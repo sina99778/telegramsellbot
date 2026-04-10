@@ -41,6 +41,11 @@ REQ_TIMEOUT = 10  # seconds
 
 TOKEN = os.getenv("BOT_TOKEN")
 channel_username = os.getenv("CHANNEL_USERNAME")
+NOWPAYMENTS_API_KEY = os.getenv("NOWPAYMENTS_API_KEY")
+NOWPAYMENTS_BASE_URL = os.getenv("NOWPAYMENTS_BASE_URL", "https://api.nowpayments.io/v1")
+NOWPAYMENTS_PRICE_CURRENCY = os.getenv("NOWPAYMENTS_PRICE_CURRENCY", "usd")
+NOWPAYMENTS_PAY_CURRENCY = os.getenv("NOWPAYMENTS_PAY_CURRENCY", "usdttrc20")
+USD_TO_TOMAN_RATE = float(os.getenv("USD_TO_TOMAN_RATE", "100000"))
 
 FIELD_MAP = {
     "url": "base_url",
@@ -82,6 +87,7 @@ STATE_AWAITING_SUPPORT_MESSAGE = "awaiting_support_message"
 STATE_AWAITING_WALLET_AMOUNT = "awaiting_wallet_amount"
 STATE_AWAITING_WALLET_CONFIRM = "awaiting_wallet_confirm"
 STATE_AWAITING_WALLET_RECEIPT = "awaiting_wallet_receipt"
+STATE_AWAITING_NOWPAYMENT = "awaiting_nowpayment"
 STATE_AWAITING_PROMO_PERCENT = "awaiting_promo_percent"
 STATE_AWAITING_PROMO_END = "awaiting_promo_end"
 
@@ -645,14 +651,18 @@ async def send_qr_code(update, context, url: str):
 
 
 async def send_config_with_qr(update, context, *, url: str, max_gb: int, duration_days: int, expiry_date: datetime,
-                              prefix_text: str = "✅ خرید شما با موفقیت انجام شد!"):
+                              prefix_text: str = "✅ خرید شما با موفقیت انجام شد!", subscription_url: str | None = None):
     await send_qr_code(update, context, url)
+    subscription_block = ""
+    if subscription_url:
+        subscription_block = f"✨ <b>لینک اشتراک:</b>\n<code>{subscription_url}</code>\n"
     await update.effective_message.reply_text(
         f"{prefix_text}\n\n"
         f"📦 <b>حجم:</b> {max_gb}GB\n"
         f"⏳ <b>مدت اعتبار:</b> {duration_days} روز\n"
         f"🗓 <b>تاریخ انقضا:</b> {expiry_date.strftime('%Y-%m-%d')}\n"
         f"🔗 <b>لینک اتصال:</b>\n<code>{url}</code>\n\n"
+        f"{subscription_block}"
         "⚠️ لطفاً این لینک را در برنامه خود وارد کنید.",
         parse_mode="HTML"
     )
@@ -760,6 +770,103 @@ async def update_panel_client_payload(*, base_url: str, username: str, password:
         if not update_resp.ok or not update_resp.json().get("success"):
             raise RuntimeError(update_resp.text or "panel_update_failed")
         return update_resp
+
+    return await asyncio.to_thread(_worker)
+
+
+async def get_sanaei_subscription_link(*, base_url: str, username: str, password: str, client_uuid: str):
+    def _worker():
+        session = requests.Session()
+        login_resp = session.post(f"{base_url}/login", json={"username": username, "password": password})
+        if not login_resp.ok or not login_resp.json().get("success"):
+            raise RuntimeError("panel_login_failed")
+
+        response = session.get(f"{base_url}/panel/api/inbounds/getClientSubscription/{client_uuid}")
+        if not response.ok:
+            raise RuntimeError("subscription_fetch_failed")
+
+        try:
+            payload = response.json()
+        except Exception:
+            payload = {}
+
+        for key in ("subscription_url", "url", "subUrl", "sub_url", "link"):
+            value = payload.get(key)
+            if value:
+                return value
+
+        obj = payload.get("obj")
+        if isinstance(obj, dict):
+            for key in ("subscription_url", "url", "subUrl", "sub_url", "link"):
+                value = obj.get(key)
+                if value:
+                    return value
+        if isinstance(obj, str) and obj.strip():
+            return obj.strip()
+
+        text = response.text.strip()
+        if text.startswith("http"):
+            return text
+        return None
+
+    return await asyncio.to_thread(_worker)
+
+
+def _to_nowpayments_amount(amount_toman: int) -> float:
+    if NOWPAYMENTS_PRICE_CURRENCY.lower() == "usd":
+        return round(float(amount_toman) / USD_TO_TOMAN_RATE, 2)
+    return round(float(amount_toman), 2)
+
+
+async def create_nowpayment_invoice(amount, user_id):
+    if not NOWPAYMENTS_API_KEY:
+        raise RuntimeError("NOWPAYMENTS_API_KEY is not configured")
+
+    amount = int(amount)
+
+    def _worker():
+        response = requests.post(
+            f"{NOWPAYMENTS_BASE_URL}/invoice",
+            headers={
+                "x-api-key": NOWPAYMENTS_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json={
+                "price_amount": _to_nowpayments_amount(amount),
+                "price_currency": NOWPAYMENTS_PRICE_CURRENCY,
+                "pay_currency": NOWPAYMENTS_PAY_CURRENCY,
+                "order_id": f"tg-{user_id}-{int(time.time())}",
+                "order_description": f"TelegramSellBot charge for {user_id}",
+            },
+            timeout=REQ_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        payment_url = payload.get("invoice_url") or payload.get("payment_url")
+        invoice_id = payload.get("id") or payload.get("invoice_id")
+        if not payment_url or not invoice_id:
+            raise RuntimeError("invalid_nowpayments_invoice_response")
+        return payment_url, str(invoice_id)
+
+    return await asyncio.to_thread(_worker)
+
+
+async def check_nowpayment_status(invoice_id):
+    if not NOWPAYMENTS_API_KEY:
+        raise RuntimeError("NOWPAYMENTS_API_KEY is not configured")
+
+    def _worker():
+        response = requests.get(
+            f"{NOWPAYMENTS_BASE_URL}/invoice/{invoice_id}",
+            headers={"x-api-key": NOWPAYMENTS_API_KEY},
+            timeout=REQ_TIMEOUT,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        status = (payload.get("invoice_status") or payload.get("payment_status") or payload.get("status") or "").lower()
+        if status in {"finished", "confirmed", "paid"}:
+            return "paid"
+        return status or "waiting"
 
     return await asyncio.to_thread(_worker)
 
@@ -1210,20 +1317,28 @@ async def handle_menu_selection(update: Update, context: ContextTypes.DEFAULT_TY
 async def show_wallet_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("show_wallet_panel tg_user=%s", getattr(update.effective_user, "id", None))
     user_tg = update.effective_user.id
-    if user_tg == ADMIN_ID:
-        row = q_one("SELECT cart_visibility FROM users WHERE user_id = %s", (user_tg,))
-        if not row or row[0] is not True:
-            await update.effective_message.reply_text("❌ شما دسترسی به این قسمت را ندارید ❌")
-            return
+    wallet_row = q_one("""
+        SELECT w.balance
+        FROM wallets w
+        JOIN users u ON u.id = w.user_id
+        WHERE u.user_id = %s
+    """, (user_tg,))
+    wallet_balance = int(wallet_row[0]) if wallet_row else 0
 
-        set_user_state(context, STATE_AWAITING_WALLET_AMOUNT)
-        await update.effective_message.reply_text(
-            "👛 به کیف پول خوش آمدید.\n"
-            "💵 لطفاً مبلغ شارژ را **بین ۲۰,۰۰۰ تا ۵۰۰,۰۰۰ تومان** وارد کنید و سپس تایید را بزنید.\n"
-            "مثال: 25000"
-        )
-    else:
-        await update.effective_message.reply_text("فعلا واریز غیر فعال شده")
+    set_user_state(context, STATE_AWAITING_WALLET_AMOUNT)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✨ 200,000 تومان", callback_data="wallet_amount_200000"),
+         InlineKeyboardButton("🔥 500,000 تومان", callback_data="wallet_amount_500000")],
+        [InlineKeyboardButton("💎 1,000,000 تومان", callback_data="wallet_amount_1000000")],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data="return_main_menu")]
+    ])
+    await update.effective_message.reply_text(
+        "💼 <b>کیف پول شما</b>\n\n"
+        f"💰 <b>موجودی:</b> {wallet_balance:,} تومان\n"
+        "عدد شارژ را بفرستید یا یکی از مبلغ‌های آماده را انتخاب کنید.",
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
 
 
 async def handle_wallet_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1277,35 +1392,148 @@ async def handle_wallet_confirm_cb(update: Update, context: ContextTypes.DEFAULT
         context.user_data.clear()
         return
 
-    # 1) اطمینان از وجود کاربر در جدول users (بر پایه user_id = آیدی تلگرام)
+    if is_admin(user_tg):
+        q_exec("""
+            INSERT INTO users (user_id, username)
+            VALUES (%s, %s)
+            ON CONFLICT (user_id) DO NOTHING
+        """, (user_tg, username))
+        internal_user_id = q_one("SELECT id FROM users WHERE user_id=%s", (user_tg,))[0]
+        unique_ref = f"manual:{internal_user_id}:{int(time.time())}"
+        tx_id = q_one("""
+            INSERT INTO wallet_transactions
+                (user_id, amount, type, method, description, status, receipt_file_id, unique_ref)
+            VALUES
+                (%s, %s, 'increase', 'manual_deposit', 'در انتظار واریز کاربر', 'pending', NULL, %s)
+            RETURNING id
+        """, (internal_user_id, amount, unique_ref))[0]
+        context.user_data["pending_tx_id"] = tx_id
+        set_user_state(context, STATE_AWAITING_WALLET_RECEIPT)
+
+        await q.edit_message_text(
+            f"✅ مبلغ {amount:,} تومان ثبت شد.\n"
+            f"لطفاً مبلغ را به شماره کارت زیر واریز کنید و سپس **عکس رسید** را ارسال کنید:\n\n"
+            f"💳 {CARD_NUMBER}\n\n"
+            "به اسم: سهند یوسف جانی\n "
+            "برای لغو، /start را ارسال کنید."
+        )
+        return
+
+    set_user_state(context, STATE_AWAITING_NOWPAYMENT)
+    await q.edit_message_text(
+        f"💎 شارژ {amount:,} تومان آماده است.\n"
+        "برای ساخت لینک پرداخت روی دکمه زیر بزنید.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("💎 پرداخت با NowPayments", callback_data="nowpayment_wallet")],
+            [InlineKeyboardButton("❌ لغو", callback_data="wallet_cancel")]
+        ])
+    )
+
+
+async def handle_wallet_amount_preset_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    amount = int(query.data.rsplit("_", 1)[-1])
+    context.user_data["charge_amount"] = amount
+    set_user_state(context, STATE_AWAITING_WALLET_CONFIRM)
+    await query.edit_message_text(
+        f"مبلغ انتخابی: {amount:,} تومان 💰\nآیا تایید می‌کنید؟",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ تایید مبلغ", callback_data="wallet_confirm")],
+            [InlineKeyboardButton("❌ لغو", callback_data="wallet_cancel")]
+        ])
+    )
+
+
+async def handle_nowpayment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    tg_user_id = query.from_user.id
+
+    if data == "nowpayment_wallet":
+        amount = int(context.user_data.get("charge_amount") or 0)
+        if amount <= 0:
+            await query.edit_message_text("❌ مبلغ معتبر برای پرداخت پیدا نشد.")
+            return
+        source = "wallet"
+        source_id = 0
+    elif data.startswith("nowpayment_buy_"):
+        source = "buy"
+        source_id = int(data.rsplit("_", 1)[-1])
+        amount = int(context.user_data.get("plan_price") or 0)
+        if amount <= 0:
+            await query.edit_message_text("❌ مبلغ طرح برای پرداخت پیدا نشد.")
+            return
+    elif data.startswith("check_nowpayment_"):
+        invoice_id = data.removeprefix("check_nowpayment_")
+        status = await check_nowpayment_status(invoice_id)
+        if status != "paid":
+            await query.answer(f"وضعیت فعلی: {status}", show_alert=True)
+            return
+
+        pending = q_one("""
+            SELECT id, user_id, amount, status, description
+            FROM wallet_transactions
+            WHERE unique_ref = %s
+        """, (f"nowpayments:{invoice_id}",))
+        if not pending:
+            await query.answer("تراکنش یافت نشد.", show_alert=True)
+            return
+        tx_id, internal_user_id, amount, tx_status, description = pending
+        if tx_status == "success":
+            await query.answer("این پرداخت قبلاً ثبت شده است.", show_alert=True)
+            return
+
+        db_conn = pool.getconn()
+        try:
+            with db_conn:
+                with db_conn.cursor() as cur:
+                    cur.execute("SELECT balance FROM wallets WHERE user_id = %s FOR UPDATE", (internal_user_id,))
+                    wallet_row = cur.fetchone()
+                    if not wallet_row:
+                        raise ValueError("wallet_not_found")
+                    new_balance = int(wallet_row[0]) + int(amount)
+                    cur.execute(
+                        "UPDATE wallets SET balance = %s, updated_at = NOW() WHERE user_id = %s",
+                        (new_balance, internal_user_id)
+                    )
+                    cur.execute(
+                        "UPDATE wallet_transactions SET status = 'success', description = %s WHERE id = %s",
+                        (f"{description} | paid", tx_id)
+                    )
+        finally:
+            pool.putconn(db_conn)
+
+        clear_user_state(context)
+        await query.edit_message_text("✅ پرداخت تایید شد و موجودی کیف پول شما شارژ شد.")
+        return
+    else:
+        return
+
     q_exec("""
         INSERT INTO users (user_id, username)
         VALUES (%s, %s)
         ON CONFLICT (user_id) DO NOTHING
-    """, (user_tg, username))
-
-    # 2) گرفتن id داخلی کاربر (users.id)
-    internal_user_id = q_one("SELECT id FROM users WHERE user_id=%s", (user_tg,))[0]
-
-    # 3) ثبت تراکنش پِندینگ با user_id داخلی
-    unique_ref = f"manual:{internal_user_id}:{int(time.time())}"
-    tx_id = q_one("""
-        INSERT INTO wallet_transactions
-            (user_id, amount, type, method, description, status, receipt_file_id, unique_ref)
-        VALUES
-            (%s,      %s,     'increase', 'manual_deposit', 'در انتظار واریز کاربر', 'pending', NULL, %s)
-        RETURNING id
-    """, (internal_user_id, amount, unique_ref))[0]
-
-    context.user_data["pending_tx_id"] = tx_id
-    set_user_state(context, STATE_AWAITING_WALLET_RECEIPT)
-
-    await q.edit_message_text(
-        f"✅ مبلغ {amount:,} تومان ثبت شد.\n"
-        f"لطفاً مبلغ را به شماره کارت زیر واریز کنید و سپس **عکس رسید** را ارسال کنید:\n\n"
-        f"💳 {CARD_NUMBER}\n\n"
-        "به اسم: سهند یوسف جانی\n "
-        f"برای لغو، /start را ارسال کنید."
+    """, (tg_user_id, query.from_user.username or None))
+    internal_user_id = q_one("SELECT id FROM users WHERE user_id = %s", (tg_user_id,))[0]
+    payment_url, invoice_id = await create_nowpayment_invoice(amount, tg_user_id)
+    q_exec("""
+        INSERT INTO wallet_transactions (user_id, amount, type, method, description, status, unique_ref, created_at)
+        VALUES (%s, %s, 'increase', 'nowpayments', %s, 'pending', %s, NOW())
+    """, (
+        internal_user_id,
+        amount,
+        f"NOWPayments invoice for {source}:{source_id}",
+        f"nowpayments:{invoice_id}",
+    ))
+    set_user_state(context, STATE_AWAITING_NOWPAYMENT)
+    await query.edit_message_text(
+        f"💎 لینک پرداخت شما آماده است.\n\n💰 مبلغ: {amount:,} تومان",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✨ باز کردن لینک پرداخت", url=payment_url)],
+            [InlineKeyboardButton("🔄 بررسی وضعیت پرداخت", callback_data=f"check_nowpayment_{invoice_id}")]
+        ])
     )
 
 
@@ -1521,7 +1749,7 @@ async def show_buy_server_panel(update: Update, context: ContextTypes.DEFAULT_TY
                                 message="💎 خوش آمدبد به پنل خرید سرور"):
     context.user_data.clear()
     set_user_state(context, STATE_BACK_BUY_SERVER_PANEL)
-    buttons = [[KeyboardButton('💰 خرید سرور')], [KeyboardButton('↩️ بازگشت')]]
+    buttons = [[InlineKeyboardButton("💎 خرید سرور", callback_data="buy_panel_open")]]
     config = q_one("""
         SELECT t.is_active, s.name, t.inbound_id, t.traffic_gb, t.duration_days
         FROM test_server_config t
@@ -1530,8 +1758,9 @@ async def show_buy_server_panel(update: Update, context: ContextTypes.DEFAULT_TY
     """)
 
     if config and config[0]:
-        buttons[0].append(KeyboardButton('🎁 دریافت سرور تست'))
-    markup = ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+        buttons[0].append(InlineKeyboardButton("🎁 سرور تست", callback_data="buy_panel_test"))
+    buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="return_main_menu")])
+    markup = InlineKeyboardMarkup(buttons)
     if update.message:
         await update.message.reply_text(message, reply_markup=markup)
     elif update.callback_query:
@@ -1542,19 +1771,104 @@ async def show_profile_panel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data.clear()
     set_user_state(context, STATE_BACK_PROFILE_PANEL)
 
-    buttons = [
-        [KeyboardButton('👤 نمایش اطلاعات کاربر'), KeyboardButton('📁 کانفیگ‌های من')],
-        [KeyboardButton('🧪 بررسی سرور دلخواه'), KeyboardButton("👥 لینک دعوت من")],
-        [KeyboardButton("🎁 درخواست جایزه")],
-        [KeyboardButton('↩️ بازگشت')]
-    ]
-
-    keyboard = ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✨ اطلاعات کاربر", callback_data="profile_user_info"),
+         InlineKeyboardButton("💎 کانفیگ‌های من", callback_data="return_user_purchased")],
+        [InlineKeyboardButton("🔥 بررسی سرور دلخواه", callback_data="profile_custom_server"),
+         InlineKeyboardButton("👥 لینک دعوت من", callback_data="profile_referral")],
+        [InlineKeyboardButton("🎁 درخواست جایزه", callback_data="profile_reward")],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data="return_main_menu")]
+    ])
     if update.message:
         await update.message.reply_text("🔧 لطفاً یکی از گزینه‌های زیر را انتخاب کنید:", reply_markup=keyboard)
     elif update.callback_query:
         await update.callback_query.message.reply_text("🔧 لطفاً یکی از گزینه‌های زیر را انتخاب کنید:",
                                                        reply_markup=keyboard)
+
+
+async def handle_test_server_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user_username = update.effective_user.username
+    result = q_one("SELECT freetrial FROM users WHERE user_id = %s", (user_id,))
+    if not result or result[0]:
+        await update.effective_message.reply_text("⚠️ شما قبلاً از سرور تست استفاده کرده‌اید.")
+        await show_buy_server_panel(update, context)
+        return
+
+    config = q_one("""
+        SELECT t.is_active, s.name, t.inbound_id, t.traffic_gb, t.duration_days
+        FROM test_server_config t
+        JOIN servers s ON t.server_id = s.id
+        LIMIT 1
+    """)
+    if not config:
+        await update.effective_message.reply_text("❌ پیکربندی تست یافت نشد.")
+        return
+
+    is_active, server_name, inbound_id, traffic_gb, duration_days = config
+    if not is_active:
+        await update.effective_message.reply_text("❌ سرور تست فعلاً غیرفعال است.")
+        return
+
+    server_row = q_one("SELECT address, base_url, username, password FROM servers WHERE name = %s LIMIT 1", (server_name,))
+    if not server_row:
+        await context.bot.send_message(
+            ADMIN_ID,
+            f"⚠️ تلاش برای دریافت سرور تست توسط @{user_username or 'نامشخص'} (ID: {user_id}) — سرور یافت نشد.",
+            parse_mode="HTML"
+        )
+        return
+
+    address, base_url, server_username, server_password = server_row
+    port, client_uuid, protocol, url, error = await create_panel_client(
+        name=str(user_id),
+        traffic_gb=traffic_gb,
+        expiry_days=duration_days,
+        inbound_id=inbound_id,
+        limit_ip=1,
+        server_name=server_name,
+        address=address
+    )
+
+    subscription_url = None
+    if error == "✅ ساخت کلاینت موفقیت‌آمیز بود.":
+        try:
+            subscription_url = await get_sanaei_subscription_link(
+                base_url=base_url,
+                username=server_username,
+                password=server_password,
+                client_uuid=client_uuid,
+            )
+        except Exception:
+            logger.exception("failed to fetch test subscription link")
+
+    await context.bot.send_message(
+        ADMIN_ID,
+        f"""
+⚠️ <b>وضعیت ساخت سرور تست</b>
+
+👤 <b>کاربر:</b> @{user_username or 'نامشخص'}
+🆔 <b>آیدی عددی:</b> <code>{user_id}</code>
+📄 <b>وضعیت:</b> {error}
+""", parse_mode="HTML"
+    )
+
+    if error != "✅ ساخت کلاینت موفقیت‌آمیز بود.":
+        await update.effective_message.reply_text(
+            "❌ دریافت اکانت تست با مشکل مواجه شد.\n\n💬 لطفاً با پشتیبانی در ارتباط باشید.")
+        return
+
+    q_exec("UPDATE users SET freetrial = TRUE WHERE user_id = %s", (user_id,))
+    await send_config_with_qr(
+        update,
+        context,
+        url=url,
+        max_gb=traffic_gb,
+        duration_days=duration_days,
+        expiry_date=datetime.now() + timedelta(days=duration_days),
+        prefix_text="🎉 <b>سرور تست شما با موفقیت ساخته شد!</b>",
+        subscription_url=subscription_url,
+    )
 
 
 async def handle_buy_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1570,70 +1884,8 @@ async def handle_buy_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     if text == '🎁 دریافت سرور تست':
-        result = q_one("SELECT freetrial FROM users WHERE user_id = %s", (user_id,))
-        if not result or result[0]:
-            await update.message.reply_text("⚠️ شما قبلاً از سرور تست استفاده کرده‌اید.")
-            await show_buy_server_panel(update, context)
-            return
-
-        config = q_one("""
-            SELECT t.is_active, s.name, t.inbound_id, t.traffic_gb, t.duration_days
-            FROM test_server_config t
-            JOIN servers s ON t.server_id = s.id
-            LIMIT 1
-        """)
-
-        if not config:
-            await update.message.reply_text("❌ پیکربندی تست یافت نشد.")
-            return
-
-        is_active, server_name, inbound_id, traffic_gb, duration_days = config
-        row = q_one("SELECT address FROM servers WHERE name = %s LIMIT 1", (server_name,))
-        if not row:
-            await context.bot.send_message(
-                ADMIN_ID,
-                f"⚠️ تلاش برای دریافت سرور تست توسط @{user_username or 'نامشخص'} (ID: {user_id}) — سرور یافت نشد.",
-                parse_mode="HTML"
-            )
-            return
-
-        address = row[0]
-        port, client_uuid, protocol, url, error = await create_panel_client(
-            name=str(user_id),
-            traffic_gb=traffic_gb,
-            expiry_days=duration_days,
-            inbound_id=1,
-            limit_ip=1,
-            server_name=server_name,
-            address=address
-        )
-
-        await context.bot.send_message(
-            ADMIN_ID,
-            f"""
-⚠️ <b>وضعیت ساخت سرور تست</b>
-
-👤 <b>کاربر:</b> @{user_username or 'نامشخص'}
-🆔 <b>آیدی عددی:</b> <code>{user_id}</code>
-📄 <b>وضعیت:</b> {error}
-""", parse_mode="HTML"
-        )
-
-        if error != '✅ ساخت کلاینت موفقیت‌آمیز بود.':
-            await update.message.reply_text(
-                "❌ دریافت اکانت تست با مشکل مواجه شد.\n\n💬 لطفاً با پشتیبانی در ارتباط باشید.")
-            return
-
-        q_exec("UPDATE users SET freetrial = TRUE WHERE user_id = %s", (user_id,))
-        await send_qr_code(update, context, url)
-        await update.message.reply_text(
-            f"🎉 <b>سرور تست شما با موفقیت ساخته شد!</b>\n\n"
-            f"📦 <b>حجم:</b> {traffic_gb}GB\n"
-            f"⏳ <b>اعتبار:</b> {duration_days} روز\n"
-            f"🔗 <b>لینک اتصال:</b>\n<code>{url}</code>\n\n"
-            f"⚠️ فقط در یک دستگاه استفاده کنید.",
-            parse_mode="HTML"
-        )
+        await handle_test_server_request(update, context)
+        return
 
     if text == "💰 خرید سرور":
         if user_id == ADMIN_ID:
@@ -1766,11 +2018,15 @@ async def handle_user_buy_plan_callback(update: Update, context: ContextTypes.DE
         await query.edit_message_text("❗️ کاربر یافت نشد.")
         return
     db_user_id, user_discount = user_row
-    user_wallet = q_one("SELECT balance FROM wallets WHERE user_id = %s", (db_user_id,))[0]
+    wallet_row = q_one("SELECT balance FROM wallets WHERE user_id = %s", (db_user_id,))
+    user_wallet = wallet_row[0] if wallet_row else 0
+    admin_user = is_admin(user_id)
     final_price = plan_price
     discount_amount = 0
 
-    if user_discount:
+    if admin_user:
+        final_price = 0
+    elif user_discount:
         discount_amount = int(plan_price * user_discount / 100)
         final_price = plan_price - discount_amount
 
@@ -1783,22 +2039,25 @@ async def handle_user_buy_plan_callback(update: Update, context: ContextTypes.DE
         f"💰 <b>موجودی کیف پول شما:</b> {user_wallet:,} تومان"
     ]
 
-    if user_discount:
+    if admin_user:
+        message_lines.append("👑 <b>خرید برای ادمین رایگان است.</b>")
+    elif user_discount:
         message_lines.append(f"🎁 <b>تخفیف ({user_discount}%):</b> {discount_amount:,} تومان")
         message_lines.append(f"💸 <b>قیمت نهایی پس از تخفیف:</b> {final_price:,} تومان")
 
     message_lines.append("━━━━━━━━━━━━━━━━━━━━━━━\n")
     message_text = "\n".join(message_lines)
     buttons = []
-    if user_wallet >= final_price:
+    if admin_user or user_wallet >= final_price:
         buttons = [
             [InlineKeyboardButton("✅ تایید خرید", callback_data=f"confirm_buy_plan_{plan_id}")],
             [InlineKeyboardButton("🔙 بازگشت", callback_data="user_back")]
         ]
-        message_text += ("✅ <b>موجودی کافی است. می‌توانید خرید را تایید کنید.</b>")
+        message_text += ("✅ <b>می‌توانید خرید را تایید کنید.</b>")
     else:
         message_text += ("❗️ <b>موجودی کیف پول کافی نیست. ابتدا آن را شارژ کنید.</b>")
         buttons = [
+            [InlineKeyboardButton("💎 پرداخت با NowPayments", callback_data=f"nowpayment_buy_{plan_id}")],
             [InlineKeyboardButton("💼 شارژ کیف پول", callback_data="go_to_wallet")],
             [InlineKeyboardButton("🔙 بازگشت", callback_data="user_back")]
         ]
@@ -1858,7 +2117,9 @@ async def handle_confirm_buy_plan(update: Update, context: ContextTypes):
 
     plan_row = q_one(
         """
-        SELECT u.id, sp.inbound_id, sp.traffic_gb, sp.duration_days, sp.server_id, sp.price, s.name, s.address
+        SELECT
+            u.id, sp.inbound_id, sp.traffic_gb, sp.duration_days, sp.server_id, sp.price,
+            s.name, s.address, s.base_url, s.username, s.password
         FROM users u
         JOIN server_plans sp ON sp.id = %s
         JOIN servers s ON s.id = sp.server_id
@@ -1870,7 +2131,11 @@ async def handle_confirm_buy_plan(update: Update, context: ContextTypes):
         await update.message.reply_text("❌ کاربر یا طرح مورد نظر یافت نشد.")
         return
 
-    db_user_id, inbound_id, traffic_gb, duration_days, server_id, server_plan_price, server_name, server_address = plan_row
+    (
+        db_user_id, inbound_id, traffic_gb, duration_days, server_id, server_plan_price,
+        server_name, server_address, base_url, server_username, server_password
+    ) = plan_row
+    admin_user = is_admin(telegram_user_id)
     purchase_date = datetime.now()
     expiry_date = purchase_date + timedelta(days=int(duration_days))
     discount_percentage = 0.0
@@ -1884,46 +2149,79 @@ async def handle_confirm_buy_plan(update: Update, context: ContextTypes):
     base_gb = int(traffic_gb)
     bonus_gb = 0
     max_gb = base_gb
+    subscription_url = None
+
+    port, client_uuid, protocol, url, error = await create_panel_client(
+        name=str(purchased_plan_name),
+        traffic_gb=base_gb,
+        expiry_days=duration_days,
+        inbound_id=inbound_id,
+        limit_ip=2,
+        server_name=server_name,
+        address=server_address,
+    )
+    if error != "✅ ساخت کلاینت موفقیت‌آمیز بود.":
+        await context.bot.send_message(
+            ADMIN_ID,
+            f"""
+⚠️ <b>گزارش ساخت اکانت جدید (ناموفق)</b>
+━━━━━━━━━━━━━━━━━━━━━━━
+👤 <b>کاربر:</b> @{user_username or 'نامشخص'}
+🆔 <b>آیدی عددی:</b> <code>{telegram_user_id}</code>
+🏷 <b>نام کانفیگ (کاربر):</b> <code>{purchased_plan_name}</code>
+
+📦 <b>طرح انتخابی:</b> <code>💠 {traffic_gb} گیگ ⏳ {duration_days} روزه 💳 {server_plan_price}</code>
+🌐 <b>سرور:</b> {server_name}
+🆔 <b>Inbound ID:</b> {inbound_id}
+
+📄 <b>وضعیت:</b> {error}
+━━━━━━━━━━━━━━━━━━━━━━━
+""",
+            parse_mode="HTML"
+        )
+        await update.message.reply_text("❌ دریافت اکانت با مشکل مواجه شد.\n\n💬 لطفاً با پشتیبانی در ارتباط باشید.")
+        return
+
+    try:
+        subscription_url = await get_sanaei_subscription_link(
+            base_url=base_url,
+            username=server_username,
+            password=server_password,
+            client_uuid=client_uuid,
+        )
+    except Exception:
+        logger.exception("failed to fetch buy subscription link")
+
     db_conn = pool.getconn()
     try:
         with db_conn:
             with db_conn.cursor() as cur:
-                cur.execute(
-                    "SELECT balance FROM wallets WHERE user_id = %s FOR UPDATE",
-                    (db_user_id,)
-                )
-                wallet_row = cur.fetchone()
-                if not wallet_row:
-                    raise ValueError("Wallet not found for user")
-                wallet_balance = int(wallet_row[0])
+                if admin_user:
+                    final_price, base_gb, bonus_gb, max_gb = 0, int(traffic_gb), 0, int(traffic_gb)
+                    wallet_row = q_one_tx(cur, "SELECT COALESCE(balance, 0) FROM wallets WHERE user_id = %s", (db_user_id,))
+                    new_balance = int(wallet_row[0]) if wallet_row else 0
+                else:
+                    cur.execute("SELECT balance FROM wallets WHERE user_id = %s FOR UPDATE", (db_user_id,))
+                    wallet_row = cur.fetchone()
+                    if not wallet_row:
+                        raise ValueError("Wallet not found for user")
+                    wallet_balance = int(wallet_row[0])
 
-                final_price, base_gb, bonus_gb, max_gb = apply_promo_and_calculate_final_price(
-                    cur, server_plan_price, db_user_id, int(traffic_gb)
-                )
+                    final_price, base_gb, bonus_gb, max_gb = apply_promo_and_calculate_final_price(
+                        cur, server_plan_price, db_user_id, int(traffic_gb)
+                    )
 
-                cur.execute("SELECT COALESCE(discount_percentage, 0) FROM users WHERE id = %s", (db_user_id,))
-                discount_percentage = float(cur.fetchone()[0] or 0)
+                    cur.execute("SELECT COALESCE(discount_percentage, 0) FROM users WHERE id = %s", (db_user_id,))
+                    discount_percentage = float(cur.fetchone()[0] or 0)
 
-                if wallet_balance < final_price:
-                    raise ValueError("INSUFFICIENT_BALANCE: wallet balance is not enough")
+                    if wallet_balance < final_price:
+                        raise ValueError("INSUFFICIENT_BALANCE: wallet balance is not enough")
 
-                port, client_uuid, protocol, url, error = await create_panel_client(
-                    name=str(purchased_plan_name),
-                    traffic_gb=max_gb,
-                    expiry_days=duration_days,
-                    inbound_id=inbound_id,
-                    limit_ip=2,
-                    server_name=server_name,
-                    address=server_address,
-                )
-                if error != "✅ ساخت کلاینت موفقیت‌آمیز بود.":
-                    raise RuntimeError(error)
-
-                new_balance = wallet_balance - final_price
-                cur.execute(
-                    "UPDATE wallets SET balance = %s WHERE user_id = %s",
-                    (new_balance, db_user_id)
-                )
+                    new_balance = wallet_balance - final_price
+                    cur.execute(
+                        "UPDATE wallets SET balance = %s WHERE user_id = %s",
+                        (new_balance, db_user_id)
+                    )
 
                 config_data = {
                     "uuid": client_uuid,
@@ -1934,6 +2232,7 @@ async def handle_confirm_buy_plan(update: Update, context: ContextTypes):
                     "inbound_id": inbound_id,
                     "remark": f"💠 {base_gb} گیگ ⏳ {duration_days} روزه 💳 {server_plan_price} تومان",
                     "connection_url": url,
+                    "subscription_url": subscription_url,
                     "price": int(server_plan_price),
                     "expiry": expiry_date.strftime("%Y-%m-%d")
                 }
@@ -1961,7 +2260,9 @@ async def handle_confirm_buy_plan(update: Update, context: ContextTypes):
                 purchased_plan_id = cur.fetchone()[0]
 
                 description = f'خرید طرح: 💠 {max_gb} گیگ ⏳ {duration_days} روزه 💳 {final_price:,} تومان'
-                if discount_percentage > 0:
+                if admin_user:
+                    description += ' (ادمین - رایگان)'
+                elif discount_percentage > 0:
                     description += f' (تخفیف {discount_percentage:g}%)'
 
                 cur.execute("""
@@ -1972,7 +2273,7 @@ async def handle_confirm_buy_plan(update: Update, context: ContextTypes):
                     db_user_id,
                     final_price,
                     'spend',
-                    None,
+                    'admin_free' if admin_user else None,
                     description,
                     purchased_plan_id,
                     'success',
@@ -2027,6 +2328,22 @@ async def handle_confirm_buy_plan(update: Update, context: ContextTypes):
     finally:
         pool.putconn(db_conn)
 
+    try:
+        email = unquote((url or "").split("#")[-1].strip()) if "#" in (url or "") else f"{client_uuid}@local"
+        await update_panel_client(
+            base_url=base_url,
+            username=server_username,
+            password=server_password,
+            inbound_id=inbound_id,
+            client_uuid=client_uuid,
+            email=email,
+            expiry_date=expiry_date,
+            max_gb=max_gb,
+            enable=True,
+        )
+    except Exception:
+        logger.exception("post-buy panel update failed")
+
     await context.bot.send_message(
         ADMIN_ID,
         f"""
@@ -2065,20 +2382,11 @@ async def handle_confirm_buy_plan(update: Update, context: ContextTypes):
         max_gb=max_gb,
         duration_days=duration_days,
         expiry_date=expiry_date,
-        prefix_text="✅ خرید شما با موفقیت انجام شد!"
-    )
-    await show_buy_server_panel(update, context, message="â¬…ï¸ Ø´Ù…Ø§ Ø¨Ù‡ Ù…Ù†ÙˆÛŒ Ø®Ø±ÛŒØ¯ Ø³Ø±ÙˆØ± Ø¨Ø±Ú¯Ø´ØªÛŒØ¯")
-    return
-    await update.message.reply_text(
-        f"✅ خرید شما با موفقیت انجام شد!\n\n"
-        f"📦 <b>حجم:</b> {max_gb}GB\n"
-        f"⏳ <b>مدت اعتبار:</b> {duration_days} روز\n"
-        f"🗓 <b>تاریخ انقضا:</b> {expiry_date.strftime('%Y-%m-%d')}\n"
-        f"🔗 <b>لینک اتصال:</b>\n<code>{url}</code>\n\n"
-        f"⚠️ لطفاً این لینک را در برنامه خود وارد کنید.",
-        parse_mode="HTML"
+        prefix_text="✅ خرید شما با موفقیت انجام شد!",
+        subscription_url=subscription_url,
     )
     await show_buy_server_panel(update, context, message="⬅️ شما به منوی خرید سرور برگشتید")
+    return
 
 
 def get_next_reward(current_level: int):
@@ -2119,15 +2427,15 @@ async def handle_profile_panel(update: Update, context: ContextTypes.DEFAULT_TYP
     db_user_id = q_one("""
     SELECT id from users where user_id = %s
     """, (user_id,))
-    if text == "🧪 بررسی سرور دلخواه":
-        await update.message.reply_text(
+    if text in {"🧪 بررسی سرور دلخواه", "profile_custom_server"}:
+        await update.effective_message.reply_text(
             "🔍 <b>بررسی کانفیگ دلخواه</b>\n\n"
             "لطفاً فقط <b>کانفیگ مورد نظر</b>را ارسال کنید تا بررسی شود.",
             parse_mode="HTML"
         )
         context.user_data["awaiting_server_detail"] = True
         return
-    if text == "👤 نمایش اطلاعات کاربر":
+    if text in {"👤 نمایش اطلاعات کاربر", "profile_user_info"}:
         user_row = q_one("""
             SELECT 
                 u.id, u.user_id, u.name, u.username, u.phone, 
@@ -2258,9 +2566,9 @@ async def handle_profile_panel(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             print(f"❌ Exception: {e}")
             await update.effective_message.reply_text("⚠️ خطایی رخ داد. لطفاً بعداً دوباره تلاش کنید.")
-    if text == "📁 کانفیگ‌های من":
+    if text in {"📁 کانفیگ‌های من", "return_user_purchased"}:
         await handle_user_purchased_plans(update, context)
-    if text == "👥 لینک دعوت من":
+    if text in {"👥 لینک دعوت من", "profile_referral"}:
         result = q_one("SELECT refcode FROM users WHERE user_id = %s", (user_id,))
         if not result:
             await update.effective_message.reply_text("❗ حساب کاربری شما یافت نشد.")
@@ -2286,7 +2594,7 @@ async def handle_profile_panel(update: Update, context: ContextTypes.DEFAULT_TYP
             f"📢 با ارسال این لینک به دوستان‌تان، پس از ثبت‌نام آن‌ها می‌توانید پاداش دریافت کنید.",
             parse_mode="HTML"
         )
-    if text == "🎁 درخواست جایزه":
+    if text in {"🎁 درخواست جایزه", "profile_reward"}:
         data = get_db_user_and_invites(user_id)
         if not data:
             await update.effective_message.reply_text("❗ حساب کاربری شما یافت نشد.")
@@ -2586,6 +2894,7 @@ async def show_detail_purchased_plan_callback(update: Update, context: ContextTy
         address = config_data.get("address")
         remark = config_data.get("remark")
         url = config_data.get("connection_url")
+        subscription_url = config_data.get("subscription_url")
     except Exception as e:
         await query.edit_message_text(f"❌ خطا در خواندن کانفیگ: {e}")
         return
@@ -2609,6 +2918,20 @@ async def show_detail_purchased_plan_callback(update: Update, context: ContextTy
         except Exception:
             await query.edit_message_text("❌ ورود به پنل ناموفق بود.")
             return
+
+        if not subscription_url:
+            try:
+                subscription_url = await get_sanaei_subscription_link(
+                    base_url=base_url,
+                    username=username,
+                    password=password,
+                    client_uuid=uuid,
+                )
+                if subscription_url:
+                    config_data["subscription_url"] = subscription_url
+                    q_exec("UPDATE purchased_plans SET config_data = %s WHERE id = %s", (json.dumps(config_data), purchased_plan_id))
+            except Exception:
+                logger.exception("failed to fetch purchased plan subscription link")
 
         if traffic_data.get("obj"):
             traffic_obj = traffic_data["obj"][0]
@@ -2638,6 +2961,7 @@ async def show_detail_purchased_plan_callback(update: Update, context: ContextTy
 
     exp_txt = expiry_date.strftime("%Y-%m-%d %H:%M") if expiry_date else "—"
     pur_txt = purchase_date.strftime("%Y-%m-%d %H:%M") if purchase_date else "—"
+    subscription_block = f"✨ <b>لینک اشتراک:</b>\n<code>{subscription_url}</code>\n" if subscription_url else ""
 
     text = (
         "<b>📡 اطلاعات سرویس</b>\n"
@@ -2646,6 +2970,7 @@ async def show_detail_purchased_plan_callback(update: Update, context: ContextTy
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "<b>🖥 اطلاعات اتصال</b>\n"
         f"🔗 <b>لینک اتصال:</b>\n<code>{url}</code>\n"
+        f"{subscription_block}"
         "━━━━━━━━━━━━━━━━━━━━━━\n"
         "<b>🔖 جزئیات طرح</b>\n"
         f"📦 <b>نام پلن:</b> {remark}\n"
@@ -2998,6 +3323,7 @@ async def handle_confirm_renewal_plan_callback(update: Update, context: ContextT
     # -------------------------
     raw_url = config_data.get("connection_url", "")
     email = unquote(raw_url.split("#")[-1].strip()) if "#" in raw_url else f"{client_uuid}@local"
+    subscription_url = config_data.get("subscription_url")
 
     try:
         reset_resp, update_resp = await update_panel_client(
@@ -3025,6 +3351,18 @@ async def handle_confirm_renewal_plan_callback(update: Update, context: ContextT
         )
         await query.edit_message_text("❌ ورود به سرور ناموفق بود.")
         return
+    try:
+        subscription_url = await get_sanaei_subscription_link(
+            base_url=base_url,
+            username=server_username,
+            password=server_password,
+            client_uuid=client_uuid,
+        )
+        if subscription_url:
+            config_data["subscription_url"] = subscription_url
+            q_exec("UPDATE purchased_plans SET config_data = %s WHERE id = %s", (json.dumps(config_data), purchased_plan_id))
+    except Exception:
+        logger.exception("failed to fetch renewal subscription link")
     if not update_resp.ok or not update_resp.json().get("success"):
         await context.bot.send_message(
             chat_id=ADMIN_ID,
@@ -3044,13 +3382,15 @@ async def handle_confirm_renewal_plan_callback(update: Update, context: ContextT
     # -------------------------
     # Phase 3: user message (✅ max_gb)
     # -------------------------
+    renewal_subscription_block = f"✨ <b>لینک اشتراک:</b>\n<code>{subscription_url}</code>" if subscription_url else ""
     await query.message.reply_text(
         "✅ تمدید پلن با موفقیت انجام شد.\n"
         f"🕒 <b>تاریخ خرید:</b> {updated_purchase_date.strftime('%Y-%m-%d %H:%M')}\n"
         f"📅 <b>تاریخ جدید انقضا:</b> {updated_expiry.strftime('%Y-%m-%d %H:%M')}\n"
         f"📦 <b>حجم جدید:</b> {max_gb} GB\n"
         f"💳 <b>مبلغ کسر شده:</b> {final_price:,} تومان\n"
-        f"💰 <b>موجودی جدید:</b> {new_balance:,} تومان",
+        f"💰 <b>موجودی جدید:</b> {new_balance:,} تومان\n"
+        f"{renewal_subscription_block}",
         parse_mode="HTML"
     )
 
@@ -3476,17 +3816,73 @@ async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, m
         return
     context.user_data.clear()
     set_user_state(context, STATE_BACK_ADMIN_PANEL)
-
-    buttons = [
-        [KeyboardButton("👤 مدیریت ادمین‌ها"), KeyboardButton("👥 مدیریت کاربران")],
-        [KeyboardButton("⚙️ تنظیمات سرور‌ها"), KeyboardButton("🧾 مدیریت طرح‌های فروخته‌شده")],
-        [KeyboardButton("📨 پاسخ به پیام‌های پشتیبانی"), KeyboardButton("🎁 پروموشن‌ها")],
-        [KeyboardButton("🔄 بررسی ناهماهنگی DB و پنل")],
-        [KeyboardButton("🔙 بازگشت به منوی اصلی")]
-    ]
-    markup = ReplyKeyboardMarkup(buttons, resize_keyboard=True)
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥 مدیریت کاربران", callback_data="admin_panel_users"),
+         InlineKeyboardButton("⚙️ تنظیمات سرورها", callback_data="admin_panel_servers")],
+        [InlineKeyboardButton("📨 پشتیبانی", callback_data="admin_panel_support"),
+         InlineKeyboardButton("🎁 پروموشن", callback_data="promo_panel")],
+        [InlineKeyboardButton("🧾 مدیریت طرح‌ها", callback_data="admin_panel_sales"),
+         InlineKeyboardButton("🔄 بررسی سینک", callback_data="sync_page:0")],
+        [InlineKeyboardButton("🔙 بازگشت", callback_data="return_main_menu")]
+    ])
 
     await update.effective_message.reply_text(message, reply_markup=markup)
+
+
+async def handle_panel_shortcuts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data == "buy_panel_open":
+        await show_categories_panel(update, context)
+        return
+    if data == "buy_panel_test":
+        await handle_test_server_request(update, context)
+        return
+    if data == "admin_panel_users":
+        await query.edit_message_text(
+            "👥 <b>مدیریت کاربران</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 نمایش لیست کاربران", callback_data="users_page_1")],
+                [InlineKeyboardButton("🔍 جستجوی کاربر", callback_data="search_user")],
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="back_admin_panel")]
+            ])
+        )
+        return
+    if data == "admin_panel_support":
+        await query.edit_message_text(
+            "📨 <b>مدیریت پیام‌های پشتیبانی</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 همه پیام‌ها", callback_data="all_message_1")],
+                [InlineKeyboardButton("❗ پاسخ‌نداده‌ها", callback_data="unanswered_message_1")],
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="back_admin_panel")]
+            ])
+        )
+        return
+    if data == "admin_panel_servers":
+        await query.edit_message_text(
+            "⚙️ <b>مدیریت سرورها</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📊 نمایش سرورها", callback_data="return_servers"),
+                 InlineKeyboardButton("⚙️ سرور تست", callback_data="edit_test_config")],
+                [InlineKeyboardButton("📦 تعیین طرح‌های فروش", callback_data="server_plans")],
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="back_admin_panel")]
+            ])
+        )
+        return
+    if data == "admin_panel_sales":
+        await query.edit_message_text(
+            "🧾 <b>مدیریت طرح‌های فروخته‌شده</b>",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("👥 مدیریت کاربران", callback_data="admin_panel_users")],
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="back_admin_panel")]
+            ])
+        )
+        return
 
 
 async def handle_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -4909,10 +5305,11 @@ async def handle_search_user(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"🙋‍♂️ <b>معرف:</b> {referrer_str}\n"
         f"🛒 <b>نمایش شماره کارت:</b> {'✅ فعال' if cart_visibility else '❌ غیرفعال'}"
     )
+    toggle_label = "⛔ غیرفعال‌کردن" if status == "active" else "✅ فعال‌کردن"
     buttons = [
         [
             InlineKeyboardButton('🎁 تغییر تخفیف', callback_data=f"user_discount_percentage_{user_id}"),
-            InlineKeyboardButton('🔄 فعال/غیرفعال‌سازی', callback_data=f"user_in_active_{user_id}")
+            InlineKeyboardButton(toggle_label, callback_data=f"user_in_active_{user_id}")
         ],
         [
             InlineKeyboardButton('🗑 حذف کاربر', callback_data=f"user_delete_{user_id}"),
@@ -4990,20 +5387,28 @@ async def handle_user_plans_callback(update: Update, context: ContextTypes.DEFAU
         return
 
     text = f"📦 <b>پلن‌های کاربر (صفحه {page}/{total_pages}):</b>\n\n"
+    buttons = []
     for plan_id, remark, expiry, active in rows:
         active_str = "✅ فعال" if active else "❌ غیرفعال"
         text += f"🔹 <code>{remark}</code>\n📅 انقضا: {expiry.strftime('%Y-%m-%d')} | {active_str}\n\n"
+        buttons.append([
+            InlineKeyboardButton(f"👁 {plan_id}", callback_data=f"user_purchased_plan_{plan_id}"),
+            InlineKeyboardButton("🔄 تمدید", callback_data=f"renewal_purchased_plan_{plan_id}"),
+            InlineKeyboardButton("⚡ وضعیت", callback_data=f"dis_able_purchased_plan_{plan_id}"),
+            InlineKeyboardButton("🗑 حذف", callback_data=f"delete_purchased_plan_{plan_id}")
+        ])
 
-    buttons = []
+    nav_buttons = []
     if page > 1:
-        buttons.append(InlineKeyboardButton("⬅️ قبلی", callback_data=f"user_plans_{user_id}_{page - 1}"))
+        nav_buttons.append(InlineKeyboardButton("⬅️ قبلی", callback_data=f"user_plans_{user_id}_{page - 1}"))
     if page < total_pages:
-        buttons.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"user_plans_{user_id}_{page + 1}"))
+        nav_buttons.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"user_plans_{user_id}_{page + 1}"))
 
-    nav = [buttons] if buttons else []
-    nav.append([InlineKeyboardButton("🔙 بازگشت", callback_data=f"selected_user_{user_id}")])
+    if nav_buttons:
+        buttons.append(nav_buttons)
+    buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data=f"selected_user_{user_id}")])
 
-    markup = InlineKeyboardMarkup(nav)
+    markup = InlineKeyboardMarkup(buttons)
     await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=markup)
 
 
@@ -5195,11 +5600,11 @@ async def handle_user_in_active_callback(update: Update, context: ContextTypes.D
     user_userid = int(query.data.rsplit("_", 1)[-1])
     account_status = q_one("SELECT account_status FROM users WHERE id = %s", (user_userid,))[0]
     if account_status == "active":
-        msg = "کاربر در حال حاضر فعال است، در صورت غیرفعال کردن، تمام کانفینگ‌ها هم غیرفعال می‌شوند."
-        buttons = [[InlineKeyboardButton("❌ غیرفعال کردن", callback_data=f"confirm_user_in_active_{user_userid}")]]
+        msg = "کاربر در حال حاضر فعال است. با یک کلیک همه پلن‌های او هم غیرفعال می‌شوند."
+        buttons = [[InlineKeyboardButton("⛔ غیرفعال‌کردن فوری", callback_data=f"confirm_user_in_active_{user_userid}")]]
     else:
-        msg = "کاربر در حال حاضر غیرفعال است، در صورت فعال کردن، تمام کانفینگ‌ها هم فعال می‌شوند."
-        buttons = [[InlineKeyboardButton("✅ فعال کردن", callback_data=f"confirm_user_active_{user_userid}")]]
+        msg = "کاربر در حال حاضر غیرفعال است. با یک کلیک همه پلن‌های او هم فعال می‌شوند."
+        buttons = [[InlineKeyboardButton("✅ فعال‌کردن فوری", callback_data=f"confirm_user_active_{user_userid}")]]
     buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data=f"selected_user_{user_userid}")])
     markup = InlineKeyboardMarkup(buttons)
     await query.edit_message_text(text=msg, reply_markup=markup)
@@ -5383,7 +5788,10 @@ async def handle_selected_user_callback(update: Update, context: ContextTypes.DE
     set_timed_value(context, "awaiting_find_user", True)
     set_timed_value(context, "search_by", "user_id")
     set_timed_value(context, "search_userid", user_userid)
-    await query.message.delete()
+    try:
+        await query.message.delete()
+    except Exception:
+        pass
     await handle_search_user(update, context)
 
 
@@ -6330,6 +6738,8 @@ def main():
     app.add_handler(CallbackQueryHandler(handle_sync_callbacks, pattern=r"^sync_"))
     app.add_handler(CallbackQueryHandler(handle_user_message_callback, pattern=r"^user_message_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_wallet_confirm_cb, pattern="^wallet_(confirm|cancel)$"))
+    app.add_handler(CallbackQueryHandler(handle_wallet_amount_preset_callback, pattern=r"^wallet_amount_\d+$"))
+    app.add_handler(CallbackQueryHandler(handle_nowpayment_callback, pattern=r"^(nowpayment_wallet|nowpayment_buy_\d+|check_nowpayment_.+)$"))
     app.add_handler(CallbackQueryHandler(handle_reward_callback, pattern=r"^reward_(approve|reject)_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_wallet_admin_cb, pattern=r"^wallet_(appr|rej)_\d+$"))
     app.add_handler(MessageHandler(filters.PHOTO, handle_wallet_receipt_photo))
@@ -6338,6 +6748,8 @@ def main():
     app.add_handler(
         MessageHandler(filters.TEXT & filters.Regex("^(💰 خرید سرور|🎁 دریافت سرور تست)$"), handle_buy_server))
     app.add_handler(CallbackQueryHandler(handle_go_to_wallet_cb, pattern="^go_to_wallet$"))
+    app.add_handler(CallbackQueryHandler(handle_panel_shortcuts, pattern=r"^(buy_panel_open|buy_panel_test|admin_panel_users|admin_panel_servers|admin_panel_support|admin_panel_sales)$"))
+    app.add_handler(CallbackQueryHandler(handle_profile_panel, pattern=r"^(profile_user_info|profile_custom_server|profile_referral|profile_reward)$"))
     app.add_handler(
         CallbackQueryHandler(handle_user_view_category_callback, pattern=r"^user_view_category_\d+$"))
     app.add_handler(CallbackQueryHandler(handle_back_navigation, pattern="^user_back$"))
