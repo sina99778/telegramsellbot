@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+import unicodedata
 from uuid import UUID
 
 from aiogram import F, Router
@@ -54,10 +55,8 @@ MENU_INTERRUPT_TEXTS = {
     Buttons.FREE_TRIAL,
 }
 
-DECIMAL_TRANSLATION_TABLE = str.maketrans(
-    "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫٬,",
-    "01234567890123456789..,",
-)
+
+DECIMAL_SEPARATORS = {".", ",", "\u066b", "\u066c", "\u060c"}
 
 
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_inbound_selection)
@@ -113,19 +112,17 @@ async def list_plans(
         markup = None
     else:
         text = "\n\n".join(
-            [
-                (
-                    f"پلن: {plan.name}\n"
-                    f"پروتکل: {plan.protocol}\n"
-                    f"اینباند: {plan.inbound.remark if plan.inbound else 'نامشخص'} "
-                    f"(ID: {plan.inbound.xui_inbound_remote_id if plan.inbound else '-'})\n"
-                    f"مدت: {plan.duration_days} روز\n"
-                    f"حجم: {format_volume_bytes(plan.volume_bytes)}\n"
-                    f"قیمت: {plan.price} {plan.currency}\n"
-                    f"وضعیت: {Common.ACTIVE if plan.is_active else Common.INACTIVE}"
-                )
-                for plan in plans
-            ]
+            (
+                f"پلن: {plan.name}\n"
+                f"پروتکل: {plan.protocol}\n"
+                f"اینباند: {plan.inbound.remark if plan.inbound else 'نامشخص'} "
+                f"(ID: {plan.inbound.xui_inbound_remote_id if plan.inbound else '-'})\n"
+                f"مدت: {plan.duration_days} روز\n"
+                f"حجم: {format_volume_bytes(plan.volume_bytes)}\n"
+                f"قیمت: {plan.price} {plan.currency}\n"
+                f"وضعیت: {Common.ACTIVE if plan.is_active else Common.INACTIVE}"
+            )
+            for plan in plans
         )
         markup = _build_plan_list_keyboard(plans, page=page, total_items=total_plans)
 
@@ -139,7 +136,6 @@ async def list_plans(
 async def create_plan_start(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     await callback.answer()
 
-    # Show available inbounds for the admin to select
     result = await session.execute(
         select(XUIInboundRecord)
         .options(selectinload(XUIInboundRecord.server))
@@ -154,8 +150,8 @@ async def create_plan_start(callback: CallbackQuery, state: FSMContext, session:
 
     if not inbounds:
         await callback.message.answer(
-            "❌ هیچ اینباند فعالی موجود نیست.\n"
-            "ابتدا یک سرور اضافه کنید تا اینباندها از پنل دریافت شوند."
+            "هیچ اینباند فعالی موجود نیست.\n"
+            "ابتدا یک سرور اضافه یا سینک کنید تا اینباندها از پنل دریافت شوند."
         )
         return
 
@@ -230,7 +226,7 @@ async def create_plan_duration(message: Message, state: FSMContext) -> None:
     if not message.text:
         return
     try:
-        duration_days = int(message.text.strip())
+        duration_days = int(_normalize_integer_input(message.text))
     except ValueError:
         await message.answer(AdminMessages.INVALID_INTEGER)
         return
@@ -247,7 +243,7 @@ async def create_plan_volume(message: Message, state: FSMContext) -> None:
     if not message.text:
         return
     try:
-        volume_gb = int(message.text.strip())
+        volume_gb = int(_normalize_integer_input(message.text))
     except ValueError:
         await message.answer(AdminMessages.INVALID_INTEGER)
         return
@@ -270,8 +266,7 @@ async def create_plan_price(
         return
 
     try:
-        normalized_price_text = _normalize_decimal_input(message.text)
-        price = Decimal(normalized_price_text)
+        price = Decimal(_normalize_decimal_input(message.text))
     except InvalidOperation:
         await message.answer(AdminMessages.INVALID_PRICE)
         return
@@ -308,6 +303,7 @@ async def create_plan_price(
         await session.rollback()
         await message.answer(AdminMessages.PLAN_CODE_EXISTS)
         return
+
     await AuditLogRepository(session).log_action(
         actor_user_id=admin_user.id,
         action="create_plan",
@@ -323,15 +319,6 @@ async def create_plan_price(
 
     await state.clear()
     await message.answer(AdminMessages.PLAN_CREATED.format(name=plan.name))
-
-
-def _normalize_decimal_input(raw_value: str) -> str:
-    normalized = raw_value.strip().translate(DECIMAL_TRANSLATION_TABLE)
-    normalized = normalized.replace(" ", "")
-    if normalized.count(",") == 1 and "." not in normalized:
-        normalized = normalized.replace(",", ".")
-    normalized = normalized.replace(",", "")
-    return normalized
 
 
 @router.callback_query(PlanActionCallback.filter(F.action == "toggle"))
@@ -382,3 +369,48 @@ def _build_plan_list_keyboard(
         next_callback_data=PlanListPageCallback(page=page + 1).pack(),
     )
     return builder.as_markup()
+
+
+def _normalize_decimal_input(raw_value: str) -> str:
+    normalized_characters: list[str] = []
+    seen_decimal_separator = False
+
+    for character in raw_value.strip():
+        if character in {"\u200e", "\u200f", "\u202a", "\u202b", "\u202c", "\u2066", "\u2067", "\u2069"}:
+            continue
+        if character.isspace():
+            continue
+        if character in "+-":
+            normalized_characters.append(character)
+            continue
+        if character in DECIMAL_SEPARATORS:
+            if seen_decimal_separator:
+                continue
+            normalized_characters.append(".")
+            seen_decimal_separator = True
+            continue
+        try:
+            normalized_characters.append(str(unicodedata.decimal(character)))
+        except (TypeError, ValueError):
+            normalized_characters.append(character)
+
+    normalized = "".join(normalized_characters)
+    if normalized.count(".") > 1:
+        raise InvalidOperation
+    return normalized
+
+
+def _normalize_integer_input(raw_value: str) -> str:
+    normalized_characters: list[str] = []
+
+    for character in raw_value.strip():
+        if character in {"\u200e", "\u200f", "\u202a", "\u202b", "\u202c", "\u2066", "\u2067", "\u2069"}:
+            continue
+        if character.isspace() or character in DECIMAL_SEPARATORS:
+            continue
+        try:
+            normalized_characters.append(str(unicodedata.decimal(character)))
+        except (TypeError, ValueError):
+            normalized_characters.append(character)
+
+    return "".join(normalized_characters)

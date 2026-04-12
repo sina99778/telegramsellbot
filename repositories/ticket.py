@@ -43,10 +43,20 @@ class TicketRepository:
     async def get_ticket_with_messages(self, ticket_id: UUID) -> Ticket | None:
         result = await self.session.execute(
             select(Ticket)
-            .options(selectinload(Ticket.messages))
+            .options(selectinload(Ticket.messages), selectinload(Ticket.user))
             .where(Ticket.id == ticket_id)
         )
         return result.scalar_one_or_none()
+
+    async def list_open_tickets(self, *, limit: int = 20) -> list[Ticket]:
+        result = await self.session.execute(
+            select(Ticket)
+            .options(selectinload(Ticket.user), selectinload(Ticket.messages))
+            .where(Ticket.status.in_(["open", "answered"]))
+            .order_by(Ticket.updated_at.desc(), Ticket.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().unique().all())
 
     async def set_status(self, ticket: Ticket, status: str) -> Ticket:
         ticket.status = status

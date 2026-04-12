@@ -109,6 +109,7 @@ class AdminButtons:
     MANAGE_USERS = "👥 مدیریت کاربران"
     BROADCAST = "📢 پیام همگانی"
     MANAGE_RETARGETING = "🎯 مدیریت ریتارگتینگ"
+    MANAGE_TICKETS = "🛠 بررسی تیکت‌ها"
     ADD_SERVER = "افزودن سرور"
     LIST_SERVERS = "لیست سرورها"
     TOGGLE_SERVER = "تغییر وضعیت فعال/غیرفعال"
@@ -186,6 +187,15 @@ class AdminMessages:
     BROADCAST_CANCELLED = "ارسال همگانی لغو شد."
     BROADCAST_CONFIRM_HINT = "فقط `confirm` یا `cancel` را ارسال کنید."
     BROADCAST_QUEUED = "پیام همگانی `{job_id}` با موفقیت در صف قرار گرفت."
+    TICKETS_OVERVIEW = "تیکت‌های باز و پاسخ‌داده‌شده:"
+    NO_OPEN_TICKETS = "فعلاً تیکت بازی برای بررسی وجود ندارد."
+    TICKET_DETAILS = (
+        "تیکت: {ticket_id}\n"
+        "کاربر: {user_name}\n"
+        "تلگرام آیدی: {telegram_id}\n"
+        "وضعیت: {status}\n\n"
+        "آخرین پیام‌ها:\n{messages}"
+    )
     RETARGETING_MENU = (
         "مدیریت ریتارگتینگ\n\n"
         "وضعیت: {status}\n"

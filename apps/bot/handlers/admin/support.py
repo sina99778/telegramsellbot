@@ -15,7 +15,7 @@ from sqlalchemy.orm import selectinload
 
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.states.admin import SupportReplyStates
-from core.texts import Messages, SupportTexts
+from core.texts import AdminMessages, Messages, SupportTexts
 from models.ticket import Ticket
 from models.user import User
 from repositories.audit import AuditLogRepository
@@ -38,6 +38,72 @@ async def cancel_admin_support_state(message: Message, state: FSMContext) -> Non
         return
     await state.clear()
     await message.answer(Messages.CANCELLED)
+
+
+@router.callback_query(F.data == "admin:tickets")
+async def support_ticket_list(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    tickets = await TicketRepository(session).list_open_tickets(limit=20)
+    if not tickets:
+        await callback.message.answer(AdminMessages.NO_OPEN_TICKETS)
+        return
+
+    builder = InlineKeyboardBuilder()
+    lines: list[str] = [AdminMessages.TICKETS_OVERVIEW]
+    for ticket in tickets:
+        user_name = ticket.user.first_name if ticket.user is not None and ticket.user.first_name else "کاربر"
+        preview = _build_ticket_preview(ticket)
+        lines.append(
+            f"#{str(ticket.id)[:8]} | {user_name} | {_format_ticket_status(ticket.status)}\n"
+            f"{preview}"
+        )
+        builder.button(
+            text=f"{user_name} | {_format_ticket_status(ticket.status)}",
+            callback_data=SupportTicketActionCallback(action="view", ticket_id=ticket.id).pack(),
+        )
+    builder.adjust(1)
+    await callback.message.answer("\n\n".join(lines), reply_markup=builder.as_markup())
+
+
+@router.callback_query(SupportTicketActionCallback.filter(F.action == "view"))
+async def support_ticket_view(
+    callback: CallbackQuery,
+    callback_data: SupportTicketActionCallback,
+    session: AsyncSession,
+) -> None:
+    await callback.answer()
+    ticket = await TicketRepository(session).get_ticket_with_messages(callback_data.ticket_id)
+    if ticket is None or ticket.user is None:
+        await callback.message.answer(SupportTexts.ADMIN_TICKET_NOT_FOUND)
+        return
+
+    recent_messages = ticket.messages[-5:]
+    rendered_messages = "\n\n".join(
+        f"{'ادمین' if message.sender_id != ticket.user_id else 'کاربر'}: {message.text}"
+        for message in recent_messages
+    ) or "-"
+
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=SupportTexts.ADMIN_REPLY_BUTTON.format(ticket_short=str(ticket.id)[:8]),
+        callback_data=SupportTicketActionCallback(action="reply", ticket_id=ticket.id).pack(),
+    )
+    builder.button(
+        text=SupportTexts.CLOSE_TICKET,
+        callback_data=SupportTicketActionCallback(action="close", ticket_id=ticket.id).pack(),
+    )
+    builder.adjust(1)
+
+    await callback.message.answer(
+        AdminMessages.TICKET_DETAILS.format(
+            ticket_id=ticket.id,
+            user_name=ticket.user.first_name or ticket.user.username or "کاربر",
+            telegram_id=ticket.user.telegram_id,
+            status=_format_ticket_status(ticket.status),
+            messages=rendered_messages,
+        ),
+        reply_markup=builder.as_markup(),
+    )
 
 
 @router.callback_query(SupportTicketActionCallback.filter(F.action == "reply"))
@@ -81,12 +147,13 @@ async def support_reply_submit(
         await message.answer(SupportTexts.ADMIN_TICKET_NOT_FOUND)
         return
 
-    await ticket_repository.add_message(ticket_id=ticket.id, sender_id=admin_user.id, text=message.text.strip())
+    clean_text = message.text.strip()
+    await ticket_repository.add_message(ticket_id=ticket.id, sender_id=admin_user.id, text=clean_text)
 
     try:
         await bot.send_message(
             chat_id=ticket.user.telegram_id,
-            text=SupportTexts.USER_REPLY.format(ticket_id=ticket.id, message=message.text.strip()),
+            text=SupportTexts.USER_REPLY.format(ticket_id=ticket.id, message=clean_text),
             reply_markup=_build_close_ticket_keyboard(ticket.id),
         )
         ticket.status = "answered"
@@ -148,3 +215,20 @@ def _build_close_ticket_keyboard(ticket_id: UUID):
     )
     builder.adjust(1)
     return builder.as_markup()
+
+
+def _build_ticket_preview(ticket: Ticket) -> str:
+    if not ticket.messages:
+        return "-"
+    preview = ticket.messages[-1].text.replace("\n", " ").strip()
+    if len(preview) > 44:
+        return preview[:41].rstrip() + "..."
+    return preview
+
+
+def _format_ticket_status(status: str) -> str:
+    return {
+        "open": "باز",
+        "answered": "پاسخ داده شده",
+        "closed": "بسته",
+    }.get(status, status)
