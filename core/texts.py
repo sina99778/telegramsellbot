@@ -196,6 +196,8 @@ class AdminMessages:
     RETARGETING_ENTER_DAYS = "تعداد روزهای عدم خرید را وارد کنید. برای لغو /cancel را ارسال کنید."
     RETARGETING_UPDATED = "تنظیمات ریتارگتینگ به‌روزرسانی شد."
     RETARGETING_TEST_SENT = "نسخه تست پیام ریتارگتینگ برای شما ارسال شد."
+    PLAN_CREATION_CANCELLED = "ساخت پلن لغو شد."
+    PLAN_CREATION_INTERRUPTED = "ساخت پلن لغو شد. حالا می‌توانید گزینه موردنظر خود را دوباره انتخاب کنید."
 
 
 class Common:

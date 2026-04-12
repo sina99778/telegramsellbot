@@ -5,6 +5,7 @@ from uuid import UUID
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
@@ -18,7 +19,7 @@ from apps.bot.keyboards.inline import add_pagination_controls
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.states.admin import CreatePlanStates
 from core.formatting import format_volume_bytes
-from core.texts import AdminButtons, AdminMessages, Common
+from core.texts import AdminButtons, AdminMessages, Buttons, Common
 from models.plan import Plan
 from models.user import User
 from models.xui import XUIInboundRecord
@@ -44,6 +45,34 @@ class PlanListPageCallback(CallbackData, prefix="plan_list"):
 
 class InboundSelectCallback(CallbackData, prefix="inbound_sel"):
     inbound_id: UUID
+
+
+MENU_INTERRUPT_TEXTS = {
+    Buttons.BUY_CONFIG,
+    Buttons.PROFILE_WALLET,
+    Buttons.SUPPORT,
+    Buttons.FREE_TRIAL,
+}
+
+
+@router.message(Command("cancel"), CreatePlanStates.waiting_for_inbound_selection)
+@router.message(Command("cancel"), CreatePlanStates.waiting_for_name)
+@router.message(Command("cancel"), CreatePlanStates.waiting_for_duration_days)
+@router.message(Command("cancel"), CreatePlanStates.waiting_for_volume_gb)
+@router.message(Command("cancel"), CreatePlanStates.waiting_for_price)
+async def cancel_plan_creation(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(AdminMessages.PLAN_CREATION_CANCELLED)
+
+
+@router.message(CreatePlanStates.waiting_for_inbound_selection, F.text.in_(MENU_INTERRUPT_TEXTS))
+@router.message(CreatePlanStates.waiting_for_name, F.text.in_(MENU_INTERRUPT_TEXTS))
+@router.message(CreatePlanStates.waiting_for_duration_days, F.text.in_(MENU_INTERRUPT_TEXTS))
+@router.message(CreatePlanStates.waiting_for_volume_gb, F.text.in_(MENU_INTERRUPT_TEXTS))
+@router.message(CreatePlanStates.waiting_for_price, F.text.in_(MENU_INTERRUPT_TEXTS))
+async def interrupt_plan_creation_with_main_menu(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(AdminMessages.PLAN_CREATION_INTERRUPTED)
 
 
 @router.callback_query(F.data == "admin:plans")
