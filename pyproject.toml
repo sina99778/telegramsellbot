@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=69.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegramsellbot"
+version = "0.1.0"
+description = "Premium Telegram bot for selling and managing VPN/Proxy configurations with Sanaei X-UI and NOWPayments."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [{ name = "OpenAI Codex" }]
+dependencies = [
+  "aiogram>=3.15.0,<4.0.0",
+  "fastapi>=0.115.0,<1.0.0",
+  "uvicorn[standard]>=0.32.0,<1.0.0",
+  "sqlalchemy>=2.0.36,<3.0.0",
+  "asyncpg>=0.30.0,<1.0.0",
+  "alembic>=1.14.0,<2.0.0",
+  "redis[hiredis]>=5.2.0,<6.0.0",
+  "pydantic>=2.10.0,<3.0.0",
+  "pydantic-settings>=2.6.0,<3.0.0",
+  "httpx>=0.28.0,<1.0.0",
+  "orjson>=3.10.0,<4.0.0",
+  "python-dotenv>=1.0.1,<2.0.0",
+  "structlog>=24.4.0,<25.0.0",
+  "apscheduler>=3.10.4,<4.0.0",
+  "tenacity>=9.0.0,<10.0.0",
+  "cryptography>=43.0.0,<44.0.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0,<9.0.0",
+  "pytest-asyncio>=0.24.0,<1.0.0",
+  "pytest-cov>=6.0.0,<7.0.0",
+  "ruff>=0.7.0,<1.0.0",
+  "mypy>=1.13.0,<2.0.0",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["apps*", "core*", "models*", "repositories*", "schemas*", "services*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "RUF"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[tool.alembic]
+script_location = "migrations"
+prepend_sys_path = ["."]
