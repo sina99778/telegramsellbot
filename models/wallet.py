@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, Numeric, String, Text
+from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -88,7 +88,7 @@ class WalletTransaction(UUIDPrimaryKeyMixin, Base):
         default=dict,
         server_default="{}",
     )
-    created_at: Mapped[datetime] = mapped_column(nullable=False, default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
     wallet: Mapped[Wallet] = relationship("Wallet", back_populates="transactions")
     user: Mapped[User] = relationship("User", back_populates="wallet_transactions")
