@@ -36,6 +36,8 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
   info "Existing installation found in ${INSTALL_DIR}. Pulling latest code..."
   cd "${INSTALL_DIR}"
   git fetch origin
+  git reset --hard
+  git clean -fd
   git checkout -B main origin/main
   git pull --ff-only origin main
 else
