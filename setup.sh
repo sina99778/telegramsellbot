@@ -6,6 +6,7 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+SETUP_VERSION="2026-04-12-1"
 REPO_URL="https://github.com/sina99778/telegramsellbot.git"
 INSTALL_DIR="/opt/telegramsellbot"
 ENV_BACKUP="/tmp/telegramsellbot.env.backup"
@@ -26,6 +27,8 @@ if [[ "${EUID}" -ne 0 ]]; then
   error "This script must be run as root. Please use sudo."
   exit 1
 fi
+
+info "Running setup.sh version ${SETUP_VERSION}"
 
 export DEBIAN_FRONTEND=noninteractive
 
