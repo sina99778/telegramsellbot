@@ -14,7 +14,7 @@ def get_main_menu_keyboard() -> ReplyKeyboardMarkup:
             ],
             [
                 KeyboardButton(text=Buttons.SUPPORT),
-                KeyboardButton(text=Buttons.FREE_TRIAL),
+                KeyboardButton(text=Buttons.MY_CONFIGS),
             ],
         ],
         resize_keyboard=True,

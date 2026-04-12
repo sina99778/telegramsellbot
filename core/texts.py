@@ -5,6 +5,7 @@ class Buttons:
     BUY_CONFIG = "🛍 خرید کانفیگ"
     PROFILE_WALLET = "👤 پروفایل و کیف پول"
     SUPPORT = "🛠 پشتیبانی (تیکت)"
+    MY_CONFIGS = "📋 کانفیگ‌های من"
     FREE_TRIAL = "🎁 اکانت تست رایگان"
     TOPUP_CRYPTO = "💳 شارژ کیف پول (کریپتو)"
     CUSTOM_AMOUNT = "مبلغ دلخواه"

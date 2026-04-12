@@ -1,6 +1,7 @@
 from aiogram import Router
 
 from apps.bot.handlers.user.free_trial import router as free_trial_router
+from apps.bot.handlers.user.my_configs import router as my_configs_router
 from apps.bot.handlers.user.purchase import router as purchase_router
 from apps.bot.handlers.user.start import router as start_router
 from apps.bot.handlers.user.support import router as support_router
@@ -14,6 +15,7 @@ router.callback_query.middleware(UserAccessMiddleware())
 router.include_router(start_router)
 router.include_router(topup_router)
 router.include_router(purchase_router)
+router.include_router(my_configs_router)
 router.include_router(free_trial_router)
 router.include_router(support_router)
 
