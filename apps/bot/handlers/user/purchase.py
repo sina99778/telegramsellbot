@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 from uuid import UUID
 
@@ -17,6 +18,8 @@ from repositories.user import UserRepository
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
 from services.wallet.manager import InsufficientBalanceError, WalletManager
 
+
+logger = logging.getLogger(__name__)
 
 router = Router(name="user-purchase")
 
@@ -113,19 +116,28 @@ async def purchase_plan_callback(
             plan_id=plan.id,
             order_id=order.id,
         )
-    except ProvisioningError:
-        await wallet_manager.process_transaction(
-            user_id=user.id,
-            amount=Decimal(str(plan.price)),
-            transaction_type="refund",
-            direction="credit",
-            currency=plan.currency,
-            reference_type="order",
-            reference_id=order.id,
-            description="Automatic refund after provisioning failure",
-            metadata={"plan_id": str(plan.id)},
-        )
-        order.status = "refunded"
+    except ProvisioningError as exc:
+        logger.error("Provisioning failed for order %s: %s", order.id, exc)
+        # Try to refund; if refund also fails, log and notify
+        try:
+            await wallet_manager.process_transaction(
+                user_id=user.id,
+                amount=Decimal(str(plan.price)),
+                transaction_type="refund",
+                direction="credit",
+                currency=plan.currency,
+                reference_type="order",
+                reference_id=order.id,
+                description="Automatic refund after provisioning failure",
+                metadata={"plan_id": str(plan.id)},
+            )
+            order.status = "refunded"
+        except Exception as refund_exc:
+            logger.critical(
+                "CRITICAL: Refund also failed for order %s: %s",
+                order.id, refund_exc,
+            )
+            order.status = "failed_needs_manual_refund"
         await callback.message.answer(Messages.PROVISIONING_FAILED_REFUNDED)
         return
 

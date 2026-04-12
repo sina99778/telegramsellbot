@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 
 from aiogram import F, Router
 from aiogram.types import Message
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from core.formatting import format_volume_bytes
 from core.texts import Buttons, Messages
@@ -14,6 +14,8 @@ from models.order import Order
 from models.plan import Plan
 from repositories.user import UserRepository
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
+
+logger = logging.getLogger(__name__)
 
 
 router = Router(name="user-free-trial")
@@ -62,7 +64,8 @@ async def free_trial_handler(message: Message, session: AsyncSession) -> None:
             plan_id=trial_plan.id,
             order_id=order.id,
         )
-    except ProvisioningError:
+    except ProvisioningError as exc:
+        logger.error("Free trial provisioning failed for user %s: %s", user.id, exc)
         order.status = "failed"
         await message.answer(Messages.PROVISIONING_FAILED_REFUNDED)
         return

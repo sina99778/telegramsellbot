@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
@@ -58,7 +58,7 @@ async def support_reply_submit(
     state: FSMContext,
     session: AsyncSession,
     admin_user: User,
-    bot,
+    bot: Bot,
 ) -> None:
     if message.text is None:
         return

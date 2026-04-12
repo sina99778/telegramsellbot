@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -39,7 +39,7 @@ async def support_submit(
     message: Message,
     state: FSMContext,
     session: AsyncSession,
-    bot,
+    bot: Bot,
 ) -> None:
     if message.from_user is None or message.text is None:
         return

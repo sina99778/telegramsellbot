@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -17,6 +18,9 @@ from schemas.internal.xui import XUIClient
 from services.wallet.manager import WalletManager
 from services.xui.client import SanaeiXUIClient
 from services.xui.runtime import build_sub_link, create_xui_client_for_server, ensure_inbound_server_loaded
+
+
+logger = logging.getLogger(__name__)
 
 
 class ProvisioningError(Exception):
@@ -50,7 +54,16 @@ class ProvisioningManager:
         plan_id: UUID,
         order_id: UUID,
     ) -> ProvisioningResult:
-        plan = await self.session.get(Plan, plan_id)
+        # Load plan WITH its inbound relation
+        plan = await self.session.scalar(
+            select(Plan)
+            .options(
+                selectinload(Plan.inbound)
+                .selectinload(XUIInboundRecord.server)
+                .selectinload(XUIServerRecord.credentials)
+            )
+            .where(Plan.id == plan_id)
+        )
         if plan is None or not plan.is_active:
             raise ProvisioningError("Plan not found or inactive.")
 
@@ -58,19 +71,29 @@ class ProvisioningManager:
         if order is None or order.user_id != user_id:
             raise ProvisioningError("Order not found for user.")
 
-        inbound = await self.session.scalar(
-            select(XUIInboundRecord)
-            .options(selectinload(XUIInboundRecord.server).selectinload(XUIServerRecord.credentials))
-            .where(XUIInboundRecord.is_active.is_(True))
-            .order_by(XUIInboundRecord.created_at.asc())
-            .limit(1)
-        )
+        # Use the plan's specific inbound instead of random selection
+        inbound: XUIInboundRecord | None = plan.inbound
+
         if inbound is None:
-            raise ProvisioningError("No active X-UI inbound is available for provisioning.")
+            # Fallback: try to find any active inbound (legacy plans without inbound_id)
+            inbound = await self.session.scalar(
+                select(XUIInboundRecord)
+                .options(selectinload(XUIInboundRecord.server).selectinload(XUIServerRecord.credentials))
+                .where(XUIInboundRecord.is_active.is_(True))
+                .order_by(XUIInboundRecord.created_at.asc())
+                .limit(1)
+            )
+
+        if inbound is None:
+            raise ProvisioningError(
+                "هیچ اینباند فعالی برای ساخت کانفیگ موجود نیست. "
+                "ابتدا یک سرور اضافه کنید."
+            )
 
         server = ensure_inbound_server_loaded(inbound)
         client_uuid, username, email, sub_id = await self._generate_unique_client_identity()
         sub_link = build_sub_link(server.base_url, sub_id)
+
         xui_payload = XUIClient(
             id=client_uuid,
             uuid=client_uuid,
@@ -81,6 +104,13 @@ class ProvisioningManager:
             enable=True,
             subId=sub_id,
             comment=f"user:{user_id};order:{order_id}",
+        )
+
+        logger.info(
+            "Provisioning config: inbound_remote_id=%s, protocol=%s, email=%s",
+            inbound.xui_inbound_remote_id,
+            inbound.protocol,
+            email,
         )
 
         async with self._get_xui_client_for_server(server) as xui_client:

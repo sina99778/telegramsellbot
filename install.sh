@@ -116,6 +116,11 @@ wait_for_postgres() {
 }
 
 generate_fernet_key() {
+  # Ensure cryptography is available for Fernet key generation
+  if ! python3 -c "from cryptography.fernet import Fernet" 2>/dev/null; then
+    info "Installing cryptography package for Fernet key generation..."
+    pip3 install -q cryptography 2>/dev/null || apt-get install -y -qq python3-pip >/dev/null && pip3 install -q cryptography
+  fi
   python3 - <<'PY'
 from cryptography.fernet import Fernet
 print(Fernet.generate_key().decode())

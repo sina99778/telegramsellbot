@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from uuid import UUID
 
 from aiogram import F, Router
@@ -12,6 +13,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from pydantic import SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from apps.bot.keyboards.inline import add_pagination_controls
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
@@ -23,6 +25,8 @@ from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerCredential, X
 from repositories.audit import AuditLogRepository
 from services.xui.client import SanaeiXUIClient, XUIAuthenticationError, XUIClientConfig, XUIRequestError
 
+
+logger = logging.getLogger(__name__)
 
 router = Router(name="admin-servers")
 router.message.middleware(AdminOnlyMiddleware())
@@ -159,6 +163,8 @@ async def add_server_password(
             )
         ) as xui_client:
             await xui_client.login()
+            # Fetch inbounds from the panel right after successful login
+            remote_inbounds = await xui_client.get_inbounds()
     except (XUIAuthenticationError, XUIRequestError):
         await message.answer(AdminMessages.SERVER_CONNECTION_FAILED)
         await state.clear()
@@ -183,16 +189,134 @@ async def add_server_password(
     session.add(credential)
     await session.flush()
 
+    # Auto-sync inbounds from the panel into the database
+    synced_count = 0
+    for remote_inbound in remote_inbounds:
+        # Check if this inbound already exists for this server
+        existing = await session.scalar(
+            select(XUIInboundRecord).where(
+                XUIInboundRecord.server_id == server.id,
+                XUIInboundRecord.xui_inbound_remote_id == remote_inbound.id,
+            )
+        )
+        if existing is not None:
+            continue
+
+        inbound_record = XUIInboundRecord(
+            server_id=server.id,
+            xui_inbound_remote_id=remote_inbound.id,
+            remark=remote_inbound.remark,
+            protocol=remote_inbound.protocol,
+            port=remote_inbound.port,
+            tag=None,
+            is_active=True,
+        )
+        session.add(inbound_record)
+        synced_count += 1
+
+    await session.flush()
+
     await AuditLogRepository(session).log_action(
         actor_user_id=admin_user.id,
         action="create_server",
         entity_type="server",
         entity_id=server.id,
-        payload={"name": server.name, "base_url": server.base_url},
+        payload={"name": server.name, "base_url": server.base_url, "inbounds_synced": synced_count},
     )
 
     await state.clear()
-    await message.answer(AdminMessages.SERVER_CREATED.format(name=server.name))
+
+    inbound_summary = ""
+    if synced_count > 0:
+        inbound_summary = f"\n\n✅ {synced_count} اینباند از پنل دریافت و ذخیره شد."
+    else:
+        inbound_summary = "\n\n⚠️ هیچ اینباندی در پنل پیدا نشد."
+
+    await message.answer(
+        AdminMessages.SERVER_CREATED.format(name=server.name) + inbound_summary
+    )
+
+
+@router.callback_query(ServerActionCallback.filter(F.action == "sync"))
+async def sync_server_inbounds(
+    callback: CallbackQuery,
+    callback_data: ServerActionCallback,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    """Re-sync inbounds from an existing server."""
+    await callback.answer()
+    server = await session.scalar(
+        select(XUIServerRecord)
+        .options(selectinload(XUIServerRecord.credentials))
+        .where(XUIServerRecord.id == callback_data.server_id)
+    )
+    if server is None:
+        await callback.message.answer(AdminMessages.SERVER_NOT_FOUND)
+        return
+
+    if server.credentials is None:
+        await callback.message.answer("اطلاعات ورود سرور موجود نیست.")
+        return
+
+    from core.security import decrypt_secret
+    try:
+        async with SanaeiXUIClient(
+            XUIClientConfig(
+                base_url=server.base_url,
+                username=server.credentials.username,
+                password=SecretStr(decrypt_secret(server.credentials.password_encrypted)),
+                timeout_seconds=15.0,
+            )
+        ) as xui_client:
+            await xui_client.login()
+            remote_inbounds = await xui_client.get_inbounds()
+    except (XUIAuthenticationError, XUIRequestError) as exc:
+        await callback.message.answer(f"خطا در اتصال به پنل: {exc}")
+        return
+
+    synced_count = 0
+    for remote_inbound in remote_inbounds:
+        existing = await session.scalar(
+            select(XUIInboundRecord).where(
+                XUIInboundRecord.server_id == server.id,
+                XUIInboundRecord.xui_inbound_remote_id == remote_inbound.id,
+            )
+        )
+        if existing is not None:
+            # Update existing inbound info
+            existing.remark = remote_inbound.remark
+            existing.protocol = remote_inbound.protocol
+            existing.port = remote_inbound.port
+            continue
+
+        inbound_record = XUIInboundRecord(
+            server_id=server.id,
+            xui_inbound_remote_id=remote_inbound.id,
+            remark=remote_inbound.remark,
+            protocol=remote_inbound.protocol,
+            port=remote_inbound.port,
+            tag=None,
+            is_active=True,
+        )
+        session.add(inbound_record)
+        synced_count += 1
+
+    await session.flush()
+
+    await AuditLogRepository(session).log_action(
+        actor_user_id=admin_user.id,
+        action="sync_inbounds",
+        entity_type="server",
+        entity_id=server.id,
+        payload={"synced": synced_count, "total_remote": len(remote_inbounds)},
+    )
+
+    await callback.message.answer(
+        f"✅ سینک اینباندها انجام شد.\n"
+        f"اینباندهای جدید ثبت‌شده: {synced_count}\n"
+        f"کل اینباندها در پنل: {len(remote_inbounds)}"
+    )
 
 
 @router.callback_query(ServerActionCallback.filter(F.action == "toggle"))
@@ -278,6 +402,10 @@ def _build_server_list_keyboard(
         builder.button(
             text=f"{server.name} | {'ON' if server.is_active else 'OFF'}",
             callback_data=ServerActionCallback(action="toggle", server_id=server.id, page=page).pack(),
+        )
+        builder.button(
+            text=f"🔄 سینک {server.name}",
+            callback_data=ServerActionCallback(action="sync", server_id=server.id, page=page).pack(),
         )
         builder.button(
             text=f"{AdminButtons.DELETE} {server.name}",

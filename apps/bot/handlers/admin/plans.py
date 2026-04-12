@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from apps.bot.keyboards.inline import add_pagination_controls
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
@@ -19,6 +20,7 @@ from core.formatting import format_volume_bytes
 from core.texts import AdminButtons, AdminMessages, Common
 from models.plan import Plan
 from models.user import User
+from models.xui import XUIInboundRecord
 from repositories.audit import AuditLogRepository
 
 
@@ -37,6 +39,10 @@ class PlanActionCallback(CallbackData, prefix="plan_admin"):
 
 class PlanListPageCallback(CallbackData, prefix="plan_list"):
     page: int
+
+
+class InboundSelectCallback(CallbackData, prefix="inbound_sel"):
+    inbound_id: UUID
 
 
 @router.callback_query(F.data == "admin:plans")
@@ -60,6 +66,7 @@ async def list_plans(
     total_plans = int(await session.scalar(select(func.count()).select_from(Plan)) or 0)
     result = await session.execute(
         select(Plan)
+        .options(selectinload(Plan.inbound))
         .order_by(Plan.created_at.asc())
         .offset((page - 1) * PLAN_PAGE_SIZE)
         .limit(PLAN_PAGE_SIZE)
@@ -73,12 +80,14 @@ async def list_plans(
         text = "\n\n".join(
             [
                 (
-                    f"Plan: {plan.name}\n"
-                    f"Protocol: {plan.protocol}\n"
-                    f"Duration: {plan.duration_days} days\n"
-                    f"Volume: {format_volume_bytes(plan.volume_bytes)}\n"
-                    f"Price: {plan.price} {plan.currency}\n"
-                f"وضعیت: {Common.ACTIVE if plan.is_active else Common.INACTIVE}"
+                    f"پلن: {plan.name}\n"
+                    f"پروتکل: {plan.protocol}\n"
+                    f"اینباند: {plan.inbound.remark if plan.inbound else 'نامشخص'} "
+                    f"(ID: {plan.inbound.xui_inbound_remote_id if plan.inbound else '-'})\n"
+                    f"مدت: {plan.duration_days} روز\n"
+                    f"حجم: {format_volume_bytes(plan.volume_bytes)}\n"
+                    f"قیمت: {plan.price} {plan.currency}\n"
+                    f"وضعیت: {Common.ACTIVE if plan.is_active else Common.INACTIVE}"
                 )
                 for plan in plans
             ]
@@ -92,8 +101,74 @@ async def list_plans(
 
 
 @router.callback_query(F.data == "admin:plans:create")
-async def create_plan_start(callback: CallbackQuery, state: FSMContext) -> None:
+async def create_plan_start(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     await callback.answer()
+
+    # Show available inbounds for the admin to select
+    result = await session.execute(
+        select(XUIInboundRecord)
+        .options(selectinload(XUIInboundRecord.server))
+        .where(XUIInboundRecord.is_active.is_(True))
+        .order_by(XUIInboundRecord.created_at.asc())
+    )
+    inbounds = list(result.scalars().all())
+
+    if not inbounds:
+        await callback.message.answer(
+            "❌ هیچ اینباند فعالی موجود نیست.\n"
+            "ابتدا یک سرور اضافه کنید تا اینباندها از پنل دریافت شوند."
+        )
+        return
+
+    builder = InlineKeyboardBuilder()
+    for inbound in inbounds:
+        server_name = inbound.server.name if inbound.server else "?"
+        label = (
+            f"{inbound.remark or 'بدون نام'} | "
+            f"{inbound.protocol or '?'} | "
+            f"Port: {inbound.port or '?'} | "
+            f"سرور: {server_name}"
+        )
+        builder.button(
+            text=label,
+            callback_data=InboundSelectCallback(inbound_id=inbound.id).pack(),
+        )
+    builder.adjust(1)
+
+    await state.set_state(CreatePlanStates.waiting_for_inbound_selection)
+    await callback.message.answer(
+        "اینباند مورد نظر را برای این پلن انتخاب کنید:",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.callback_query(
+    CreatePlanStates.waiting_for_inbound_selection,
+    InboundSelectCallback.filter(),
+)
+async def create_plan_inbound_selected(
+    callback: CallbackQuery,
+    callback_data: InboundSelectCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    await callback.answer()
+
+    inbound = await session.scalar(
+        select(XUIInboundRecord)
+        .options(selectinload(XUIInboundRecord.server))
+        .where(XUIInboundRecord.id == callback_data.inbound_id)
+    )
+    if inbound is None:
+        await callback.message.answer("اینباند پیدا نشد.")
+        await state.clear()
+        return
+
+    await state.update_data(
+        inbound_id=str(inbound.id),
+        protocol=inbound.protocol or "unknown",
+        inbound_remote_id=inbound.xui_inbound_remote_id,
+    )
     await state.set_state(CreatePlanStates.waiting_for_name)
     await callback.message.answer(AdminMessages.ENTER_PLAN_NAME)
 
@@ -103,19 +178,6 @@ async def create_plan_name(message: Message, state: FSMContext) -> None:
     if not message.text:
         return
     await state.update_data(name=message.text.strip())
-    await state.set_state(CreatePlanStates.waiting_for_protocol)
-    await message.answer(AdminMessages.ENTER_PROTOCOL)
-
-
-@router.message(CreatePlanStates.waiting_for_protocol)
-async def create_plan_protocol(message: Message, state: FSMContext) -> None:
-    if not message.text:
-        return
-    protocol = message.text.strip().lower()
-    if protocol not in {"vless", "vmess"}:
-        await message.answer(AdminMessages.INVALID_PROTOCOL)
-        return
-    await state.update_data(protocol=protocol)
     await state.set_state(CreatePlanStates.waiting_for_duration_days)
     await message.answer(AdminMessages.ENTER_DURATION)
 
@@ -170,18 +232,24 @@ async def create_plan_price(
         await message.answer(AdminMessages.INVALID_PRICE)
         return
 
-    if price <= Decimal("0"):
+    if price < Decimal("0"):
         await message.answer(AdminMessages.PRICE_GT_ZERO)
         return
 
     form_data = await state.get_data()
     volume_bytes = int(form_data["volume_gb"]) * 1024 * 1024 * 1024
-    code = f"{str(form_data['protocol'])}_{int(form_data['duration_days'])}d_{int(form_data['volume_gb'])}gb_{price.normalize()}"
+    protocol = str(form_data["protocol"])
+    inbound_id = UUID(str(form_data["inbound_id"]))
+    code = (
+        f"{protocol}_{int(form_data['duration_days'])}d_"
+        f"{int(form_data['volume_gb'])}gb_{price.normalize()}"
+    )
 
     plan = Plan(
         code=code,
         name=str(form_data["name"]),
-        protocol=str(form_data["protocol"]),
+        protocol=protocol,
+        inbound_id=inbound_id,
         duration_days=int(form_data["duration_days"]),
         volume_bytes=volume_bytes,
         price=price,
@@ -196,7 +264,12 @@ async def create_plan_price(
         action="create_plan",
         entity_type="plan",
         entity_id=plan.id,
-        payload={"code": plan.code, "price": str(plan.price)},
+        payload={
+            "code": plan.code,
+            "price": str(plan.price),
+            "inbound_id": str(inbound_id),
+            "protocol": protocol,
+        },
     )
 
     await state.clear()

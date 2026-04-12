@@ -169,6 +169,7 @@ async def revoke_user_config(
         xui_record.is_active = False
 
     subscription.status = "cancelled"
+    subscription.sub_link = None
     await AuditLogRepository(session).log_action(
         actor_user_id=admin_user.id,
         action="revoke_config",

@@ -22,11 +22,13 @@ services:
     image: redis:7-alpine
     container_name: telegramsellbot-redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    env_file:
+      - .env
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:-changeme}"]
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-changeme}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5

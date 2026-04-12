@@ -147,6 +147,10 @@ async def admin_edit_balance_submit(
     total_orders = int(
         await session.scalar(select(func.count()).select_from(Order).where(Order.user_id == user.id)) or 0
     )
+    # Reload user with wallet to get the updated balance
+    await session.refresh(user, attribute_names=["wallet"])
+    if user.wallet is not None:
+        await session.refresh(user.wallet)
     await state.clear()
     await message.answer(
         _build_user_profile_text(user=user, total_orders=total_orders),
