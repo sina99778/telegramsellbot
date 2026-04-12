@@ -271,7 +271,7 @@ async def create_plan_price(
         await message.answer(AdminMessages.INVALID_PRICE)
         return
 
-    if price < Decimal("0"):
+    if price <= Decimal("0"):
         await message.answer(AdminMessages.PRICE_GT_ZERO)
         return
 
@@ -296,11 +296,18 @@ async def create_plan_price(
         currency="USD",
         is_active=True,
     )
-    session.add(plan)
+
+    # Use a savepoint so an IntegrityError doesn't corrupt the outer session
+    # managed by DatabaseSessionMiddleware. This keeps state.clear() safe.
+    duplicate_code = False
     try:
-        await session.flush()
+        async with session.begin_nested():
+            session.add(plan)
+            await session.flush()
     except IntegrityError:
-        await session.rollback()
+        duplicate_code = True
+
+    if duplicate_code:
         await message.answer(AdminMessages.PLAN_CODE_EXISTS)
         return
 
