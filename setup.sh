@@ -8,6 +8,7 @@ NC='\033[0m'
 
 REPO_URL="https://github.com/sina99778/telegramsellbot.git"
 INSTALL_DIR="/opt/telegramsellbot"
+ENV_BACKUP="/tmp/telegramsellbot.env.backup"
 
 error() {
   echo -e "${RED}[ERROR]${NC} $*" >&2
@@ -33,13 +34,18 @@ apt-get update -qq
 apt-get install -y -qq git curl >/dev/null
 
 if [[ -d "${INSTALL_DIR}/.git" ]]; then
-  info "Existing installation found in ${INSTALL_DIR}. Pulling latest code..."
+  info "Existing installation found in ${INSTALL_DIR}. Replacing it with a fresh clone..."
+  if [[ -f "${INSTALL_DIR}/.env" ]]; then
+    cp "${INSTALL_DIR}/.env" "${ENV_BACKUP}"
+    info "Existing .env backed up to ${ENV_BACKUP}"
+  fi
+  rm -rf "${INSTALL_DIR}"
+  git clone --branch main --single-branch "${REPO_URL}" "${INSTALL_DIR}"
   cd "${INSTALL_DIR}"
-  git fetch origin
-  git reset --hard
-  git clean -fd
-  git checkout -B main origin/main
-  git pull --ff-only origin main
+  if [[ -f "${ENV_BACKUP}" ]]; then
+    mv "${ENV_BACKUP}" "${INSTALL_DIR}/.env"
+    info "Previous .env restored."
+  fi
 else
   info "Cloning repository into ${INSTALL_DIR}..."
   rm -rf "${INSTALL_DIR}"
