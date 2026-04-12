@@ -52,7 +52,18 @@ wait_for_postgres() {
 
 quick_reload() {
   echo "Quick reloading api, bot, and worker services..."
-  "${COMPOSE_CMD[@]}" -f docker-compose.prod.yml restart api bot worker
+
+  local api_id bot_id worker_id
+  api_id="$("${COMPOSE_CMD[@]}" -f docker-compose.prod.yml ps -q api 2>/dev/null || true)"
+  bot_id="$("${COMPOSE_CMD[@]}" -f docker-compose.prod.yml ps -q bot 2>/dev/null || true)"
+  worker_id="$("${COMPOSE_CMD[@]}" -f docker-compose.prod.yml ps -q worker 2>/dev/null || true)"
+
+  if [[ -n "${api_id}" && -n "${bot_id}" && -n "${worker_id}" ]]; then
+    "${COMPOSE_CMD[@]}" -f docker-compose.prod.yml restart api bot worker
+  else
+    echo "Some app containers do not exist yet; starting api, bot, and worker instead..."
+    "${COMPOSE_CMD[@]}" -f docker-compose.prod.yml up -d api bot worker
+  fi
 }
 
 full_deploy() {
