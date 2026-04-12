@@ -40,6 +40,11 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
+if [[ "${PWD}" == "${INSTALL_DIR}" || "${PWD}" == "${INSTALL_DIR}/"* ]]; then
+  info "Current shell is inside ${INSTALL_DIR}; switching to /root for safe self-update."
+  cd /root
+fi
+
 info "Running setup.sh version ${SETUP_VERSION}"
 
 export DEBIAN_FRONTEND=noninteractive
@@ -50,7 +55,7 @@ apt-get install -y -qq git curl rsync >/dev/null
 
 rm -rf "${TMP_DIR}"
 info "Fetching latest repository snapshot..."
-git clone --depth 1 --branch "${REPO_BRANCH}" --single-branch "${REPO_URL}" "${TMP_DIR}" >/dev/null 2>&1
+git clone --depth 1 --branch "${REPO_BRANCH}" --single-branch "${REPO_URL}" "${TMP_DIR}"
 
 mkdir -p "${INSTALL_DIR}"
 

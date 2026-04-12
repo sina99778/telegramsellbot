@@ -245,6 +245,16 @@ install_prerequisites_and_ssl() {
     apt-get install -y docker-compose || true
   fi
 
+  if docker compose version >/dev/null 2>&1; then
+    info "Using modern docker compose plugin."
+  elif command -v docker-compose >/dev/null 2>&1; then
+    warn "Only legacy docker-compose is available. Deploy script will use compatibility cleanup mode."
+  else
+    error "Neither docker compose plugin nor docker-compose could be installed."
+    pause
+    return
+  fi
+
   systemctl enable --now docker
   systemctl enable --now nginx
 
