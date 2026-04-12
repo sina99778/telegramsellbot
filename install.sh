@@ -72,21 +72,26 @@ require_commands() {
 
 compose_cmd() {
   if docker compose version >/dev/null 2>&1; then
-    echo "docker compose"
+    echo "plugin"
   elif command -v docker-compose >/dev/null 2>&1; then
-    echo "docker-compose"
+    echo "legacy"
   else
-    return 1
+    echo "missing"
   fi
 }
 
 run_compose() {
-  local compose
-  compose="$(compose_cmd)" || {
+  local mode
+  mode="$(compose_cmd)"
+
+  if [[ "${mode}" == "plugin" ]]; then
+    docker compose -f "${COMPOSE_FILE}" "$@"
+  elif [[ "${mode}" == "legacy" ]]; then
+    docker-compose -f "${COMPOSE_FILE}" "$@"
+  else
     error "Docker Compose is not installed."
     return 1
-  }
-  eval "${compose} -f \"${COMPOSE_FILE}\" $*"
+  fi
 }
 
 wait_for_postgres() {
@@ -374,12 +379,13 @@ quick_reload() {
 
 show_important_logs() {
   print_header
-  local compose
-  compose="$(compose_cmd)" || {
+  local mode
+  mode="$(compose_cmd)"
+  if [[ "${mode}" == "missing" ]]; then
     error "Docker Compose is not installed."
     pause
     return
-  }
+  fi
 
   echo "1) Bot logs"
   echo "2) API logs"
@@ -392,12 +398,12 @@ show_important_logs() {
 
   read -r -p "Choose logs to show: " log_choice
   case "${log_choice}" in
-    1) eval "${compose} -f \"${COMPOSE_FILE}\" logs --tail=120 bot" ;;
-    2) eval "${compose} -f \"${COMPOSE_FILE}\" logs --tail=120 api" ;;
-    3) eval "${compose} -f \"${COMPOSE_FILE}\" logs --tail=120 worker" ;;
-    4) eval "${compose} -f \"${COMPOSE_FILE}\" logs --tail=120 postgres" ;;
-    5) eval "${compose} -f \"${COMPOSE_FILE}\" logs --tail=120 redis" ;;
-    6) eval "${compose} -f \"${COMPOSE_FILE}\" logs --tail=80 bot api worker postgres redis" ;;
+    1) run_compose logs --tail=120 bot ;;
+    2) run_compose logs --tail=120 api ;;
+    3) run_compose logs --tail=120 worker ;;
+    4) run_compose logs --tail=120 postgres ;;
+    5) run_compose logs --tail=120 redis ;;
+    6) run_compose logs --tail=80 bot api worker postgres redis ;;
     0) return ;;
     *) warn "Invalid option." ;;
   esac
@@ -426,10 +432,10 @@ full_uninstall() {
     return
   fi
 
-  local compose
-  compose="$(compose_cmd)" || true
-  if [[ -n "${compose}" && -f "${COMPOSE_FILE}" ]]; then
-    eval "${compose} -f \"${COMPOSE_FILE}\" down -v --remove-orphans" || true
+  local mode
+  mode="$(compose_cmd)"
+  if [[ "${mode}" != "missing" && -f "${COMPOSE_FILE}" ]]; then
+    run_compose down -v --remove-orphans || true
   fi
 
   docker rm -f telegramsellbot-postgres telegramsellbot-redis telegramsellbot-api telegramsellbot-bot telegramsellbot-worker >/dev/null 2>&1 || true
