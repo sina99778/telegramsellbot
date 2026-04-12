@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from core.database import utcnow
+from core.texts import MarketingTexts
 from models.order import Order
 from models.user import User
 
@@ -44,11 +45,7 @@ async def process_retargeting_campaigns(session: AsyncSession, bot: Bot) -> None
             try:
                 await bot.send_message(
                     chat_id=user.telegram_id,
-                    text=(
-                        "We miss you.\n\n"
-                        "Your dashboard is ready whenever you want to come back. "
-                        "If you need a fresh config or help choosing a plan, just open the bot."
-                    ),
+                    text=MarketingTexts.RETARGETING_REMINDER,
                 )
             except TelegramForbiddenError:
                 user.is_bot_blocked = True

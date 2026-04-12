@@ -89,6 +89,14 @@ class SupportTexts:
     TICKET_CLOSED = "تیکت `{ticket_id}` بسته شد."
 
 
+class MarketingTexts:
+    RETARGETING_REMINDER = (
+        "دلتنگت شدیم.\n\n"
+        "هر زمان بخواهی برگردی، پنل تو آماده است. "
+        "اگر کانفیگ جدید می‌خواهی یا برای انتخاب پلن نیاز به کمک داری، فقط ربات را باز کن."
+    )
+
+
 class AdminButtons:
     MANAGE_SERVERS = "🖥 مدیریت سرورها"
     MANAGE_PLANS = "📦 مدیریت پلن‌ها"
