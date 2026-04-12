@@ -89,6 +89,27 @@ run_compose() {
   eval "${compose} -f \"${COMPOSE_FILE}\" $*"
 }
 
+wait_for_postgres() {
+  local db_user db_name attempt max_attempts
+  db_user="$(read_env_value POSTGRES_USER)"
+  db_name="$(read_env_value POSTGRES_DB)"
+  db_user="${db_user:-telegramsellbot}"
+  db_name="${db_name:-telegramsellbot}"
+  max_attempts=30
+
+  for attempt in $(seq 1 "${max_attempts}"); do
+    if docker exec telegramsellbot-postgres pg_isready -U "${db_user}" -d "${db_name}" >/dev/null 2>&1; then
+      success "PostgreSQL is ready."
+      return 0
+    fi
+    info "Waiting for PostgreSQL to become ready (${attempt}/${max_attempts})..."
+    sleep 2
+  done
+
+  error "PostgreSQL did not become ready in time."
+  return 1
+}
+
 generate_fernet_key() {
   python3 - <<'PY'
 from cryptography.fernet import Fernet
@@ -465,6 +486,7 @@ db_reset_database() {
   success "Database volume removed."
   info "Recreating postgres and redis..."
   run_compose up -d postgres redis
+  wait_for_postgres
   info "Bootstrapping schema..."
   run_compose run --rm api python -c "import asyncio; import models; from core.database import init_database; asyncio.run(init_database())"
   success "Database reset and bootstrap completed."
