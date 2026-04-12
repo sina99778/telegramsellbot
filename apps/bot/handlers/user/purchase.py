@@ -9,14 +9,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.bot.keyboards.inline import build_plan_selection_keyboard, build_wallet_topup_keyboard
-from core.config import settings
+from core.formatting import format_volume_bytes
 from core.texts import Buttons, Messages
 from models.order import Order
 from models.plan import Plan
 from repositories.user import UserRepository
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
 from services.wallet.manager import InsufficientBalanceError, WalletManager
-from services.xui.client import SanaeiXUIClient, XUIClientConfig
 
 
 router = Router(name="user-purchase")
@@ -108,19 +107,12 @@ async def purchase_plan_callback(
         return
 
     try:
-        async with SanaeiXUIClient(
-            XUIClientConfig(
-                base_url=settings.xui_base_url,
-                username=settings.xui_username,
-                password=settings.xui_password,
-            )
-        ) as xui_client:
-            provisioning_manager = ProvisioningManager(session, xui_client)
-            provisioned = await provisioning_manager.provision_subscription(
-                user_id=user.id,
-                plan_id=plan.id,
-                order_id=order.id,
-            )
+        provisioning_manager = ProvisioningManager(session)
+        provisioned = await provisioning_manager.provision_subscription(
+            user_id=user.id,
+            plan_id=plan.id,
+            order_id=order.id,
+        )
     except ProvisioningError:
         await wallet_manager.process_transaction(
             user_id=user.id,
@@ -145,7 +137,7 @@ async def purchase_plan_callback(
     await callback.message.answer(
         Messages.CONFIG_CREATED.format(
             plan_name=plan.name,
-            volume_bytes=plan.volume_bytes,
+            volume_label=format_volume_bytes(plan.volume_bytes),
             client_email=xui_record.email,
             sub_link=sub_link,
         )

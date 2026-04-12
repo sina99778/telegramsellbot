@@ -9,20 +9,13 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from core.database import AsyncSessionFactory, utcnow
+from core.database import utcnow
 from models.order import Order
 from models.user import User
 
 
 RETARGETING_DAYS = 30
 RETARGETING_CONCURRENCY = 20
-
-
-async def send_inactive_user_reminders() -> None:
-    async with AsyncSessionFactory() as session:
-        # This wrapper intentionally leaves delivery integration to the runtime,
-        # while `process_retargeting_campaigns` contains the real campaign logic.
-        await session.commit()
 
 
 async def process_retargeting_campaigns(session: AsyncSession, bot: Bot) -> None:

@@ -8,7 +8,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from models.user import User
+from core.database import utcnow
+from models.user import User, UserProfile
 from models.wallet import Wallet
 from repositories.base import AsyncRepository
 
@@ -57,9 +58,13 @@ class UserRepository(AsyncRepository[User]):
                     first_name=first_name,
                     last_name=last_name,
                     language_code=language_code,
+                    last_seen_at=utcnow(),
                 )
                 self.session.add(user)
                 await self.session.flush()
+
+                profile = UserProfile(user_id=user.id)
+                self.session.add(profile)
 
                 wallet = Wallet(
                     user_id=user.id,

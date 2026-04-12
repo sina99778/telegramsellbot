@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from decimal import Decimal
+import json
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -62,12 +63,10 @@ async def handle_nowpayments_ipn(
     payment.callback_payload = payload
 
     if payment_status not in {"finished", "confirmed"}:
-        await session.commit()
         return {"status": "ignored"}
 
     # Idempotency guard: if we already credited this payment once, do not repeat it.
     if payment.actually_paid is not None:
-        await session.commit()
         return {"status": "already_processed"}
 
     amount_to_credit = _extract_credit_amount(payload)
@@ -96,7 +95,6 @@ async def handle_nowpayments_ipn(
         },
     )
 
-    await session.commit()
     return {"status": "processed"}
 
 
@@ -110,9 +108,18 @@ def _is_valid_nowpayments_signature(*, raw_body: bytes, signature: str | None) -
     if not signature:
         return False
 
+    try:
+        canonical_body = json.dumps(
+            json.loads(raw_body.decode("utf-8")),
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+
     expected_signature = hmac.new(
         key=settings.nowpayments_ipn_secret.get_secret_value().encode("utf-8"),
-        msg=raw_body,
+        msg=canonical_body,
         digestmod=hashlib.sha512,
     ).hexdigest()
     return hmac.compare_digest(expected_signature, signature)
@@ -120,4 +127,16 @@ def _is_valid_nowpayments_signature(*, raw_body: bytes, signature: str | None) -
 
 def _extract_credit_amount(payload: dict[str, Any]) -> Decimal:
     raw_amount = payload.get("actually_paid") or payload.get("price_amount")
-    return Decimal(str(raw_amount))
+    if raw_amount in {None, ""}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing payment amount in callback payload.",
+        )
+
+    try:
+        return Decimal(str(raw_amount))
+    except (InvalidOperation, TypeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid payment amount in callback payload.",
+        ) from exc

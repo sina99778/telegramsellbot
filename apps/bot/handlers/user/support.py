@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
@@ -79,4 +80,7 @@ async def support_submit(
         message=message.text.strip(),
     )
     for admin in admins:
-        await bot.send_message(admin.telegram_id, alert_text, reply_markup=builder.as_markup())
+        try:
+            await bot.send_message(admin.telegram_id, alert_text, reply_markup=builder.as_markup())
+        except (TelegramForbiddenError, TelegramBadRequest):
+            admin.is_bot_blocked = True

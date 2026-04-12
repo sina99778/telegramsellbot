@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,10 +15,10 @@ router = APIRouter()
 
 @router.get("/overview")
 async def admin_overview(
-    owner_telegram_id: int,
+    x_admin_api_key: str | None = Header(default=None, alias="X-Admin-API-Key"),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, int | str]:
-    if settings.owner_telegram_id is None or owner_telegram_id != settings.owner_telegram_id:
+    if settings.admin_api_key is None or x_admin_api_key != settings.admin_api_key.get_secret_value():
         raise HTTPException(status_code=403, detail="Forbidden")
 
     users_count = await session.scalar(select(func.count()).select_from(User))

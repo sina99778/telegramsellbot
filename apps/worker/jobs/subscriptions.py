@@ -4,16 +4,15 @@ import asyncio
 from datetime import timedelta
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from core.config import settings
 from core.database import AsyncSessionFactory, utcnow
-from models.plan import Plan
 from models.subscription import Subscription
-from models.xui import XUIClientRecord
+from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from schemas.internal.xui import XUIClient
-from services.xui.client import SanaeiXUIClient, XUIClientConfig
-from services.xui.client import XUIClientError
+from services.xui.client import SanaeiXUIClient, XUIClientError
+from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
 
 
 DEFAULT_PLAN_DURATION_DAYS = 30
@@ -21,18 +20,10 @@ XUI_USAGE_SYNC_CONCURRENCY = 10
 
 
 async def sync_xui_usage_and_status(
-    session,
+    session: AsyncSession,
     xui_client: SanaeiXUIClient,
+    subscriptions: list[Subscription],
 ) -> None:
-    result = await session.execute(
-        select(Subscription)
-        .options(
-            selectinload(Subscription.plan),
-            selectinload(Subscription.xui_client).selectinload(XUIClientRecord.inbound),
-        )
-        .where(Subscription.status.in_(["pending_activation", "active"]))
-    )
-    subscriptions = list(result.scalars().all())
     semaphore = asyncio.Semaphore(XUI_USAGE_SYNC_CONCURRENCY)
 
     async def sync_one(subscription: Subscription) -> None:
@@ -72,29 +63,39 @@ async def sync_xui_usage_and_status(
     await session.flush()
 
 
-async def sync_first_use_activations() -> None:
+async def sync_all_subscription_states() -> None:
     async with AsyncSessionFactory() as session:
-        async with SanaeiXUIClient(
-            XUIClientConfig(
-                base_url=settings.xui_base_url,
-                username=settings.xui_username,
-                password=settings.xui_password,
+        result = await session.execute(
+            select(Subscription)
+            .options(
+                selectinload(Subscription.plan),
+                selectinload(Subscription.xui_client)
+                .selectinload(XUIClientRecord.inbound)
+                .selectinload(XUIInboundRecord.server)
+                .selectinload(XUIServerRecord.credentials),
             )
-        ) as xui_client:
-            await sync_xui_usage_and_status(session, xui_client)
-        await session.commit()
+            .where(Subscription.status.in_(["pending_activation", "active"]))
+        )
+        subscriptions = list(result.scalars().all())
 
+        grouped_by_server: dict[str, list[Subscription]] = {}
+        for subscription in subscriptions:
+            xui_record = subscription.xui_client
+            if xui_record is None or xui_record.inbound is None:
+                continue
+            server = xui_record.inbound.server
+            if server is None or server.credentials is None or not server.is_active:
+                continue
+            grouped_by_server.setdefault(str(server.id), []).append(subscription)
 
-async def expire_due_subscriptions() -> None:
-    async with AsyncSessionFactory() as session:
-        async with SanaeiXUIClient(
-            XUIClientConfig(
-                base_url=settings.xui_base_url,
-                username=settings.xui_username,
-                password=settings.xui_password,
-            )
-        ) as xui_client:
-            await sync_xui_usage_and_status(session, xui_client)
+        for group in grouped_by_server.values():
+            sample_subscription = group[0]
+            sample_inbound = sample_subscription.xui_client.inbound if sample_subscription.xui_client is not None else None
+            if sample_inbound is None:
+                continue
+            server = ensure_inbound_server_loaded(sample_inbound)
+            async with create_xui_client_for_server(server) as xui_client:
+                await sync_xui_usage_and_status(session, xui_client, group)
         await session.commit()
 
 

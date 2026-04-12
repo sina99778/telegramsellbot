@@ -8,13 +8,12 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from core.config import settings
+from core.formatting import format_volume_bytes
 from core.texts import Buttons, Messages
 from models.order import Order
 from models.plan import Plan
 from repositories.user import UserRepository
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
-from services.xui.client import SanaeiXUIClient, XUIClientConfig
 
 
 router = Router(name="user-free-trial")
@@ -57,19 +56,12 @@ async def free_trial_handler(message: Message, session: AsyncSession) -> None:
     await session.flush()
 
     try:
-        async with SanaeiXUIClient(
-            XUIClientConfig(
-                base_url=settings.xui_base_url,
-                username=settings.xui_username,
-                password=settings.xui_password,
-            )
-        ) as xui_client:
-            provisioning_manager = ProvisioningManager(session, xui_client)
-            provisioned = await provisioning_manager.provision_subscription(
-                user_id=user.id,
-                plan_id=trial_plan.id,
-                order_id=order.id,
-            )
+        provisioning_manager = ProvisioningManager(session)
+        provisioned = await provisioning_manager.provision_subscription(
+            user_id=user.id,
+            plan_id=trial_plan.id,
+            order_id=order.id,
+        )
     except ProvisioningError:
         order.status = "failed"
         await message.answer(Messages.PROVISIONING_FAILED_REFUNDED)
@@ -85,7 +77,7 @@ async def free_trial_handler(message: Message, session: AsyncSession) -> None:
     await message.answer(
         Messages.CONFIG_CREATED.format(
             plan_name=trial_plan.name,
-            volume_bytes=trial_plan.volume_bytes,
+            volume_label=format_volume_bytes(trial_plan.volume_bytes),
             client_email=xui_record.email,
             sub_link=sub_link,
         )

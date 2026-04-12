@@ -35,6 +35,7 @@ class Messages:
     TOPUP_INVALID_AMOUNT = "مبلغ واردشده معتبر نیست. لطفاً عددی مثل `10` یا `12.50` وارد کنید."
     TOPUP_AMOUNT_GT_ZERO = "مبلغ باید بیشتر از صفر باشد."
     ACCOUNT_NOT_FOUND = "حساب شما پیدا نشد. لطفاً دوباره /start را بزنید."
+    ACCESS_DENIED = "دسترسی شما به ربات محدود شده است. برای پیگیری با پشتیبانی تماس بگیرید."
     PAYMENT_GATEWAY_UNAVAILABLE = "درگاه پرداخت موقتاً در دسترس نیست. کمی بعد دوباره تلاش کنید."
     TOPUP_INVOICE_CREATED = (
         "فاکتور شارژ کیف پول به مبلغ {amount} دلار ساخته شد.\n\n"
@@ -58,7 +59,7 @@ class Messages:
     CONFIG_CREATED = (
         "کانفیگ شما با موفقیت ساخته شد.\n\n"
         "پلن: {plan_name}\n"
-        "حجم: {volume_bytes} بایت\n"
+        "حجم: {volume_label}\n"
         "کاربر: {client_email}\n"
         "ساب لینک: {sub_link}\n\n"
         "زمان اکانت از اولین استفاده شروع می‌شود."

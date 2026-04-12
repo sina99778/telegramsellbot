@@ -7,7 +7,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from pydantic import SecretStr
 from sqlalchemy import func, select
@@ -271,7 +271,7 @@ def _build_server_list_keyboard(
     *,
     page: int,
     total_items: int,
-) -> InlineKeyboardBuilder:
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for server in servers:
         builder.button(
@@ -279,7 +279,7 @@ def _build_server_list_keyboard(
             callback_data=ServerActionCallback(action="toggle", server_id=server.id, page=page).pack(),
         )
         builder.button(
-            text=f"Delete {server.name}",
+            text=f"{AdminButtons.DELETE} {server.name}",
             callback_data=ServerActionCallback(action="delete", server_id=server.id, page=page).pack(),
         )
     builder.adjust(1)
@@ -291,7 +291,7 @@ def _build_server_list_keyboard(
         prev_callback_data=ServerListPageCallback(page=page - 1).pack(),
         next_callback_data=ServerListPageCallback(page=page + 1).pack(),
     )
-    return builder
+    return builder.as_markup()
 
 
 async def _edit_or_send(

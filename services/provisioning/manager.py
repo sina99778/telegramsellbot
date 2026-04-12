@@ -9,14 +9,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from core.config import settings
 from models.order import Order
 from models.plan import Plan
 from models.subscription import Subscription
-from models.xui import XUIClientRecord, XUIInboundRecord
+from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from schemas.internal.xui import XUIClient
 from services.wallet.manager import WalletManager
 from services.xui.client import SanaeiXUIClient
+from services.xui.runtime import build_sub_link, create_xui_client_for_server, ensure_inbound_server_loaded
 
 
 class ProvisioningError(Exception):
@@ -38,7 +38,7 @@ class ProvisioningResult:
 
 
 class ProvisioningManager:
-    def __init__(self, session: AsyncSession, xui_client: SanaeiXUIClient) -> None:
+    def __init__(self, session: AsyncSession, xui_client: SanaeiXUIClient | None = None) -> None:
         self.session = session
         self.xui_client = xui_client
         self.wallet_manager = WalletManager(session)
@@ -60,6 +60,7 @@ class ProvisioningManager:
 
         inbound = await self.session.scalar(
             select(XUIInboundRecord)
+            .options(selectinload(XUIInboundRecord.server).selectinload(XUIServerRecord.credentials))
             .where(XUIInboundRecord.is_active.is_(True))
             .order_by(XUIInboundRecord.created_at.asc())
             .limit(1)
@@ -67,8 +68,9 @@ class ProvisioningManager:
         if inbound is None:
             raise ProvisioningError("No active X-UI inbound is available for provisioning.")
 
+        server = ensure_inbound_server_loaded(inbound)
         client_uuid, username, email, sub_id = await self._generate_unique_client_identity()
-        sub_link = self._build_sub_link(sub_id)
+        sub_link = build_sub_link(server.base_url, sub_id)
         xui_payload = XUIClient(
             id=client_uuid,
             uuid=client_uuid,
@@ -81,7 +83,8 @@ class ProvisioningManager:
             comment=f"user:{user_id};order:{order_id}",
         )
 
-        await self.xui_client.add_client_to_inbound(inbound.xui_inbound_remote_id, xui_payload)
+        async with self._get_xui_client_for_server(server) as xui_client:
+            await xui_client.add_client_to_inbound(inbound.xui_inbound_remote_id, xui_payload)
 
         subscription = Subscription(
             user_id=user_id,
@@ -131,7 +134,10 @@ class ProvisioningManager:
             .options(
                 selectinload(Subscription.order),
                 selectinload(Subscription.plan),
-                selectinload(Subscription.xui_client).selectinload(XUIClientRecord.inbound),
+                selectinload(Subscription.xui_client)
+                .selectinload(XUIClientRecord.inbound)
+                .selectinload(XUIInboundRecord.server)
+                .selectinload(XUIServerRecord.credentials),
             )
             .where(
                 Subscription.id == subscription_id,
@@ -195,10 +201,6 @@ class ProvisioningManager:
 
         raise ProvisioningConflictError("Could not generate a unique X-UI client identity.")
 
-    @staticmethod
-    def _build_sub_link(sub_id: str) -> str:
-        return f"{settings.xui_base_url.rstrip('/')}/sub/{sub_id}"
-
     async def _disable_xui_client(
         self,
         *,
@@ -210,6 +212,7 @@ class ProvisioningManager:
         if inbound is None:
             raise ProvisioningError("X-UI inbound mapping is missing.")
 
+        server = ensure_inbound_server_loaded(inbound)
         expiry_ms = int(ends_at.timestamp() * 1000) if ends_at is not None else 0
         disabled_client = XUIClient(
             id=xui_record.xui_client_remote_id or xui_record.client_uuid,
@@ -221,8 +224,42 @@ class ProvisioningManager:
             enable=False,
             comment=f"disabled:{xui_record.subscription_id}",
         )
-        await self.xui_client.update_client(
-            inbound_id=inbound.xui_inbound_remote_id,
-            client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
-            client=disabled_client,
-        )
+        async with self._get_xui_client_for_server(server) as xui_client:
+            await xui_client.update_client(
+                inbound_id=inbound.xui_inbound_remote_id,
+                client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+                client=disabled_client,
+            )
+
+    def _get_xui_client_for_server(self, server: XUIServerRecord) -> "_StaticAsyncClientContext":
+        if self.xui_client is not None:
+            return _StaticAsyncClientContext(self.xui_client)
+        return _StaticAsyncClientContext.from_factory(server)
+
+
+class _StaticAsyncClientContext:
+    def __init__(
+        self,
+        client: SanaeiXUIClient | None = None,
+        *,
+        server: XUIServerRecord | None = None,
+    ) -> None:
+        self._client = client
+        self._server = server
+        self._factory_context = None
+
+    @classmethod
+    def from_factory(cls, server: XUIServerRecord) -> "_StaticAsyncClientContext":
+        return cls(server=server)
+
+    async def __aenter__(self) -> SanaeiXUIClient:
+        if self._client is not None:
+            return self._client
+        if self._server is None:
+            raise ProvisioningError("X-UI server context is missing.")
+        self._factory_context = create_xui_client_for_server(self._server)
+        return await self._factory_context.__aenter__()
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self._factory_context is not None:
+            await self._factory_context.__aexit__(exc_type, exc, tb)

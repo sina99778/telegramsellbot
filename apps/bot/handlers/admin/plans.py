@@ -7,7 +7,7 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.bot.keyboards.inline import add_pagination_controls
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.states.admin import CreatePlanStates
+from core.formatting import format_volume_bytes
 from core.texts import AdminButtons, AdminMessages, Common
 from models.plan import Plan
 from models.user import User
@@ -75,7 +76,7 @@ async def list_plans(
                     f"Plan: {plan.name}\n"
                     f"Protocol: {plan.protocol}\n"
                     f"Duration: {plan.duration_days} days\n"
-                    f"Volume: {plan.volume_bytes} bytes\n"
+                    f"Volume: {format_volume_bytes(plan.volume_bytes)}\n"
                     f"Price: {plan.price} {plan.currency}\n"
                 f"وضعیت: {Common.ACTIVE if plan.is_active else Common.INACTIVE}"
                 )
@@ -233,7 +234,7 @@ def _build_plan_list_keyboard(
     *,
     page: int,
     total_items: int,
-) -> InlineKeyboardBuilder:
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for plan in plans:
         builder.button(
@@ -249,4 +250,4 @@ def _build_plan_list_keyboard(
         prev_callback_data=PlanListPageCallback(page=page - 1).pack(),
         next_callback_data=PlanListPageCallback(page=page + 1).pack(),
     )
-    return builder
+    return builder.as_markup()

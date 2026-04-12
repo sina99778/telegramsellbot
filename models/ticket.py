@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -10,8 +11,6 @@ from core.database import Base, TimestampMixin, UUIDPrimaryKeyMixin, utcnow
 
 
 if TYPE_CHECKING:
-    from datetime import datetime
-
     from models.user import User
 
 

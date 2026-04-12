@@ -14,13 +14,12 @@ from sqlalchemy.orm import selectinload
 from apps.bot.keyboards.inline import add_pagination_controls
 from apps.bot.handlers.admin.users import AdminUserActionCallback
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
-from core.config import settings
 from core.texts import AdminButtons, AdminMessages
 from models.subscription import Subscription
 from models.user import User
-from models.xui import XUIClientRecord
+from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.audit import AuditLogRepository
-from services.xui.client import SanaeiXUIClient, XUIClientConfig
+from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
 
 
 router = Router(name="admin-subs")
@@ -147,7 +146,12 @@ async def revoke_user_config(
     await callback.answer()
     subscription = await session.scalar(
         select(Subscription)
-        .options(selectinload(Subscription.xui_client).selectinload(XUIClientRecord.inbound))
+        .options(
+            selectinload(Subscription.xui_client)
+            .selectinload(XUIClientRecord.inbound)
+            .selectinload(XUIInboundRecord.server)
+            .selectinload(XUIServerRecord.credentials)
+        )
         .where(Subscription.id == callback_data.subscription_id)
     )
     if subscription is None:
@@ -156,13 +160,8 @@ async def revoke_user_config(
 
     xui_record = subscription.xui_client
     if xui_record is not None and xui_record.inbound is not None:
-        async with SanaeiXUIClient(
-            XUIClientConfig(
-                base_url=settings.xui_base_url,
-                username=settings.xui_username,
-                password=settings.xui_password,
-            )
-        ) as xui_client:
+        server = ensure_inbound_server_loaded(xui_record.inbound)
+        async with create_xui_client_for_server(server) as xui_client:
             await xui_client.delete_client(
                 inbound_id=xui_record.inbound.xui_inbound_remote_id,
                 client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,

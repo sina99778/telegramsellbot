@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     nowpayments_ipn_callback_url: str = "http://localhost:8000/api/webhooks/nowpayments"
     support_url: str | None = None
     owner_telegram_id: int | None = None
+    admin_api_key: SecretStr | None = None
 
 
 settings = Settings()
