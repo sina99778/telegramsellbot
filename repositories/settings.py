@@ -11,6 +11,14 @@ from models.app_setting import AppSetting
 RETARGETING_SETTINGS_KEY = "marketing.retargeting"
 
 
+RENEWAL_SETTINGS_KEY = "service.renewal"
+
+@dataclass(slots=True)
+class RenewalSettings:
+    price_per_gb: float
+    price_per_10_days: float
+
+
 @dataclass(slots=True)
 class RetargetingSettings:
     enabled: bool
@@ -21,6 +29,47 @@ class RetargetingSettings:
 class AppSettingsRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def get_renewal_settings(self) -> RenewalSettings:
+        record = await self._get_or_create_renewal_record()
+        payload = dict(record.value_json or {})
+        return RenewalSettings(
+            price_per_gb=float(payload.get("price_per_gb", 0.1)),
+            price_per_10_days=float(payload.get("price_per_10_days", 0.1)),
+        )
+
+    async def update_renewal_settings(
+        self,
+        *,
+        price_per_gb: float | None = None,
+        price_per_10_days: float | None = None,
+    ) -> RenewalSettings:
+        record = await self._get_or_create_renewal_record()
+        payload = dict(record.value_json or {})
+
+        if price_per_gb is not None:
+            payload["price_per_gb"] = price_per_gb
+        if price_per_10_days is not None:
+            payload["price_per_10_days"] = price_per_10_days
+
+        record.value_json = payload
+        self.session.add(record)
+        await self.session.flush()
+        await self.session.refresh(record)
+        return await self.get_renewal_settings()
+
+    async def _get_or_create_renewal_record(self) -> AppSetting:
+        record = await self.session.get(AppSetting, RENEWAL_SETTINGS_KEY)
+        if record is not None:
+            return record
+
+        record = AppSetting(
+            key=RENEWAL_SETTINGS_KEY,
+            value_json={"price_per_gb": 0.1, "price_per_10_days": 0.1},
+        )
+        self.session.add(record)
+        await self.session.flush()
+        return record
 
     async def get_retargeting_settings(self) -> RetargetingSettings:
         record = await self._get_or_create_retargeting_record()

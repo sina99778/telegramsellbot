@@ -9,6 +9,9 @@ class Buttons:
     TOPUP_CRYPTO = "💳 شارژ کیف پول (کریپتو)"
     CUSTOM_AMOUNT = "مبلغ دلخواه"
     OPEN_PAYMENT = "🔗 باز کردن صفحه پرداخت"
+    RENEW_SERVICE = "🔄 تمدید سرویس"
+    RENEW_TIME = "⏳ تمدید زمان"
+    RENEW_VOLUME = "💾 تمدید حجم"
     PREV = "⬅️ قبلی"
     NEXT = "بعدی ➡️"
     BACK = "🔙 بازگشت"
@@ -60,6 +63,18 @@ class Messages:
         "در حال حاضر ساخت کانفیگ ناموفق بود و بازگشت خودکار مبلغ هم کامل نشد. "
         "موضوع برای پیگیری دستی ثبت شده است؛ لطفاً با پشتیبانی تماس بگیرید."
     )
+    RENEWAL_OPTIONS = "نحوه تمدید سرویس را انتخاب کنید:"
+    RENEWAL_ENTER_VOLUME = "تعداد گیگابایت حجم برای اضافه شدن را وارد کنید (مثلا 10):"
+    RENEWAL_ENTER_TIME = "تعداد روزهایی که می‌خواهید تمدید کنید را وارد کنید (مثلا 30):"
+    RENEWAL_INVALID_VALUE = "مقدار وارد شده معتبر نیست. لطفا یک عدد بزرگتر از صفر وارد کنید."
+    RENEWAL_INVOICE = (
+        "🔖 فاکتور تمدید:\n\n"
+        "حجم اضافه: {volume} گیگابایت\n"
+        "زمان اضافه: {time} روز\n"
+        "مبلغ قابل پرداخت: {price} دلار\n\n"
+        "آیا تایید می‌کنید؟"
+    )
+    RENEWAL_SUCCESS = "سرویس شما با موفقیت تمدید شد. زمان و حجم اکانت شما در سیستم ثبت گردید."
 
     CONFIG_CREATED = (
         "کانفیگ شما با موفقیت ساخته شد.\n\n"
@@ -110,6 +125,7 @@ class AdminButtons:
     BROADCAST = "📢 پیام همگانی"
     MANAGE_RETARGETING = "🎯 مدیریت ریتارگتینگ"
     MANAGE_TICKETS = "🛠 بررسی تیکت‌ها"
+    BOT_SETTINGS = "⚙️ تنظیمات ربات"
     ADD_SERVER = "افزودن سرور"
     LIST_SERVERS = "لیست سرورها"
     TOGGLE_SERVER = "تغییر وضعیت فعال/غیرفعال"
@@ -209,6 +225,14 @@ class AdminMessages:
     RETARGETING_TEST_SENT = "نسخه تست پیام ریتارگتینگ برای شما ارسال شد."
     PLAN_CREATION_CANCELLED = "ساخت پلن لغو شد."
     PLAN_CREATION_INTERRUPTED = "ساخت پلن لغو شد. حالا می‌توانید گزینه موردنظر خود را دوباره انتخاب کنید."
+    SETTINGS_MENU = (
+        "⚙️ تنظیمات عمومی ربات\n\n"
+        "قیمت تمدید هر ۱ گیگابایت: {price_per_gb} دلار\n"
+        "قیمت تمدید هر ۱۰ روز: {price_per_10_days} دلار\n"
+    )
+    ENTER_PRICE_PER_GB = "قیمت تمدید برای ۱ گیگابایت (به دلار) را وارد کنید:"
+    ENTER_PRICE_PER_10_DAYS = "قیمت تمدید برای ۱۰ روز (به دلار) را وارد کنید:"
+    SETTINGS_UPDATED = "تنظیمات با موفقیت بروزرسانی شد."
 
 
 class Common:

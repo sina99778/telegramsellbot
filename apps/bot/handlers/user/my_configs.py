@@ -238,6 +238,8 @@ async def my_config_detail_handler(
     text = "\n".join(lines)
 
     builder = InlineKeyboardBuilder()
+    if sub.status in ("active", "pending_activation"):
+        builder.button(text=Buttons.RENEW_SERVICE, callback_data=MyConfigCallback(action="renew", subscription_id=sub.id).pack())
     builder.button(text=Buttons.BACK, callback_data="myconfig:back_to_list")
     builder.adjust(1)
 

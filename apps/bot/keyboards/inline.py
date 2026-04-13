@@ -55,6 +55,15 @@ def build_topup_link_keyboard(invoice_url: str) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def build_renewal_keyboard(sub_id: UUID) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text=Buttons.RENEW_VOLUME, callback_data=f"renew:volume:{sub_id}")
+    builder.button(text=Buttons.RENEW_TIME, callback_data=f"renew:time:{sub_id}")
+    builder.button(text=Buttons.BACK, callback_data=f"sub:view:{sub_id}")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
 def _format_plan_button_text(name: str, price: Decimal, currency: str) -> str:
     return f"{name} - {price.normalize()} {currency}"
 

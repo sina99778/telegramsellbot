@@ -5,6 +5,7 @@ from apps.bot.handlers.user.purchase import router as purchase_router
 from apps.bot.handlers.user.start import router as start_router
 from apps.bot.handlers.user.support import router as support_router
 from apps.bot.handlers.user.topup import router as topup_router
+from apps.bot.handlers.user.renewal import router as renewal_router
 from apps.bot.middlewares.user import UserAccessMiddleware
 
 
@@ -16,5 +17,6 @@ router.include_router(topup_router)
 router.include_router(purchase_router)
 router.include_router(my_configs_router)
 router.include_router(support_router)
+router.include_router(renewal_router)
 
 __all__ = ["router"]

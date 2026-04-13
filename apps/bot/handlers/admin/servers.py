@@ -56,6 +56,7 @@ async def admin_main_menu(message: Message) -> None:
     builder.button(text=AdminButtons.MANAGE_TICKETS, callback_data="admin:tickets")
     builder.button(text=AdminButtons.MANAGE_RETARGETING, callback_data="admin:retargeting")
     builder.button(text=AdminButtons.STATISTICS, callback_data="admin:stats")
+    builder.button(text=AdminButtons.BOT_SETTINGS, callback_data="admin:bot_settings")
     builder.adjust(1)
     await message.answer(AdminMessages.PANEL_TITLE, reply_markup=builder.as_markup())
 
@@ -72,6 +73,7 @@ async def admin_main_menu_callback(callback: CallbackQuery) -> None:
     builder.button(text=AdminButtons.MANAGE_TICKETS, callback_data="admin:tickets")
     builder.button(text=AdminButtons.MANAGE_RETARGETING, callback_data="admin:retargeting")
     builder.button(text=AdminButtons.STATISTICS, callback_data="admin:stats")
+    builder.button(text=AdminButtons.BOT_SETTINGS, callback_data="admin:bot_settings")
     builder.adjust(1)
     await callback.message.answer(AdminMessages.PANEL_TITLE, reply_markup=builder.as_markup())
 
