@@ -47,6 +47,7 @@ class SanaeiXUIClient:
             timeout=httpx.Timeout(config.timeout_seconds, connect=10.0),
             headers={"Accept": "application/json", "Content-Type": "application/json"},
             follow_redirects=True,
+            verify=False,
         )
         self._authenticated = False
 
