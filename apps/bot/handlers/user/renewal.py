@@ -22,7 +22,7 @@ from repositories.settings import AppSettingsRepository
 from repositories.user import UserRepository
 from services.xui.client import SanaeiXUIClient, XUIClient, XUIRequestError
 from services.xui.runtime import build_xui_client_config, ensure_inbound_server_loaded
-from core.database import generate_uuid
+from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +162,7 @@ async def renew_confirm_payment(
     session.add(user)
     
     order = Order(
-        id=generate_uuid(),
+        id=uuid4(),
         user_id=user.id,
         plan_id=sub.plan_id,
         amount=price,
