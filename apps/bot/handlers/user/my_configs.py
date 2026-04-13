@@ -13,7 +13,7 @@ from core.formatting import format_volume_bytes
 from core.qr import make_qr_bytes
 from core.texts import Buttons
 from models.subscription import Subscription
-from models.xui import XUIClientRecord
+from models.xui import XUIClientRecord, XUIInboundRecord
 from repositories.user import UserRepository
 from services.xui.runtime import build_vless_uri, ensure_inbound_server_loaded
 
@@ -41,7 +41,7 @@ async def my_configs_handler(message: Message, session: AsyncSession, bot: Bot) 
             selectinload(Subscription.plan),
             selectinload(Subscription.xui_client)
             .selectinload(XUIClientRecord.inbound)
-            .selectinload("server")
+            .selectinload(XUIInboundRecord.server)
         )
         .where(
             Subscription.user_id == user.id,
