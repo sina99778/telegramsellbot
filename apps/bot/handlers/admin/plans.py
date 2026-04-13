@@ -55,7 +55,6 @@ MENU_INTERRUPT_TEXTS = {
     Buttons.BUY_CONFIG,
     Buttons.PROFILE_WALLET,
     Buttons.SUPPORT,
-    Buttons.FREE_TRIAL,
     Buttons.MY_CONFIGS,
 }
 

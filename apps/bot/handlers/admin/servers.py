@@ -53,7 +53,7 @@ async def admin_main_menu(message: Message) -> None:
     builder.button(text=AdminButtons.MANAGE_PLANS, callback_data="admin:plans")
     builder.button(text=AdminButtons.MANAGE_USERS, callback_data="admin:users")
     builder.button(text=AdminButtons.BROADCAST, callback_data="admin:broadcast")
-    builder.button(text=AdminButtons.MANAGE_TICKETS, callback_data="admin:support")
+    builder.button(text=AdminButtons.MANAGE_TICKETS, callback_data="admin:tickets")
     builder.button(text=AdminButtons.MANAGE_RETARGETING, callback_data="admin:retargeting")
     builder.button(text=AdminButtons.STATISTICS, callback_data="admin:stats")
     builder.adjust(1)

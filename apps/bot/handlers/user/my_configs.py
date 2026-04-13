@@ -53,8 +53,8 @@ async def my_configs_handler(message: Message, session: AsyncSession, bot: Bot) 
 
     if not subscriptions:
         await message.answer(
-            "📭 *شما هیچ کانفیگ فعالی ندارید\\.*\n\n"
-            "از دکمه *خرید کانفیگ* می‌توانید یک پلن تهیه کنید\\.",
+            "📭 *شما هیچ کانفیگ فعالی ندارید\.*\n\n"
+            "از دکمه *خرید کانفیگ* می\u200cتوانید یک پلن تهیه کنید\.",
             parse_mode="MarkdownV2",
         )
         return
@@ -92,11 +92,17 @@ async def my_configs_handler(message: Message, session: AsyncSession, bot: Bot) 
                 inbound = xui.inbound
                 # Load server via inbound relation (already loaded via selectinload)
                 if inbound.server:
+                    # Extract sub_id safely from sub_link
+                    raw_sub_link = sub_link
+                    if raw_sub_link and raw_sub_link != "-" and "/" in raw_sub_link:
+                        extracted_sub_id = raw_sub_link.rsplit("/", 1)[-1]
+                    else:
+                        extracted_sub_id = ""
                     vless_uri = build_vless_uri(
                         client_uuid=xui.client_uuid,
                         server=inbound.server,
                         inbound=inbound,
-                        sub_id=sub_link.rsplit("/", 1)[-1] if sub_link != "-" else "",
+                        sub_id=extracted_sub_id,
                         remark=plan.name if plan else "VPN",
                     )
             except Exception as exc:

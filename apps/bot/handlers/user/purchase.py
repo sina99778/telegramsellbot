@@ -62,24 +62,27 @@ async def purchase_plan_callback(
     try:
         plan_id = UUID(raw_plan_id)
     except ValueError:
-        await callback.message.answer("پلن انتخاب‌شده نامعتبر است.")
+        if callback.message is not None:
+            await callback.message.answer("پلن انتخاب‌شده نامعتبر است.")
         return
 
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     plan = await session.get(Plan, plan_id)
     if user is None or user.wallet is None or plan is None or not plan.is_active:
-        await callback.message.answer(Messages.PLAN_NOT_AVAILABLE)
+        if callback.message is not None:
+            await callback.message.answer(Messages.PLAN_NOT_AVAILABLE)
         return
 
     if user.wallet.balance < plan.price:
-        await callback.message.answer(
-            Messages.INSUFFICIENT_BALANCE.format(
-                balance=f"{user.wallet.balance:.2f}",
-                price=f"{plan.price:.2f}",
-                currency=plan.currency,
-            ),
-            reply_markup=build_wallet_topup_keyboard(),
-        )
+        if callback.message is not None:
+            await callback.message.answer(
+                Messages.INSUFFICIENT_BALANCE.format(
+                    balance=f"{user.wallet.balance:.2f}",
+                    price=f"{plan.price:.2f}",
+                    currency=plan.currency,
+                ),
+                reply_markup=build_wallet_topup_keyboard(),
+            )
         return
 
     wallet_manager = WalletManager(session)
@@ -108,7 +111,8 @@ async def purchase_plan_callback(
         )
     except InsufficientBalanceError:
         order.status = "failed"
-        await callback.message.answer(Messages.BALANCE_NOT_SUFFICIENT_ANYMORE)
+        if callback.message is not None:
+            await callback.message.answer(Messages.BALANCE_NOT_SUFFICIENT_ANYMORE)
         return
 
     try:
@@ -138,7 +142,8 @@ async def purchase_plan_callback(
                 "CRITICAL: Refund also failed for order %s: %s", order.id, refund_exc
             )
             order.status = "failed_needs_manual_refund"
-        await callback.message.answer(Messages.PROVISIONING_FAILED_REFUNDED)
+        if callback.message is not None:
+            await callback.message.answer(Messages.PROVISIONING_FAILED_REFUNDED)
         return
 
     order.status = "provisioned"
@@ -162,10 +167,10 @@ async def purchase_plan_callback(
         f"`{_escape(vless_uri)}`\n\n"
         "━━━━━━━━━━━━━━━━\n"
         "📱 *QR Code رو اسکن کن یا کانفیگ بالا رو کپی کن*\n"
-        "⚡ ساپورت اپ\\u0647ایی مثل v2rayNG، Hiddify، NekoBox"
+        "⚡ ساپورت اپ‌هایی مثل v2rayNG، Hiddify، NekoBox"
     )
-
-    await callback.message.answer(text, parse_mode="MarkdownV2")
+    if callback.message is not None:
+        await callback.message.answer(text, parse_mode="MarkdownV2")
 
     # ─── QR Code ──────────────────────────────────────────────────────
     qr_bytes = make_qr_bytes(vless_uri)
