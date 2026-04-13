@@ -107,6 +107,10 @@ class SupportTexts:
     USER_REPLY = "پاسخ پشتیبانی برای تیکت {ticket_id}\n\n{message}"
     CLOSE_TICKET = "🔒 بستن تیکت"
     TICKET_CLOSED = "تیکت `{ticket_id}` بسته شد."
+    EXIT_SUPPORT = "🔙 خروج از پشتیبانی"
+    HISTORY_TITLE = "📜 سوابق تیکت شما #{ticket_id}:\n\n"
+    PHOTO_MARKER = "[📷 تصویر]"
+
 
 
 class MarketingTexts:

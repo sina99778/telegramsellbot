@@ -78,9 +78,8 @@ async def support_ticket_view(
         await callback.message.answer(SupportTexts.ADMIN_TICKET_NOT_FOUND)
         return
 
-    recent_messages = ticket.messages[-5:]
     rendered_messages = "\n\n".join(
-        f"{'ادمین' if message.sender_id != ticket.user_id else 'کاربر'}: {message.text}"
+        f"{'ادمین' if message.sender_id != ticket.user_id else 'کاربر'}: {message.text or SupportTexts.PHOTO_MARKER}"
         for message in recent_messages
     ) or "-"
 
@@ -127,7 +126,7 @@ async def support_reply_submit(
     admin_user: User,
     bot: Bot,
 ) -> None:
-    if message.text is None:
+    if message.text is None and message.photo is None:
         return
 
     state_data = await state.get_data()
@@ -148,15 +147,34 @@ async def support_reply_submit(
         await message.answer(SupportTexts.ADMIN_TICKET_NOT_FOUND)
         return
 
-    clean_text = message.text.strip()
-    await ticket_repository.add_message(ticket_id=ticket.id, sender_id=admin_user.id, text=clean_text)
+    clean_text = message.text.strip() if message.text else message.caption.strip() if message.caption else None
+    photo_id = message.photo[-1].file_id if message.photo else None
+    
+    await ticket_repository.add_message(
+        ticket_id=ticket.id,
+        sender_id=admin_user.id,
+        text=clean_text,
+        photo_id=photo_id
+    )
 
     try:
-        await bot.send_message(
-            chat_id=ticket.user.telegram_id,
-            text=SupportTexts.USER_REPLY.format(ticket_id=ticket.id, message=clean_text),
-            reply_markup=_build_close_ticket_keyboard(ticket.id),
+        user_reply_text = SupportTexts.USER_REPLY.format(
+            ticket_id=ticket.id,
+            message=clean_text or SupportTexts.PHOTO_MARKER
         )
+        if photo_id:
+            await bot.send_photo(
+                chat_id=ticket.user.telegram_id,
+                photo=photo_id,
+                caption=user_reply_text,
+                reply_markup=_build_close_ticket_keyboard(ticket.id),
+            )
+        else:
+            await bot.send_message(
+                chat_id=ticket.user.telegram_id,
+                text=user_reply_text,
+                reply_markup=_build_close_ticket_keyboard(ticket.id),
+            )
         ticket.status = "answered"
     except TelegramForbiddenError:
         ticket.status = "closed"
@@ -217,11 +235,12 @@ def _build_close_ticket_keyboard(ticket_id: UUID):
     builder.adjust(1)
     return builder.as_markup()
 
-
 def _build_ticket_preview(ticket: Ticket) -> str:
     if not ticket.messages:
         return "-"
-    preview = ticket.messages[-1].text.replace("\n", " ").strip()
+    last_msg = ticket.messages[-1]
+    msg_content = last_msg.text or SupportTexts.PHOTO_MARKER
+    preview = msg_content.replace("\n", " ").strip()
     if len(preview) > 44:
         return preview[:41].rstrip() + "..."
     return preview

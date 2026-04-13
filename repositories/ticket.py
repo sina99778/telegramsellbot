@@ -33,8 +33,20 @@ class TicketRepository:
         await self.session.refresh(ticket)
         return ticket
 
-    async def add_message(self, *, ticket_id: UUID, sender_id: UUID, text: str) -> TicketMessage:
-        message = TicketMessage(ticket_id=ticket_id, sender_id=sender_id, text=text)
+    async def add_message(
+        self,
+        *,
+        ticket_id: UUID,
+        sender_id: UUID,
+        text: str | None = None,
+        photo_id: str | None = None,
+    ) -> TicketMessage:
+        message = TicketMessage(
+            ticket_id=ticket_id,
+            sender_id=sender_id,
+            text=text,
+            photo_id=photo_id,
+        )
         self.session.add(message)
         await self.session.flush()
         await self.session.refresh(message)
