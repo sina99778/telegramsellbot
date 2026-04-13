@@ -13,15 +13,26 @@ RUN apt-get update \
     && "${VENV_PATH}/bin/pip" install --upgrade pip setuptools wheel \
     && rm -rf /var/lib/apt/lists/*
 
+# Install ONLY dependencies (not the project itself) — avoids slow wheel build
 COPY pyproject.toml ./
-COPY apps ./apps
-COPY core ./core
-COPY models ./models
-COPY repositories ./repositories
-COPY schemas ./schemas
-COPY services ./services
-
-RUN "${VENV_PATH}/bin/pip" install .
+RUN "${VENV_PATH}/bin/pip" install \
+    aiogram \
+    fastapi \
+    "uvicorn[standard]" \
+    sqlalchemy \
+    asyncpg \
+    alembic \
+    "redis[hiredis]" \
+    pydantic \
+    pydantic-settings \
+    httpx \
+    orjson \
+    python-dotenv \
+    structlog \
+    apscheduler \
+    tenacity \
+    cryptography \
+    segno
 
 
 FROM python:3.12-slim AS runtime
@@ -29,7 +40,8 @@ FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     VENV_PATH=/opt/venv \
-    PATH="/opt/venv/bin:${PATH}"
+    PATH="/opt/venv/bin:${PATH}" \
+    PYTHONPATH="/app"
 
 WORKDIR /app
 
