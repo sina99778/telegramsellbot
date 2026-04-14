@@ -25,6 +25,7 @@ class CreatePlanStates(StatesGroup):
 class ManageUserStates(StatesGroup):
     waiting_for_telegram_id = State()
     waiting_for_balance_adjustment = State()
+    waiting_for_message_to_user = State()
 
 
 class BroadcastStates(StatesGroup):
@@ -44,6 +45,7 @@ class SupportReplyStates(StatesGroup):
 class SettingsStates(StatesGroup):
     waiting_for_price_gb = State()
     waiting_for_price_days = State()
+    waiting_for_toman_rate = State()
 
 
 class DiscountStates(StatesGroup):

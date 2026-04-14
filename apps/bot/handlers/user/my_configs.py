@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 router = Router(name="user-my-configs")
 
-_ACTIVE_STATUSES = {"pending_activation", "active"}
+_ACTIVE_STATUSES = {"pending_activation", "active", "expired"}
 
 
 class MyConfigCallback(CallbackData, prefix="myconfig"):
@@ -250,6 +250,12 @@ async def my_config_detail_handler(
     builder = InlineKeyboardBuilder()
     if sub.status in ("active", "pending_activation"):
         builder.button(text=Buttons.RENEW_SERVICE, callback_data=MyConfigCallback(action="renew", subscription_id=sub.id).pack())
+    # Cancel & refund for unused configs
+    if sub.status == "pending_activation" and sub.used_bytes == 0:
+        builder.button(text="🔄 لغو و بازپرداخت", callback_data=MyConfigCallback(action="cancel_refund", subscription_id=sub.id).pack())
+    # Delete finished configs (no refund)
+    if sub.status == "expired":
+        builder.button(text="🗑 حذف", callback_data=MyConfigCallback(action="delete", subscription_id=sub.id).pack())
     builder.button(text=Buttons.BACK, callback_data="myconfig:back_to_list")
     builder.adjust(1)
 
@@ -297,3 +303,156 @@ def _escape(text: str) -> str:
     """Escape special chars for Telegram MarkdownV2."""
     special = r"\_*[]()~`>#+-=|{}.!"
     return "".join(f"\\{c}" if c in special else c for c in str(text))
+
+
+# ─── Delete / Cancel+Refund handlers ─────────────────────────────────────────
+
+
+@router.callback_query(MyConfigCallback.filter(F.action == "cancel_refund"))
+async def cancel_and_refund_config(
+    callback: CallbackQuery,
+    callback_data: MyConfigCallback,
+    session: AsyncSession,
+) -> None:
+    """Cancel an unused config and refund to wallet."""
+    await callback.answer()
+    if callback.from_user is None:
+        return
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        return
+
+    sub = await session.scalar(
+        select(Subscription)
+        .options(
+            selectinload(Subscription.plan),
+            selectinload(Subscription.xui_client)
+            .selectinload(XUIClientRecord.inbound)
+            .selectinload(XUIInboundRecord.server),
+        )
+        .where(
+            Subscription.id == callback_data.subscription_id,
+            Subscription.user_id == user.id,
+        )
+    )
+    if sub is None:
+        if callback.message:
+            await callback.message.answer("کانفیگ پیدا نشد.")
+        return
+
+    if sub.status != "pending_activation" or sub.used_bytes > 0:
+        if callback.message:
+            await callback.message.answer("این کانفیگ قابل بازپرداخت نیست (قبلاً استفاده شده).")
+        return
+
+    # Delete from X-UI
+    xui_record = sub.xui_client
+    if xui_record and xui_record.inbound and xui_record.inbound.server:
+        try:
+            from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
+            server = ensure_inbound_server_loaded(xui_record.inbound)
+            async with create_xui_client_for_server(server) as xui_client:
+                await xui_client.delete_client(
+                    inbound_id=xui_record.inbound.xui_inbound_remote_id,
+                    client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+                )
+            xui_record.is_active = False
+        except Exception as exc:
+            logger.error("Failed to delete X-UI client on refund: %s", exc)
+
+    # Refund to wallet
+    from decimal import Decimal
+    from services.wallet.manager import WalletManager
+    from models.order import Order
+
+    # Find the order for this subscription
+    order = await session.scalar(
+        select(Order).where(
+            Order.user_id == user.id,
+            Order.plan_id == sub.plan_id,
+            Order.status == "provisioned",
+        ).order_by(Order.created_at.desc())
+    )
+    refund_amount = order.amount if order else (sub.plan.price if sub.plan else Decimal("0"))
+
+    if refund_amount and refund_amount > 0:
+        wallet_manager = WalletManager(session)
+        await wallet_manager.process_transaction(
+            user_id=user.id,
+            amount=Decimal(str(refund_amount)),
+            transaction_type="refund",
+            direction="credit",
+            currency="USD",
+            reference_type="subscription",
+            reference_id=sub.id,
+            description="Refund for cancelled unused config",
+            metadata={"subscription_id": str(sub.id)},
+        )
+        if order:
+            order.status = "refunded"
+
+    sub.status = "refunded"
+    sub.sub_link = None
+    await session.flush()
+
+    from core.formatting import format_price
+    if callback.message:
+        await callback.message.answer(
+            f"✅ کانفیگ لغو و مبلغ {format_price(refund_amount)} دلار به کیف پول برگشت داده شد."
+        )
+
+
+@router.callback_query(MyConfigCallback.filter(F.action == "delete"))
+async def delete_expired_config(
+    callback: CallbackQuery,
+    callback_data: MyConfigCallback,
+    session: AsyncSession,
+) -> None:
+    """Delete an expired config (no refund)."""
+    await callback.answer()
+    if callback.from_user is None:
+        return
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        return
+
+    sub = await session.scalar(
+        select(Subscription)
+        .options(
+            selectinload(Subscription.xui_client)
+            .selectinload(XUIClientRecord.inbound)
+            .selectinload(XUIInboundRecord.server),
+        )
+        .where(
+            Subscription.id == callback_data.subscription_id,
+            Subscription.user_id == user.id,
+        )
+    )
+    if sub is None:
+        if callback.message:
+            await callback.message.answer("کانفیگ پیدا نشد.")
+        return
+
+    # Delete from X-UI
+    xui_record = sub.xui_client
+    if xui_record and xui_record.inbound and xui_record.inbound.server:
+        try:
+            from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
+            server = ensure_inbound_server_loaded(xui_record.inbound)
+            async with create_xui_client_for_server(server) as xui_client:
+                await xui_client.delete_client(
+                    inbound_id=xui_record.inbound.xui_inbound_remote_id,
+                    client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+                )
+            xui_record.is_active = False
+        except Exception as exc:
+            logger.error("Failed to delete X-UI client: %s", exc)
+
+    sub.status = "cancelled"
+    sub.sub_link = None
+    await session.flush()
+
+    if callback.message:
+        await callback.message.answer("✅ کانفیگ حذف شد.")

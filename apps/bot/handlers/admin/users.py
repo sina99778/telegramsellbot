@@ -336,6 +336,66 @@ async def admin_toggle_ban(
     )
 
 
+# ─── Send Message to User ─────────────────────────────────────────────────────
+
+
+@router.callback_query(AdminUserActionCallback.filter(F.action == "send_msg"))
+async def admin_send_msg_prompt(
+    callback: CallbackQuery,
+    callback_data: AdminUserActionCallback,
+    state: FSMContext,
+) -> None:
+    await callback.answer()
+    await state.set_state(ManageUserStates.waiting_for_message_to_user)
+    await state.update_data(target_user_id=str(callback_data.user_id))
+    await callback.message.answer(
+        "📩 پیام مورد نظر خود را برای این کاربر ارسال کنید.\n"
+        "برای لغو /cancel بزنید."
+    )
+
+
+@router.message(ManageUserStates.waiting_for_message_to_user)
+async def admin_send_msg_submit(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    if not message.text:
+        return
+
+    state_data = await state.get_data()
+    raw_user_id = state_data.get("target_user_id")
+    if raw_user_id is None:
+        await state.clear()
+        await message.answer("کاربر پیدا نشد.")
+        return
+
+    target_user = await session.scalar(
+        select(User).where(User.id == UUID(raw_user_id))
+    )
+    if target_user is None:
+        await state.clear()
+        await message.answer(AdminMessages.USER_NOT_FOUND)
+        return
+
+    from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+    try:
+        await message.bot.send_message(
+            target_user.telegram_id,
+            f"📩 پیام از طرف مدیریت:\n\n{message.text}",
+        )
+        await message.answer("✅ پیام با موفقیت ارسال شد.")
+    except TelegramForbiddenError:
+        await message.answer("❌ کاربر ربات را بلاک کرده است.")
+    except TelegramBadRequest as exc:
+        await message.answer(f"❌ خطا در ارسال: {exc}")
+    except Exception as exc:
+        await message.answer(f"❌ خطای ناشناخته: {exc}")
+
+    await state.clear()
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -345,7 +405,7 @@ def _build_user_profile_text(*, user: User, total_orders: int) -> str:
         name=user.first_name or "-",
         telegram_id=user.telegram_id,
         status=user.status,
-        wallet_balance=wallet_balance,
+        wallet_balance=f"{wallet_balance:.2f}",
         total_orders=total_orders,
     )
 
@@ -365,8 +425,13 @@ def _build_user_profile_keyboard(user_id: UUID, status: str):
         callback_data=AdminUserActionCallback(action="view_configs", user_id=user_id).pack(),
     )
     builder.button(
+        text="📩 ارسال پیام",
+        callback_data=AdminUserActionCallback(action="send_msg", user_id=user_id).pack(),
+    )
+    builder.button(
         text=AdminButtons.BACK,
         callback_data="admin:users",
     )
     builder.adjust(1)
     return builder.as_markup()
+

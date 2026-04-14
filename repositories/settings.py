@@ -147,3 +147,22 @@ class AppSettingsRepository:
         self.session.add(record)
         await self.session.flush()
         return record
+
+    # ── Toman exchange rate ──────────────────────────────────────────────────
+
+    USD_TOMAN_RATE_KEY = "finance.usd_toman_rate"
+
+    async def get_toman_rate(self) -> int:
+        """Return the USD → Toman rate. Default 100000."""
+        record = await self.session.get(AppSetting, self.USD_TOMAN_RATE_KEY)
+        if record and record.value_json:
+            return int(record.value_json.get("rate", 100000))
+        return 100000
+
+    async def set_toman_rate(self, rate: int) -> None:
+        record = await self.session.get(AppSetting, self.USD_TOMAN_RATE_KEY)
+        if record is None:
+            record = AppSetting(key=self.USD_TOMAN_RATE_KEY)
+        record.value_json = {"rate": rate}
+        self.session.add(record)
+        await self.session.flush()

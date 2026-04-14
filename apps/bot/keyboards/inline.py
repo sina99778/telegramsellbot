@@ -77,7 +77,7 @@ def build_renewal_keyboard(sub_id: UUID) -> InlineKeyboardMarkup:
 
 
 def _format_plan_button_text(name: str, price: Decimal, currency: str) -> str:
-    return f"{name} - {price.normalize()} {currency}"
+    return f"{name} - {price:.2f} {currency}"
 
 
 def add_pagination_controls(

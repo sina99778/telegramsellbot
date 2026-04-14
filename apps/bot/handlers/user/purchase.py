@@ -203,14 +203,20 @@ async def _show_payment_method_choice(
     else:
         final_price = original_price
 
+    from core.formatting import format_price_with_toman
+    from repositories.settings import AppSettingsRepository
+    toman_rate = await AppSettingsRepository(session).get_toman_rate()
+    price_display = format_price_with_toman(final_price, toman_rate)
+
     discount_line = ""
     if discount_percent > 0:
-        discount_line = f"🏷 تخفیف: {discount_percent}% (قیمت اصلی: {original_price} {plan.currency})\n"
+        orig_display = format_price_with_toman(original_price, toman_rate)
+        discount_line = f"🏷 تخفیف: {discount_percent}% (قیمت اصلی: {orig_display})\n"
 
     text = (
         "💳 روش پرداخت را انتخاب کنید:\n\n"
         f"📦 پلن: {plan.name}\n"
-        f"💰 مبلغ قابل پرداخت: {final_price} {plan.currency}\n"
+        f"💰 مبلغ قابل پرداخت: {price_display}\n"
         f"{discount_line}\n"
         "از کدام روش پرداخت می‌خواهید استفاده کنید؟"
     )
@@ -245,14 +251,20 @@ async def _show_payment_method_choice_msg(
     else:
         final_price = original_price
 
+    from core.formatting import format_price_with_toman
+    from repositories.settings import AppSettingsRepository
+    toman_rate = await AppSettingsRepository(session).get_toman_rate()
+    price_display = format_price_with_toman(final_price, toman_rate)
+
     discount_line = ""
     if discount_percent > 0:
-        discount_line = f"🏷 تخفیف: {discount_percent}% (قیمت اصلی: {original_price} {plan.currency})\n"
+        orig_display = format_price_with_toman(original_price, toman_rate)
+        discount_line = f"🏷 تخفیف: {discount_percent}% (قیمت اصلی: {orig_display})\n"
 
     text = (
         "💳 روش پرداخت را انتخاب کنید:\n\n"
         f"📦 پلن: {plan.name}\n"
-        f"💰 مبلغ قابل پرداخت: {final_price} {plan.currency}\n"
+        f"💰 مبلغ قابل پرداخت: {price_display}\n"
         f"{discount_line}\n"
         "از کدام روش پرداخت می‌خواهید استفاده کنید؟"
     )
