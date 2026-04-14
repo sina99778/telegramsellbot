@@ -172,8 +172,8 @@ async def add_server_password(
             username=str(form_data["username"]),
             password=password,
         )
-    except (XUIAuthenticationError, XUIRequestError) as exc:
-        await message.answer(f"{AdminMessages.SERVER_CONNECTION_FAILED}\n\nجزئیات خطا:\n`{exc}`", parse_mode="MarkdownV2")
+    except Exception as exc:
+        await message.answer(f"خطا در اتصال به سرور:\n`{exc}`", parse_mode="MarkdownV2")
         await state.clear()
         return
 
@@ -248,8 +248,8 @@ async def sync_server_inbounds(
             username=server.credentials.username,
             password=decrypt_secret(server.credentials.password_encrypted),
         )
-    except (XUIAuthenticationError, XUIRequestError) as exc:
-        await callback.message.answer(f"خطا در اتصال به پنل: {exc}")
+    except Exception as exc:
+        await callback.message.answer(f"خطا در اتصال به پنل:\n`{exc}`", parse_mode="MarkdownV2")
         return
 
     created_inbounds, synced_count, disabled_count = _sync_remote_inbounds(
