@@ -163,7 +163,10 @@ class SanaeiXUIClient:
                 f"{self._safe_response_text(exc.response)}"
             ) from exc
         except httpx.RequestError as exc:
-            raise XUIRequestError(f"Network error while calling X-UI endpoint '{path}': {exc}") from exc
+            cause = f" (caused by {type(exc.__cause__).__name__}: {exc.__cause__})" if exc.__cause__ else ""
+            raise XUIRequestError(
+                f"{type(exc).__name__} while calling X-UI endpoint '{path}'{cause}"
+            ) from exc
 
     @staticmethod
     def _decode_response(response: httpx.Response) -> dict[str, Any] | list[Any] | None:

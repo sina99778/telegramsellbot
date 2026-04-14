@@ -166,33 +166,40 @@ async def add_server_password(
     password = message.text.strip()
     base_url = str(form_data["base_url"]).rstrip("/")
 
-    try:
-        remote_inbounds = await _fetch_remote_inbounds(
-            base_url=base_url,
-            username=str(form_data["username"]),
-            password=password,
+    # Try multiple URL variations to find the working one
+    urls_to_try = [base_url]
+    if base_url.startswith("http://"):
+        urls_to_try.append("https://" + base_url[7:])
+    elif base_url.startswith("https://"):
+        urls_to_try.append("http://" + base_url[8:])
+
+    remote_inbounds = None
+    last_error = None
+    working_url = base_url
+    for url in urls_to_try:
+        try:
+            remote_inbounds = await _fetch_remote_inbounds(
+                base_url=url,
+                username=str(form_data["username"]),
+                password=password,
+            )
+            working_url = url
+            break
+        except Exception as exc:
+            last_error = exc
+            logger.warning("Failed to connect to %s: %s", url, exc)
+
+    if remote_inbounds is None:
+        await message.answer(
+            f"خطا در اتصال به سرور.\n\n"
+            f"آدرس‌های امتحان‌شده:\n"
+            + "\n".join(f"• {u}" for u in urls_to_try)
+            + f"\n\nآخرین خطا: {last_error}"
         )
-    except Exception as exc:
-        if base_url.startswith("http://"):
-            try:
-                base_url = "https://" + base_url[7:]
-                remote_inbounds = await _fetch_remote_inbounds(
-                    base_url=base_url,
-                    username=str(form_data["username"]),
-                    password=password,
-                )
-            except Exception as exc2:
-                err_msg = f"خطا در اتصال به سرور:\n`{exc}`\n\nتلاش با https هم ناموفق بود:\n`{exc2}`"
-                err_msg = err_msg.replace("(", "\\(").replace(")", "\\)").replace(".", "\\.")
-                await message.answer(err_msg, parse_mode="MarkdownV2")
-                await state.clear()
-                return
-        else:
-            err_msg = f"خطا در اتصال به سرور:\n`{exc}`"
-            err_msg = err_msg.replace("(", "\\(").replace(")", "\\)").replace(".", "\\.")
-            await message.answer(err_msg, parse_mode="MarkdownV2")
-            await state.clear()
-            return
+        await state.clear()
+        return
+
+    base_url = working_url
 
     server = XUIServerRecord(
         name=str(form_data["name"]),
