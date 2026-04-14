@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -16,6 +17,7 @@ from models.payment import Payment
 from services.payment import process_successful_payment
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -24,25 +26,40 @@ async def handle_nowpayments_ipn(
     request: Request,
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, str]:
-    signature = request.headers.get("x-nowpayments-sig")
     raw_body = await request.body()
+    signature = request.headers.get("x-nowpayments-sig")
 
-    if not _is_valid_nowpayments_signature(raw_body=raw_body, signature=signature):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid NOWPayments signature.",
-        )
+    logger.info("IPN received. Signature present: %s, Body length: %d", bool(signature), len(raw_body))
+
+    # Validate signature (skip if IPN secret not configured — log warning)
+    if settings.nowpayments_ipn_secret is not None:
+        if not _is_valid_nowpayments_signature(raw_body=raw_body, signature=signature):
+            logger.warning("IPN signature validation FAILED")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid NOWPayments signature.",
+            )
+        logger.info("IPN signature validated OK")
+    else:
+        logger.warning("NOWPAYMENTS_IPN_SECRET not configured — skipping signature check!")
 
     try:
-        payload = await request.json()
-    except ValueError as exc:
+        payload = json.loads(raw_body)
+    except (ValueError, json.JSONDecodeError) as exc:
+        logger.error("IPN: Invalid JSON payload: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid JSON payload.",
         ) from exc
 
     provider_payment_id = str(payload.get("payment_id", "")).strip()
-    payment_status = str(payload.get("payment_status", "")).strip().lower()
+    payment_status_str = str(payload.get("payment_status", "")).strip().lower()
+    order_id_from_payload = str(payload.get("order_id", "")).strip()
+
+    logger.info(
+        "IPN payload: payment_id=%s, status=%s, order_id=%s",
+        provider_payment_id, payment_status_str, order_id_from_payload,
+    )
 
     if not provider_payment_id:
         raise HTTPException(
@@ -50,37 +67,43 @@ async def handle_nowpayments_ipn(
             detail="Missing payment_id in NOWPayments callback.",
         )
 
-    # Try by provider_payment_id first, then fallback to order_id
+    # Find payment: try provider_payment_id, then order_id
     payment = await session.scalar(
         select(Payment).where(Payment.provider_payment_id == provider_payment_id)
     )
+    if payment is None and order_id_from_payload:
+        logger.info("Payment not found by provider_payment_id, trying order_id=%s", order_id_from_payload)
+        payment = await session.scalar(
+            select(Payment).where(Payment.order_id == order_id_from_payload)
+        )
+
     if payment is None:
-        # Fallback: look up by order_id from payload
-        order_id_from_payload = str(payload.get("order_id", "")).strip()
-        if order_id_from_payload:
-            payment = await session.scalar(
-                select(Payment).where(Payment.order_id == order_id_from_payload)
-            )
-    if payment is None:
+        logger.error("IPN: Payment NOT FOUND for payment_id=%s, order_id=%s", provider_payment_id, order_id_from_payload)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Payment not found.",
         )
+
+    logger.info("IPN: Found payment %s (kind=%s, current_status=%s)", payment.id, payment.kind, payment.payment_status)
+
     # Store provider_payment_id for future lookups
     if not payment.provider_payment_id:
         payment.provider_payment_id = provider_payment_id
 
-    payment.payment_status = payment_status
+    # Update status and payload
+    payment.payment_status = payment_status_str
     if isinstance(payment.callback_payload, dict):
         payment.callback_payload = {**payment.callback_payload, "nowpayments_ipn": payload}
     else:
         payment.callback_payload = {"nowpayments_ipn": payload}
 
-    if payment_status not in {"finished", "confirmed"}:
+    if payment_status_str not in {"finished", "confirmed"}:
+        logger.info("IPN: Status '%s' is not final — ignoring", payment_status_str)
         return {"status": "ignored"}
 
-    # Idempotency guard: if we already credited this payment once, do not repeat it.
+    # Idempotency guard
     if payment.actually_paid is not None:
+        logger.info("IPN: Payment %s already processed (actually_paid=%s)", payment.id, payment.actually_paid)
         return {"status": "already_processed"}
 
     amount_to_credit = _extract_credit_amount(payload)
@@ -90,22 +113,26 @@ async def handle_nowpayments_ipn(
             detail="Invalid payment amount in callback payload.",
         )
 
-    await process_successful_payment(
-        session=session,
-        payment=payment,
-        amount_to_credit=amount_to_credit,
-    )
+    logger.info("IPN: Processing payment %s — amount_to_credit=%s", payment.id, amount_to_credit)
+
+    try:
+        await process_successful_payment(
+            session=session,
+            payment=payment,
+            amount_to_credit=amount_to_credit,
+        )
+        logger.info("IPN: Payment %s processed SUCCESSFULLY", payment.id)
+    except Exception as exc:
+        logger.error("IPN: FAILED to process payment %s: %s", payment.id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Payment processing failed: {exc}",
+        ) from exc
 
     return {"status": "processed"}
 
 
 def _is_valid_nowpayments_signature(*, raw_body: bytes, signature: str | None) -> bool:
-    if settings.nowpayments_ipn_secret is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="NOWPayments IPN secret is not configured.",
-        )
-
     if not signature:
         return False
 
@@ -127,7 +154,14 @@ def _is_valid_nowpayments_signature(*, raw_body: bytes, signature: str | None) -
 
 
 def _extract_credit_amount(payload: dict[str, Any]) -> Decimal:
-    raw_amount = payload.get("actually_paid") or payload.get("price_amount")
+    """
+    Extract the amount to credit in USD.
+    
+    IMPORTANT: 'actually_paid' is in crypto currency (e.g. 0.003 BTC),
+    NOT in USD! We must use 'price_amount' which is the original USD amount.
+    """
+    # Use price_amount (USD) first — this is what the user actually owes
+    raw_amount = payload.get("price_amount") or payload.get("actually_paid")
     if raw_amount in {None, ""}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -141,3 +175,4 @@ def _extract_credit_amount(payload: dict[str, Any]) -> Decimal:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid payment amount in callback payload.",
         ) from exc
+

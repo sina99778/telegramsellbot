@@ -54,7 +54,8 @@ async def sync_pending_payments() -> None:
                         payment.callback_payload = {"nowpayments_status": status.model_dump(mode="json")}
 
                     if status.payment_status in ("finished", "confirmed") and payment.actually_paid is None:
-                        paid_amount = status.actually_paid or status.price_amount
+                        # Use price_amount (USD), NOT actually_paid (crypto amount)
+                        paid_amount = status.price_amount or status.actually_paid
                         await process_successful_payment(
                             session=session,
                             payment=payment,

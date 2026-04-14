@@ -1,7 +1,6 @@
 """
 Payment processing service.
 Handles IPN callbacks and direct purchase provisioning.
-No circular imports — uses ProvisioningManager directly.
 """
 from __future__ import annotations
 
@@ -10,7 +9,9 @@ from decimal import Decimal
 from uuid import UUID
 
 from aiogram import Bot
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from core.config import settings
 from models.payment import Payment
@@ -26,12 +27,16 @@ async def process_successful_payment(
     payment: Payment,
     amount_to_credit: Decimal,
 ) -> None:
+    logger.info("[PAYMENT] Processing payment %s (kind=%s, amount=%s)", payment.id, payment.kind, amount_to_credit)
+
     if payment.actually_paid is not None:
+        logger.info("[PAYMENT] Already processed — skipping")
         return
 
     payment.actually_paid = amount_to_credit
 
     # 1. Top up wallet
+    logger.info("[PAYMENT] Step 1: Credit wallet for user %s", payment.user_id)
     wallet_manager = WalletManager(session)
     await wallet_manager.process_transaction(
         user_id=payment.user_id,
@@ -48,10 +53,19 @@ async def process_successful_payment(
             "payment_status": payment.payment_status,
         },
     )
+    logger.info("[PAYMENT] Wallet credited OK")
 
     # 2. If it is direct purchase, attempt provisioning
     if payment.kind == "direct_purchase":
-        await _handle_direct_purchase(session, payment)
+        logger.info("[PAYMENT] Step 2: Direct purchase — provisioning config")
+        try:
+            await _handle_direct_purchase(session, payment)
+            logger.info("[PAYMENT] Direct purchase provisioning COMPLETED")
+        except Exception as exc:
+            logger.error("[PAYMENT] Direct purchase provisioning FAILED: %s", exc, exc_info=True)
+            # Don't re-raise — wallet was already credited, user can buy manually
+    else:
+        logger.info("[PAYMENT] Payment kind=%s — not a direct purchase, done", payment.kind)
 
 
 async def _handle_direct_purchase(
@@ -59,107 +73,124 @@ async def _handle_direct_purchase(
     payment: Payment,
 ) -> None:
     """Provision a subscription after a successful direct purchase payment."""
+    purchase_meta = payment.callback_payload
+    logger.info("[PROVISION] callback_payload keys: %s", list(purchase_meta.keys()) if purchase_meta else "EMPTY")
+
+    plan_id_str = purchase_meta.get("plan_id") if purchase_meta else None
+    if not plan_id_str:
+        logger.error("[PROVISION] Missing plan_id in purchase metadata for payment %s", payment.id)
+        return
+
+    plan_id = UUID(plan_id_str)
+    config_name = purchase_meta.get("config_name", "VPN")
+    discount_percent = purchase_meta.get("discount_percent", 0)
+
+    logger.info("[PROVISION] plan_id=%s, config_name=%s, discount=%s", plan_id, config_name, discount_percent)
+
+    # Load user with wallet
+    user = await session.scalar(
+        select(User)
+        .options(selectinload(User.wallet))
+        .where(User.id == payment.user_id)
+    )
+    plan = await session.get(Plan, plan_id)
+
+    if not user:
+        logger.error("[PROVISION] User %s not found", payment.user_id)
+        return
+    if not plan:
+        logger.error("[PROVISION] Plan %s not found", plan_id)
+        return
+    if not user.wallet:
+        logger.error("[PROVISION] User %s has no wallet", payment.user_id)
+        return
+
+    logger.info("[PROVISION] User: %s (tg=%s), Plan: %s", user.id, user.telegram_id, plan.name)
+
+    original_price = plan.price
+    if discount_percent > 0:
+        final_price = (original_price * (Decimal(100 - discount_percent) / Decimal(100))).quantize(Decimal("0.01"))
+    else:
+        final_price = original_price
+
+    from services.provisioning.manager import ProvisioningManager, ProvisioningError
+    from models.order import Order
+    from core.formatting import format_volume_bytes
+
+    order = Order(
+        user_id=user.id,
+        plan_id=plan.id,
+        status="processing",
+        source="gateway",
+        amount=final_price,
+        currency=plan.currency,
+    )
+    session.add(order)
+    await session.flush()
+    logger.info("[PROVISION] Order created: %s", order.id)
+
+    # Debit from wallet (was credited above)
+    wallet_manager = WalletManager(session)
+    await wallet_manager.process_transaction(
+        user_id=user.id,
+        amount=Decimal(str(final_price)),
+        transaction_type="purchase",
+        direction="debit",
+        currency=plan.currency,
+        reference_type="order",
+        reference_id=order.id,
+        description=f"Purchase of plan {plan.code}",
+        metadata={"plan_id": str(plan.id), "config_name": config_name},
+    )
+    logger.info("[PROVISION] Wallet debited OK")
+
+    # Provision
     bot = Bot(token=settings.bot_token.get_secret_value())
     try:
-        purchase_meta = payment.callback_payload
-        plan_id_str = purchase_meta.get("plan_id")
-        if not plan_id_str:
-            logger.error("Missing plan_id in purchase metadata for payment %s", payment.id)
-            return
-
-        plan_id = UUID(plan_id_str)
-        config_name = purchase_meta.get("config_name", "VPN")
-        discount_percent = purchase_meta.get("discount_percent", 0)
-
-        user = await session.get(User, payment.user_id)
-        plan = await session.get(Plan, plan_id)
-        if not user or not plan:
-            logger.error("User or plan not found for direct purchase payment %s", payment.id)
-            return
-
-        # Eagerly load wallet for debit operation
-        from sqlalchemy.orm import selectinload
-        from sqlalchemy import select
-        user = await session.scalar(
-            select(User)
-            .options(selectinload(User.wallet))
-            .where(User.id == payment.user_id)
-        )
-        if not user or not user.wallet:
-            logger.error("User wallet not found for direct purchase payment %s", payment.id)
-            return
-
-        original_price = plan.price
-        if discount_percent > 0:
-            final_price = (original_price * (Decimal(100 - discount_percent) / Decimal(100))).quantize(Decimal("0.01"))
-        else:
-            final_price = original_price
-
-        # Use ProvisioningManager directly (no circular import)
-        from services.provisioning.manager import ProvisioningManager, ProvisioningError
-        from models.order import Order
-        from core.formatting import format_volume_bytes
-
-        order = Order(
+        provisioning_manager = ProvisioningManager(session)
+        logger.info("[PROVISION] Calling provision_subscription...")
+        provisioned = await provisioning_manager.provision_subscription(
             user_id=user.id,
             plan_id=plan.id,
-            status="processing",
-            source="gateway",
-            amount=final_price,
-            currency=plan.currency,
+            order_id=order.id,
+            config_name=config_name,
         )
-        session.add(order)
-        await session.flush()
-
-        # Debit from wallet (was credited above)
-        wallet_manager = WalletManager(session)
+        logger.info("[PROVISION] Provisioning SUCCESS — sub_link=%s", provisioned.sub_link[:50] if provisioned.sub_link else "NONE")
+    except ProvisioningError as exc:
+        logger.error("[PROVISION] Provisioning FAILED: %s", exc)
+        # Refund
         await wallet_manager.process_transaction(
             user_id=user.id,
             amount=Decimal(str(final_price)),
-            transaction_type="purchase",
-            direction="debit",
+            transaction_type="refund",
+            direction="credit",
             currency=plan.currency,
             reference_type="order",
             reference_id=order.id,
-            description=f"Purchase of plan {plan.code}",
-            metadata={"plan_id": str(plan.id), "config_name": config_name},
+            description="Automatic refund after provisioning failure",
+            metadata={"plan_id": str(plan.id)},
         )
-
+        order.status = "refunded"
         try:
-            provisioning_manager = ProvisioningManager(session)
-            provisioned = await provisioning_manager.provision_subscription(
-                user_id=user.id,
-                plan_id=plan.id,
-                order_id=order.id,
-                config_name=config_name,
-            )
-        except ProvisioningError as exc:
-            logger.error("Provisioning failed for gateway order %s: %s", order.id, exc)
-            # Refund
-            await wallet_manager.process_transaction(
-                user_id=user.id,
-                amount=Decimal(str(final_price)),
-                transaction_type="refund",
-                direction="credit",
-                currency=plan.currency,
-                reference_type="order",
-                reference_id=order.id,
-                description="Automatic refund after provisioning failure",
-                metadata={"plan_id": str(plan.id)},
-            )
-            order.status = "refunded"
             await bot.send_message(
                 user.telegram_id,
                 "❌ خطا در ساخت کانفیگ. مبلغ به کیف پول شما بازگردانده شد."
             )
-            return
+        except Exception as bot_exc:
+            logger.error("[PROVISION] Failed to send refund message: %s", bot_exc)
+        return
+    finally:
+        await bot.session.close()
 
-        order.status = "provisioned"
+    order.status = "provisioned"
 
-        volume_label = format_volume_bytes(plan.volume_bytes)
-        sub_link = provisioned.sub_link
-        vless_uri = provisioned.vless_uri
+    volume_label = format_volume_bytes(plan.volume_bytes)
+    sub_link = provisioned.sub_link
+    vless_uri = provisioned.vless_uri
 
+    # Send config to user
+    bot2 = Bot(token=settings.bot_token.get_secret_value())
+    try:
         text = (
             "✅ کانفیگ شما آماده است!\n\n"
             f"📛 نام: {config_name}\n"
@@ -173,14 +204,15 @@ async def _handle_direct_purchase(
             f"🔗 ساب لینک:\n{sub_link}\n\n"
             f"📋 کانفیگ مستقیم:\n{vless_uri}"
         )
-        await bot.send_message(user.telegram_id, text)
+        await bot2.send_message(user.telegram_id, text)
+        logger.info("[PROVISION] Config sent to user %s", user.telegram_id)
 
         # QR Code
         from core.qr import make_qr_bytes
         from aiogram.types import BufferedInputFile
         qr_bytes = make_qr_bytes(vless_uri)
         if qr_bytes:
-            await bot.send_photo(
+            await bot2.send_photo(
                 chat_id=user.telegram_id,
                 photo=BufferedInputFile(qr_bytes, filename="config_qr.png"),
                 caption=f"📷 QR کد کانفیگ {config_name}",
@@ -197,9 +229,11 @@ async def _handle_direct_purchase(
             f"💳 روش: درگاه پرداخت"
         )
         try:
-            await notify_admins(session, bot, admin_text)
+            await notify_admins(session, bot2, admin_text)
         except Exception as exc:
-            logger.warning("Failed to notify admins: %s", exc)
+            logger.warning("[PROVISION] Failed to notify admins: %s", exc)
 
+    except Exception as exc:
+        logger.error("[PROVISION] Failed to send config to user: %s", exc, exc_info=True)
     finally:
-        await bot.session.close()
+        await bot2.session.close()
