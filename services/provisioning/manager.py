@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -99,6 +99,20 @@ class ProvisioningManager:
         server = ensure_inbound_server_loaded(inbound)
         if not server.is_active:
             raise ProvisioningError("The selected server is inactive.")
+
+        if server.max_clients is not None:
+            active_count = await self.session.scalar(
+                select(func.count())
+                .select_from(XUIClientRecord)
+                .join(XUIInboundRecord, XUIClientRecord.inbound_id == XUIInboundRecord.id)
+                .where(
+                    XUIClientRecord.is_active.is_(True),
+                    XUIInboundRecord.server_id == server.id
+                )
+            ) or 0
+            if active_count >= server.max_clients:
+                raise ProvisioningError("ظرفیت این سرور تکمیل شده است. لطفاً به پشتیبانی اطلاع دهید.")
+
         client_uuid, username, email, sub_id = await self._generate_unique_client_identity()
         sub_link = build_sub_link(server, sub_id)
         vless_uri = build_vless_uri(

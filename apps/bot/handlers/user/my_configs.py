@@ -221,19 +221,23 @@ async def my_config_detail_handler(
         except Exception as exc:
             logger.warning("Failed to build vless_uri for sub %s: %s", sub.id, exc)
 
-    # Build message (plain text, no MarkdownV2)
+    # Build message with MarkdownV2
     lines = [
-        f"📦 پلن: {plan_name}",
-        f"💾 حجم کل: {volume_total}",
-        f"📊 مصرف شده: {volume_used}",
-        f"✅ باقی‌مانده: {volume_remaining}",
-        f"📅 زمان: {ends_label}",
-        f"🔄 وضعیت: {_status_fa(sub.status)}",
+        f"📛 *نام کانفیگ*: `{_escape(xui.username if xui else '-')}`",
+        f"📦 *پلن*: `{_escape(plan_name)}`",
+        f"💾 *حجم کل*: `{_escape(volume_total)}`",
+        f"📊 *مصرف شده*: `{_escape(volume_used)}`",
+        f"✅ *باقی‌مانده*: `{_escape(volume_remaining)}`",
+        f"📅 *زمان*: `{_escape(ends_label)}`",
+        f"🔄 *وضعیت*: `{_escape(_status_fa(sub.status))}`",
         "",
-        f"🔗 ساب لینک:\n{sub_link}",
+        "🔗 *ساب لینک \\(برای وارد کردن در اپ\\)*:",
+        f"`{_escape(sub_link)}`",
     ]
     if vless_uri:
-        lines.append(f"\n📋 کانفیگ مستقیم:\n{vless_uri}")
+        lines.append("")
+        lines.append("📋 *لینک کانفیگ مستقیم*:")
+        lines.append(f"`{_escape(vless_uri)}`")
 
     text = "\n".join(lines)
 
@@ -261,15 +265,16 @@ async def my_config_detail_handler(
                 photo=BufferedInputFile(qr_bytes, filename="config_qr.png"),
                 caption=text,
                 reply_markup=builder.as_markup(),
+                parse_mode="MarkdownV2"
             )
             return
 
     # Fallback to text message if no QR or QR failed
     if callback.message is not None:
         try:
-            await callback.message.edit_text(text, reply_markup=builder.as_markup())
+            await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="MarkdownV2")
         except Exception:
-            await callback.message.answer(text, reply_markup=builder.as_markup())
+            await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="MarkdownV2")
 
 
 def _status_fa(status: str) -> str:

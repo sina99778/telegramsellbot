@@ -4,6 +4,7 @@
 -- Server domain fields for config and subscription link generation
 ALTER TABLE xui_servers ADD COLUMN IF NOT EXISTS config_domain VARCHAR(255);
 ALTER TABLE xui_servers ADD COLUMN IF NOT EXISTS sub_domain VARCHAR(255);
+ALTER TABLE xui_servers ADD COLUMN IF NOT EXISTS max_clients INTEGER;
 
 -- Photo support in ticket messages
 ALTER TABLE ticket_messages ADD COLUMN IF NOT EXISTS photo_id VARCHAR(255);

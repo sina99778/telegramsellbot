@@ -8,6 +8,12 @@ class AddServerStates(StatesGroup):
     waiting_for_password = State()
 
 
+class ServerManageStates(StatesGroup):
+    waiting_for_config_domain = State()
+    waiting_for_sub_domain = State()
+    waiting_for_max_clients = State()
+
+
 class CreatePlanStates(StatesGroup):
     waiting_for_inbound_selection = State()
     waiting_for_name = State()

@@ -30,6 +30,8 @@ class XUIServerRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     config_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # Domain used for subscription links (e.g. "sub.example.com")
     sub_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Maximum number of active clients allowed to be provisioned on this server
+    max_clients: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     inbounds: Mapped[list[XUIInboundRecord]] = relationship("XUIInboundRecord", back_populates="server")
     credentials: Mapped[XUIServerCredential | None] = relationship(
