@@ -22,7 +22,6 @@ from repositories.settings import AppSettingsRepository
 from repositories.user import UserRepository
 from services.xui.client import SanaeiXUIClient, XUIClient, XUIRequestError
 from services.xui.runtime import build_xui_client_config, ensure_inbound_server_loaded
-from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -132,10 +131,13 @@ async def renew_confirm_payment(
 ) -> None:
     if callback.from_user is None:
         return
-        
+
+    await callback.answer()
+
     user_repo = UserRepository(session)
     user = await user_repo.get_by_telegram_id(callback.from_user.id)
-    if user is None:
+    if user is None or user.wallet is None:
+        await callback.message.edit_text("حساب یا کیف پول پیدا نشد.")
         return
 
     sub = await session.scalar(
@@ -150,74 +152,85 @@ async def renew_confirm_payment(
         await callback.message.edit_text("سرویس نامعتبر است.")
         return
 
-    price = callback_data.price
-    if user.wallet_balance < price:
-        await callback.answer(Messages.INSUFFICIENT_BALANCE.format(balance=user.wallet_balance, price=price, currency="دلار"), show_alert=True)
+    from decimal import Decimal
+    price = Decimal(str(callback_data.price))
+
+    if user.wallet.balance < price:
+        await callback.message.edit_text(
+            f"موجودی کیف پول کافی نیست.\n"
+            f"موجودی: {user.wallet.balance:.2f} USD\n"
+            f"هزینه تمدید: {price:.2f} USD"
+        )
         return
 
     await callback.message.edit_text("⏳ در حال تمدید...")
 
-    # Deduct wallet
-    user.wallet_balance -= price
-    session.add(user)
-    
+    # Create order
     order = Order(
-        id=uuid4(),
         user_id=user.id,
         plan_id=sub.plan_id,
         amount=price,
+        currency="USD",
         status="completed",
-        type="renewal",
-        payment_method="wallet",
+        source="bot",
     )
     session.add(order)
+    await session.flush()
+
+    # Deduct from wallet using WalletManager
+    from services.wallet.manager import WalletManager
+    wallet_manager = WalletManager(session)
+    await wallet_manager.process_transaction(
+        user_id=user.id,
+        amount=price,
+        transaction_type="renewal",
+        direction="debit",
+        currency="USD",
+        reference_type="order",
+        reference_id=order.id,
+        description=f"Renewal of subscription {sub.id}",
+        metadata={"sub_id": str(sub.id), "type": callback_data.type},
+    )
 
     # Calculate actual bytes or timeframe
     from datetime import datetime, timezone, timedelta
-    
-    bytes_to_add = 0
+
     if callback_data.type == "volume":
         bytes_to_add = int(callback_data.amount * 1024**3)
         sub.volume_bytes += bytes_to_add
-    
-    days_to_add = 0
+
     if callback_data.type == "time":
         days_to_add = int(callback_data.amount)
         if sub.ends_at is None:
             if sub.activated_at is not None:
                 sub.ends_at = sub.activated_at + timedelta(days=days_to_add)
-            else:
-                 # It's pending activation, so extending time doesn't make sense if it doesn't expire until used, but we let it be handled when activated.
-                 pass
         else:
             sub.ends_at += timedelta(days=days_to_add)
 
-    # Fetch server limits and push updates safely
+    # Sync with X-UI panel
     xui = sub.xui_client
     if xui:
-        import asyncio
-        from sqlalchemy import select
-        from models.xui import XUIClientRecord, XUIInboundRecord
+        from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 
-        # Load relations fully
         xui_full = await session.scalar(
             select(XUIClientRecord)
-            .options(selectinload(XUIClientRecord.inbound).selectinload(XUIInboundRecord.server).selectinload(XUIServerRecord.credentials))
+            .options(
+                selectinload(XUIClientRecord.inbound)
+                .selectinload(XUIInboundRecord.server)
+                .selectinload(XUIServerRecord.credentials)
+            )
             .where(XUIClientRecord.id == xui.id)
         )
-        
-        from models.xui import XUIServerRecord
+
         if xui_full and xui_full.inbound and xui_full.inbound.server:
             try:
                 server = ensure_inbound_server_loaded(xui_full.inbound)
                 config = build_xui_client_config(server)
                 async with SanaeiXUIClient(config) as client:
-                    # We have to fetch traffic to know current limit, but X-UI actually overwrites totalGB.
-                    # so we just push sub.volume_bytes to totalGB
                     expiry_time = 0
                     if sub.ends_at:
                         expiry_time = int(sub.ends_at.timestamp() * 1000)
-                    
+
                     xui_c = XUIClient(
                         id=xui_full.client_uuid,
                         uuid=xui_full.client_uuid,
@@ -232,7 +245,7 @@ async def renew_confirm_payment(
                         client=xui_c,
                     )
             except Exception as e:
-                logger.error(f"Failed to sync X-UI limit on renewal: {e}")
+                logger.error("Failed to sync X-UI limit on renewal: %s", e, exc_info=True)
 
     await session.flush()
     await callback.message.edit_text(Messages.RENEWAL_SUCCESS)

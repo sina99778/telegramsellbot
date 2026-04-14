@@ -56,10 +56,22 @@ def build_topup_link_keyboard(invoice_url: str) -> InlineKeyboardMarkup:
 
 
 def build_renewal_keyboard(sub_id: UUID) -> InlineKeyboardMarkup:
+    from apps.bot.handlers.user.renewal import RenewTypeCallback
+    from apps.bot.handlers.user.my_configs import MyConfigCallback
+
     builder = InlineKeyboardBuilder()
-    builder.button(text=Buttons.RENEW_VOLUME, callback_data=f"renew:volume:{sub_id}")
-    builder.button(text=Buttons.RENEW_TIME, callback_data=f"renew:time:{sub_id}")
-    builder.button(text=Buttons.BACK, callback_data=f"sub:view:{sub_id}")
+    builder.button(
+        text=Buttons.RENEW_VOLUME,
+        callback_data=RenewTypeCallback(type="volume", sub_id=sub_id).pack(),
+    )
+    builder.button(
+        text=Buttons.RENEW_TIME,
+        callback_data=RenewTypeCallback(type="time", sub_id=sub_id).pack(),
+    )
+    builder.button(
+        text=Buttons.BACK,
+        callback_data=MyConfigCallback(action="view", subscription_id=sub_id).pack(),
+    )
     builder.adjust(1)
     return builder.as_markup()
 

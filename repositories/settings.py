@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -37,7 +38,6 @@ class AppSettingsRepository:
         if record is None or not record.value_json:
             return None
         
-        from datetime import datetime, timezone
         reset_at_str = record.value_json.get("reset_at")
         if not reset_at_str:
             return None
@@ -48,7 +48,6 @@ class AppSettingsRepository:
             return None
 
     async def reset_revenue(self) -> None:
-        from datetime import datetime, timezone
         record = await self.session.get(AppSetting, REVENUE_SETTINGS_KEY)
         if record is None:
             record = AppSetting(key=REVENUE_SETTINGS_KEY)
