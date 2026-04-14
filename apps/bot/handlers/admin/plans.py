@@ -380,15 +380,36 @@ async def delete_plan(
         await callback.message.answer(AdminMessages.PLAN_NOT_FOUND)
         return
 
-    await AuditLogRepository(session).log_action(
-        actor_user_id=admin_user.id,
-        action="delete_plan",
-        entity_type="plan",
-        entity_id=plan.id,
-        payload={"name": plan.name},
-    )
-    await session.delete(plan)
-    await session.flush()
+    plan_name = plan.name
+
+    try:
+        await AuditLogRepository(session).log_action(
+            actor_user_id=admin_user.id,
+            action="delete_plan",
+            entity_type="plan",
+            entity_id=plan.id,
+            payload={"name": plan_name},
+        )
+        await session.delete(plan)
+        await session.flush()
+        await callback.message.answer(f"✅ پلن «{plan_name}» با موفقیت حذف شد.")
+    except IntegrityError:
+        await session.rollback()
+        # FK constraint: orders reference this plan, so we can't delete it.
+        # Deactivate instead.
+        plan_again = await session.get(Plan, callback_data.plan_id)
+        if plan_again:
+            plan_again.is_active = False
+            await session.flush()
+        await callback.message.answer(
+            f"⚠️ پلن «{plan_name}» اردرهای مرتبط دارد و قابل حذف نیست.\n"
+            "به جای حذف، غیرفعال شد."
+        )
+    except Exception as exc:
+        logger.error("Failed to delete plan %s: %s", callback_data.plan_id, exc, exc_info=True)
+        await callback.message.answer(f"❌ خطا در حذف پلن: {exc}")
+        return
+
     await list_plans(callback, PlanListPageCallback(page=callback_data.page), session)
 
 
