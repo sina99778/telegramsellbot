@@ -148,7 +148,13 @@ async def skip_discount_code(
     """Skip discount and proceed to payment."""
     await callback.answer()
     await state.update_data(discount_code=None, discount_percent=0)
-    await _process_purchase(callback, state, session, bot)
+    try:
+        await _process_purchase(callback, state, session, bot)
+    except Exception as exc:
+        logger.error("Purchase failed: %s", exc, exc_info=True)
+        await state.clear()
+        if callback.message is not None:
+            await callback.message.answer(f"خطا در انجام خرید:\n{exc}")
 
 
 @router.message(PurchaseStates.waiting_for_discount_code)
@@ -181,10 +187,12 @@ async def discount_code_entered(
         discount_percent=discount.discount_percent,
         discount_id=str(discount.id),
     )
-    
-    # Create a fake callback to reuse _process_purchase
-    # Actually, we'll call the processing directly
-    await _process_purchase_from_message(message, state, session, bot)
+    try:
+        await _process_purchase_from_message(message, state, session, bot)
+    except Exception as exc:
+        logger.error("Purchase with discount failed: %s", exc, exc_info=True)
+        await state.clear()
+        await message.answer(f"خطا در انجام خرید:\n{exc}")
 
 
 async def _process_purchase(

@@ -367,6 +367,31 @@ async def toggle_plan(
     await list_plans(callback, PlanListPageCallback(page=callback_data.page), session)
 
 
+@router.callback_query(PlanActionCallback.filter(F.action == "delete"))
+async def delete_plan(
+    callback: CallbackQuery,
+    callback_data: PlanActionCallback,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    await callback.answer()
+    plan = await session.get(Plan, callback_data.plan_id)
+    if plan is None:
+        await callback.message.answer(AdminMessages.PLAN_NOT_FOUND)
+        return
+
+    await AuditLogRepository(session).log_action(
+        actor_user_id=admin_user.id,
+        action="delete_plan",
+        entity_type="plan",
+        entity_id=plan.id,
+        payload={"name": plan.name},
+    )
+    await session.delete(plan)
+    await session.flush()
+    await list_plans(callback, PlanListPageCallback(page=callback_data.page), session)
+
+
 def _build_plan_list_keyboard(
     plans: list[Plan],
     *,
@@ -378,6 +403,10 @@ def _build_plan_list_keyboard(
         builder.button(
             text=f"{plan.name} | {'ON' if plan.is_active else 'OFF'}",
             callback_data=PlanActionCallback(action="toggle", plan_id=plan.id, page=page).pack(),
+        )
+        builder.button(
+            text=f"✖ حذف {plan.name}",
+            callback_data=PlanActionCallback(action="delete", plan_id=plan.id, page=page).pack(),
         )
     builder.adjust(1)
     add_pagination_controls(
