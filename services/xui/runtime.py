@@ -76,7 +76,11 @@ def build_vless_uri(
         path = ws_settings.get("path", "/")
         params["path"] = path
         ws_headers = ws_settings.get("headers", {})
-        ws_host = ws_headers.get("Host") or ws_headers.get("host", "")
+        ws_host = (
+            ws_headers.get("Host")
+            or ws_headers.get("host")
+            or ws_settings.get("host", "")  # some X-UI versions
+        )
         if ws_host:
             params["host"] = ws_host
     elif network == "grpc":
@@ -143,9 +147,22 @@ def build_vless_uri(
         first_proxy = ext_proxy[0]
         if isinstance(first_proxy, dict):
             ext_dest = first_proxy.get("dest", "")
+            ext_port = first_proxy.get("port", None)
             if ext_dest:
                 # External proxy dest is the actual address clients connect to
                 host = ext_dest.split(":")[0] if ":" in ext_dest else ext_dest
+            if ext_port:
+                port = int(ext_port)
+
+            # If "host" param was NOT set (e.g. wsSettings.headers.Host is empty),
+            # but we're using external proxy, the WS Host should be the original
+            # server address (not the CDN/proxy address).
+            if "host" not in params and network == "ws":
+                # Use config_domain or extract from base_url as the WS Host
+                original_host = server.config_domain or _extract_host(server.base_url)
+                if original_host:
+                    params["host"] = original_host
+
             if "sni" not in params:
                 params["sni"] = host
 
