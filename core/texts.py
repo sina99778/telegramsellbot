@@ -148,6 +148,7 @@ class AdminButtons:
     BACK = "🔙 بازگشت"
     TEST_RETARGETING = "🧪 ارسال تست"
     RESET_REVENUE = "🗑 صفر کردن درآمد"
+    MANAGE_DISCOUNTS = "🏷 مدیریت تخفیف‌ها"
 
 
 class AdminMessages:

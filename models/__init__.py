@@ -1,4 +1,5 @@
 from models.app_setting import AppSetting
+from models.discount import DiscountCode
 from models.audit import AuditLog
 from models.broadcast import BroadcastJob
 from models.order import Order
@@ -12,6 +13,7 @@ from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerCredential, X
 
 __all__ = [
     "AuditLog",
+    "DiscountCode",
     "AppSetting",
     "BroadcastJob",
     "Payment",

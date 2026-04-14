@@ -9,6 +9,7 @@ from apps.bot.handlers.admin.stats import router as stats_router
 from apps.bot.handlers.admin.subs import router as subs_router
 from apps.bot.handlers.admin.users import router as users_router
 from apps.bot.handlers.admin.settings import router as settings_router
+from apps.bot.handlers.admin.discounts import router as discounts_router
 
 
 router = Router(name="admin")
@@ -21,5 +22,6 @@ router.include_router(retargeting_router)
 router.include_router(support_router)
 router.include_router(stats_router)
 router.include_router(settings_router)
+router.include_router(discounts_router)
 
 __all__ = ["router"]

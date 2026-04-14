@@ -38,3 +38,10 @@ class SupportReplyStates(StatesGroup):
 class SettingsStates(StatesGroup):
     waiting_for_price_gb = State()
     waiting_for_price_days = State()
+
+
+class DiscountStates(StatesGroup):
+    waiting_for_code = State()
+    waiting_for_percent = State()
+    waiting_for_max_uses = State()
+

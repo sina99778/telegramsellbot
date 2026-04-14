@@ -55,6 +55,7 @@ class ProvisioningManager:
         user_id: UUID,
         plan_id: UUID,
         order_id: UUID,
+        config_name: str = "VPN",
     ) -> ProvisioningResult:
         # Load plan WITH its inbound relation
         plan = await self.session.scalar(
@@ -105,7 +106,7 @@ class ProvisioningManager:
             server=server,
             inbound=inbound,
             sub_id=sub_id,
-            remark=plan.name,
+            remark=config_name,
         )
 
         xui_payload = XUIClient(
