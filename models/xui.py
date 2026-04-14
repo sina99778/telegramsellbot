@@ -26,6 +26,10 @@ class XUIServerRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Port used by X-UI subscription service (different from admin panel port)
     # X-UI Sanaei default sub port is 2096 over HTTP
     subscription_port: Mapped[int] = mapped_column(Integer, nullable=False, default=2096, server_default="2096")
+    # Domain used for generating VLESS/VMess config URIs (e.g. "proxy.example.com")
+    config_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Domain used for subscription links (e.g. "sub.example.com")
+    sub_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     inbounds: Mapped[list[XUIInboundRecord]] = relationship("XUIInboundRecord", back_populates="server")
     credentials: Mapped[XUIServerCredential | None] = relationship(

@@ -440,6 +440,8 @@ def _sync_remote_inbounds(
         inbound.protocol = remote.protocol
         inbound.port = remote.port
         inbound.is_active = True
+        # Store stream settings so config generation can read network type, security, etc.
+        inbound.metadata_ = _build_inbound_metadata(remote)
 
     for remote in remote_inbounds:
         if remote.id in existing_by_remote_id:
@@ -453,11 +455,24 @@ def _sync_remote_inbounds(
                 port=remote.port,
                 tag=None,
                 is_active=True,
+                metadata_=_build_inbound_metadata(remote),
             )
         )
         created_count += 1
 
     return created, created_count, disabled_count
+
+
+def _build_inbound_metadata(remote) -> dict:
+    """Extract stream_settings and other relevant config from the remote inbound."""
+    meta: dict = {}
+    if remote.stream_settings and isinstance(remote.stream_settings, dict):
+        meta["stream_settings"] = remote.stream_settings
+    if remote.sniffing and isinstance(remote.sniffing, dict):
+        meta["sniffing"] = remote.sniffing
+    if remote.settings and isinstance(remote.settings, dict):
+        meta["settings"] = remote.settings
+    return meta
 
 
 async def _fetch_remote_inbounds(*, base_url: str, username: str, password: str):

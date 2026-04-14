@@ -19,9 +19,13 @@ def build_sub_link(server: XUIServerRecord, sub_id: str) -> str:
     base_url is the admin panel URL (e.g. http://1.2.3.4:54321/path).
     Subscription service uses server.subscription_port (default 2096).
 
-    Result: http://1.2.3.4:2096/sub/<sub_id>
+    If server.sub_domain is set, use it instead of extracting from base_url.
+    Result: http://<host>:<port>/sub/<sub_id>
     """
-    host = _extract_host(server.base_url)
+    if server.sub_domain:
+        host = server.sub_domain
+    else:
+        host = _extract_host(server.base_url)
     sub_port = server.subscription_port
     return f"http://{host}:{sub_port}/sub/{sub_id}"
 
@@ -35,20 +39,124 @@ def build_vless_uri(
     remark: str = "VPN",
 ) -> str:
     """
-    Build a VLESS URI for direct import to clients like v2rayNG/Hiddify.
-    Format: vless://<uuid>@<host>:<port>?type=tcp&security=none#<remark>
+    Build a VLESS/VMess URI by reading actual stream settings from inbound metadata.
+    Supports: tcp, ws, grpc, http, kcp networks and none/tls/reality security.
     """
-    host = _extract_host(server.base_url)
+    # Use config_domain if set, otherwise extract from base_url
+    if server.config_domain:
+        host = server.config_domain
+    else:
+        host = _extract_host(server.base_url)
+
     port = inbound.port or 443
     protocol = (inbound.protocol or "vless").lower()
 
+    # Read stream settings from inbound metadata
+    meta = inbound.metadata_ or {}
+    stream = meta.get("stream_settings", {})
+    if isinstance(stream, str):
+        import json
+        try:
+            stream = json.loads(stream)
+        except Exception:
+            stream = {}
+
+    network = stream.get("network", "tcp")
+    security = stream.get("security", "none")
+
+    # Build query parameters from actual stream settings
+    params: dict[str, str] = {
+        "type": network,
+        "security": security,
+    }
+
+    # --- Network-specific settings ---
+    if network == "ws":
+        ws_settings = stream.get("wsSettings", {})
+        path = ws_settings.get("path", "/")
+        params["path"] = path
+        ws_headers = ws_settings.get("headers", {})
+        ws_host = ws_headers.get("Host") or ws_headers.get("host", "")
+        if ws_host:
+            params["host"] = ws_host
+    elif network == "grpc":
+        grpc_settings = stream.get("grpcSettings", {})
+        service_name = grpc_settings.get("serviceName", "")
+        if service_name:
+            params["serviceName"] = service_name
+    elif network == "tcp":
+        tcp_settings = stream.get("tcpSettings", {})
+        header = tcp_settings.get("header", {})
+        header_type = header.get("type", "none")
+        if header_type != "none":
+            params["headerType"] = header_type
+    elif network == "kcp":
+        kcp_settings = stream.get("kcpSettings", {})
+        header = kcp_settings.get("header", {})
+        header_type = header.get("type", "none")
+        if header_type != "none":
+            params["headerType"] = header_type
+        seed = kcp_settings.get("seed", "")
+        if seed:
+            params["seed"] = seed
+    elif network in ("http", "h2"):
+        http_settings = stream.get("httpSettings", {})
+        path = http_settings.get("path", "/")
+        params["path"] = path
+        h_host = http_settings.get("host", [])
+        if h_host and isinstance(h_host, list) and h_host[0]:
+            params["host"] = h_host[0]
+
+    # --- Security-specific settings ---
+    if security == "tls":
+        tls_settings = stream.get("tlsSettings", {})
+        sni = tls_settings.get("serverName", "")
+        if sni:
+            params["sni"] = sni
+        fp = tls_settings.get("fingerprint", "")
+        if fp:
+            params["fp"] = fp
+        alpn = tls_settings.get("alpn", [])
+        if alpn and isinstance(alpn, list):
+            params["alpn"] = ",".join(alpn)
+    elif security == "reality":
+        reality_settings = stream.get("realitySettings", {})
+        pbk = reality_settings.get("publicKey", "")
+        sid = reality_settings.get("shortId", "")
+        sni = reality_settings.get("serverName", "")
+        fp = reality_settings.get("fingerprint", "")
+        spx = reality_settings.get("spiderX", "")
+        if pbk:
+            params["pbk"] = pbk
+        if sid:
+            params["sid"] = sid
+        if sni:
+            params["sni"] = sni
+        if fp:
+            params["fp"] = fp
+        if spx:
+            params["spx"] = spx
+
+    # --- External proxy / SNI override ---
+    ext_proxy = stream.get("externalProxy", [])
+    if ext_proxy and isinstance(ext_proxy, list) and len(ext_proxy) > 0:
+        first_proxy = ext_proxy[0]
+        if isinstance(first_proxy, dict):
+            ext_dest = first_proxy.get("dest", "")
+            if ext_dest:
+                # External proxy dest is the actual address clients connect to
+                host = ext_dest.split(":")[0] if ":" in ext_dest else ext_dest
+            if "sni" not in params:
+                params["sni"] = host
+
+    # Build URI
+    from urllib.parse import urlencode, quote
+    query = urlencode(params, safe="/:@,")
+
     if protocol == "vless":
-        return (
-            f"vless://{client_uuid}@{host}:{port}"
-            f"?type=tcp&security=none&pbk=&fp=&sid=&spx=#{remark}"
-        )
+        return f"vless://{client_uuid}@{host}:{port}?{query}#{quote(remark)}"
     elif protocol == "vmess":
-        import base64, json
+        import base64, json as json_mod
         payload = {
             "v": "2",
             "ps": remark,
@@ -56,18 +164,19 @@ def build_vless_uri(
             "port": str(port),
             "id": client_uuid,
             "aid": "0",
-            "net": "tcp",
-            "type": "none",
-            "tls": "",
+            "net": network,
+            "type": params.get("headerType", "none"),
+            "host": params.get("host", params.get("sni", "")),
+            "path": params.get("path", ""),
+            "tls": security if security != "none" else "",
+            "sni": params.get("sni", ""),
+            "fp": params.get("fp", ""),
+            "alpn": params.get("alpn", ""),
         }
-        encoded = base64.b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
+        encoded = base64.b64encode(json_mod.dumps(payload, separators=(",", ":")).encode()).decode()
         return f"vmess://{encoded}"
     else:
-        # Generic fallback: encode as vless-style
-        return (
-            f"vless://{client_uuid}@{host}:{port}"
-            f"?type=tcp&security=none#{remark}"
-        )
+        return f"vless://{client_uuid}@{host}:{port}?{query}#{quote(remark)}"
 
 
 def _extract_host(base_url: str) -> str:

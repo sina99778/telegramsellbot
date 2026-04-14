@@ -78,6 +78,7 @@ async def support_ticket_view(
         await callback.message.answer(SupportTexts.ADMIN_TICKET_NOT_FOUND)
         return
 
+    recent_messages = ticket.messages[-5:]
     rendered_messages = "\n\n".join(
         f"{'ادمین' if message.sender_id != ticket.user_id else 'کاربر'}: {message.text or SupportTexts.PHOTO_MARKER}"
         for message in recent_messages
