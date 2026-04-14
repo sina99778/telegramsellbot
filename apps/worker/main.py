@@ -11,6 +11,7 @@ from apps.worker.jobs.payments import sync_pending_payments
 from apps.worker.jobs.retargeting import process_retargeting_campaigns
 from apps.worker.jobs.subscriptions import sync_all_subscription_states
 from apps.worker.jobs.expiry_notifications import send_expiry_notifications
+from apps.worker.jobs.server_health import check_server_health
 from core.config import settings
 from core.database import AsyncSessionFactory
 
@@ -48,6 +49,15 @@ async def main() -> None:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        run_server_health_check,
+        "cron",
+        hour="*/4",
+        minute=0,
+        kwargs={"bot": bot},
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.start()
 
     try:
@@ -71,6 +81,12 @@ async def run_retargeting_campaigns(bot: Bot) -> None:
 async def run_expiry_notifications(bot: Bot) -> None:
     async with AsyncSessionFactory() as session:
         await send_expiry_notifications(session, bot)
+        await session.commit()
+
+
+async def run_server_health_check(bot: Bot) -> None:
+    async with AsyncSessionFactory() as session:
+        await check_server_health(session, bot)
         await session.commit()
 
 
