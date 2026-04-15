@@ -143,11 +143,14 @@ async def my_configs_back_to_list(callback: CallbackQuery, session: AsyncSession
     builder.adjust(1)
 
     if callback.message is not None:
-        await callback.message.answer(
+        text = (
             f"📋 کانفیگ‌های فعال شما ({len(subscriptions)} عدد):\n"
-            "برای مشاهده جزئیات روی هر کدام بزنید:",
-            reply_markup=builder.as_markup(),
+            "برای مشاهده جزئیات روی هر کدام بزنید:"
         )
+        try:
+            await callback.message.edit_text(text, reply_markup=builder.as_markup())
+        except Exception:
+            await callback.message.answer(text, reply_markup=builder.as_markup())
 
 
 @router.callback_query(MyConfigCallback.filter(F.action == "view"))
@@ -442,11 +445,11 @@ async def reset_uuid_handler(
         id=xui_record.xui_client_remote_id or xui_record.client_uuid,
         uuid=new_uuid,
         email=xui_record.email,
-        limitIp=xui_record.limit_ip or 1,
+        limitIp=1,
         totalGB=sub.volume_bytes,
         expiryTime=expiry_ms,
         enable=xui_record.is_active,
-        comment=xui_record.remark or "",
+        comment=xui_record.username or "",
     )
 
     try:
@@ -535,11 +538,11 @@ async def toggle_enable_handler(
         id=xui_record.xui_client_remote_id or xui_record.client_uuid,
         uuid=xui_record.client_uuid,
         email=xui_record.email,
-        limitIp=xui_record.limit_ip or 1,
+        limitIp=1,
         totalGB=sub.volume_bytes,
         expiryTime=expiry_ms,
         enable=new_enable_status,
-        comment=xui_record.remark or "",
+        comment=xui_record.username or "",
     )
 
     try:
