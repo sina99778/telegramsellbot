@@ -127,7 +127,7 @@ class XUIUpdateClientRequest(BaseModel):
 class XUIClientTraffic(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
-    id: str | None = None
+    id: int | str | None = None
     email: str
     up: int = 0
     down: int = 0
