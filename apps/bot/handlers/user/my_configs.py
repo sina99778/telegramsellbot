@@ -177,7 +177,8 @@ async def my_config_detail_handler(
             selectinload(Subscription.plan),
             selectinload(Subscription.xui_client)
             .selectinload(XUIClientRecord.inbound)
-            .selectinload(XUIInboundRecord.server),
+            .selectinload(XUIInboundRecord.server)
+            .selectinload(XUIServerRecord.credentials),
         )
         .where(
             Subscription.id == callback_data.subscription_id,
@@ -193,6 +194,17 @@ async def my_config_detail_handler(
     xui = sub.xui_client
 
     plan_name = plan.name if plan else "نامشخص"
+    config_name = xui.username if xui else plan_name
+
+    # ── Fetch real-time usage from X-UI panel ──
+    try:
+        from apps.worker.jobs.subscriptions import get_realtime_usage
+        usage = await get_realtime_usage(session, sub)
+        # get_realtime_usage directly updates sub.used_bytes, sub.status, sub.ends_at etc.
+        # No need to refresh - the object is already mutated in memory
+    except Exception as exc:
+        logger.warning("Failed to fetch realtime usage for sub %s: %s", sub.id, exc)
+
     volume_total = format_volume_bytes(sub.volume_bytes)
     volume_used = format_volume_bytes(sub.used_bytes)
     volume_remaining = format_volume_bytes(max(sub.volume_bytes - sub.used_bytes, 0))
@@ -201,7 +213,11 @@ async def my_config_detail_handler(
     if sub.ends_at is not None:
         now = datetime.now(timezone.utc)
         remaining_days = max((sub.ends_at - now).days, 0)
-        ends_label = f"{remaining_days} روز مانده"
+        remaining_hours = max(int((sub.ends_at - now).total_seconds() / 3600), 0)
+        if remaining_days > 0:
+            ends_label = f"{remaining_days} روز مانده"
+        else:
+            ends_label = f"{remaining_hours} ساعت مانده"
     elif sub.status == "pending_activation":
         ends_label = "هنوز فعال نشده (از اولین اتصال شروع می‌شود)"
     else:
@@ -225,7 +241,7 @@ async def my_config_detail_handler(
                     server=inbound.server,
                     inbound=inbound,
                     sub_id=extracted_sub_id,
-                    remark=plan_name,
+                    remark=config_name,
                 )
         except Exception as exc:
             logger.warning("Failed to build vless_uri for sub %s: %s", sub.id, exc)
@@ -460,11 +476,11 @@ async def reset_uuid_handler(
     new_sub_id = uuid_mod.uuid4().hex[:16]  # Generate a proper new subId
     expiry_ms = int(sub.ends_at.timestamp() * 1000) if sub.ends_at else 0
 
-    # Extract old subId from existing sub_link if possible
-    old_sub_link = sub.sub_link or xui_record.sub_link or ""
-
+    # The URL path uses the OLD UUID to find the client
+    old_client_id = xui_record.xui_client_remote_id or xui_record.client_uuid
+    # The payload uses the NEW UUID as the new client identity
     updated_client = XUIClient(
-        id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+        id=new_uuid,
         uuid=new_uuid,
         email=xui_record.email,
         limitIp=1,
@@ -480,12 +496,13 @@ async def reset_uuid_handler(
         async with create_xui_client_for_server(server) as xui_client:
             await xui_client.update_client(
                 inbound_id=xui_record.inbound.xui_inbound_remote_id,
-                client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+                client_id=old_client_id,
                 client=updated_client,
             )
         
         # Update local records
         xui_record.client_uuid = new_uuid
+        xui_record.xui_client_remote_id = new_uuid
         new_sub_link = build_sub_link(server, new_sub_id)
         sub.sub_link = new_sub_link
         xui_record.sub_link = new_sub_link
@@ -507,27 +524,22 @@ async def reset_uuid_handler(
         # Send new config info to user
         response_lines = [
             "✅ لینک کانفیگ شما با موفقیت تغییر کرد!\n",
-            f"🔗 ساب لینک جدید:\n`{escape_markdown(new_sub_link)}`",
+            f"🔗 ساب لینک جدید:\n{new_sub_link}",
         ]
         if new_vless:
-            response_lines.append(f"\n📋 لینک مستقیم جدید:\n`{escape_markdown(new_vless)}`")
+            response_lines.append(f"\n📋 لینک مستقیم جدید:\n{new_vless}")
         response_lines.append("\n⚠️ لینک‌های قبلی دیگر کار نمی‌کنند.")
 
         if callback.message:
             try:
-                await callback.message.edit_text(
-                    "\n".join(response_lines),
-                    parse_mode="MarkdownV2",
-                )
+                await callback.message.edit_text("\n".join(response_lines))
             except Exception:
-                await callback.message.answer(
-                    "\n".join(response_lines),
-                    parse_mode="MarkdownV2",
-                )
+                await callback.message.answer("\n".join(response_lines))
     except Exception as exc:
-        logger.error("Failed to reset UUID for sub %s: %s", sub.id, exc)
+        logger.error("Failed to reset UUID for sub %s: %s", sub.id, exc, exc_info=True)
+        error_detail = str(exc)[:150]
         if callback.message:
-            await callback.message.answer("❌ خطا در تغییر لینک (برقراری ارتباط با سرور ناموفق بود).")
+            await callback.message.answer(f"❌ خطا در تغییر لینک:\n{error_detail}")
 
 
 @router.callback_query(MyConfigCallback.filter(F.action == "toggle_enable"))
