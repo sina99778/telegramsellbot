@@ -22,7 +22,7 @@ async def main() -> None:
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(sync_pending_payments, "interval", minutes=3)
-    scheduler.add_job(sync_all_subscription_states, "interval", minutes=5, max_instances=1, coalesce=True)
+    scheduler.add_job(sync_all_subscription_states, "interval", minutes=10, max_instances=1, coalesce=True)
     scheduler.add_job(
         run_broadcast_queue,
         "interval",

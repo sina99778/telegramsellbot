@@ -252,6 +252,7 @@ async def my_config_detail_handler(
 
     builder = InlineKeyboardBuilder()
     if sub.status in ("active", "pending_activation"):
+        builder.button(text="📊 بروزرسانی حجم", callback_data=MyConfigCallback(action="refresh_usage", subscription_id=sub.id).pack())
         builder.button(text=Buttons.RENEW_SERVICE, callback_data=MyConfigCallback(action="renew", subscription_id=sub.id).pack())
     # Cancel & refund for unused configs
     if sub.status == "pending_activation" and sub.used_bytes == 0:
@@ -260,7 +261,7 @@ async def my_config_detail_handler(
     if sub.status == "expired":
         builder.button(text="🗑 حذف", callback_data=MyConfigCallback(action="delete", subscription_id=sub.id).pack())
     builder.button(text=Buttons.BACK, callback_data="myconfig:back_to_list")
-    builder.adjust(1)
+    builder.adjust(2, 1, 1)
 
     # If QR code is available, send photo with text as caption
     if vless_uri:
@@ -301,8 +302,69 @@ def _status_fa(status: str) -> str:
         "refunded": "💰 استرداد شده",
     }.get(status, status)
 
+# ─── Refresh Usage (Real-time) ────────────────────────────────────────────────
+
+
+@router.callback_query(MyConfigCallback.filter(F.action == "refresh_usage"))
+async def refresh_usage_handler(
+    callback: CallbackQuery,
+    callback_data: MyConfigCallback,
+    session: AsyncSession,
+) -> None:
+    """Fetch real-time volume usage from X-UI panel and show to user."""
+    await callback.answer("📊 در حال بررسی...")
+    if callback.from_user is None:
+        return
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        return
+
+    sub = await session.scalar(
+        select(Subscription)
+        .options(
+            selectinload(Subscription.plan),
+            selectinload(Subscription.xui_client),
+        )
+        .where(
+            Subscription.id == callback_data.subscription_id,
+            Subscription.user_id == user.id,
+        )
+    )
+    if sub is None:
+        if callback.message:
+            await callback.message.answer("کانفیگ پیدا نشد.")
+        return
+
+    from apps.worker.jobs.subscriptions import get_realtime_usage
+    usage = await get_realtime_usage(session, sub)
+
+    if usage is None:
+        if callback.message:
+            await callback.message.answer("❌ خطا در دریافت اطلاعات از سرور. لطفاً بعداً تلاش کنید.")
+        return
+
+    used = format_volume_bytes(usage["used_bytes"])
+    total = format_volume_bytes(usage["total_bytes"])
+    remaining = format_volume_bytes(usage["remaining_bytes"])
+    usage_bar = format_usage_bar(usage["used_bytes"], usage["total_bytes"])
+
+    config_name = sub.xui_client.username if sub.xui_client else "نامشخص"
+
+    text = (
+        f"📊 وضعیت لحظه‌ای کانفیگ «{config_name}»\n\n"
+        f"💾 حجم کل: {total}\n"
+        f"📤 مصرف شده: {used}\n"
+        f"✅ باقی‌مانده: {remaining}\n"
+        f"📶 {usage_bar}"
+    )
+
+    if callback.message:
+        await callback.message.answer(text)
+
 
 # ─── Delete / Cancel+Refund handlers ─────────────────────────────────────────
+
 
 
 @router.callback_query(MyConfigCallback.filter(F.action == "cancel_refund"))
