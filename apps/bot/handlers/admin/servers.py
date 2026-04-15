@@ -167,6 +167,10 @@ async def add_server_password(
     password = message.text.strip()
     base_url = str(form_data["base_url"]).rstrip("/")
 
+    # Ensure URL has a scheme
+    if not base_url.startswith("http://") and not base_url.startswith("https://"):
+        base_url = "http://" + base_url
+
     # Try multiple URL variations to find the working one
     urls_to_try = [base_url]
     if base_url.startswith("http://"):
@@ -179,23 +183,26 @@ async def add_server_password(
     working_url = base_url
     for url in urls_to_try:
         try:
+            logger.info("Trying to connect to X-UI panel at: %s", url)
             remote_inbounds = await _fetch_remote_inbounds(
                 base_url=url,
                 username=str(form_data["username"]),
                 password=password,
             )
             working_url = url
+            logger.info("Successfully connected to: %s", url)
             break
         except Exception as exc:
             last_error = exc
             logger.warning("Failed to connect to %s: %s", url, exc)
 
     if remote_inbounds is None:
+        error_detail = str(last_error)[:300] if last_error else "خطای نامشخص"
         await message.answer(
-            f"خطا در اتصال به سرور.\n\n"
+            f"❌ خطا در اتصال به سرور.\n\n"
             f"آدرس‌های امتحان‌شده:\n"
             + "\n".join(f"• {u}" for u in urls_to_try)
-            + f"\n\nآخرین خطا: {last_error}"
+            + f"\n\nخطا: {error_detail}"
         )
         await state.clear()
         return

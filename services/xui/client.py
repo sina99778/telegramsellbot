@@ -62,15 +62,39 @@ class SanaeiXUIClient:
             await self._client.aclose()
 
     async def login(self) -> XUILoginResponse:
-        payload = XUILoginRequest(
-            username=self._config.username,
-            password=self._config.password.get_secret_value(),
-        )
-        response = await self._send("POST", "login", json=payload.model_dump(mode="json"))
-        data = self._decode_response(response)
-        login_response = XUILoginResponse.model_validate(data or {"success": True})
-        if login_response.success is False or not self._client.cookies:
-            raise XUIAuthenticationError(login_response.msg or "X-UI authentication failed.")
+        login_data = {
+            "username": self._config.username,
+            "password": self._config.password.get_secret_value(),
+        }
+        # Try JSON login first (newer X-UI versions)
+        try:
+            response = await self._send("POST", "login", json=login_data)
+        except XUIRequestError:
+            # Fallback: try form-encoded login (older X-UI versions)
+            response = await self._send(
+                "POST", "login",
+                data=login_data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+
+        # Some X-UI versions return HTML on login — check for cookies first
+        if self._client.cookies:
+            self._authenticated = True
+            return XUILoginResponse(success=True, msg="OK")
+
+        # Try to parse JSON response
+        try:
+            data = self._decode_response(response)
+            login_response = XUILoginResponse.model_validate(data or {"success": True})
+            if login_response.success is False:
+                raise XUIAuthenticationError(login_response.msg or "X-UI authentication failed.")
+        except XUIRequestError:
+            # Response wasn't JSON but we also have no cookies — auth failed
+            raise XUIAuthenticationError(
+                "X-UI login failed. The panel did not return a session cookie. "
+                "Please verify the URL, username, and password."
+            )
+
         self._authenticated = True
         return login_response
 
