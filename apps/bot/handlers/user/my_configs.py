@@ -250,16 +250,25 @@ async def my_config_detail_handler(
 
     text = "\n".join(lines)
 
+    # Check if server is deleted or missing
+    server_deleted = False
+    if xui and xui.inbound:
+        server = xui.inbound.server
+        if server is None or server.health_status == "deleted" or not server.is_active:
+            server_deleted = True
+    elif xui and xui.inbound is None:
+        server_deleted = True
+
     builder = InlineKeyboardBuilder()
-    if sub.status in ("active", "pending_activation"):
+    if sub.status in ("active", "pending_activation") and not server_deleted:
         builder.button(text="📊 بروزرسانی حجم", callback_data=MyConfigCallback(action="refresh_usage", subscription_id=sub.id).pack())
         builder.button(text=Buttons.RENEW_SERVICE, callback_data=MyConfigCallback(action="renew", subscription_id=sub.id).pack())
-    # Cancel & refund for unused configs
+    # Cancel & refund for unused configs OR configs with deleted server
     if sub.status == "pending_activation" and sub.used_bytes == 0:
         builder.button(text="🔄 لغو و بازپرداخت", callback_data=MyConfigCallback(action="cancel_refund", subscription_id=sub.id).pack())
-    # Delete finished configs (no refund)
-    if sub.status == "expired":
-        builder.button(text="🗑 حذف", callback_data=MyConfigCallback(action="delete", subscription_id=sub.id).pack())
+    # Delete: expired configs OR configs with deleted/missing server
+    if sub.status == "expired" or server_deleted:
+        builder.button(text="🗑 حذف کانفیگ", callback_data=MyConfigCallback(action="delete", subscription_id=sub.id).pack())
     builder.button(text=Buttons.BACK, callback_data="myconfig:back_to_list")
     builder.adjust(2, 1, 1)
 
@@ -409,18 +418,23 @@ async def cancel_and_refund_config(
     xui_record = sub.xui_client
     xui_deleted = True
     if xui_record and xui_record.inbound and xui_record.inbound.server:
-        try:
-            from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
-            server = ensure_inbound_server_loaded(xui_record.inbound)
-            async with create_xui_client_for_server(server) as xui_client:
-                await xui_client.delete_client(
-                    inbound_id=xui_record.inbound.xui_inbound_remote_id,
-                    client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
-                )
+        server_obj = xui_record.inbound.server
+        # Skip X-UI deletion if server is deleted or inactive
+        if server_obj.health_status == "deleted" or not server_obj.is_active:
             xui_record.is_active = False
-        except Exception as exc:
-            logger.error("Failed to delete X-UI client on refund: %s", exc)
-            xui_deleted = False
+        else:
+            try:
+                from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
+                server = ensure_inbound_server_loaded(xui_record.inbound)
+                async with create_xui_client_for_server(server) as xui_client:
+                    await xui_client.delete_client(
+                        inbound_id=xui_record.inbound.xui_inbound_remote_id,
+                        client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+                    )
+                xui_record.is_active = False
+            except Exception as exc:
+                logger.error("Failed to delete X-UI client on refund: %s", exc)
+                xui_deleted = False
 
     if not xui_deleted:
         if callback.message:
@@ -501,20 +515,22 @@ async def delete_expired_config(
             await callback.message.answer("کانفیگ پیدا نشد.")
         return
 
-    # Delete from X-UI
+    # Delete from X-UI (skip if server is deleted/inactive)
     xui_record = sub.xui_client
     if xui_record and xui_record.inbound and xui_record.inbound.server:
-        try:
-            from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
-            server = ensure_inbound_server_loaded(xui_record.inbound)
-            async with create_xui_client_for_server(server) as xui_client:
-                await xui_client.delete_client(
-                    inbound_id=xui_record.inbound.xui_inbound_remote_id,
-                    client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
-                )
-            xui_record.is_active = False
-        except Exception as exc:
-            logger.error("Failed to delete X-UI client: %s", exc)
+        server_obj = xui_record.inbound.server
+        if server_obj.health_status != "deleted" and server_obj.is_active:
+            try:
+                from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
+                server = ensure_inbound_server_loaded(xui_record.inbound)
+                async with create_xui_client_for_server(server) as xui_client:
+                    await xui_client.delete_client(
+                        inbound_id=xui_record.inbound.xui_inbound_remote_id,
+                        client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+                    )
+            except Exception as exc:
+                logger.error("Failed to delete X-UI client: %s", exc)
+        xui_record.is_active = False
 
     sub.status = "cancelled"
     sub.sub_link = None
