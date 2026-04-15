@@ -195,7 +195,7 @@ async def _disable_client_in_xui(
 async def get_realtime_usage(session: AsyncSession, subscription: Subscription) -> dict | None:
     """Fetch real-time usage from X-UI panel for a single subscription."""
     xui_record = subscription.xui_client
-    if xui_record is None or xui_record.inbound is None:
+    if xui_record is None or xui_record.inbound_id is None:
         return None
 
     inbound = await session.scalar(
@@ -218,6 +218,17 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
             subscription.used_bytes = traffic.used_bytes
             subscription.last_usage_sync_at = utcnow()
             xui_record.usage_bytes = traffic.used_bytes
+
+            # Auto-activate if still pending and has usage
+            if subscription.status == "pending_activation" and traffic.used_bytes > 0:
+                from datetime import timedelta
+                now = utcnow()
+                plan_duration = subscription.plan.duration_days if subscription.plan else DEFAULT_PLAN_DURATION_DAYS
+                subscription.status = "active"
+                subscription.activated_at = now
+                subscription.starts_at = now
+                subscription.ends_at = now + timedelta(days=plan_duration)
+
             await session.flush()
 
             return {
