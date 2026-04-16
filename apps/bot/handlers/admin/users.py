@@ -460,7 +460,6 @@ async def view_user_configs(
     callback_data: AdminUserActionCallback,
     session: AsyncSession,
 ) -> None:
-    await callback.answer()
     try:
         from apps.bot.handlers.admin.subs import _render_user_configs
         await _render_user_configs(
@@ -471,7 +470,10 @@ async def view_user_configs(
         )
     except Exception as exc:
         logging.getLogger(__name__).error("Error rendering user configs: %s", exc, exc_info=True)
-        await callback.answer("خطا در بارگذاری کانفیگ‌ها", show_alert=True)
+        try:
+            await callback.message.answer(f"❌ خطا در بارگذاری کانفیگ‌ها:\n`{str(exc)}`")
+        except Exception:
+            pass
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
