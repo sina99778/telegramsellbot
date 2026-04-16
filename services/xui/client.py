@@ -167,19 +167,26 @@ class SanaeiXUIClient:
         return XUIClientTraffic.model_validate(payload)
 
     async def get_db_backup(self) -> bytes:
-        """Download X-UI panel database backup via /panel/setting/getDb endpoint."""
+        """Download X-UI panel database backup, trying known endpoints."""
         if not self._authenticated:
             await self.login()
-        response = await self._client.request("GET", "panel/setting/getDb")
-        if response.status_code in {401, 403}:
-            self._authenticated = False
-            await self.login()
-            response = await self._client.request("GET", "panel/setting/getDb")
-        if response.status_code != 200:
-            raise XUIRequestError(f"Failed to download X-UI DB: status {response.status_code}")
-        if len(response.content) < 100:
-            raise XUIRequestError("X-UI DB backup response too small.")
-        return response.content
+
+        endpoints = ["panel/setting/getDb", "server/getDb", "xui/API/inbounds/getDb"]
+        last_error = ""
+
+        for endpoint in endpoints:
+            response = await self._client.request("GET", endpoint)
+            if response.status_code in {401, 403}:
+                self._authenticated = False
+                await self.login()
+                response = await self._client.request("GET", endpoint)
+
+            if response.status_code == 200 and len(response.content) >= 100:
+                return response.content
+            else:
+                last_error = f"HTTP {response.status_code}, len={len(response.content)}"
+
+        raise XUIRequestError(f"Failed to download X-UI DB from any endpoint. Last response: {last_error}")
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any] | list[Any] | None:
         if not self._authenticated:

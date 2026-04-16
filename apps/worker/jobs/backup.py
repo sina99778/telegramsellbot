@@ -100,6 +100,7 @@ async def _dump_xui_databases(session: AsyncSession) -> list[tuple[str, bytes]]:
                 logger.info("Downloaded X-UI DB from '%s': %d bytes", server.name, len(db_bytes))
         except (XUIClientError, Exception) as exc:
             logger.error("Failed to download X-UI DB from '%s': %s", server.name, exc)
+            backups.append((server.name + "_ERROR", f"Failed to download X-UI DB: {exc}".encode("utf-8")))
     return backups
 
 
@@ -126,7 +127,8 @@ async def run_backup(session: AsyncSession, bot: Bot, manual_requester_id: int |
     xui_backups = await _dump_xui_databases(session)
     for server_name, db_bytes in xui_backups:
         safe_name = server_name.replace(" ", "_").replace("/", "_")[:30]
-        files_to_send.append(BufferedInputFile(db_bytes, filename=f"xui_{safe_name}_{timestamp}.db"))
+        ext = "txt" if server_name.endswith("_ERROR") else "db"
+        files_to_send.append(BufferedInputFile(db_bytes, filename=f"xui_{safe_name}_{timestamp}.{ext}"))
 
     if not files_to_send:
         for tg_id in admin_ids:
