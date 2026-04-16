@@ -171,7 +171,12 @@ class SanaeiXUIClient:
         if not self._authenticated:
             await self.login()
 
-        endpoints = ["panel/setting/getDb", "server/getDb", "xui/API/inbounds/getDb"]
+        endpoints = [
+            "panel/api/server/getDb", 
+            "panel/setting/getDb", 
+            "server/getDb", 
+            "xui/API/inbounds/getDb"
+        ]
         last_error = ""
 
         for endpoint in endpoints:
