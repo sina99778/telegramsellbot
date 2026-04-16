@@ -121,7 +121,7 @@ async def run_backup(session: AsyncSession, bot: Bot, manual_requester_id: int |
 
     pg_data = await _dump_postgres()
     if pg_data:
-        files_to_send.append(BufferedInputFile(pg_data, filename=f"marzbot_db_{timestamp}.dump"))
+        files_to_send.append(BufferedInputFile(pg_data, filename=f"telegramsellbot_{timestamp}.dump"))
 
     xui_backups = await _dump_xui_databases(session)
     for server_name, db_bytes in xui_backups:

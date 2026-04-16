@@ -167,14 +167,14 @@ class SanaeiXUIClient:
         return XUIClientTraffic.model_validate(payload)
 
     async def get_db_backup(self) -> bytes:
-        """Download X-UI panel database backup via /server/getDb endpoint."""
+        """Download X-UI panel database backup via /panel/setting/getDb endpoint."""
         if not self._authenticated:
             await self.login()
-        response = await self._client.request("GET", "server/getDb")
+        response = await self._client.request("GET", "panel/setting/getDb")
         if response.status_code in {401, 403}:
             self._authenticated = False
             await self.login()
-            response = await self._client.request("GET", "server/getDb")
+            response = await self._client.request("GET", "panel/setting/getDb")
         if response.status_code != 200:
             raise XUIRequestError(f"Failed to download X-UI DB: status {response.status_code}")
         if len(response.content) < 100:
