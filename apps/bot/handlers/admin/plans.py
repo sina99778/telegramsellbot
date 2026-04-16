@@ -44,6 +44,11 @@ class PlanActionCallback(CallbackData, prefix="plan_admin"):
     page: int = 1
 
 
+class ViewPlanCallback(CallbackData, prefix="plan_view"):
+    plan_id: UUID
+    page: int
+
+
 class PlanListPageCallback(CallbackData, prefix="plan_list"):
     page: int
 
@@ -102,10 +107,12 @@ async def list_plans(
 ) -> None:
     await callback.answer()
     page = max(callback_data.page, 1)
-    total_plans = int(await session.scalar(select(func.count()).select_from(Plan)) or 0)
+    
+    query = select(Plan).where(~Plan.name.startswith("[حذف شده]"))
+    total_plans = int(await session.scalar(select(func.count()).select_from(query.subquery())) or 0)
+    
     result = await session.execute(
-        select(Plan)
-        .options(selectinload(Plan.inbound))
+        query
         .order_by(Plan.created_at.asc())
         .offset((page - 1) * PLAN_PAGE_SIZE)
         .limit(PLAN_PAGE_SIZE)
@@ -116,25 +123,64 @@ async def list_plans(
         text = AdminMessages.NO_PLANS
         markup = None
     else:
-        text = "\n\n".join(
-            (
-                f"پلن: {plan.name}\n"
-                f"پروتکل: {plan.protocol}\n"
-                f"اینباند: {plan.inbound.remark if plan.inbound else 'نامشخص'} "
-                f"(ID: {plan.inbound.xui_inbound_remote_id if plan.inbound else '-'})\n"
-                f"مدت: {plan.duration_days} روز\n"
-                f"حجم: {format_volume_bytes(plan.volume_bytes)}\n"
-                f"قیمت: {plan.price} {plan.currency}\n"
-                f"وضعیت: {Common.ACTIVE if plan.is_active else Common.INACTIVE}"
-            )
-            for plan in plans
-        )
+        text = "📦 **لیست پلن‌های تعریف شده:**\nبرای مشاهده جزئیات یا ویرایش، روی پلن مورد نظر کلیک کنید."
         markup = _build_plan_list_keyboard(plans, page=page, total_items=total_plans)
 
     try:
         await callback.message.edit_text(text, reply_markup=markup)
     except TelegramBadRequest:
         await safe_edit_or_send(callback, text, reply_markup=markup)
+
+
+@router.callback_query(ViewPlanCallback.filter())
+async def view_plan(
+    callback: CallbackQuery,
+    callback_data: ViewPlanCallback,
+    session: AsyncSession,
+) -> None:
+    await callback.answer()
+    plan = await session.scalar(
+        select(Plan)
+        .options(selectinload(Plan.inbound))
+        .where(Plan.id == callback_data.plan_id)
+    )
+    if not plan:
+        await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
+        return
+
+    text = (
+        f"📦 **جزئیات پلن:**\n\n"
+        f"🏷 **نام:** {plan.name}\n"
+        f"🛡 **پروتکل:** {plan.protocol}\n"
+        f"📡 **اینباند:** {plan.inbound.remark if plan.inbound else 'نامشخص'} "
+        f"(ID: {plan.inbound.xui_inbound_remote_id if plan.inbound else '-'})\n"
+        f"⏳ **مدت:** {plan.duration_days} روز\n"
+        f"💾 **حجم:** {format_volume_bytes(plan.volume_bytes)}\n"
+        f"💲 **قیمت:** {plan.price} {plan.currency}\n"
+        f"وضعیت: {Common.ACTIVE if plan.is_active else Common.INACTIVE}\n"
+    )
+
+    builder = InlineKeyboardBuilder()
+    status_toggle_text = "🔴 غیرفعال کردن" if plan.is_active else "🟢 فعال کردن"
+    builder.button(
+        text=status_toggle_text,
+        callback_data=PlanActionCallback(action="toggle", plan_id=plan.id, page=callback_data.page).pack(),
+    )
+    builder.button(
+        text="🔗 تغییر سرور",
+        callback_data=PlanActionCallback(action="change_inbound", plan_id=plan.id, page=callback_data.page).pack(),
+    )
+    builder.button(
+        text="✖ حذف پلن",
+        callback_data=PlanActionCallback(action="delete", plan_id=plan.id, page=callback_data.page).pack(),
+    )
+    builder.button(
+        text="🔙 بازگشت به لیست",
+        callback_data=PlanListPageCallback(page=callback_data.page).pack(),
+    )
+    builder.adjust(1)
+    
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
 
 
 @router.callback_query(F.data == "admin:plans:create")
@@ -365,7 +411,7 @@ async def toggle_plan(
         payload={"from": previous_state, "to": plan.is_active},
     )
     await session.flush()
-    await list_plans(callback, PlanListPageCallback(page=callback_data.page), session)
+    await view_plan(callback, ViewPlanCallback(plan_id=plan.id, page=callback_data.page), session)
 
 
 @router.callback_query(PlanActionCallback.filter(F.action == "delete"))
@@ -393,22 +439,21 @@ async def delete_plan(
         )
         await session.delete(plan)
         await session.flush()
-        await safe_edit_or_send(callback, f"✅ پلن «{plan_name}» با موفقیت حذف شد.")
+        await callback.answer("✅ پلن با موفقیت حذف شد.", show_alert=True)
     except IntegrityError:
         await session.rollback()
-        # FK constraint: orders reference this plan, so we can't delete it.
-        # Deactivate instead.
         plan_again = await session.get(Plan, callback_data.plan_id)
         if plan_again:
             plan_again.is_active = False
+            # Append label up to max length (name is usually String(255))
+            prefix = "[حذف شده] "
+            if not plan_again.name.startswith(prefix):
+                plan_again.name = f"{prefix}{plan_again.name}"[:250]
             await session.flush()
-        await safe_edit_or_send(callback, 
-            f"⚠️ پلن «{plan_name}» اردرهای مرتبط دارد و قابل حذف نیست.\n"
-            "به جای حذف، غیرفعال شد."
-        )
+        await callback.answer("⚠️ پلن متصل به کاربر است و به لیست دکمه‌ها مخفی (غیرفعال) شد.", show_alert=True)
     except Exception as exc:
         logger.error("Failed to delete plan %s: %s", callback_data.plan_id, exc, exc_info=True)
-        await safe_edit_or_send(callback, f"❌ خطا در حذف پلن: {exc}")
+        await callback.answer(f"❌ خطا در حذف پلن: {str(exc)[:50]}", show_alert=True)
         return
 
     await list_plans(callback, PlanListPageCallback(page=callback_data.page), session)
@@ -472,7 +517,7 @@ async def change_inbound_start(
         )
     builder.button(
         text="🔙 بازگشت",
-        callback_data=PlanListPageCallback(page=callback_data.page).pack(),
+        callback_data=ViewPlanCallback(plan_id=plan.id, page=callback_data.page).pack(),
     )
     builder.adjust(1)
 
@@ -523,13 +568,9 @@ async def change_inbound_confirm(
     )
 
     server_name = new_inbound.server.name if new_inbound.server else "نامشخص"
-    await safe_edit_or_send(callback, 
-        f"✅ سرور پلن «{plan.name}» تغییر کرد.\n\n"
-        f"🖥 سرور: {server_name}\n"
-        f"📡 اینباند: {new_inbound.remark} ({new_inbound.protocol})"
-    )
+    await callback.answer(f"✅ سرور پلن به {server_name} تغییر یافت.", show_alert=True)
 
-    await list_plans(callback, PlanListPageCallback(page=callback_data.page), session)
+    await view_plan(callback, ViewPlanCallback(plan_id=plan.id, page=callback_data.page), session)
 
 
 def _build_plan_list_keyboard(
@@ -540,19 +581,12 @@ def _build_plan_list_keyboard(
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for plan in plans:
+        status_icon = "🟢" if plan.is_active else "🔴"
         builder.button(
-            text=f"{plan.name} | {'ON' if plan.is_active else 'OFF'}",
-            callback_data=PlanActionCallback(action="toggle", plan_id=plan.id, page=page).pack(),
+            text=f"{status_icon} {plan.name}",
+            callback_data=ViewPlanCallback(plan_id=plan.id, page=page).pack(),
         )
-        builder.button(
-            text=f"🔗 سرور",
-            callback_data=PlanActionCallback(action="change_inbound", plan_id=plan.id, page=page).pack(),
-        )
-        builder.button(
-            text=f"✖ حذف",
-            callback_data=PlanActionCallback(action="delete", plan_id=plan.id, page=page).pack(),
-        )
-    builder.adjust(3)
+    builder.adjust(1)
     add_pagination_controls(
         builder,
         page=page,
