@@ -20,7 +20,7 @@ def build_plan_selection_keyboard(plans: Iterable[Plan]) -> InlineKeyboardMarkup
             text=_format_plan_button_text(plan.name, plan.price, plan.currency),
             callback_data=f"plan:select:{plan.id}",
         )
-
+    builder.button(text="❌ انصراف", callback_data="purchase:cancel")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -37,7 +37,8 @@ def build_wallet_topup_keyboard() -> InlineKeyboardMarkup:
         text=Buttons.CUSTOM_AMOUNT,
         callback_data="wallet:topup:custom",
     )
-    builder.adjust(3, 1)
+    builder.button(text=Buttons.BACK, callback_data="wallet:profile")
+    builder.adjust(3, 1, 1)
     return builder.as_markup()
 
 
@@ -45,7 +46,13 @@ def build_wallet_profile_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text=Buttons.TOPUP_CRYPTO, callback_data="wallet:topup")
     builder.button(text="📊 تاریخچه تراکنش‌ها", callback_data="wallet:history")
+    builder.button(text="❌ بستن", callback_data="purchase:cancel")
     builder.adjust(1)
+    return builder.as_markup()
+
+def build_wallet_history_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text=Buttons.BACK, callback_data="wallet:profile")
     return builder.as_markup()
 
 

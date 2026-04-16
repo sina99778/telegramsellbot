@@ -43,6 +43,13 @@ async def support_start(message: Message, state: FSMContext, session: AsyncSessi
     
     await state.set_state(UserSupportStates.waiting_for_issue)
     
+    from aiogram.types import InlineKeyboardMarkup
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ انصراف و خروج از پشتیبانی", callback_data="support:cancel")
+    reply_markup = builder.as_markup()
+
     if ticket:
         messages = ticket.messages[-5:] # Last 5 messages
         history_text = SupportTexts.HISTORY_TITLE.format(ticket_id=str(ticket.id)[:8])
@@ -52,9 +59,24 @@ async def support_start(message: Message, state: FSMContext, session: AsyncSessi
             history_text += f"🔹 {sender}: {content}\n"
         
         history_text += f"\n{SupportTexts.START}"
-        await message.answer(history_text)
+        await message.answer(history_text, reply_markup=reply_markup)
     else:
-        await message.answer(SupportTexts.START)
+        await message.answer(SupportTexts.START, reply_markup=reply_markup)
+
+
+@router.callback_query(F.data == "support:cancel")
+async def support_cancel_handler(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    if await state.get_state() is not None:
+        await state.clear()
+    
+    # Try to clean up the message
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+    
+    await callback.message.answer(Messages.CANCELLED)
 
 
 @router.message(UserSupportStates.waiting_for_issue)

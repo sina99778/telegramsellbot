@@ -12,6 +12,7 @@ from apps.bot.keyboards.inline import (
     build_topup_link_keyboard,
     build_wallet_profile_keyboard,
     build_wallet_topup_keyboard,
+    build_wallet_history_keyboard,
 )
 from apps.bot.states.wallet import TopUpStates
 from core.config import settings
@@ -42,6 +43,33 @@ async def wallet_profile_handler(message: Message, session: AsyncSession) -> Non
     balance_display = format_price_with_toman(user.wallet.balance, toman_rate)
 
     await message.answer(
+        Messages.PROFILE_OVERVIEW.format(
+            name=user.first_name or "کاربر",
+            balance=balance_display,
+            credit_limit=f"{user.wallet.credit_limit:.2f}",
+        ),
+        reply_markup=build_wallet_profile_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "wallet:profile")
+async def wallet_profile_callback_handler(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    if callback.from_user is None:
+        return
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None or user.wallet is None:
+        await safe_edit_or_send(callback, Messages.WALLET_NOT_FOUND)
+        return
+
+    from repositories.settings import AppSettingsRepository
+    from core.formatting import format_price_with_toman
+    toman_rate = await AppSettingsRepository(session).get_toman_rate()
+    balance_display = format_price_with_toman(user.wallet.balance, toman_rate)
+
+    await safe_edit_or_send(
+        callback,
         Messages.PROFILE_OVERVIEW.format(
             name=user.first_name or "کاربر",
             balance=balance_display,
@@ -95,7 +123,7 @@ async def wallet_history_handler(callback: CallbackQuery, session: AsyncSession)
             f"   موجودی: {tx.balance_after:.2f} | {dt}"
         )
 
-    await safe_edit_or_send(callback, "\n\n".join(lines))
+    await safe_edit_or_send(callback, "\n\n".join(lines), reply_markup=build_wallet_history_keyboard())
 
 
 @router.callback_query(F.data == "wallet:topup")
