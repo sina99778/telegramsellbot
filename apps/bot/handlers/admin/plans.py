@@ -587,6 +587,7 @@ def _build_plan_list_keyboard(
             callback_data=ViewPlanCallback(plan_id=plan.id, page=page).pack(),
         )
     builder.adjust(1)
+    builder.button(text="🔙 بازگشت", callback_data="admin:plans")
     add_pagination_controls(
         builder,
         page=page,
