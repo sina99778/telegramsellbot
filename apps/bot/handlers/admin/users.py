@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 from decimal import Decimal, InvalidOperation
 from math import ceil
 from uuid import UUID
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -19,6 +21,7 @@ from core.texts import AdminButtons, AdminMessages
 from models.order import Order
 from models.subscription import Subscription
 from models.user import User
+from models.xui import XUIClientRecord
 from repositories.audit import AuditLogRepository
 from repositories.user import UserRepository
 from services.wallet.manager import WalletManager
@@ -460,20 +463,48 @@ async def view_user_configs(
     callback_data: AdminUserActionCallback,
     session: AsyncSession,
 ) -> None:
+    """Show active subscriptions/configs for a user."""
+    logger = logging.getLogger(__name__)
     try:
-        from apps.bot.handlers.admin.subs import _render_user_configs
-        await _render_user_configs(
-            callback=callback,
-            session=session,
-            user_id=callback_data.user_id,
-            page=1,
+        user = await session.scalar(
+            select(User)
+            .options(
+                selectinload(User.subscriptions)
+                .selectinload(Subscription.xui_client)
+                .selectinload(XUIClientRecord.inbound)
+            )
+            .where(User.id == callback_data.user_id)
         )
-    except Exception as exc:
-        logging.getLogger(__name__).error("Error rendering user configs: %s", exc, exc_info=True)
+        if user is None:
+            await callback.answer("کاربر یافت نشد.", show_alert=True)
+            return
+
+        active_subs = [s for s in user.subscriptions if s.status in {"pending_activation", "active"}]
+        if not active_subs:
+            await callback.answer(AdminMessages.NO_ACTIVE_CONFIGS, show_alert=True)
+            return
+
+        text = "\n\n".join(
+            [
+                (
+                    f"📦 اشتراک: {str(sub.id)[:8]}\n"
+                    f"وضعیت: {sub.status}\n"
+                    f"مصرف: {sub.used_bytes}/{sub.volume_bytes}\n"
+                    f"لینک: {sub.sub_link or '-'}"
+                )
+                for sub in active_subs
+            ]
+        )
+        builder = InlineKeyboardBuilder()
+        builder.button(text=AdminButtons.BACK, callback_data=AdminUserActionCallback(action="profile", user_id=user.id).pack())
+        builder.adjust(1)
         try:
-            await callback.message.answer(f"❌ خطا در بارگذاری کانفیگ‌ها:\n`{str(exc)}`")
-        except Exception:
-            pass
+            await callback.message.edit_text(text, reply_markup=builder.as_markup())
+        except TelegramBadRequest:
+            await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+    except Exception as exc:
+        logger.error("Error rendering user configs: %s", exc, exc_info=True)
+        await callback.answer(f"خطا: {exc}", show_alert=True)
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

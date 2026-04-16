@@ -31,7 +31,7 @@ class GlobalErrorMiddleware(BaseMiddleware):
             logger.error(
                 "Unhandled exception in handler: %s", exc, exc_info=True
             )
-            error_text = "⚠️ خطای آپدیت تستی: این پیام یعنی کدهای جدید بالاخره نصب شدن!"
+            error_text = "⚠️ خطایی رخ داد. لطفاً دوباره تلاش کنید یا با پشتیبانی تماس بگیرید."
             try:
                 if isinstance(event, Message):
                     await event.answer(error_text)
