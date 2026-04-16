@@ -42,21 +42,6 @@ class AdminSubscriptionListPageCallback(CallbackData, prefix="admin_sub_list"):
     page: int = 1
 
 
-@router.callback_query(AdminUserActionCallback.filter(F.action == "view_configs"))
-async def view_user_configs(
-    callback: CallbackQuery,
-    callback_data: AdminUserActionCallback,
-    session: AsyncSession,
-) -> None:
-    await callback.answer()
-    await _render_user_configs(
-        callback=callback,
-        session=session,
-        user_id=callback_data.user_id,
-        page=1,
-    )
-
-
 @router.callback_query(AdminSubscriptionListPageCallback.filter())
 async def view_user_configs_page(
     callback: CallbackQuery,

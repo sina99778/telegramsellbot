@@ -454,6 +454,26 @@ async def admin_user_toggle_admin(
             )
 
 
+@router.callback_query(AdminUserActionCallback.filter(F.action == "view_configs"))
+async def view_user_configs(
+    callback: CallbackQuery,
+    callback_data: AdminUserActionCallback,
+    session: AsyncSession,
+) -> None:
+    await callback.answer()
+    try:
+        from apps.bot.handlers.admin.subs import _render_user_configs
+        await _render_user_configs(
+            callback=callback,
+            session=session,
+            user_id=callback_data.user_id,
+            page=1,
+        )
+    except Exception as exc:
+        logging.getLogger(__name__).error("Error rendering user configs: %s", exc, exc_info=True)
+        await callback.answer("خطا در بارگذاری کانفیگ‌ها", show_alert=True)
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
