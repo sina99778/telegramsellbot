@@ -103,12 +103,16 @@ async def _dump_xui_databases(session: AsyncSession) -> list[tuple[str, bytes]]:
     return backups
 
 
-async def run_backup(session: AsyncSession, bot: Bot) -> None:
+async def run_backup(session: AsyncSession, bot: Bot, manual_requester_id: int | None = None) -> None:
     now = datetime.now(timezone.utc)
     timestamp = now.strftime("%Y%m%d_%H%M")
     logger.info("[BACKUP] Starting at %s", timestamp)
 
-    admin_ids = await _get_admin_telegram_ids(session)
+    if manual_requester_id is not None:
+        admin_ids = {manual_requester_id}
+    else:
+        admin_ids = await _get_admin_telegram_ids(session)
+        
     if not admin_ids:
         logger.warning("[BACKUP] No admin IDs — skipping")
         return
@@ -132,7 +136,8 @@ async def run_backup(session: AsyncSession, bot: Bot) -> None:
                 pass
         return
 
-    caption = f"🗄 بکاپ اتوماتیک\n📅 {now.strftime('%Y-%m-%d %H:%M UTC')}\n📦 {len(files_to_send)} فایل"
+    type_str = "دستی" if manual_requester_id else "اتوماتیک"
+    caption = f"🗄 بکاپ {type_str}\n📅 {now.strftime('%Y-%m-%d %H:%M UTC')}\n📦 {len(files_to_send)} فایل"
     for tg_id in admin_ids:
         try:
             await bot.send_message(tg_id, caption)

@@ -13,6 +13,7 @@ from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.states.admin import SettingsStates
 from core.texts import AdminButtons, AdminMessages
 from repositories.settings import AppSettingsRepository
+from apps.worker.jobs.backup import run_backup
 
 logger = logging.getLogger(__name__)
 
@@ -146,3 +147,25 @@ async def edit_toman_rate_submit(message: Message, state: FSMContext, session: A
 
     await state.clear()
     await message.answer(f"✅ نرخ دلار به تومان به {rate:,} تنظیم شد.")
+
+
+@router.callback_query(F.data == "admin:backup")
+async def manual_backup_request(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Manually trigger the backup job and send to the requesting admin."""
+    # We don't block the UI during the potentially slow backup process
+    await callback.answer("⏳ در حال تهیه بکاپ، لطفا صبر کنید...", show_alert=True)
+    if callback.from_user is None:
+        return
+        
+    try:
+        from apps.worker.jobs.backup import run_backup
+        # Retrieve bot instance
+        bot = callback.bot
+        await run_backup(session, bot, manual_requester_id=callback.from_user.id)
+    except Exception as exc:
+        logger.error("Manual backup failed: %s", exc)
+        try:
+            from apps.bot.utils.messaging import safe_edit_or_send
+            await safe_edit_or_send(callback, "❌ خطا در اجرای بکاپ دستی.")
+        except Exception:
+            pass

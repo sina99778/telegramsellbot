@@ -143,6 +143,7 @@ class AdminButtons:
     BROADCAST = "📢 پیام همگانی"
     MANAGE_RETARGETING = "🎯 مدیریت ریتارگتینگ"
     MANAGE_TICKETS = "🛠 بررسی تیکت‌ها"
+    BACKUP = "🗄 دریافت بکاپ"
     BOT_SETTINGS = "⚙️ تنظیمات ربات"
     ADD_SERVER = "افزودن سرور"
     LIST_SERVERS = "لیست سرورها"
