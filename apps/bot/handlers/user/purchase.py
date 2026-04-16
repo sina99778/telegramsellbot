@@ -24,6 +24,7 @@ from repositories.discount import DiscountRepository
 from repositories.user import UserRepository
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
 from services.wallet.manager import InsufficientBalanceError, WalletManager
+from apps.bot.utils.messaging import safe_edit_or_send
 
 
 logger = logging.getLogger(__name__)
@@ -72,26 +73,23 @@ async def plan_selected_ask_name(
     try:
         plan_id = UUID(raw_plan_id)
     except ValueError:
-        if callback.message is not None:
-            await callback.message.answer("پلن انتخاب‌شده نامعتبر است.")
+        await safe_edit_or_send(callback, "پلن انتخاب‌شده نامعتبر است.")
         return
 
     plan = await session.get(Plan, plan_id)
     if plan is None or not plan.is_active:
-        if callback.message is not None:
-            await callback.message.answer(Messages.PLAN_NOT_AVAILABLE)
+        await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
         return
 
     await state.update_data(plan_id=str(plan_id))
     await state.set_state(PurchaseStates.waiting_for_config_name)
 
-    if callback.message is not None:
-        await callback.message.answer(
-            "📝 لطفاً یک نام برای کانفیگ خود انتخاب کنید:\n\n"
-            "• فقط حروف انگلیسی، اعداد، خط تیره و آندرلاین مجاز است\n"
-            "• طول نام بین ۳ تا ۳۲ کاراکتر باشد\n"
-            "• مثال: `MyVPN` یا `phone-1`"
-        )
+    await safe_edit_or_send(callback, 
+        "📝 لطفاً یک نام برای کانفیگ خود انتخاب کنید:\n\n"
+        "• فقط حروف انگلیسی، اعداد، خط تیره و آندرلاین مجاز است\n"
+        "• طول نام بین ۳ تا ۳۲ کاراکتر باشد\n"
+        "• مثال: `MyVPN` یا `phone-1`"
+    )
 
 
 @router.message(PurchaseStates.waiting_for_config_name)
@@ -192,8 +190,7 @@ async def _show_payment_method_choice(
     plan = await session.get(Plan, UUID(data["plan_id"]))
     if plan is None:
         await state.clear()
-        if callback.message:
-            await callback.message.answer(Messages.PLAN_NOT_AVAILABLE)
+        await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
         return
 
     discount_percent = data.get("discount_percent", 0)
@@ -227,8 +224,7 @@ async def _show_payment_method_choice(
     builder.button(text=Buttons.BACK, callback_data="purchase:cancel")
     builder.adjust(1)
 
-    if callback.message:
-        await callback.message.answer(text, reply_markup=builder.as_markup())
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
 
 
 async def _show_payment_method_choice_msg(
@@ -282,8 +278,7 @@ async def _show_payment_method_choice_msg(
 async def cancel_purchase(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.clear()
-    if callback.message:
-        await callback.message.answer(Messages.CANCELLED)
+    await safe_edit_or_send(callback, Messages.CANCELLED)
 
 
 @router.callback_query(F.data == "purchase:pay:wallet")
@@ -311,8 +306,7 @@ async def pay_with_wallet(
     except Exception as exc:
         logger.error("Wallet purchase failed: %s", exc, exc_info=True)
         await state.clear()
-        if callback.message is not None:
-            await callback.message.answer(f"خطا در انجام خرید:\n{exc}")
+        await safe_edit_or_send(callback, f"خطا در انجام خرید:\n{exc}")
 
 
 @router.callback_query(F.data == "purchase:pay:gateway")
@@ -328,8 +322,7 @@ async def pay_with_gateway(
     except Exception as exc:
         logger.error("Gateway purchase failed: %s", exc, exc_info=True)
         await state.clear()
-        if callback.message is not None:
-            await callback.message.answer(f"خطا در ساخت فاکتور:\n{exc}")
+        await safe_edit_or_send(callback, f"خطا در ساخت فاکتور:\n{exc}")
 
 
 async def _process_wallet_purchase(
@@ -353,8 +346,7 @@ async def _process_wallet_purchase(
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     plan = await session.get(Plan, plan_id)
     if user is None or user.wallet is None or plan is None or not plan.is_active:
-        if callback.message is not None:
-            await callback.message.answer(Messages.PLAN_NOT_AVAILABLE)
+        await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
         return
 
     # Calculate discounted price
@@ -366,15 +358,14 @@ async def _process_wallet_purchase(
         final_price = original_price
 
     if user.wallet.balance < final_price:
-        if callback.message is not None:
-            await callback.message.answer(
-                Messages.INSUFFICIENT_BALANCE.format(
-                    balance=f"{user.wallet.balance:.2f}",
-                    price=f"{final_price:.2f}",
-                    currency=plan.currency,
-                ),
-                reply_markup=build_wallet_topup_keyboard(),
-            )
+        await safe_edit_or_send(callback, 
+            Messages.INSUFFICIENT_BALANCE.format(
+                balance=f"{user.wallet.balance:.2f}",
+                price=f"{final_price:.2f}",
+                currency=plan.currency,
+            ),
+            reply_markup=build_wallet_topup_keyboard(),
+        )
         return
 
     # Use the discount code
@@ -419,8 +410,7 @@ async def _process_gateway_purchase(
     plan = await session.get(Plan, plan_id)
     if user is None or plan is None or not plan.is_active:
         await state.clear()
-        if callback.message is not None:
-            await callback.message.answer(Messages.PLAN_NOT_AVAILABLE)
+        await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
         return
 
     original_price = plan.price
@@ -464,8 +454,7 @@ async def _process_gateway_purchase(
             invoice = await client.create_payment_invoice(payload)
     except NowPaymentsRequestError:
         await state.clear()
-        if callback.message is not None:
-            await callback.message.answer(Messages.PAYMENT_GATEWAY_UNAVAILABLE)
+        await safe_edit_or_send(callback, Messages.PAYMENT_GATEWAY_UNAVAILABLE)
         return
 
     payment = Payment(
@@ -492,16 +481,15 @@ async def _process_gateway_purchase(
     if discount_percent > 0:
         discount_line = f"🏷 تخفیف: {discount_percent}%\n"
 
-    if callback.message is not None:
-        await callback.message.answer(
-            f"🧾 فاکتور خرید ساخته شد:\n\n"
-            f"📦 پلن: {plan.name}\n"
-            f"💰 مبلغ: {final_price} USD\n"
-            f"{discount_line}\n"
-            "بعد از پرداخت و تایید NOWPayments، کانفیگ شما "
-            "به صورت خودکار ساخته و ارسال می‌شود.",
-            reply_markup=build_topup_link_keyboard(str(invoice.invoice_url)),
-        )
+    await safe_edit_or_send(callback, 
+        f"🧾 فاکتور خرید ساخته شد:\n\n"
+        f"📦 پلن: {plan.name}\n"
+        f"💰 مبلغ: {final_price} USD\n"
+        f"{discount_line}\n"
+        "بعد از پرداخت و تایید NOWPayments، کانفیگ شما "
+        "به صورت خودکار ساخته و ارسال می‌شود.",
+        reply_markup=build_topup_link_keyboard(str(invoice.invoice_url)),
+    )
 
 
 async def _finalize_purchase(

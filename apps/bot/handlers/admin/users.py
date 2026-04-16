@@ -22,6 +22,7 @@ from models.user import User
 from repositories.audit import AuditLogRepository
 from repositories.user import UserRepository
 from services.wallet.manager import WalletManager
+from apps.bot.utils.messaging import safe_edit_or_send
 
 
 router = Router(name="admin-users")
@@ -57,7 +58,7 @@ async def admin_users_menu(callback: CallbackQuery, state: FSMContext) -> None:
         try:
             await callback.message.edit_text("مدیریت کاربران:", reply_markup=builder.as_markup())
         except Exception:
-            await callback.message.answer("مدیریت کاربران:", reply_markup=builder.as_markup())
+            await safe_edit_or_send(callback, "مدیریت کاربران:", reply_markup=builder.as_markup())
 
 
 # ─── User List (Paginated) ────────────────────────────────────────────────────
@@ -91,7 +92,7 @@ async def admin_users_list(
         builder = InlineKeyboardBuilder()
         builder.button(text=AdminButtons.BACK, callback_data="admin:users")
         builder.adjust(1)
-        await callback.message.answer("هیچ کاربری وجود ندارد.", reply_markup=builder.as_markup())
+        await safe_edit_or_send(callback, "هیچ کاربری وجود ندارد.", reply_markup=builder.as_markup())
         return
 
     builder = InlineKeyboardBuilder()
@@ -130,7 +131,7 @@ async def admin_users_list(
                 reply_markup=builder.as_markup(),
             )
         except Exception:
-            await callback.message.answer(
+            await safe_edit_or_send(callback, 
                 f"👥 لیست کاربران ({total_users} نفر):",
                 reply_markup=builder.as_markup(),
             )
@@ -143,7 +144,7 @@ async def admin_users_list(
 async def admin_users_search_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(ManageUserStates.waiting_for_telegram_id)
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         "🔍 شناسه تلگرام (عددی) یا یوزرنیم کاربر را ارسال کنید.\n"
         "برای لغو /cancel بزنید."
     )
@@ -212,13 +213,13 @@ async def admin_user_profile_from_list(
         .where(User.id == callback_data.user_id)
     )
     if user is None or user.wallet is None:
-        await callback.message.answer(AdminMessages.USER_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.USER_NOT_FOUND)
         return
 
     total_orders = int(
         await session.scalar(select(func.count()).select_from(Order).where(Order.user_id == user.id)) or 0
     )
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         _build_user_profile_text(user=user, total_orders=total_orders),
         reply_markup=_build_user_profile_keyboard(user.id, user.status),
     )
@@ -236,7 +237,7 @@ async def admin_edit_balance_prompt(
     await callback.answer()
     await state.set_state(ManageUserStates.waiting_for_balance_adjustment)
     await state.update_data(target_user_id=str(callback_data.user_id))
-    await callback.message.answer(AdminMessages.ENTER_BALANCE_ADJUSTMENT)
+    await safe_edit_or_send(callback, AdminMessages.ENTER_BALANCE_ADJUSTMENT)
 
 
 @router.message(ManageUserStates.waiting_for_balance_adjustment)
@@ -320,7 +321,7 @@ async def admin_toggle_ban(
     await callback.answer()
     user = await UserRepository(session).get(callback_data.user_id)
     if user is None:
-        await callback.message.answer(AdminMessages.USER_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.USER_NOT_FOUND)
         return
 
     if user.status == "banned":
@@ -341,7 +342,7 @@ async def admin_toggle_ban(
     total_orders = int(
         await session.scalar(select(func.count()).select_from(Order).where(Order.user_id == user.id)) or 0
     )
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         _build_user_profile_text(user=user, total_orders=total_orders),
         reply_markup=_build_user_profile_keyboard(user.id, user.status),
     )
@@ -359,7 +360,7 @@ async def admin_send_msg_prompt(
     await callback.answer()
     await state.set_state(ManageUserStates.waiting_for_message_to_user)
     await state.update_data(target_user_id=str(callback_data.user_id))
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         "📩 پیام مورد نظر خود را برای این کاربر ارسال کنید.\n"
         "برای لغو /cancel بزنید."
     )
@@ -421,16 +422,14 @@ async def admin_user_toggle_admin(
         .where(User.id == callback_data.user_id)
     )
     if user is None:
-        if callback.message:
-            await callback.message.answer(AdminMessages.USER_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.USER_NOT_FOUND)
         return
         
     # Toggle logic
     from core.config import settings
     # Cannot demote owner
     if user.telegram_id == settings.owner_telegram_id:
-        if callback.message:
-            await callback.message.answer("❌ نقش مالک اصلی ربات (owner) قابل تغییر نیست.")
+        await safe_edit_or_send(callback, "❌ نقش مالک اصلی ربات (owner) قابل تغییر نیست.")
         return
 
     new_role = "admin" if user.role == "user" else "user"
@@ -449,7 +448,7 @@ async def admin_user_toggle_admin(
                 reply_markup=_build_user_profile_keyboard(user.id, user.status),
             )
         except Exception:
-            await callback.message.answer(
+            await safe_edit_or_send(callback, 
                 _build_user_profile_text(user=user, total_orders=total_orders) + f"\n\n✅ نقش به {status_text} تغییر یافت.",
                 reply_markup=_build_user_profile_keyboard(user.id, user.status),
             )

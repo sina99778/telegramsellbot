@@ -12,6 +12,7 @@ from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.states.admin import DiscountStates
 from core.texts import AdminButtons, AdminMessages
 from repositories.discount import DiscountRepository
+from apps.bot.utils.messaging import safe_edit_or_send
 
 
 router = Router(name="admin-discounts")
@@ -41,7 +42,7 @@ async def admin_discounts_menu(callback: CallbackQuery, session: AsyncSession) -
             )
         text = "\n".join(lines)
 
-    await callback.message.answer(text, reply_markup=builder.as_markup())
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
 
 
 @router.callback_query(F.data == "admin:discounts:create")
@@ -50,7 +51,7 @@ async def create_discount_start(callback: CallbackQuery, state: FSMContext) -> N
     # Auto-generate a random code suggestion
     suggested = secrets.token_hex(4).upper()
     await state.set_state(DiscountStates.waiting_for_code)
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         f"کد تخفیف را وارد کنید (یا از کد پیشنهادی استفاده کنید):\n\n"
         f"پیشنهاد: `{suggested}`",
     )

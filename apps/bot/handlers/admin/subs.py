@@ -20,6 +20,7 @@ from models.user import User
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.audit import AuditLogRepository
 from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
+from apps.bot.utils.messaging import safe_edit_or_send
 
 
 router = Router(name="admin-subs")
@@ -86,7 +87,7 @@ async def _render_user_configs(
         .where(User.id == user_id)
     )
     if user is None:
-        await callback.message.answer(AdminMessages.USER_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.USER_NOT_FOUND)
         return
 
     active_subs = [sub for sub in user.subscriptions if sub.status in {"pending_activation", "active"}]
@@ -94,7 +95,7 @@ async def _render_user_configs(
         try:
             await callback.message.edit_text(AdminMessages.NO_ACTIVE_CONFIGS)
         except TelegramBadRequest:
-            await callback.message.answer(AdminMessages.NO_ACTIVE_CONFIGS)
+            await safe_edit_or_send(callback, AdminMessages.NO_ACTIVE_CONFIGS)
         return
 
     start = max(page - 1, 0) * SUB_PAGE_SIZE
@@ -133,7 +134,7 @@ async def _render_user_configs(
     try:
         await callback.message.edit_text(text, reply_markup=builder.as_markup())
     except TelegramBadRequest:
-        await callback.message.answer(text, reply_markup=builder.as_markup())
+        await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
 
 
 @router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "revoke"))
@@ -155,7 +156,7 @@ async def revoke_user_config(
         .where(Subscription.id == callback_data.subscription_id)
     )
     if subscription is None:
-        await callback.message.answer(AdminMessages.SUBSCRIPTION_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.SUBSCRIPTION_NOT_FOUND)
         return
 
     xui_record = subscription.xui_client

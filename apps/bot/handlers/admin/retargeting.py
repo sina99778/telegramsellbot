@@ -14,6 +14,7 @@ from core.texts import AdminButtons, AdminMessages, Common
 from models.user import User
 from repositories.audit import AuditLogRepository
 from repositories.settings import AppSettingsRepository
+from apps.bot.utils.messaging import safe_edit_or_send
 
 
 router = Router(name="admin-retargeting")
@@ -35,7 +36,7 @@ async def cancel_retargeting_edit(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "admin:retargeting")
 async def retargeting_menu(callback: CallbackQuery, session: AsyncSession) -> None:
     await callback.answer()
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         _format_retargeting_menu(await AppSettingsRepository(session).get_retargeting_settings()),
         reply_markup=_build_retargeting_keyboard(),
     )
@@ -68,7 +69,7 @@ async def toggle_retargeting(
 async def prompt_retargeting_text(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(RetargetingStates.waiting_for_message)
-    await callback.message.answer(AdminMessages.RETARGETING_ENTER_MESSAGE)
+    await safe_edit_or_send(callback, AdminMessages.RETARGETING_ENTER_MESSAGE)
 
 
 @router.message(RetargetingStates.waiting_for_message)
@@ -98,7 +99,7 @@ async def save_retargeting_text(
 async def prompt_retargeting_days(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(RetargetingStates.waiting_for_days)
-    await callback.message.answer(AdminMessages.RETARGETING_ENTER_DAYS)
+    await safe_edit_or_send(callback, AdminMessages.RETARGETING_ENTER_DAYS)
 
 
 @router.message(RetargetingStates.waiting_for_days)
@@ -150,7 +151,7 @@ async def test_retargeting_message(
         entity_id=None,
         payload={"days": settings.days, "enabled": settings.enabled},
     )
-    await callback.message.answer(AdminMessages.RETARGETING_TEST_SENT)
+    await safe_edit_or_send(callback, AdminMessages.RETARGETING_TEST_SENT)
 
 
 def _build_retargeting_keyboard():

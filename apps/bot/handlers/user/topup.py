@@ -20,6 +20,7 @@ from models.payment import Payment
 from repositories.user import UserRepository
 from schemas.internal.nowpayments import NowPaymentsPaymentCreateRequest
 from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
+from apps.bot.utils.messaging import safe_edit_or_send
 
 
 router = Router(name="user-topup")
@@ -59,8 +60,7 @@ async def wallet_history_handler(callback: CallbackQuery, session: AsyncSession)
 
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     if user is None or user.wallet is None:
-        if callback.message:
-            await callback.message.answer(Messages.WALLET_NOT_FOUND)
+        await safe_edit_or_send(callback, Messages.WALLET_NOT_FOUND)
         return
 
     from sqlalchemy import select as sel
@@ -75,8 +75,7 @@ async def wallet_history_handler(callback: CallbackQuery, session: AsyncSession)
     transactions = list(result.scalars().all())
 
     if not transactions:
-        if callback.message:
-            await callback.message.answer("📭 هیچ تراکنشی ثبت نشده.")
+        await safe_edit_or_send(callback, "📭 هیچ تراکنشی ثبت نشده.")
         return
 
     type_labels = {
@@ -96,14 +95,13 @@ async def wallet_history_handler(callback: CallbackQuery, session: AsyncSession)
             f"   موجودی: {tx.balance_after:.2f} | {dt}"
         )
 
-    if callback.message:
-        await callback.message.answer("\n\n".join(lines))
+    await safe_edit_or_send(callback, "\n\n".join(lines))
 
 
 @router.callback_query(F.data == "wallet:topup")
 async def topup_options_handler(callback: CallbackQuery) -> None:
     await callback.answer()
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         Messages.TOPUP_CHOOSE_AMOUNT,
         reply_markup=build_wallet_topup_keyboard(),
     )
@@ -124,7 +122,7 @@ async def topup_preset_handler(
 async def topup_custom_amount_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(TopUpStates.waiting_for_custom_amount)
-    await callback.message.answer(Messages.TOPUP_ENTER_CUSTOM)
+    await safe_edit_or_send(callback, Messages.TOPUP_ENTER_CUSTOM)
 
 
 @router.message(TopUpStates.waiting_for_custom_amount)

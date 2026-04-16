@@ -19,6 +19,7 @@ from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.user import UserRepository
 from services.xui.runtime import build_vless_uri
+from apps.bot.utils.messaging import safe_edit_or_send
 
 
 logger = logging.getLogger(__name__)
@@ -121,8 +122,7 @@ async def my_configs_back_to_list(callback: CallbackQuery, session: AsyncSession
     subscriptions = list(result.scalars().all())
 
     if not subscriptions:
-        if callback.message is not None:
-            await callback.message.answer("📭 شما هیچ کانفیگ فعالی ندارید.")
+        await safe_edit_or_send(callback, "📭 شما هیچ کانفیگ فعالی ندارید.")
         return
 
     builder = InlineKeyboardBuilder()
@@ -150,7 +150,7 @@ async def my_configs_back_to_list(callback: CallbackQuery, session: AsyncSession
         try:
             await callback.message.edit_text(text, reply_markup=builder.as_markup())
         except Exception:
-            await callback.message.answer(text, reply_markup=builder.as_markup())
+            await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
 
 
 @router.callback_query(MyConfigCallback.filter(F.action == "view"))
@@ -167,8 +167,7 @@ async def my_config_detail_handler(
 
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     if user is None:
-        if callback.message is not None:
-            await callback.message.answer("حساب شما پیدا نشد.")
+        await safe_edit_or_send(callback, "حساب شما پیدا نشد.")
         return
 
     sub = await session.scalar(
@@ -186,8 +185,7 @@ async def my_config_detail_handler(
         )
     )
     if sub is None:
-        if callback.message is not None:
-            await callback.message.answer("کانفیگ پیدا نشد یا متعلق به شما نیست.")
+        await safe_edit_or_send(callback, "کانفیگ پیدا نشد یا متعلق به شما نیست.")
         return
 
     plan = sub.plan
@@ -338,7 +336,7 @@ async def my_config_detail_handler(
         try:
             await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="MarkdownV2")
         except Exception:
-            await callback.message.answer(text, reply_markup=builder.as_markup(), parse_mode="MarkdownV2")
+            await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="MarkdownV2")
 
 
 def _status_fa(status: str) -> str:
@@ -380,8 +378,7 @@ async def refresh_usage_handler(
         )
     )
     if sub is None:
-        if callback.message:
-            await callback.message.answer("کانفیگ پیدا نشد.")
+        await safe_edit_or_send(callback, "کانفیگ پیدا نشد.")
         return
 
     from apps.worker.jobs.subscriptions import get_realtime_usage
@@ -389,13 +386,11 @@ async def refresh_usage_handler(
         usage = await get_realtime_usage(session, sub)
     except Exception as exc:
         logger.error("refresh_usage failed: %s", exc, exc_info=True)
-        if callback.message:
-            await callback.message.answer(f"❌ خطا: {str(exc)[:200]}")
+        await safe_edit_or_send(callback, f"❌ خطا: {str(exc)[:200]}")
         return
 
     if usage is None:
-        if callback.message:
-            await callback.message.answer("❌ خطا در دریافت اطلاعات از سرور. لطفاً بعداً تلاش کنید.")
+        await safe_edit_or_send(callback, "❌ خطا در دریافت اطلاعات از سرور. لطفاً بعداً تلاش کنید.")
         return
 
     used = format_volume_bytes(usage["used_bytes"])
@@ -430,8 +425,7 @@ async def refresh_usage_handler(
         f"{time_info}"
     )
 
-    if callback.message:
-        await callback.message.answer(text)
+    await safe_edit_or_send(callback, text)
 
 
 
@@ -468,20 +462,17 @@ async def reset_uuid_handler(
         )
     )
     if sub is None or sub.status not in ("active", "pending_activation"):
-        if callback.message:
-            await callback.message.answer("کانفیگ پیدا نشد یا منقضی شده است.")
+        await safe_edit_or_send(callback, "کانفیگ پیدا نشد یا منقضی شده است.")
         return
 
     xui_record = sub.xui_client
     if not xui_record or not xui_record.inbound or not xui_record.inbound.server:
-        if callback.message:
-            await callback.message.answer("❌ سرور متصل به این کانفیگ یافت نشد.")
+        await safe_edit_or_send(callback, "❌ سرور متصل به این کانفیگ یافت نشد.")
         return
 
     server_obj = xui_record.inbound.server
     if server_obj.health_status == "deleted" or not server_obj.is_active:
-        if callback.message:
-            await callback.message.answer("❌ سرور خاموش یا حذف شده است.")
+        await safe_edit_or_send(callback, "❌ سرور خاموش یا حذف شده است.")
         return
 
     import uuid as uuid_mod
@@ -546,16 +537,11 @@ async def reset_uuid_handler(
             response_lines.append(f"\n📋 لینک مستقیم جدید:\n{new_vless}")
         response_lines.append("\n⚠️ لینک‌های قبلی دیگر کار نمی‌کنند.")
 
-        if callback.message:
-            try:
-                await callback.message.edit_text("\n".join(response_lines))
-            except Exception:
-                await callback.message.answer("\n".join(response_lines))
+        await safe_edit_or_send(callback, "\n".join(response_lines))
     except Exception as exc:
         logger.error("Failed to reset UUID for sub %s: %s", sub.id, exc, exc_info=True)
         error_detail = str(exc)[:150]
-        if callback.message:
-            await callback.message.answer(f"❌ خطا در تغییر لینک:\n{error_detail}")
+        await safe_edit_or_send(callback, f"❌ خطا در تغییر لینک:\n{error_detail}")
 
 
 @router.callback_query(MyConfigCallback.filter(F.action == "toggle_enable"))
@@ -588,20 +574,17 @@ async def toggle_enable_handler(
         )
     )
     if sub is None or sub.status not in ("active", "pending_activation"):
-        if callback.message:
-            await callback.message.answer("کانفیگ پیدا نشد یا منقضی شده است.")
+        await safe_edit_or_send(callback, "کانفیگ پیدا نشد یا منقضی شده است.")
         return
 
     xui_record = sub.xui_client
     if not xui_record or not xui_record.inbound or not xui_record.inbound.server:
-        if callback.message:
-            await callback.message.answer("❌ سرور متصل به این کانفیگ یافت نشد.")
+        await safe_edit_or_send(callback, "❌ سرور متصل به این کانفیگ یافت نشد.")
         return
 
     server_obj = xui_record.inbound.server
     if server_obj.health_status == "deleted" or not server_obj.is_active:
-        if callback.message:
-            await callback.message.answer("❌ سرور خاموش یا حذف شده است.")
+        await safe_edit_or_send(callback, "❌ سرور خاموش یا حذف شده است.")
         return
 
     from schemas.internal.xui import XUIClient
@@ -640,12 +623,10 @@ async def toggle_enable_handler(
         await session.flush()
         
         status_text = "روشن" if new_enable_status else "خاموش"
-        if callback.message:
-            await callback.message.answer(f"✅ کانفیگ با موفقیت {status_text} شد. برای اعمال تغییرات از لیست کانفیگ‌ها رفرش کنید.")
+        await safe_edit_or_send(callback, f"✅ کانفیگ با موفقیت {status_text} شد. برای اعمال تغییرات از لیست کانفیگ‌ها رفرش کنید.")
     except Exception as exc:
         logger.error("Failed to toggle enable for sub %s: %s", sub.id, exc)
-        if callback.message:
-            await callback.message.answer("❌ خطا در اجرای درخواست (برقراری ارتباط با سرور ناموفق بود).")
+        await safe_edit_or_send(callback, "❌ خطا در اجرای درخواست (برقراری ارتباط با سرور ناموفق بود).")
 
 
 
@@ -681,13 +662,11 @@ async def cancel_and_refund_config(
         )
     )
     if sub is None:
-        if callback.message:
-            await callback.message.answer("کانفیگ پیدا نشد.")
+        await safe_edit_or_send(callback, "کانفیگ پیدا نشد.")
         return
 
     if sub.status != "pending_activation" or sub.used_bytes > 0:
-        if callback.message:
-            await callback.message.answer("این کانفیگ قابل بازپرداخت نیست (قبلاً استفاده شده).")
+        await safe_edit_or_send(callback, "این کانفیگ قابل بازپرداخت نیست (قبلاً استفاده شده).")
         return
 
     # Delete from X-UI first — only refund if successful
@@ -714,8 +693,7 @@ async def cancel_and_refund_config(
                 xui_error = str(exc)[:150]
 
     if not xui_deleted:
-        if callback.message:
-            await callback.message.answer(f"❌ خطا در حذف کانفیگ از سرور:\n{xui_error}")
+        await safe_edit_or_send(callback, f"❌ خطا در حذف کانفیگ از سرور:\n{xui_error}")
         return
 
     # Refund to wallet
@@ -754,10 +732,9 @@ async def cancel_and_refund_config(
     await session.flush()
 
     from core.formatting import format_price
-    if callback.message:
-        await callback.message.answer(
-            f"✅ کانفیگ لغو و مبلغ {format_price(refund_amount)} دلار به کیف پول برگشت داده شد."
-        )
+    await safe_edit_or_send(callback, 
+        f"✅ کانفیگ لغو و مبلغ {format_price(refund_amount)} دلار به کیف پول برگشت داده شد."
+    )
 
 
 @router.callback_query(MyConfigCallback.filter(F.action == "delete"))
@@ -789,8 +766,7 @@ async def delete_expired_config(
         )
     )
     if sub is None:
-        if callback.message:
-            await callback.message.answer("کانفیگ پیدا نشد.")
+        await safe_edit_or_send(callback, "کانفیگ پیدا نشد.")
         return
 
     # Delete from X-UI (skip if server is deleted/inactive)
@@ -814,5 +790,4 @@ async def delete_expired_config(
     sub.sub_link = None
     await session.flush()
 
-    if callback.message:
-        await callback.message.answer("✅ کانفیگ حذف شد.")
+    await safe_edit_or_send(callback, "✅ کانفیگ حذف شد.")

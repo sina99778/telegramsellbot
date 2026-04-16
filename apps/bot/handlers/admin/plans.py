@@ -26,6 +26,7 @@ from models.plan import Plan
 from models.user import User
 from models.xui import XUIInboundRecord
 from repositories.audit import AuditLogRepository
+from apps.bot.utils.messaging import safe_edit_or_send
 
 
 router = Router(name="admin-plans")
@@ -90,7 +91,7 @@ async def admin_plans_menu(callback: CallbackQuery) -> None:
     builder.button(text=AdminButtons.LIST_PLANS, callback_data=PlanListPageCallback(page=1).pack())
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
     builder.adjust(1)
-    await callback.message.answer(AdminMessages.PLAN_MANAGEMENT, reply_markup=builder.as_markup())
+    await safe_edit_or_send(callback, AdminMessages.PLAN_MANAGEMENT, reply_markup=builder.as_markup())
 
 
 @router.callback_query(PlanListPageCallback.filter())
@@ -133,7 +134,7 @@ async def list_plans(
     try:
         await callback.message.edit_text(text, reply_markup=markup)
     except TelegramBadRequest:
-        await callback.message.answer(text, reply_markup=markup)
+        await safe_edit_or_send(callback, text, reply_markup=markup)
 
 
 @router.callback_query(F.data == "admin:plans:create")
@@ -153,7 +154,7 @@ async def create_plan_start(callback: CallbackQuery, state: FSMContext, session:
     inbounds = list(result.scalars().all())
 
     if not inbounds:
-        await callback.message.answer(
+        await safe_edit_or_send(callback, 
             "هیچ اینباند فعالی موجود نیست.\n"
             "ابتدا یک سرور اضافه یا سینک کنید تا اینباندها از پنل دریافت شوند."
         )
@@ -175,7 +176,7 @@ async def create_plan_start(callback: CallbackQuery, state: FSMContext, session:
     builder.adjust(1)
 
     await state.set_state(CreatePlanStates.waiting_for_inbound_selection)
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         "اینباند مورد نظر را برای این پلن انتخاب کنید:",
         reply_markup=builder.as_markup(),
     )
@@ -203,7 +204,7 @@ async def create_plan_inbound_selected(
         )
     )
     if inbound is None:
-        await callback.message.answer("اینباند پیدا نشد.")
+        await safe_edit_or_send(callback, "اینباند پیدا نشد.")
         await state.clear()
         return
 
@@ -213,7 +214,7 @@ async def create_plan_inbound_selected(
         inbound_remote_id=inbound.xui_inbound_remote_id,
     )
     await state.set_state(CreatePlanStates.waiting_for_name)
-    await callback.message.answer(AdminMessages.ENTER_PLAN_NAME)
+    await safe_edit_or_send(callback, AdminMessages.ENTER_PLAN_NAME)
 
 
 @router.message(CreatePlanStates.waiting_for_name)
@@ -351,7 +352,7 @@ async def toggle_plan(
     await callback.answer()
     plan = await session.get(Plan, callback_data.plan_id)
     if plan is None:
-        await callback.message.answer(AdminMessages.PLAN_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
         return
 
     previous_state = plan.is_active
@@ -377,7 +378,7 @@ async def delete_plan(
     await callback.answer()
     plan = await session.get(Plan, callback_data.plan_id)
     if plan is None:
-        await callback.message.answer(AdminMessages.PLAN_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
         return
 
     plan_name = plan.name
@@ -392,7 +393,7 @@ async def delete_plan(
         )
         await session.delete(plan)
         await session.flush()
-        await callback.message.answer(f"✅ پلن «{plan_name}» با موفقیت حذف شد.")
+        await safe_edit_or_send(callback, f"✅ پلن «{plan_name}» با موفقیت حذف شد.")
     except IntegrityError:
         await session.rollback()
         # FK constraint: orders reference this plan, so we can't delete it.
@@ -401,13 +402,13 @@ async def delete_plan(
         if plan_again:
             plan_again.is_active = False
             await session.flush()
-        await callback.message.answer(
+        await safe_edit_or_send(callback, 
             f"⚠️ پلن «{plan_name}» اردرهای مرتبط دارد و قابل حذف نیست.\n"
             "به جای حذف، غیرفعال شد."
         )
     except Exception as exc:
         logger.error("Failed to delete plan %s: %s", callback_data.plan_id, exc, exc_info=True)
-        await callback.message.answer(f"❌ خطا در حذف پلن: {exc}")
+        await safe_edit_or_send(callback, f"❌ خطا در حذف پلن: {exc}")
         return
 
     await list_plans(callback, PlanListPageCallback(page=callback_data.page), session)
@@ -432,7 +433,7 @@ async def change_inbound_start(
         .where(Plan.id == callback_data.plan_id)
     )
     if plan is None:
-        await callback.message.answer(AdminMessages.PLAN_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
         return
 
     # Current inbound info
@@ -454,7 +455,7 @@ async def change_inbound_start(
     inbounds = list(result.scalars().all())
 
     if not inbounds:
-        await callback.message.answer("❌ هیچ اینباند فعالی وجود ندارد. اول سرور اضافه کنید.")
+        await safe_edit_or_send(callback, "❌ هیچ اینباند فعالی وجود ندارد. اول سرور اضافه کنید.")
         return
 
     builder = InlineKeyboardBuilder()
@@ -475,7 +476,7 @@ async def change_inbound_start(
     )
     builder.adjust(1)
 
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         f"🔗 تغییر سرور برای پلن «{plan.name}»\n\n"
         f"سرور فعلی: {current_info}\n\n"
         "اینباند جدید را انتخاب کنید:",
@@ -493,7 +494,7 @@ async def change_inbound_confirm(
     await callback.answer()
     plan = await session.get(Plan, callback_data.plan_id)
     if plan is None:
-        await callback.message.answer(AdminMessages.PLAN_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
         return
 
     new_inbound = await session.scalar(
@@ -502,7 +503,7 @@ async def change_inbound_confirm(
         .where(XUIInboundRecord.id == callback_data.inbound_id)
     )
     if new_inbound is None:
-        await callback.message.answer("❌ اینباند پیدا نشد.")
+        await safe_edit_or_send(callback, "❌ اینباند پیدا نشد.")
         return
 
     old_inbound_id = plan.inbound_id
@@ -522,7 +523,7 @@ async def change_inbound_confirm(
     )
 
     server_name = new_inbound.server.name if new_inbound.server else "نامشخص"
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         f"✅ سرور پلن «{plan.name}» تغییر کرد.\n\n"
         f"🖥 سرور: {server_name}\n"
         f"📡 اینباند: {new_inbound.remark} ({new_inbound.protocol})"

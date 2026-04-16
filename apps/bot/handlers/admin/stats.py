@@ -16,6 +16,7 @@ router.callback_query.middleware(AdminOnlyMiddleware())
 
 
 from repositories.settings import AppSettingsRepository
+from apps.bot.utils.messaging import safe_edit_or_send
 
 @router.callback_query(F.data == "admin:stats")
 async def admin_stats_dashboard(callback: CallbackQuery, session: AsyncSession) -> None:
@@ -63,7 +64,7 @@ async def admin_server_capacity(callback: CallbackQuery, session: AsyncSession) 
     servers = list(result.scalars().all())
 
     if not servers:
-        await callback.message.answer("هیچ سرور فعالی وجود ندارد.")
+        await safe_edit_or_send(callback, "هیچ سرور فعالی وجود ندارد.")
         return
 
     lines = ["📊 گزارش ظرفیت سرورها:\n"]
@@ -90,7 +91,7 @@ async def admin_server_capacity(callback: CallbackQuery, session: AsyncSession) 
     builder = InlineKeyboardBuilder()
     builder.button(text=AdminButtons.BACK, callback_data="admin:stats")
     builder.adjust(1)
-    await callback.message.answer("\n".join(lines), reply_markup=builder.as_markup())
+    await safe_edit_or_send(callback, "\n".join(lines), reply_markup=builder.as_markup())
 
 
 @router.callback_query(F.data == "admin:stats:expired_subs")
@@ -112,7 +113,7 @@ async def admin_expired_subs(callback: CallbackQuery, session: AsyncSession) -> 
     subs = list(result.scalars().all())
 
     if not subs:
-        await callback.message.answer("هیچ سرویس منقضی‌ای وجود ندارد.")
+        await safe_edit_or_send(callback, "هیچ سرویس منقضی‌ای وجود ندارد.")
         return
 
     lines = ["❌ آخرین ۲۰ سرویس منقضی:\n"]
@@ -125,7 +126,7 @@ async def admin_expired_subs(callback: CallbackQuery, session: AsyncSession) -> 
     builder = InlineKeyboardBuilder()
     builder.button(text=AdminButtons.BACK, callback_data="admin:stats")
     builder.adjust(1)
-    await callback.message.answer("\n".join(lines), reply_markup=builder.as_markup())
+    await safe_edit_or_send(callback, "\n".join(lines), reply_markup=builder.as_markup())
 
 
 @router.callback_query(F.data == "admin:stats:export_csv")
@@ -193,5 +194,5 @@ async def admin_stats_reset_now(callback: CallbackQuery, session: AsyncSession) 
     settings_repository = AppSettingsRepository(session)
     await settings_repository.reset_revenue()
     
-    await callback.message.answer(AdminMessages.REVENUE_RESET_SUCCESS)
+    await safe_edit_or_send(callback, AdminMessages.REVENUE_RESET_SUCCESS)
     await admin_stats_dashboard(callback, session)

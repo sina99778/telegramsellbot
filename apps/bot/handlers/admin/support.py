@@ -20,6 +20,7 @@ from models.ticket import Ticket
 from models.user import User
 from repositories.audit import AuditLogRepository
 from repositories.ticket import TicketRepository
+from apps.bot.utils.messaging import safe_edit_or_send
 
 
 router = Router(name="admin-support")
@@ -45,7 +46,7 @@ async def support_ticket_list(callback: CallbackQuery, session: AsyncSession) ->
     await callback.answer()
     tickets = await TicketRepository(session).list_open_tickets(limit=20)
     if not tickets:
-        await callback.message.answer(AdminMessages.NO_OPEN_TICKETS)
+        await safe_edit_or_send(callback, AdminMessages.NO_OPEN_TICKETS)
         return
 
     builder = InlineKeyboardBuilder()
@@ -63,7 +64,7 @@ async def support_ticket_list(callback: CallbackQuery, session: AsyncSession) ->
         )
     builder.button(text="🔙 بازگشت", callback_data="admin:main")
     builder.adjust(1)
-    await callback.message.answer("\n\n".join(lines), reply_markup=builder.as_markup())
+    await safe_edit_or_send(callback, "\n\n".join(lines), reply_markup=builder.as_markup())
 
 
 @router.callback_query(SupportTicketActionCallback.filter(F.action == "view"))
@@ -75,7 +76,7 @@ async def support_ticket_view(
     await callback.answer()
     ticket = await TicketRepository(session).get_ticket_with_messages(callback_data.ticket_id)
     if ticket is None or ticket.user is None:
-        await callback.message.answer(SupportTexts.ADMIN_TICKET_NOT_FOUND)
+        await safe_edit_or_send(callback, SupportTexts.ADMIN_TICKET_NOT_FOUND)
         return
 
     recent_messages = ticket.messages[-5:]
@@ -95,7 +96,7 @@ async def support_ticket_view(
     )
     builder.adjust(1)
 
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         AdminMessages.TICKET_DETAILS.format(
             ticket_id=ticket.id,
             user_name=ticket.user.first_name or ticket.user.username or "کاربر",
@@ -116,7 +117,7 @@ async def support_reply_start(
     await callback.answer()
     await state.set_state(SupportReplyStates.waiting_for_reply)
     await state.update_data(ticket_id=str(callback_data.ticket_id))
-    await callback.message.answer(SupportTexts.ADMIN_REPLY_PROMPT)
+    await safe_edit_or_send(callback, SupportTexts.ADMIN_REPLY_PROMPT)
 
 
 @router.message(SupportReplyStates.waiting_for_reply)
@@ -213,7 +214,7 @@ async def support_close_ticket(
     ticket_repository = TicketRepository(session)
     ticket = await ticket_repository.get(callback_data.ticket_id)
     if ticket is None:
-        await callback.message.answer(SupportTexts.ADMIN_TICKET_NOT_FOUND)
+        await safe_edit_or_send(callback, SupportTexts.ADMIN_TICKET_NOT_FOUND)
         return
 
     await ticket_repository.set_status(ticket, "closed")
@@ -224,7 +225,7 @@ async def support_close_ticket(
         entity_id=ticket.id,
         payload={"status": "closed"},
     )
-    await callback.message.answer(SupportTexts.TICKET_CLOSED.format(ticket_id=ticket.id))
+    await safe_edit_or_send(callback, SupportTexts.TICKET_CLOSED.format(ticket_id=ticket.id))
 
 
 def _build_close_ticket_keyboard(ticket_id: UUID):

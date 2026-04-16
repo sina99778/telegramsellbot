@@ -10,6 +10,7 @@ from apps.bot.states.admin import BroadcastStates
 from core.texts import AdminMessages
 from models.broadcast import BroadcastJob
 from models.user import User
+from apps.bot.utils.messaging import safe_edit_or_send
 
 
 router = Router(name="admin-broadcast")
@@ -21,7 +22,7 @@ router.callback_query.middleware(AdminOnlyMiddleware())
 async def broadcast_start(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(BroadcastStates.waiting_for_message)
-    await callback.message.answer(AdminMessages.BROADCAST_START)
+    await safe_edit_or_send(callback, AdminMessages.BROADCAST_START)
 
 
 @router.message(BroadcastStates.waiting_for_message)

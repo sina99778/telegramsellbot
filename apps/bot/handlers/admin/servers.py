@@ -25,6 +25,7 @@ from models.user import User
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerCredential, XUIServerRecord
 from repositories.audit import AuditLogRepository
 from services.xui.client import SanaeiXUIClient, XUIAuthenticationError, XUIClientConfig, XUIRequestError
+from apps.bot.utils.messaging import safe_edit_or_send
 
 
 logger = logging.getLogger(__name__)
@@ -83,7 +84,7 @@ async def admin_main_menu_callback(callback: CallbackQuery) -> None:
         try:
             await callback.message.edit_text(AdminMessages.PANEL_TITLE, reply_markup=builder.as_markup())
         except Exception:
-            await callback.message.answer(AdminMessages.PANEL_TITLE, reply_markup=builder.as_markup())
+            await safe_edit_or_send(callback, AdminMessages.PANEL_TITLE, reply_markup=builder.as_markup())
 
 
 @router.callback_query(F.data == "admin:servers")
@@ -99,7 +100,7 @@ async def admin_servers_menu(callback: CallbackQuery) -> None:
         try:
             await callback.message.edit_text(AdminMessages.SERVER_MANAGEMENT, reply_markup=builder.as_markup())
         except Exception:
-            await callback.message.answer(AdminMessages.SERVER_MANAGEMENT, reply_markup=builder.as_markup())
+            await safe_edit_or_send(callback, AdminMessages.SERVER_MANAGEMENT, reply_markup=builder.as_markup())
 
 
 @router.callback_query(ServerListPageCallback.filter())
@@ -134,7 +135,7 @@ async def list_servers(
 async def add_server_start(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(AddServerStates.waiting_for_name)
-    await callback.message.answer(AdminMessages.ENTER_SERVER_NAME)
+    await safe_edit_or_send(callback, AdminMessages.ENTER_SERVER_NAME)
 
 
 @router.message(AddServerStates.waiting_for_name)
@@ -279,10 +280,10 @@ async def sync_server_inbounds(
         .where(XUIServerRecord.id == callback_data.server_id)
     )
     if server is None:
-        await callback.message.answer(AdminMessages.SERVER_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.SERVER_NOT_FOUND)
         return
     if server.credentials is None:
-        await callback.message.answer("اطلاعات ورود سرور موجود نیست.")
+        await safe_edit_or_send(callback, "اطلاعات ورود سرور موجود نیست.")
         return
 
     try:
@@ -292,7 +293,7 @@ async def sync_server_inbounds(
             password=decrypt_secret(server.credentials.password_encrypted),
         )
     except Exception as exc:
-        await callback.message.answer(f"خطا در اتصال به پنل:\n`{exc}`", parse_mode="MarkdownV2")
+        await safe_edit_or_send(callback, f"خطا در اتصال به پنل:\n`{exc}`", parse_mode="MarkdownV2")
         return
 
     created_inbounds, synced_count, disabled_count = _sync_remote_inbounds(
@@ -315,7 +316,7 @@ async def sync_server_inbounds(
         },
     )
 
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         "سینک اینباندها انجام شد.\n"
         f"اینباند جدید: {synced_count}\n"
         f"اینباند غیرفعال‌شده: {disabled_count}\n"
@@ -337,7 +338,7 @@ async def toggle_server(
         .where(XUIServerRecord.id == callback_data.server_id)
     )
     if server is None:
-        await callback.message.answer(AdminMessages.SERVER_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.SERVER_NOT_FOUND)
         return
 
     previous_state = server.is_active
@@ -372,7 +373,7 @@ async def delete_server(
         .where(XUIServerRecord.id == callback_data.server_id)
     )
     if server is None:
-        await callback.message.answer(AdminMessages.SERVER_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.SERVER_NOT_FOUND)
         return
 
     active_client_count = int(
@@ -426,7 +427,7 @@ async def server_manage_menu(
         .where(XUIServerRecord.id == callback_data.server_id)
     )
     if server is None:
-        await callback.message.answer(AdminMessages.SERVER_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.SERVER_NOT_FOUND)
         return
 
     active_inbounds = sum(1 for inbound in server.inbounds if inbound.is_active)
@@ -512,7 +513,7 @@ async def edit_domain_start(
     builder.button(text="پرش (حذف مقدار)", callback_data="server:domain:skip_config")
     builder.adjust(1)
     
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         "ابتدا دامنه یا آدرس IP که برای ساخت کانفیگ‌ها (VLESS/VMess) استفاده می‌شود را وارد کنید.\n"
         "(مثلاً proxy.example.com یا آدرس IP تمیز)\n"
         "اگر مقداری ارسال نکنید، از همون آدرس پنل X-UI استفاده می‌شود.",
@@ -593,7 +594,7 @@ async def edit_limit_start(
     builder.button(text="نامحدود (بدون لیمیت)", callback_data="server:limit:unlimited")
     builder.adjust(1)
     
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         "حداکثر تعداد کلاینت (کاربر فعال) مجاز روی این سرور را به عدد ارسال کنید.\n"
         "مثلاً: 100",
         reply_markup=builder.as_markup()
@@ -648,12 +649,12 @@ async def edit_url_start(
     await callback.answer()
     server = await session.get(XUIServerRecord, callback_data.server_id)
     if server is None:
-        await callback.message.answer(AdminMessages.SERVER_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.SERVER_NOT_FOUND)
         return
 
     await state.update_data(server_id=str(callback_data.server_id), page=callback_data.page)
     await state.set_state(ServerManageStates.waiting_for_new_base_url)
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         f"آدرس فعلی سرور:\n`{server.base_url}`\n\n"
         "آدرس جدید سرور (به همراه پورت) را وارد کنید:\n"
         "مثلاً: http://1.2.3.4:54321 یا https://panel.example.com:2053",
@@ -736,13 +737,13 @@ async def edit_creds_start(
         .where(XUIServerRecord.id == callback_data.server_id)
     )
     if server is None:
-        await callback.message.answer(AdminMessages.SERVER_NOT_FOUND)
+        await safe_edit_or_send(callback, AdminMessages.SERVER_NOT_FOUND)
         return
 
     current_username = server.credentials.username if server.credentials else "-"
     await state.update_data(server_id=str(callback_data.server_id), page=callback_data.page)
     await state.set_state(ServerManageStates.waiting_for_new_username)
-    await callback.message.answer(
+    await safe_edit_or_send(callback, 
         f"یوزرنیم فعلی: `{current_username}`\n\n"
         "یوزرنیم جدید پنل X-UI را وارد کنید:",
         parse_mode="Markdown",
@@ -865,7 +866,7 @@ async def _edit_or_send(
     try:
         await callback.message.edit_text(text, reply_markup=reply_markup)
     except TelegramBadRequest:
-        await callback.message.answer(text, reply_markup=reply_markup)
+        await safe_edit_or_send(callback, text, reply_markup=reply_markup)
 
 
 def _sync_remote_inbounds(
