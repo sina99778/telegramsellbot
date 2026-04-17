@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.states.admin import ManageUserStates
+from core.formatting import format_volume_bytes, format_usage_bar
 from core.texts import AdminButtons, AdminMessages
 from models.order import Order
 from models.subscription import Subscription
@@ -488,9 +489,11 @@ async def view_user_configs(
             [
                 (
                     f"📦 اشتراک: {str(sub.id)[:8]}\n"
-                    f"وضعیت: {sub.status}\n"
-                    f"مصرف: {sub.used_bytes}/{sub.volume_bytes}\n"
-                    f"لینک: {sub.sub_link or '-'}"
+                    f"وضعیت: {'✅ فعال' if sub.status == 'active' else '⏳ در انتظار فعال‌سازی'}\n"
+                    f"مصرف: {format_volume_bytes(sub.used_bytes)} / {format_volume_bytes(sub.volume_bytes)}\n"
+                    f"{format_usage_bar(sub.used_bytes, sub.volume_bytes)}\n"
+                    f"{'📅 انقضا: ' + sub.ends_at.strftime('%Y-%m-%d') if sub.ends_at else ''}\n"
+                    f"🔗 لینک: {sub.sub_link or '-'}"
                 )
                 for sub in active_subs
             ]
