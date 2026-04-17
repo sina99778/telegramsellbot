@@ -8,15 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from core.texts import AdminButtons, AdminMessages
 from repositories.admin import AdminStatsRepository
-
+from repositories.settings import AppSettingsRepository
+from apps.bot.utils.messaging import safe_edit_or_send
+from core.formatting import format_volume_bytes
 
 router = Router(name="admin-stats")
 router.message.middleware(AdminOnlyMiddleware())
 router.callback_query.middleware(AdminOnlyMiddleware())
 
-
-from repositories.settings import AppSettingsRepository
-from apps.bot.utils.messaging import safe_edit_or_send
 
 @router.callback_query(F.data == "admin:stats")
 async def admin_stats_dashboard(callback: CallbackQuery, session: AsyncSession) -> None:
@@ -31,7 +30,7 @@ async def admin_stats_dashboard(callback: CallbackQuery, session: AsyncSession) 
     total_active_subscriptions = await stats_repository.get_total_active_subscriptions()
     total_revenue = await stats_repository.get_total_revenue(reset_at=reset_at)
     total_active_servers = await stats_repository.get_total_active_servers()
-
+    total_used_volume = format_volume_bytes(await stats_repository.get_total_used_bytes())
     builder = InlineKeyboardBuilder()
     builder.button(text=AdminButtons.RESET_REVENUE, callback_data="admin:stats:reset_confirm")
     builder.button(text="📊 ظرفیت سرورها", callback_data="admin:stats:server_capacity")
@@ -45,6 +44,7 @@ async def admin_stats_dashboard(callback: CallbackQuery, session: AsyncSession) 
             total_users=total_users,
             total_active_subscriptions=total_active_subscriptions,
             total_revenue=total_revenue,
+            total_used_volume=total_used_volume,
             total_active_servers=total_active_servers,
         ),
         reply_markup=builder.as_markup(),

@@ -268,10 +268,11 @@ async def renew_confirm_payment(
 
     # Notify admins
     from services.notifications import notify_admins
+    user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
     renew_type_label = "حجم" if callback_data.type == "volume" else "زمان"
     admin_text = (
         "🔄 تمدید سرویس!\n\n"
-        f"👤 کاربر: {user.first_name or '-'} (ID: {user.telegram_id})\n"
+        f"👤 کاربر: {user.first_name or '-'} | {user_link} (ID: <code>{user.telegram_id}</code>)\n"
         f"📦 نوع: {renew_type_label}\n"
         f"📊 مقدار: {callback_data.amount}\n"
         f"💰 مبلغ: {price} USD"

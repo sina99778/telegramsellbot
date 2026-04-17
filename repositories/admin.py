@@ -41,3 +41,9 @@ class AdminStatsRepository:
             select(func.count()).select_from(XUIServerRecord).where(XUIServerRecord.is_active.is_(True))
         )
         return int(result or 0)
+
+    async def get_total_used_bytes(self) -> int:
+        result = await self.session.scalar(
+            select(func.sum(Subscription.used_bytes)).select_from(Subscription)
+        )
+        return int(result or 0)

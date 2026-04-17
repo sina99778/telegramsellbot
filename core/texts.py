@@ -202,6 +202,7 @@ class AdminMessages:
         "کل کاربران: {total_users}\n"
         "اشتراک‌های فعال: {total_active_subscriptions}\n"
         "کل درآمد: {total_revenue} دلار\n"
+        "مجموع مصرف کاربران: {total_used_volume}\n"
         "سرورهای فعال: {total_active_servers}"
     )
     PERMISSION_DENIED = "شما دسترسی لازم را ندارید."

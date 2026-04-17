@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from apps.bot.keyboards.inline import add_pagination_controls
-from apps.bot.handlers.admin.users import AdminUserActionCallback
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from core.texts import AdminButtons, AdminMessages
 from models.subscription import Subscription
