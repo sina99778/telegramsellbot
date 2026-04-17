@@ -36,6 +36,7 @@ async def admin_stats_dashboard(callback: CallbackQuery, session: AsyncSession) 
     builder.button(text="📊 ظرفیت سرورها", callback_data="admin:stats:server_capacity")
     builder.button(text="❌ سرویس‌های منقضی", callback_data="admin:stats:expired_subs")
     builder.button(text="📥 خروجی CSV کاربران", callback_data="admin:stats:export_csv")
+    builder.button(text="📅 گزارش فروش هفتگی", callback_data="admin:stats:weekly_sales")
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
     builder.adjust(1)
 
@@ -164,11 +165,69 @@ async def admin_export_csv(callback: CallbackQuery, session: AsyncSession) -> No
     csv_bytes = output.getvalue().encode("utf-8-sig")  # BOM for Excel compatibility
     doc = BufferedInputFile(csv_bytes, filename="users_export.csv")
 
-    bot = callback.bot
-    await bot.send_document(
-        chat_id=callback.from_user.id,
+    await callback.message.answer_document(
         document=doc,
-        caption=f"📥 خروجی {len(users)} کاربر",
+        caption="📥 دیتابیس کاربران"
+    )
+
+
+@router.callback_query(F.data == "admin:stats:weekly_sales")
+async def admin_export_weekly_sales_csv(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Export weekly sales CSV."""
+    await callback.answer("⏳ در حال تولید گزارش...")
+    
+    from sqlalchemy import select, desc
+    from datetime import datetime, timedelta
+    from models.order import Order
+    from sqlalchemy.orm import selectinload
+    import io
+    import csv
+    from aiogram.types import BufferedInputFile
+    
+    one_week_ago = datetime.utcnow() - timedelta(days=7)
+    
+    stmt = (
+        select(Order)
+        .options(selectinload(Order.user), selectinload(Order.plan))
+        .where(Order.created_at >= one_week_ago, Order.status.in_(["paid", "provisioned", "completed"]))
+        .order_by(desc(Order.created_at))
+    )
+    result = await session.scalars(stmt)
+    orders = result.all()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "Order ID", "Date", "User ID", "Name", "Username", "Plan",
+        "Amount Paid", "Currency", "Payment Method"
+    ])
+    
+    for order in orders:
+        user = order.user
+        plan = order.plan
+        
+        provider_mapped = "درگاه (Gateway)" if order.source == "gateway" else "موجودی کیف پول (Wallet)"
+        
+        writer.writerow([
+            str(order.id),
+            order.created_at.strftime("%Y-%m-%d %H:%M:%S") if order.created_at else "",
+            str(user.telegram_id) if user else "",
+            user.first_name if user else "",
+            user.username if (user and user.username) else "",
+            plan.name if plan else "Unknown Plan",
+            f"{order.amount:.2f}",
+            order.currency,
+            provider_mapped
+        ])
+        
+    csv_bytes = output.getvalue().encode("utf-8-sig")  # BOM for Excel
+    doc = BufferedInputFile(csv_bytes, filename=f"weekly_sales_{datetime.utcnow().strftime('%Y%m%d')}.csv")
+    
+    await callback.message.answer_document(
+        document=doc,
+        caption="📅 گزارش فروش ۷ روز گذشته\n"
+        f"تعداد سفارش: {len(orders)}\n\n"
+        "💡 فایل پیوست را در اکسل باز کنید."
     )
 
 

@@ -220,9 +220,10 @@ async def _handle_direct_purchase(
 
         # Notify admins
         from services.notifications import notify_admins
+        user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
         admin_text = (
             "🛒 خرید جدید (درگاه)!\n\n"
-            f"👤 کاربر: {user.first_name or '-'} (ID: {user.telegram_id})\n"
+            f"👤 کاربر: {user.first_name or '-'} | {user_link} (ID: <code>{user.telegram_id}</code>)\n"
             f"📦 پلن: {plan.name}\n"
             f"💰 مبلغ: {final_price:.2f} {plan.currency}\n"
             f"📛 کانفیگ: {config_name}\n"
