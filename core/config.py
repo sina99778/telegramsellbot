@@ -39,6 +39,11 @@ class Settings(BaseSettings):
 
     web_base_url: str = "http://localhost:8000"
     nowpayments_ipn_callback_url: str = "http://localhost:8000/api/webhooks/nowpayments"
+    
+    tetrapay_api_key: SecretStr = SecretStr("CHANGE_ME")
+    tetrapay_base_url: str = "https://tetra98.com/api"
+    tetrapay_callback_url: str = "http://localhost:8000/api/webhooks/tetrapay"
+    
     support_url: str | None = None
     owner_telegram_id: int | None = None
     admin_api_key: SecretStr | None = None

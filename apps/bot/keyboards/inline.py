@@ -44,7 +44,7 @@ def build_wallet_topup_keyboard() -> InlineKeyboardMarkup:
 
 def build_wallet_profile_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text=Buttons.TOPUP_CRYPTO, callback_data="wallet:topup")
+    builder.button(text="💳 شارژ حساب", callback_data="wallet:topup")
     builder.button(text="📊 تاریخچه تراکنش‌ها", callback_data="wallet:history")
     builder.button(text="❌ بستن", callback_data="purchase:cancel")
     builder.adjust(1)
@@ -53,6 +53,15 @@ def build_wallet_profile_keyboard() -> InlineKeyboardMarkup:
 def build_wallet_history_keyboard() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text=Buttons.BACK, callback_data="wallet:profile")
+    return builder.as_markup()
+
+
+def build_gateway_selection_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="wallet:topup:pay:tetrapay")
+    builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="wallet:topup:pay:gateway")
+    builder.button(text=Buttons.BACK, callback_data="wallet:topup")
+    builder.adjust(1)
     return builder.as_markup()
 
 

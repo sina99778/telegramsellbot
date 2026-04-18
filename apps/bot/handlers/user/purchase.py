@@ -220,7 +220,8 @@ async def _show_payment_method_choice(
 
     builder = InlineKeyboardBuilder()
     builder.button(text="👛 کیف پول", callback_data="purchase:pay:wallet")
-    builder.button(text="💳 درگاه پرداخت (کریپتو)", callback_data="purchase:pay:gateway")
+    builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="purchase:pay:tetrapay")
+    builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
     builder.button(text=Buttons.BACK, callback_data="purchase:cancel")
     builder.adjust(1)
 
@@ -267,7 +268,8 @@ async def _show_payment_method_choice_msg(
 
     builder = InlineKeyboardBuilder()
     builder.button(text="👛 کیف پول", callback_data="purchase:pay:wallet")
-    builder.button(text="💳 درگاه پرداخت (کریپتو)", callback_data="purchase:pay:gateway")
+    builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="purchase:pay:tetrapay")
+    builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
     builder.button(text=Buttons.BACK, callback_data="purchase:cancel")
     builder.adjust(1)
 
@@ -323,6 +325,22 @@ async def pay_with_gateway(
         logger.error("Gateway purchase failed: %s", exc, exc_info=True)
         await state.clear()
         await safe_edit_or_send(callback, f"خطا در ساخت فاکتور:\n{exc}")
+
+
+@router.callback_query(F.data == "purchase:pay:tetrapay")
+async def pay_with_tetrapay(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Pay with TetraPay gateway (Tomans)."""
+    await callback.answer()
+    try:
+        await _process_tetrapay_purchase(callback, state, session)
+    except Exception as exc:
+        logger.error("TetraPay purchase failed: %s", exc, exc_info=True)
+        await state.clear()
+        await safe_edit_or_send(callback, f"خطا در ایجاد فاکتور ریالی:\n{exc}")
 
 
 async def _process_wallet_purchase(
@@ -478,6 +496,108 @@ async def _process_gateway_purchase(
     from apps.bot.keyboards.inline import build_topup_link_keyboard
 
     discount_line = ""
+
+
+async def _process_tetrapay_purchase(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Create a TetraPay invoice for the purchase amount in Tomans."""
+    if callback.from_user is None:
+        return
+
+    data = await state.get_data()
+    # DON'T clear state yet
+    
+    plan_id = UUID(data["plan_id"])
+    config_name = data.get("config_name", "VPN")
+    discount_percent = data.get("discount_percent", 0)
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    plan = await session.get(Plan, plan_id)
+    if user is None or plan is None or not plan.is_active:
+        await state.clear()
+        await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
+        return
+
+    original_price = plan.price
+    if discount_percent > 0:
+        final_price = (original_price * (Decimal(100 - discount_percent) / Decimal(100))).quantize(Decimal("0.01"))
+    else:
+        final_price = original_price
+
+    from repositories.settings import AppSettingsRepository
+    toman_rate = await AppSettingsRepository(session).get_toman_rate()
+    # Cost in tomans
+    toman_amount = int((final_price * toman_rate).quantize(Decimal("1")))
+    
+    from uuid import uuid4
+    from core.config import settings
+    from models.payment import Payment
+    from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
+
+    local_order_id = str(uuid4())
+
+    purchase_meta = {
+        "plan_id": str(plan_id),
+        "config_name": config_name,
+        "discount_percent": discount_percent,
+        "discount_id": data.get("discount_id"),
+        "purpose": "direct_purchase",
+    }
+    
+    try:
+        async with TetraPayClient(
+            TetraPayClientConfig(
+                api_key=settings.tetrapay_api_key.get_secret_value(),
+                base_url=settings.tetrapay_base_url,
+            )
+        ) as client:
+            tx = await client.create_order(
+                hash_id=local_order_id,
+                amount=toman_amount,
+                description=f"خرید سرویس {plan.name} - کاربر {user.telegram_id}",
+                email=user.email or f"{user.telegram_id}@telegram.org",
+                mobile="09111111111", # Placeholder usually accepted unless strict check
+            )
+    except TetraPayRequestError:
+        await state.clear()
+        await safe_edit_or_send(callback, Messages.PAYMENT_GATEWAY_UNAVAILABLE)
+        return
+
+    payment = Payment(
+        user_id=user.id,
+        provider="tetrapay",
+        kind="direct_purchase",
+        provider_payment_id=tx.Authority,  # We can save it later or now
+        order_id=local_order_id,
+        payment_status="waiting",
+        pay_currency="IRT",
+        price_currency="USD",
+        price_amount=final_price,
+        pay_amount=toman_amount,
+        invoice_url=tx.payment_url_web,
+        callback_payload=purchase_meta,
+    )
+    session.add(payment)
+    await session.flush()
+    await state.clear()
+
+    from apps.bot.keyboards.inline import build_topup_link_keyboard
+    from core.formatting import format_price_with_toman
+    price_display = format_price_with_toman(final_price, toman_rate)
+
+    text = (
+        "🔖 **فاکتور پرداخت (ریالی/تومانی)**\n\n"
+        f"💳 درگاه: تتراپی\n"
+        f"💵 مبلغ پرداخت: `{toman_amount:,}` تومان\n\n"
+        "👇 برای پرداخت روی دکمه زیر کلیک کنید:"
+    )
+    await safe_edit_or_send(
+        callback, text, reply_markup=build_topup_link_keyboard(tx.payment_url_web)
+    )
+
     if discount_percent > 0:
         discount_line = f"🏷 تخفیف: {discount_percent}%\n"
 

@@ -138,12 +138,20 @@ async def topup_options_handler(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("wallet:topup:preset:"))
 async def topup_preset_handler(
     callback: CallbackQuery,
-    session: AsyncSession,
+    state: FSMContext,
 ) -> None:
     await callback.answer()
     raw_amount = callback.data.rsplit(":", 1)[-1]
     amount = Decimal(raw_amount)
-    await _create_topup_invoice(callback.from_user.id, amount, callback.message, session)
+    
+    await state.update_data(topup_amount=str(amount))
+    
+    from apps.bot.keyboards.inline import build_gateway_selection_keyboard
+    await safe_edit_or_send(
+        callback,
+        "💳 لطفاً درگاه پرداخت را انتخاب کنید:",
+        reply_markup=build_gateway_selection_keyboard()
+    )
 
 
 @router.callback_query(F.data == "wallet:topup:custom")
@@ -157,7 +165,6 @@ async def topup_custom_amount_prompt(callback: CallbackQuery, state: FSMContext)
 async def topup_custom_amount_handler(
     message: Message,
     state: FSMContext,
-    session: AsyncSession,
 ) -> None:
     if message.from_user is None or message.text is None:
         return
@@ -172,11 +179,51 @@ async def topup_custom_amount_handler(
         await message.answer(Messages.TOPUP_AMOUNT_GT_ZERO)
         return
 
-    await state.clear()
-    await _create_topup_invoice(message.from_user.id, amount, message, session)
+    await state.update_data(topup_amount=str(amount))
+    await state.set_state(None) # clear state
+    
+    from apps.bot.keyboards.inline import build_gateway_selection_keyboard
+    await message.answer(
+        "💳 لطفاً درگاه پرداخت را انتخاب کنید:",
+        reply_markup=build_gateway_selection_keyboard()
+    )
+
+@router.callback_query(F.data == "wallet:topup:pay:gateway")
+async def topup_pay_gateway(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Pay with NOWPayments"""
+    await callback.answer()
+    data = await state.get_data()
+    amount_str = data.get("topup_amount")
+    if not amount_str:
+        await safe_edit_or_send(callback, Messages.TOPUP_AMOUNT_GT_ZERO)
+        return
+        
+    await _create_nowpayments_topup_invoice(callback.from_user.id, Decimal(amount_str), callback.message, session)
+
+@router.callback_query(F.data == "wallet:topup:pay:tetrapay")
+async def topup_pay_tetrapay(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Pay with TetraPay"""
+    await callback.answer()
+    data = await state.get_data()
+    amount_str = data.get("topup_amount")
+    if not amount_str:
+        await safe_edit_or_send(callback, Messages.TOPUP_AMOUNT_GT_ZERO)
+        return
+        
+    await _create_tetrapay_topup_invoice(callback.from_user.id, Decimal(amount_str), callback.message, session)
 
 
-async def _create_topup_invoice(
+
+
+async def _create_nowpayments_topup_invoice(
     telegram_id: int,
     amount: Decimal,
     message: Message,
@@ -228,4 +275,70 @@ async def _create_topup_invoice(
     await message.answer(
         Messages.TOPUP_INVOICE_CREATED.format(amount=amount),
         reply_markup=build_topup_link_keyboard(str(invoice.invoice_url)),
+    )
+
+async def _create_tetrapay_topup_invoice(
+    telegram_id: int,
+    amount: Decimal,
+    message: Message,
+    session: AsyncSession,
+) -> None:
+    user = await UserRepository(session).get_by_telegram_id(telegram_id)
+    if user is None:
+        await message.answer(Messages.ACCOUNT_NOT_FOUND)
+        return
+
+    from repositories.settings import AppSettingsRepository
+    toman_rate = await AppSettingsRepository(session).get_toman_rate()
+    toman_amount = int((amount * toman_rate).quantize(Decimal("1")))
+
+    local_order_id = str(uuid4())
+    
+    from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
+    
+    try:
+        async with TetraPayClient(
+            TetraPayClientConfig(
+                api_key=settings.tetrapay_api_key.get_secret_value(),
+                base_url=settings.tetrapay_base_url,
+            )
+        ) as client:
+            tx = await client.create_order(
+                hash_id=local_order_id,
+                amount=toman_amount,
+                description=f"شارژ کیف پول - کاربر {user.telegram_id}",
+                email=user.email or f"{user.telegram_id}@telegram.org",
+                mobile="09111111111",
+            )
+    except TetraPayRequestError:
+        await message.answer(Messages.PAYMENT_GATEWAY_UNAVAILABLE)
+        return
+
+    payment = Payment(
+        user_id=user.id,
+        provider="tetrapay",
+        kind="wallet_topup",
+        provider_payment_id=tx.Authority,
+        order_id=local_order_id,
+        payment_status="waiting",
+        pay_currency="IRT",
+        price_currency="USD",
+        price_amount=amount,
+        pay_amount=toman_amount,
+        invoice_url=tx.payment_url_web,
+        callback_payload={},
+    )
+    session.add(payment)
+    await session.flush()
+
+    text = (
+        "🔖 **فاکتور شارژ (ریالی/تومانی)**\n\n"
+        f"💳 درگاه: تتراپی\n"
+        f"💵 مبلغ پرداخت: `{toman_amount:,}` تومان\n"
+        f"💰 شارژ دلاری: `{amount:.2f}` دلار\n\n"
+        "👇 برای پرداخت روی دکمه زیر کلیک کنید:"
+    )
+    await message.answer(
+        text,
+        reply_markup=build_topup_link_keyboard(tx.payment_url_web),
     )
