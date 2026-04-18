@@ -558,7 +558,7 @@ async def _process_tetrapay_purchase(
                 hash_id=local_order_id,
                 amount=toman_amount,
                 description=f"خرید سرویس {plan.name} - کاربر {user.telegram_id}",
-                email=user.email or f"{user.telegram_id}@telegram.org",
+                email=f"{user.telegram_id}@telegram.org",
                 mobile="09111111111", # Placeholder usually accepted unless strict check
             )
     except TetraPayRequestError:

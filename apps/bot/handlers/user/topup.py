@@ -307,7 +307,7 @@ async def _create_tetrapay_topup_invoice(
                 hash_id=local_order_id,
                 amount=toman_amount,
                 description=f"شارژ کیف پول - کاربر {user.telegram_id}",
-                email=user.email or f"{user.telegram_id}@telegram.org",
+                email=f"{user.telegram_id}@telegram.org",
                 mobile="09111111111",
             )
     except TetraPayRequestError:
