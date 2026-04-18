@@ -45,6 +45,7 @@ class TetraPayClient:
             self._session = httpx.AsyncClient(
                 base_url=self.config.base_url,
                 timeout=self.config.timeout,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
             )
 
     async def close(self) -> None:
