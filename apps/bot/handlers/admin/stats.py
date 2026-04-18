@@ -40,14 +40,20 @@ async def admin_stats_dashboard(callback: CallbackQuery, session: AsyncSession) 
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
     builder.adjust(1)
 
-    await callback.message.edit_text(
-        AdminMessages.STATS_DASHBOARD.format(
-            total_users=total_users,
-            total_active_subscriptions=total_active_subscriptions,
-            total_revenue=total_revenue,
-            total_used_volume=total_used_volume,
-            total_active_servers=total_active_servers,
-        ),
+    from datetime import datetime
+    current_time = datetime.utcnow().strftime("%H:%M:%S (UTC)")
+    
+    text = AdminMessages.STATS_DASHBOARD.format(
+        total_users=total_users,
+        total_active_subscriptions=total_active_subscriptions,
+        total_revenue=total_revenue,
+        total_used_volume=total_used_volume,
+        total_active_servers=total_active_servers,
+    ) + f"\n\n🕒 به‌روزرسانی: {current_time}"
+
+    await safe_edit_or_send(
+        callback=callback,
+        text=text,
         reply_markup=builder.as_markup(),
     )
 
