@@ -37,6 +37,7 @@ async def admin_stats_dashboard(callback: CallbackQuery, session: AsyncSession) 
     builder.button(text="❌ سرویس‌های منقضی", callback_data="admin:stats:expired_subs")
     builder.button(text="📥 خروجی CSV کاربران", callback_data="admin:stats:export_csv")
     builder.button(text="📅 گزارش فروش هفتگی", callback_data="admin:stats:weekly_sales")
+    builder.button(text="🔄 آپدیت آنی مصرف", callback_data="admin:stats:force_sync")
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
     builder.adjust(1)
 
@@ -56,6 +57,19 @@ async def admin_stats_dashboard(callback: CallbackQuery, session: AsyncSession) 
         text=text,
         reply_markup=builder.as_markup(),
     )
+
+
+@router.callback_query(F.data == "admin:stats:force_sync")
+async def admin_force_sync_stats(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Force immediately syncing usage across all servers."""
+    await callback.answer("⏳ در حال دریافت لحظه‌ای مصرف از سرورها... (ممکن است کمی طول بکشد)")
+    from apps.worker.jobs.subscriptions import sync_all_subscription_states
+    await sync_all_subscription_states()
+    # Let users see the update
+    # Call the dashboard again
+    # We must commit current session so we read the updated data done by the worker's own session
+    await session.commit()
+    await admin_stats_dashboard(callback, session)
 
 
 @router.callback_query(F.data == "admin:stats:server_capacity")
