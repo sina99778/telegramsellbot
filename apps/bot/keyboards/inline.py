@@ -68,8 +68,7 @@ def build_gateway_selection_keyboard() -> InlineKeyboardMarkup:
 def build_topup_link_keyboard(invoice_url: str, bot_url: str | None = None) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     if bot_url:
-        builder.button(text="🌐 پرداخت در وب‌سایت", url=invoice_url)
-        builder.button(text="🤖 پرداخت در صفحه تلگرامی", url=bot_url)
+        builder.button(text="💳 پرداخت در تتراپی", url=bot_url)
     else:
         builder.button(text=Buttons.OPEN_PAYMENT, url=invoice_url)
     builder.adjust(1)

@@ -117,6 +117,16 @@ async def _handle_direct_purchase(
     from models.order import Order
     from core.formatting import format_volume_bytes
 
+    # Consume discount code NOW (after payment confirmed), not at invoice creation
+    discount_id_str = purchase_meta.get("discount_id")
+    if discount_id_str:
+        from repositories.discount import DiscountRepository
+        from models.discount import DiscountCode
+        dc = await session.get(DiscountCode, UUID(discount_id_str))
+        if dc and dc.current_uses < dc.max_uses:
+            await DiscountRepository(session).use_code(dc)
+            logger.info("[PROVISION] Consumed discount code %s", dc.id)
+
     order = Order(
         user_id=user.id,
         plan_id=plan.id,

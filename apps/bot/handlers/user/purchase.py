@@ -495,16 +495,6 @@ async def _process_gateway_purchase(
 
     from apps.bot.keyboards.inline import build_topup_link_keyboard
 
-    # Consume discount code for gateway purchases too
-    discount_id = data.get("discount_id")
-    if discount_id:
-        from repositories.discount import DiscountRepository
-        dc = await session.get(
-            __import__("models.discount", fromlist=["DiscountCode"]).DiscountCode,
-            UUID(discount_id),
-        )
-        if dc:
-            await DiscountRepository(session).use_code(dc)
 
     discount_line = ""
     if discount_percent > 0:
@@ -601,7 +591,7 @@ async def _process_tetrapay_purchase(
         price_currency="USD",
         price_amount=final_price,
         pay_amount=toman_amount,
-        invoice_url=tx.payment_url_web,
+        invoice_url=tx.payment_url_bot,
         callback_payload=purchase_meta,
     )
     session.add(payment)
@@ -611,16 +601,7 @@ async def _process_tetrapay_purchase(
     from apps.bot.keyboards.inline import build_topup_link_keyboard
     from core.formatting import format_price_with_toman
 
-    # Consume discount code for gateway purchases too
-    discount_id = data.get("discount_id")
-    if discount_id:
-        from repositories.discount import DiscountRepository
-        dc = await session.get(
-            __import__("models.discount", fromlist=["DiscountCode"]).DiscountCode,
-            UUID(discount_id),
-        )
-        if dc:
-            await DiscountRepository(session).use_code(dc)
+
 
     price_display = format_price_with_toman(final_price, toman_rate)
 
@@ -631,7 +612,7 @@ async def _process_tetrapay_purchase(
         "👇 برای پرداخت روی دکمه زیر کلیک کنید:"
     )
     await safe_edit_or_send(
-        callback, text, reply_markup=build_topup_link_keyboard(invoice_url=tx.payment_url_web, bot_url=tx.payment_url_bot)
+        callback, text, reply_markup=build_topup_link_keyboard(invoice_url=tx.payment_url_bot, bot_url=tx.payment_url_bot)
     )
 
 

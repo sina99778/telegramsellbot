@@ -325,7 +325,7 @@ async def _create_tetrapay_topup_invoice(
         price_currency="USD",
         price_amount=amount,
         pay_amount=toman_amount,
-        invoice_url=tx.payment_url_web,
+        invoice_url=tx.payment_url_bot,
         callback_payload={},
     )
     session.add(payment)
