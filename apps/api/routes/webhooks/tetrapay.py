@@ -50,7 +50,7 @@ async def tetrapay_webhook_handler(
         logger.info("TetraPay IPN: Payment %s already processed", payment.id)
         return {"status": "already_processed"}
 
-    if payload.status != "100":
+    if str(payload.status) != "100":
         logger.info("TetraPay IPN: Status is '%s' (not success). Ignoring payment.", payload.status)
         payment.payment_status = "failed"
         await session.commit()
@@ -72,7 +72,7 @@ async def tetrapay_webhook_handler(
             detail="Failed to verify payment with provider",
         )
 
-    if verify_res.status != "100":
+    if str(verify_res.status) != "100":
         logger.error("TetraPay IPN: Verification for %s returned status %s", payload.hash_id, verify_res.status)
         payment.payment_status = "failed"
         await session.commit()

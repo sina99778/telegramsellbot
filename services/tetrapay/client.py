@@ -85,7 +85,7 @@ class TetraPayClient:
             response.raise_for_status()
             data = response.json()
             
-            if data.get("status") != "100":
+            if str(data.get("status")) != "100":
                 logger.error("TetraPay API error (create_order): %s", data)
                 raise TetraPayRequestError(f"API Error. Status: {data.get('status')}")
 
