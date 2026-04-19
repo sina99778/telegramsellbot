@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 class TetraPayCreateOrderRequest(BaseModel):
     ApiKey: str
@@ -26,7 +26,7 @@ class TetraPayVerifyResponse(BaseModel):
     authority: str | None = None
 
 class TetraPayCallbackPayload(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
     status: str
-    hash_id: str | None = None
+    hash_id: str | None = Field(default=None, alias="hashid")
     authority: str
