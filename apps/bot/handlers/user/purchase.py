@@ -598,18 +598,7 @@ async def _process_tetrapay_purchase(
         callback, text, reply_markup=build_topup_link_keyboard(tx.payment_url_web)
     )
 
-    if discount_percent > 0:
-        discount_line = f"🏷 تخفیف: {discount_percent}%\n"
 
-    await safe_edit_or_send(callback, 
-        f"🧾 فاکتور خرید ساخته شد:\n\n"
-        f"📦 پلن: {plan.name}\n"
-        f"💰 مبلغ: {final_price} USD\n"
-        f"{discount_line}\n"
-        "بعد از پرداخت و تایید NOWPayments، کانفیگ شما "
-        "به صورت خودکار ساخته و ارسال می‌شود.",
-        reply_markup=build_topup_link_keyboard(str(invoice.invoice_url)),
-    )
 
 
 async def _finalize_purchase(
