@@ -556,7 +556,7 @@ async def _process_tetrapay_purchase(
         ) as client:
             tx = await client.create_order(
                 hash_id=local_order_id,
-                amount=toman_amount,
+                amount=toman_amount * 10, # Convert Toman to Rial for TetraPay API
                 description=f"خرید سرویس {plan.name} - کاربر {user.telegram_id}",
                 email=f"{user.telegram_id}@telegram.org",
                 mobile="09111111111", # Placeholder usually accepted unless strict check

@@ -305,7 +305,7 @@ async def _create_tetrapay_topup_invoice(
         ) as client:
             tx = await client.create_order(
                 hash_id=local_order_id,
-                amount=toman_amount,
+                amount=toman_amount * 10, # TetraPay accepts RIALS
                 description=f"شارژ کیف پول - کاربر {user.telegram_id}",
                 email=f"{user.telegram_id}@telegram.org",
                 mobile="09111111111",
