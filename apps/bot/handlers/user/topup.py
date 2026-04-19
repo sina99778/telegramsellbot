@@ -340,5 +340,5 @@ async def _create_tetrapay_topup_invoice(
     )
     await message.answer(
         text,
-        reply_markup=build_topup_link_keyboard(tx.payment_url_web),
+        reply_markup=build_topup_link_keyboard(invoice_url=tx.payment_url_web, bot_url=tx.payment_url_bot),
     )

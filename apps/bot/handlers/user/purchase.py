@@ -595,7 +595,7 @@ async def _process_tetrapay_purchase(
         "👇 برای پرداخت روی دکمه زیر کلیک کنید:"
     )
     await safe_edit_or_send(
-        callback, text, reply_markup=build_topup_link_keyboard(tx.payment_url_web)
+        callback, text, reply_markup=build_topup_link_keyboard(invoice_url=tx.payment_url_web, bot_url=tx.payment_url_bot)
     )
 
 
