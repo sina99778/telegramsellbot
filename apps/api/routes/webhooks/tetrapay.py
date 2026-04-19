@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
-from core.database import get_db
+from apps.api.dependencies.db import get_db_session
 from models.payment import Payment
 from schemas.internal.tetrapay import TetraPayCallbackPayload
 from services.payment import process_successful_payment
@@ -22,7 +22,7 @@ router = APIRouter(prefix="/tetrapay", tags=["webhooks", "tetrapay"])
 @router.post("")
 async def tetrapay_webhook_handler(
     payload: TetraPayCallbackPayload,
-    session: AsyncSession = Depends(get_db),
+    session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, str]:
     """Handle incoming TetraPay IPN / Callback requests."""
     
