@@ -31,13 +31,16 @@ async def handle_nowpayments_ipn(
 
     logger.info("IPN received. Signature present: %s, Body length: %d", bool(signature), len(raw_body))
 
-    # Validate signature — warn but DO NOT reject to avoid blocking payments
-    # The user must ensure NOWPAYMENTS_IPN_SECRET matches the NowPayments dashboard
+    # Validate signature — REJECT invalid signatures to prevent forged callbacks
     if settings.nowpayments_ipn_secret is not None:
         if not _is_valid_nowpayments_signature(raw_body=raw_body, signature=signature):
             logger.warning(
-                "IPN signature validation FAILED — processing anyway. "
+                "IPN signature validation FAILED — REJECTING request. "
                 "Please check NOWPAYMENTS_IPN_SECRET matches your NowPayments dashboard setting!"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Invalid IPN signature.",
             )
         else:
             logger.info("IPN signature validated OK")

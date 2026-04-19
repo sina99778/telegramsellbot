@@ -495,7 +495,31 @@ async def _process_gateway_purchase(
 
     from apps.bot.keyboards.inline import build_topup_link_keyboard
 
+    # Consume discount code for gateway purchases too
+    discount_id = data.get("discount_id")
+    if discount_id:
+        from repositories.discount import DiscountRepository
+        dc = await session.get(
+            __import__("models.discount", fromlist=["DiscountCode"]).DiscountCode,
+            UUID(discount_id),
+        )
+        if dc:
+            await DiscountRepository(session).use_code(dc)
+
     discount_line = ""
+    if discount_percent > 0:
+        discount_line = f"🏷 تخفیف: {discount_percent}%\n"
+
+    await safe_edit_or_send(
+        callback,
+        f"🧾 فاکتور خرید ساخته شد:\n\n"
+        f"📦 پلن: {plan.name}\n"
+        f"💰 مبلغ: {final_price} USD\n"
+        f"{discount_line}\n"
+        "بعد از پرداخت و تایید NOWPayments، کانفیگ شما "
+        "به صورت خودکار ساخته و ارسال می‌شود.",
+        reply_markup=build_topup_link_keyboard(str(invoice.invoice_url)),
+    )
 
 
 async def _process_tetrapay_purchase(
@@ -586,6 +610,18 @@ async def _process_tetrapay_purchase(
 
     from apps.bot.keyboards.inline import build_topup_link_keyboard
     from core.formatting import format_price_with_toman
+
+    # Consume discount code for gateway purchases too
+    discount_id = data.get("discount_id")
+    if discount_id:
+        from repositories.discount import DiscountRepository
+        dc = await session.get(
+            __import__("models.discount", fromlist=["DiscountCode"]).DiscountCode,
+            UUID(discount_id),
+        )
+        if dc:
+            await DiscountRepository(session).use_code(dc)
+
     price_display = format_price_with_toman(final_price, toman_rate)
 
     text = (

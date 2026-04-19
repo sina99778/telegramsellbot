@@ -201,9 +201,11 @@ setup_env_builder() {
   local current_bot_token current_owner current_xui_base_url current_xui_username current_xui_password
   local current_nowpayments_api_key current_domain current_app_secret current_postgres_password
   local current_redis_password current_admin_api_key current_nowpayments_ipn_secret
+  local current_tetrapay_api_key
   local bot_token owner_telegram_id xui_base_url xui_username xui_password nowpayments_api_key domain_name
   local app_secret_key postgres_password redis_password admin_api_key nowpayments_ipn_secret
-  local postgres_user postgres_db database_url redis_url webhook_url support_url web_base_url
+  local tetrapay_api_key
+  local postgres_user postgres_db database_url redis_url webhook_url support_url web_base_url tetrapay_callback_url
 
   current_bot_token="$(read_env_value BOT_TOKEN)"
   current_owner="$(read_env_value OWNER_TELEGRAM_ID)"
@@ -217,6 +219,7 @@ setup_env_builder() {
   current_redis_password="$(read_env_value REDIS_PASSWORD)"
   current_admin_api_key="$(read_env_value ADMIN_API_KEY)"
   current_nowpayments_ipn_secret="$(read_env_value NOWPAYMENTS_IPN_SECRET)"
+  current_tetrapay_api_key="$(read_env_value TETRAPAY_API_KEY)"
 
   prompt_with_default "Bot Token" bot_token "${current_bot_token}" 1
   prompt_with_default "Admin Telegram ID" owner_telegram_id "${current_owner}"
@@ -224,6 +227,7 @@ setup_env_builder() {
   prompt_with_default "X-UI Username" xui_username "${current_xui_username}"
   prompt_with_default "X-UI Password" xui_password "${current_xui_password}" 1
   prompt_with_default "NOWPayments API Key" nowpayments_api_key "${current_nowpayments_api_key}" 1
+  prompt_with_default "TetraPay API Key (leave empty to skip)" tetrapay_api_key "${current_tetrapay_api_key}" 1
   prompt_with_default "Domain Name (for webhook/API)" domain_name "${current_domain}"
 
   app_secret_key="${current_app_secret:-$(generate_fernet_key)}"
@@ -237,6 +241,7 @@ setup_env_builder() {
   database_url="postgresql+asyncpg://${postgres_user}:${postgres_password}@postgres:5432/${postgres_db}"
   redis_url="redis://default:${redis_password}@redis:6379/0"
   webhook_url="https://${domain_name}/api/webhooks/nowpayments"
+  tetrapay_callback_url="https://${domain_name}/api/webhooks/tetrapay"
   support_url="https://${domain_name}"
   web_base_url="https://${domain_name}"
 
@@ -268,6 +273,10 @@ NOWPAYMENTS_API_KEY=${nowpayments_api_key}
 NOWPAYMENTS_BASE_URL=https://api.nowpayments.io/v1
 NOWPAYMENTS_IPN_SECRET=${nowpayments_ipn_secret}
 NOWPAYMENTS_IPN_CALLBACK_URL=${webhook_url}
+
+TETRAPAY_API_KEY=${tetrapay_api_key:-CHANGE_ME}
+TETRAPAY_BASE_URL=https://tetra98.com/api
+TETRAPAY_CALLBACK_URL=${tetrapay_callback_url}
 
 WEB_BASE_URL=${web_base_url}
 SUPPORT_URL=${support_url}
