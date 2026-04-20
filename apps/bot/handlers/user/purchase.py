@@ -15,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.bot.keyboards.inline import build_plan_selection_keyboard, build_wallet_topup_keyboard
 from apps.bot.states.purchase import PurchaseStates
 from core.formatting import format_volume_bytes, escape_markdown as _escape
-from core.qr import make_qr_bytes
+from services.banner import create_traffic_banner
+import urllib.parse
 from core.texts import Buttons, Messages
 from models.order import Order
 from models.plan import Plan
@@ -721,19 +722,42 @@ async def _finalize_purchase(
         "📋 *کانفیگ مستقیم:*\n"
         f"`{_escape(vless_uri)}`\n\n"
         "━━━━━━━━━━━━━━━━\n"
-        "📱 *QR Code رو اسکن کن یا کانفیگ بالا رو کپی کن*\n"
-        "⚡ ساپورت اپ‌هایی مثل v2rayNG، Hiddify، NekoBox"
+        "⚡ برای اتصال سریع روی دکمه‌های زیر کلیک کنید"
     )
-    await bot.send_message(chat_id=chat_id, text=text, parse_mode="MarkdownV2")
 
-    # QR Code
-    qr_bytes = make_qr_bytes(vless_uri)
-    if qr_bytes:
+    builder = InlineKeyboardBuilder()
+    if vless_uri:
+        encoded_uri = urllib.parse.quote(vless_uri, safe="")
+        builder.button(text="🟢 اتصال v2rayNG", url=f"v2rayng://install-config?url={encoded_uri}")
+        builder.button(text="🍎 اتصال Shadowrocket", url=f"shadowrocket://install-sub?url={encoded_uri}")
+        builder.button(text="🍎 اتصال V2Box", url=f"v2box://install-sub?url={encoded_uri}")
+        builder.adjust(2)
+
+    # Generate Banner
+    banner_bytes = create_traffic_banner(
+        config_name=config_name,
+        user_id=user.id,
+        status="pending_activation",
+        used_gb=0.0,
+        total_gb=plan.volume_bytes / (1024**3),
+        days_left=plan.duration_days,
+        is_active=True
+    )
+    
+    if banner_bytes:
         await bot.send_photo(
             chat_id=chat_id,
-            photo=BufferedInputFile(qr_bytes, filename="config_qr.png"),
-            caption=f"📷 QR کد کانفیگ *{_escape(config_name)}*",
-            parse_mode="MarkdownV2",
+            photo=BufferedInputFile(banner_bytes.getvalue(), filename="banner.png"),
+            caption=text,
+            reply_markup=builder.as_markup() if vless_uri else None,
+            parse_mode="MarkdownV2"
+        )
+    else:
+        await bot.send_message(
+            chat_id=chat_id, 
+            text=text, 
+            reply_markup=builder.as_markup() if vless_uri else None,
+            parse_mode="MarkdownV2"
         )
 
     # ── Notify admins about the purchase ──

@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from core.formatting import escape_markdown, format_usage_bar, format_volume_bytes
-from core.qr import make_qr_bytes
+from services.banner import create_traffic_banner
+import urllib.parse
 from core.texts import Buttons
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
@@ -306,17 +307,31 @@ async def my_config_detail_handler(
     if sub.status == "expired" or server_deleted:
         builder.button(text="🗑 حذف کانفیگ", callback_data=MyConfigCallback(action="delete", subscription_id=sub.id).pack())
         
-    builder.button(text=Buttons.BACK, callback_data="myconfig:back_to_list")
-    builder.adjust(2, 2, 1, 1)
-
-    # If QR code is available, send photo with text as caption
     if vless_uri:
-        qr_bytes = make_qr_bytes(vless_uri)
-        if qr_bytes:
-            # Delete the previous text-only message if it was an edit from list
-            # Actually, callback.message.edit_text works for text, but to switch to photo
-            # we usually need to send a NEW message or use edit_message_media.
-            # To keep it simple and reliable, we'll send a NEW message and try to delete the old one.
+        encoded_uri = urllib.parse.quote(vless_uri, safe="")
+        builder.button(text="🟢 اتصال v2rayNG", url=f"v2rayng://install-config?url={encoded_uri}")
+        builder.button(text="🍎 اتصال Shadowrocket", url=f"shadowrocket://install-sub?url={encoded_uri}")
+        builder.button(text="🍎 اتصال V2Box", url=f"v2box://install-sub?url={encoded_uri}")
+
+    builder.button(text=Buttons.BACK, callback_data="myconfig:back_to_list")
+    builder.adjust(2)
+
+    # If vless_uri is available, send photo with text as caption
+    if vless_uri:
+        days_left = 0
+        if sub.ends_at:
+            days_left = max((sub.ends_at - datetime.now(timezone.utc)).days, 0)
+        
+        banner_bytes = create_traffic_banner(
+            config_name=config_name,
+            user_id=user.id,
+            status=sub.status,
+            used_gb=sub.used_bytes / (1024**3),
+            total_gb=sub.volume_bytes / (1024**3),
+            days_left=days_left,
+            is_active=(sub.status in ["active", "pending_activation"])
+        )
+        if banner_bytes:
             try:
                 await callback.message.delete()
             except Exception:
@@ -324,19 +339,20 @@ async def my_config_detail_handler(
             
             await bot.send_photo(
                 chat_id=callback.from_user.id,
-                photo=BufferedInputFile(qr_bytes, filename="config_qr.png"),
+                photo=BufferedInputFile(banner_bytes.getvalue(), filename="banner.png"),
                 caption=text,
                 reply_markup=builder.as_markup(),
                 parse_mode="MarkdownV2"
             )
             return
 
-    # Fallback to text message if no QR or QR failed
+    # Fallback to text message
     if callback.message is not None:
         try:
             await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="MarkdownV2")
         except Exception:
             await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="MarkdownV2")
+
 
 
 def _status_fa(status: str) -> str:
