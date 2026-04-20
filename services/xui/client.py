@@ -36,18 +36,25 @@ class XUIClientConfig:
     username: str
     password: SecretStr
     timeout_seconds: float = 20.0
+    verify_ssl: bool = False  # Default False for self-signed X-UI certs
 
 
 class SanaeiXUIClient:
     def __init__(self, config: XUIClientConfig, *, http_client: httpx.AsyncClient | None = None) -> None:
         self._config = config
         self._owns_client = http_client is None
+        if not config.verify_ssl:
+            import logging
+            logging.getLogger(__name__).warning(
+                "X-UI client TLS verification DISABLED for %s — set XUI_VERIFY_SSL=true to enable",
+                config.base_url,
+            )
         self._client = http_client or httpx.AsyncClient(
             base_url=config.base_url.rstrip("/") + "/",
             timeout=httpx.Timeout(config.timeout_seconds, connect=10.0),
             headers={"Accept": "application/json", "Content-Type": "application/json"},
             follow_redirects=True,
-            verify=False,
+            verify=config.verify_ssl,
         )
         self._authenticated = False
 

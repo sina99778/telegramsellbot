@@ -29,41 +29,53 @@ async def process_successful_payment(
 ) -> None:
     logger.info("[PAYMENT] Processing payment %s (kind=%s, amount=%s)", payment.id, payment.kind, amount_to_credit)
 
-    if payment.actually_paid is not None:
-        logger.info("[PAYMENT] Already processed — skipping")
-        return
+    # Idempotency: skip wallet credit if already done, but still allow provisioning retry
+    wallet_already_credited = payment.actually_paid is not None
 
-    payment.actually_paid = amount_to_credit
+    if not wallet_already_credited:
+        payment.actually_paid = amount_to_credit
 
-    # 1. Top up wallet
-    logger.info("[PAYMENT] Step 1: Credit wallet for user %s", payment.user_id)
-    wallet_manager = WalletManager(session)
-    await wallet_manager.process_transaction(
-        user_id=payment.user_id,
-        amount=amount_to_credit,
-        transaction_type="deposit",
-        direction="credit",
-        currency=payment.price_currency,
-        reference_type="payment",
-        reference_id=payment.id,
-        description="NOWPayments automated wallet credit",
-        metadata={
-            "provider": payment.provider,
-            "provider_payment_id": payment.provider_payment_id,
-            "payment_status": payment.payment_status,
-        },
-    )
-    logger.info("[PAYMENT] Wallet credited OK")
+        # 1. Top up wallet
+        logger.info("[PAYMENT] Step 1: Credit wallet for user %s", payment.user_id)
+        wallet_manager = WalletManager(session)
+        await wallet_manager.process_transaction(
+            user_id=payment.user_id,
+            amount=amount_to_credit,
+            transaction_type="deposit",
+            direction="credit",
+            currency=payment.price_currency,
+            reference_type="payment",
+            reference_id=payment.id,
+            description="Automated wallet credit",
+            metadata={
+                "provider": payment.provider,
+                "provider_payment_id": payment.provider_payment_id,
+                "payment_status": payment.payment_status,
+            },
+        )
+        logger.info("[PAYMENT] Wallet credited OK")
+    else:
+        logger.info("[PAYMENT] Wallet already credited — skipping credit step")
 
-    # 2. If it is direct purchase, attempt provisioning
+    # 2. If it is direct purchase, attempt provisioning (retriable)
     if payment.kind == "direct_purchase":
+        # Check if already provisioned via callback_payload flag
+        if payment.callback_payload and payment.callback_payload.get("provisioned"):
+            logger.info("[PAYMENT] Already provisioned — skipping")
+            return
+
         logger.info("[PAYMENT] Step 2: Direct purchase — provisioning config")
         try:
             await _handle_direct_purchase(session, payment)
+            # Mark as provisioned so retries don't duplicate
+            if payment.callback_payload is None:
+                payment.callback_payload = {}
+            payment.callback_payload["provisioned"] = True
             logger.info("[PAYMENT] Direct purchase provisioning COMPLETED")
         except Exception as exc:
             logger.error("[PAYMENT] Direct purchase provisioning FAILED: %s", exc, exc_info=True)
             # Don't re-raise — wallet was already credited, user can buy manually
+            # But do NOT mark as provisioned so next retry can attempt again
     else:
         logger.info("[PAYMENT] Payment kind=%s — not a direct purchase, done", payment.kind)
 
@@ -123,7 +135,7 @@ async def _handle_direct_purchase(
         from repositories.discount import DiscountRepository
         from models.discount import DiscountCode
         dc = await session.get(DiscountCode, UUID(discount_id_str))
-        if dc and dc.current_uses < dc.max_uses:
+        if dc and dc.used_count < dc.max_uses:
             await DiscountRepository(session).use_code(dc)
             logger.info("[PROVISION] Consumed discount code %s", dc.id)
 
