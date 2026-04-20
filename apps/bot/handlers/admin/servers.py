@@ -60,6 +60,7 @@ async def admin_main_menu(message: Message) -> None:
     builder.button(text=AdminButtons.STATISTICS, callback_data="admin:stats")
     builder.button(text=AdminButtons.BOT_SETTINGS, callback_data="admin:bot_settings")
     builder.button(text=AdminButtons.MANAGE_DISCOUNTS, callback_data="admin:discounts")
+    builder.button(text=AdminButtons.RECOVERY, callback_data="admin:recovery")
     builder.button(text=AdminButtons.BACKUP, callback_data="admin:backup")
     builder.adjust(2)
     await message.answer(AdminMessages.PANEL_TITLE, reply_markup=builder.as_markup())
@@ -79,6 +80,7 @@ async def admin_main_menu_callback(callback: CallbackQuery) -> None:
     builder.button(text=AdminButtons.STATISTICS, callback_data="admin:stats")
     builder.button(text=AdminButtons.BOT_SETTINGS, callback_data="admin:bot_settings")
     builder.button(text=AdminButtons.MANAGE_DISCOUNTS, callback_data="admin:discounts")
+    builder.button(text=AdminButtons.RECOVERY, callback_data="admin:recovery")
     builder.button(text=AdminButtons.BACKUP, callback_data="admin:backup")
     builder.adjust(2)
     
