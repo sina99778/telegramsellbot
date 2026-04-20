@@ -32,7 +32,8 @@ RUN "${VENV_PATH}/bin/pip" install \
     apscheduler \
     tenacity \
     cryptography \
-    segno
+    segno \
+    pillow
 
 
 FROM python:3.12-slim AS runtime
