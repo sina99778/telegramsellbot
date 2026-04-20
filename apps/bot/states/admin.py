@@ -56,3 +56,7 @@ class DiscountStates(StatesGroup):
     waiting_for_percent = State()
     waiting_for_max_uses = State()
 
+
+class GlobalSearchStates(StatesGroup):
+    waiting_for_query = State()
+

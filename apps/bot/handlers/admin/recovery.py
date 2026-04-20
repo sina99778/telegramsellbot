@@ -112,6 +112,10 @@ async def recovery_main_menu(callback: CallbackQuery, session: AsyncSession) -> 
         text="📋 همه پرداخت‌ها",
         callback_data=RecoveryFilterCallback(filter="all", page=1).pack(),
     )
+    builder.button(
+        text="🔍 جستجوی سراسری",
+        callback_data="admin:search",
+    )
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
     builder.adjust(1)
 
@@ -614,3 +618,200 @@ async def user_timeline_view(
     builder.adjust(1)
 
     await safe_edit_or_send(callback, "\n".join(lines), reply_markup=builder.as_markup())
+
+
+# ─── Global Search ────────────────────────────────────────────────────────────
+
+
+@router.callback_query(F.data == "admin:search")
+async def global_search_prompt(callback: CallbackQuery, state) -> None:
+    from apps.bot.states.admin import GlobalSearchStates
+    from aiogram.fsm.context import FSMContext
+    await callback.answer()
+    if isinstance(state, FSMContext):
+        await state.set_state(GlobalSearchStates.waiting_for_query)
+    await safe_edit_or_send(
+        callback,
+        "🔍 جستجوی سراسری\n\n"
+        "هر یک از موارد زیر را ارسال کنید:\n"
+        "• Telegram ID (عددی)\n"
+        "• یوزرنیم (@username)\n"
+        "• UUID پرداخت / سفارش / اشتراک\n"
+        "• نام کانفیگ\n\n"
+        "برای لغو /cancel بزنید.",
+    )
+
+
+@router.message(F.text)
+async def global_search_execute(
+    message, session: AsyncSession, state,
+) -> None:
+    from apps.bot.states.admin import GlobalSearchStates
+    from aiogram.fsm.context import FSMContext
+    from aiogram.types import Message
+
+    if not isinstance(message, Message) or not isinstance(state, FSMContext):
+        return
+    current = await state.get_state()
+    if current != GlobalSearchStates.waiting_for_query.state:
+        return
+
+    query = (message.text or "").strip()
+    if not query or query.startswith("/"):
+        await state.clear()
+        return
+
+    await state.clear()
+
+    results: list[str] = []
+    builder = InlineKeyboardBuilder()
+
+    q_clean = query.lstrip("@")
+
+    # 1. Try as telegram_id
+    try:
+        tg_id = int(q_clean)
+        user = await session.scalar(
+            select(User).options(selectinload(User.wallet)).where(User.telegram_id == tg_id)
+        )
+        if user:
+            balance = f"{user.wallet.balance:.2f}" if user.wallet else "0.00"
+            results.append(
+                f"👤 کاربر: {user.first_name or '-'} | @{user.username or '-'}\n"
+                f"   TG: {user.telegram_id} | موجودی: ${balance}"
+            )
+            builder.button(
+                text=f"📋 Timeline {user.first_name or tg_id}",
+                callback_data=TimelineCallback(user_id=user.id).pack(),
+            )
+    except ValueError:
+        pass
+
+    # 2. Try as username
+    if not results:
+        user = await session.scalar(
+            select(User).options(selectinload(User.wallet))
+            .where(func.lower(User.username) == q_clean.lower())
+        )
+        if user:
+            balance = f"{user.wallet.balance:.2f}" if user.wallet else "0.00"
+            results.append(
+                f"👤 کاربر: {user.first_name or '-'} | @{user.username or '-'}\n"
+                f"   TG: {user.telegram_id} | موجودی: ${balance}"
+            )
+            builder.button(
+                text=f"📋 Timeline {user.first_name or user.username}",
+                callback_data=TimelineCallback(user_id=user.id).pack(),
+            )
+
+    # 3. Try as UUID (payment, order, subscription)
+    try:
+        search_uuid = UUID(query)
+
+        payment = await session.scalar(
+            select(Payment).options(selectinload(Payment.user)).where(Payment.id == search_uuid)
+        )
+        if payment:
+            u = payment.user
+            results.append(
+                f"💳 پرداخت: {str(payment.id)[:8]}\n"
+                f"   {payment.price_amount}$ | {payment.payment_status} | {payment.kind}\n"
+                f"   کاربر: {u.first_name if u else '-'}"
+            )
+            builder.button(
+                text=f"🔍 پرداخت {str(payment.id)[:8]}",
+                callback_data=RecoveryPaymentCallback(action="view", payment_id=payment.id).pack(),
+            )
+
+        order = await session.scalar(
+            select(Order).options(selectinload(Order.user), selectinload(Order.plan)).where(Order.id == search_uuid)
+        )
+        if order:
+            results.append(
+                f"📦 سفارش: {str(order.id)[:8]}\n"
+                f"   {order.amount:.2f}$ | {order.status} | پلن: {order.plan.name if order.plan else '-'}"
+            )
+
+        sub = await session.scalar(
+            select(Subscription).options(selectinload(Subscription.user), selectinload(Subscription.plan))
+            .where(Subscription.id == search_uuid)
+        )
+        if sub:
+            results.append(
+                f"🔗 اشتراک: {str(sub.id)[:8]}\n"
+                f"   {sub.status} | پلن: {sub.plan.name if sub.plan else '-'}\n"
+                f"   لینک: {sub.sub_link[:40] + '...' if sub.sub_link and len(sub.sub_link) > 40 else sub.sub_link or '-'}"
+            )
+            if sub.user_id:
+                builder.button(
+                    text=f"📋 Timeline کاربر",
+                    callback_data=TimelineCallback(user_id=sub.user_id).pack(),
+                )
+    except (ValueError, AttributeError):
+        pass
+
+    # 4. Try as payment order_id string
+    if not results:
+        payment = await session.scalar(
+            select(Payment).options(selectinload(Payment.user)).where(Payment.order_id == query)
+        )
+        if payment:
+            u = payment.user
+            results.append(
+                f"💳 پرداخت (order_id): {str(payment.id)[:8]}\n"
+                f"   {payment.price_amount}$ | {payment.payment_status} | {payment.kind}"
+            )
+            builder.button(
+                text=f"🔍 پرداخت {str(payment.id)[:8]}",
+                callback_data=RecoveryPaymentCallback(action="view", payment_id=payment.id).pack(),
+            )
+
+    # 5. Try as config name in subscriptions (via callback_payload)
+    if not results:
+        pay_result = await session.execute(
+            select(Payment).options(selectinload(Payment.user))
+            .where(Payment.callback_payload["config_name"].as_string() == query)
+            .order_by(Payment.created_at.desc())
+            .limit(5)
+        )
+        config_pays = list(pay_result.scalars().all())
+        if config_pays:
+            for cp in config_pays:
+                u = cp.user
+                results.append(
+                    f"📛 کانفیگ '{query}': پرداخت {str(cp.id)[:8]}\n"
+                    f"   {cp.price_amount}$ | {cp.payment_status} | کاربر: {u.first_name if u else '-'}"
+                )
+                builder.button(
+                    text=f"🔍 {str(cp.id)[:8]}",
+                    callback_data=RecoveryPaymentCallback(action="view", payment_id=cp.id).pack(),
+                )
+
+    # 6. Try partial first_name search as last resort
+    if not results:
+        user_result = await session.execute(
+            select(User).options(selectinload(User.wallet))
+            .where(func.lower(User.first_name).contains(q_clean.lower()))
+            .limit(5)
+        )
+        found_users = list(user_result.scalars().all())
+        for fu in found_users:
+            balance = f"{fu.wallet.balance:.2f}" if fu.wallet else "0.00"
+            results.append(
+                f"👤 {fu.first_name or '-'} | @{fu.username or '-'} | TG: {fu.telegram_id} | ${balance}"
+            )
+            builder.button(
+                text=f"📋 {fu.first_name or fu.telegram_id}",
+                callback_data=TimelineCallback(user_id=fu.id).pack(),
+            )
+
+    if not results:
+        text = f"🔍 نتیجه‌ای برای «{query}» یافت نشد."
+    else:
+        text = f"🔍 نتایج جستجو برای «{query}»:\n\n" + "\n\n".join(results)
+
+    builder.button(text="🔍 جستجوی جدید", callback_data="admin:search")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:recovery")
+    builder.adjust(1)
+
+    await message.answer(text, reply_markup=builder.as_markup())
