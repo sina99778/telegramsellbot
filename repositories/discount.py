@@ -35,10 +35,18 @@ class DiscountRepository:
         return discount
 
     async def use_code(self, discount: DiscountCode) -> None:
-        discount.used_count += 1
-        if discount.used_count >= discount.max_uses:
-            discount.is_active = False
-        self.session.add(discount)
+        # Re-fetch with FOR UPDATE to prevent concurrent over-consumption
+        locked = await self.session.scalar(
+            select(DiscountCode)
+            .where(DiscountCode.id == discount.id)
+            .with_for_update()
+        )
+        if locked is None or locked.used_count >= locked.max_uses:
+            return
+        locked.used_count += 1
+        if locked.used_count >= locked.max_uses:
+            locked.is_active = False
+        self.session.add(locked)
         await self.session.flush()
 
     async def create_code(

@@ -170,3 +170,34 @@ async def support_submit(
         except (TelegramForbiddenError, TelegramBadRequest):
             admin.is_bot_blocked = True
 
+
+@router.callback_query(SupportTicketActionCallback.filter(F.action == "close"))
+async def user_close_ticket(
+    callback: CallbackQuery,
+    callback_data: SupportTicketActionCallback,
+    session: AsyncSession,
+) -> None:
+    """Allow the user to close their own ticket via the button sent with admin replies."""
+    await callback.answer()
+    if callback.from_user is None:
+        return
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        return
+
+    ticket_repository = TicketRepository(session)
+    ticket = await ticket_repository.get(callback_data.ticket_id)
+    if ticket is None:
+        await callback.message.edit_reply_markup(reply_markup=None)  # type: ignore[union-attr]
+        return
+
+    # Only allow the ticket owner to close it
+    if ticket.user_id != user.id:
+        return
+
+    await ticket_repository.set_status(ticket, "closed")
+    await callback.message.edit_text(  # type: ignore[union-attr]
+        SupportTexts.TICKET_CLOSED.format(ticket_id=ticket.id),
+        reply_markup=None,
+    )

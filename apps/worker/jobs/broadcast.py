@@ -12,6 +12,17 @@ from models.broadcast import BroadcastJob
 from models.user import User
 
 
+async def _send_broadcast_to_user(bot: Bot, job: BroadcastJob, user: User) -> None:
+    if job.message_type == "photo" and job.media_file_id is not None:
+        await bot.send_photo(
+            chat_id=user.telegram_id,
+            photo=job.media_file_id,
+            caption=job.media_caption,
+        )
+    else:
+        await bot.send_message(chat_id=user.telegram_id, text=job.text or "")
+
+
 async def process_broadcast_queue(session: AsyncSession, bot: Bot) -> None:
     result = await session.execute(
         select(BroadcastJob)
@@ -33,18 +44,16 @@ async def process_broadcast_queue(session: AsyncSession, bot: Bot) -> None:
 
         for user in users:
             try:
-                if job.message_type == "photo" and job.media_file_id is not None:
-                    await bot.send_photo(
-                        chat_id=user.telegram_id,
-                        photo=job.media_file_id,
-                        caption=job.media_caption,
-                    )
-                else:
-                    await bot.send_message(chat_id=user.telegram_id, text=job.text or "")
+                await _send_broadcast_to_user(bot, job, user)
                 job.processed_recipients += 1
             except TelegramRetryAfter as exc:
-                await asyncio.sleep(exc.retry_after)
-                continue
+                await asyncio.sleep(exc.retry_after + 1)
+                # Retry the same user after waiting
+                try:
+                    await _send_broadcast_to_user(bot, job, user)
+                    job.processed_recipients += 1
+                except Exception:
+                    job.failed_recipients += 1
             except TelegramForbiddenError:
                 user.is_bot_blocked = True
                 job.failed_recipients += 1

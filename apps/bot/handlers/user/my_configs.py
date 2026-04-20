@@ -701,14 +701,10 @@ async def cancel_and_refund_config(
     from services.wallet.manager import WalletManager
     from models.order import Order
 
-    # Find the order for this subscription
-    order = await session.scalar(
-        select(Order).where(
-            Order.user_id == user.id,
-            Order.plan_id == sub.plan_id,
-            Order.status == "provisioned",
-        ).order_by(Order.created_at.desc())
-    )
+    # Find the order for this subscription using its direct FK
+    order = None
+    if sub.order_id:
+        order = await session.get(Order, sub.order_id)
     refund_amount = order.amount if order else (sub.plan.price if sub.plan else Decimal("0"))
 
     if refund_amount and refund_amount > 0:
