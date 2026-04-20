@@ -111,8 +111,7 @@ async def _render_user_configs(
     all_subs = sorted(user.subscriptions, key=lambda s: s.created_at or datetime.min, reverse=True)
     if not all_subs:
         builder = InlineKeyboardBuilder()
-        from apps.bot.handlers.admin.users import AdminUserActionCallback
-        builder.button(text=AdminButtons.BACK, callback_data=AdminUserActionCallback(action="profile", user_id=user_id).pack())
+        builder.button(text=AdminButtons.BACK, callback_data="admin:users")
         builder.adjust(1)
         await safe_edit_or_send(callback, "این کاربر هیچ اشتراکی ندارد.", reply_markup=builder.as_markup())
         return
@@ -154,8 +153,7 @@ async def _render_user_configs(
         prev_callback_data=AdminSubscriptionListPageCallback(user_id=user.id, page=page - 1).pack(),
         next_callback_data=AdminSubscriptionListPageCallback(user_id=user.id, page=page + 1).pack(),
     )
-    from apps.bot.handlers.admin.users import AdminUserActionCallback
-    builder.button(text=AdminButtons.BACK, callback_data=AdminUserActionCallback(action="profile", user_id=user_id).pack())
+    builder.button(text=AdminButtons.BACK, callback_data="admin:users")
     builder.adjust(1)
 
     await safe_edit_or_send(callback, "\n".join(lines), reply_markup=builder.as_markup())
