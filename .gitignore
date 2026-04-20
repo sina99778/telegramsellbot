@@ -1,7 +1,10 @@
 .env
 .venv/
 __pycache__/
+**/__pycache__/
 *.py[cod]
+*.pyo
+*.pyd
 *.sqlite3
 .pytest_cache/
 .mypy_cache/
@@ -9,3 +12,6 @@ __pycache__/
 dist/
 build/
 *.egg-info/
+coverage.xml
+.coverage
+htmlcov/

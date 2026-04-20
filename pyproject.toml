@@ -9,7 +9,15 @@ description = "Premium Telegram bot for selling and managing VPN/Proxy configura
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
-authors = [{ name = "OpenAI Codex" }]
+authors = [{ name = "sina99778" }]
+keywords = ["telegram", "bot", "vpn", "proxy", "x-ui", "fastapi", "aiogram"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Framework :: FastAPI",
+  "License :: Other/Proprietary License",
+  "Operating System :: OS Independent",
+]
 dependencies = [
   "aiogram>=3.15.0,<4.0.0",
   "fastapi>=0.115.0,<1.0.0",
