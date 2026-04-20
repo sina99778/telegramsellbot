@@ -17,7 +17,8 @@ from uuid import UUID
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters.callback_data import CallbackData
-from aiogram.types import CallbackQuery
+from aiogram.fsm.context import FSMContext
+from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select, func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,6 +33,7 @@ from models.subscription import Subscription
 from models.user import User
 from models.wallet import WalletTransaction
 from repositories.audit import AuditLogRepository
+from apps.bot.states.admin import GlobalSearchStates
 
 logger = logging.getLogger(__name__)
 
@@ -642,20 +644,10 @@ async def global_search_prompt(callback: CallbackQuery, state) -> None:
     )
 
 
-@router.message(F.text)
+@router.message(GlobalSearchStates.waiting_for_query, F.text)
 async def global_search_execute(
-    message, session: AsyncSession, state,
+    message: Message, session: AsyncSession, state: FSMContext,
 ) -> None:
-    from apps.bot.states.admin import GlobalSearchStates
-    from aiogram.fsm.context import FSMContext
-    from aiogram.types import Message
-
-    if not isinstance(message, Message) or not isinstance(state, FSMContext):
-        return
-    current = await state.get_state()
-    if current != GlobalSearchStates.waiting_for_query.state:
-        return
-
     query = (message.text or "").strip()
     if not query or query.startswith("/"):
         await state.clear()
