@@ -38,6 +38,7 @@ async def admin_stats_dashboard(callback: CallbackQuery, session: AsyncSession) 
     builder.button(text="📥 خروجی CSV کاربران", callback_data="admin:stats:export_csv")
     builder.button(text="📅 گزارش فروش هفتگی", callback_data="admin:stats:weekly_sales")
     builder.button(text="🔄 آپدیت آنی مصرف", callback_data="admin:stats:force_sync")
+    builder.button(text="💰 گزارش مالی", callback_data="admin:stats:financial")
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
     builder.adjust(1)
 
@@ -275,3 +276,106 @@ async def admin_stats_reset_now(callback: CallbackQuery, session: AsyncSession) 
     
     await safe_edit_or_send(callback, AdminMessages.REVENUE_RESET_SUCCESS)
     await admin_stats_dashboard(callback, session)
+
+
+@router.callback_query(F.data == "admin:stats:financial")
+async def admin_financial_dashboard(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select, func, case
+    from models.payment import Payment
+    from models.wallet import WalletTransaction
+    from models.subscription import Subscription
+
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_ago = now - timedelta(days=7)
+    month_ago = now - timedelta(days=30)
+
+    # Today's revenue (successful payments)
+    today_revenue = await session.scalar(
+        select(func.coalesce(func.sum(Payment.price_amount), 0))
+        .where(
+            Payment.actually_paid.isnot(None),
+            Payment.created_at >= today_start,
+        )
+    ) or 0
+
+    # This week's revenue
+    week_revenue = await session.scalar(
+        select(func.coalesce(func.sum(Payment.price_amount), 0))
+        .where(
+            Payment.actually_paid.isnot(None),
+            Payment.created_at >= week_ago,
+        )
+    ) or 0
+
+    # This month's revenue
+    month_revenue = await session.scalar(
+        select(func.coalesce(func.sum(Payment.price_amount), 0))
+        .where(
+            Payment.actually_paid.isnot(None),
+            Payment.created_at >= month_ago,
+        )
+    ) or 0
+
+    # Wallet charges today
+    wallet_today = await session.scalar(
+        select(func.coalesce(func.sum(WalletTransaction.amount), 0))
+        .where(
+            WalletTransaction.direction == "credit",
+            WalletTransaction.type == "topup",
+            WalletTransaction.created_at >= today_start,
+        )
+    ) or 0
+
+    # Payment status breakdown (last 30 days)
+    status_counts = dict(
+        (await session.execute(
+            select(Payment.payment_status, func.count())
+            .where(Payment.created_at >= month_ago)
+            .group_by(Payment.payment_status)
+        )).all()
+    )
+
+    # Active subscriptions
+    active_subs = await session.scalar(
+        select(func.count()).select_from(Subscription)
+        .where(Subscription.status == "active")
+    ) or 0
+
+    # Stuck payments
+    from sqlalchemy import or_
+    stuck = await session.scalar(
+        select(func.count()).select_from(Payment).where(
+            Payment.actually_paid.isnot(None),
+            Payment.kind == "direct_purchase",
+            or_(
+                ~Payment.callback_payload.has_key("provisioned"),
+                Payment.callback_payload["provisioned"].as_boolean().is_(False),
+            ),
+        )
+    ) or 0
+
+    text = (
+        "💰 گزارش مالی\n\n"
+        f"📅 درآمد امروز: ${today_revenue:.2f}\n"
+        f"📅 درآمد هفتگی: ${week_revenue:.2f}\n"
+        f"📅 درآمد ماهانه: ${month_revenue:.2f}\n\n"
+        f"💳 شارژ کیف پول امروز: ${wallet_today:.2f}\n"
+        f"🔗 اشتراک فعال: {active_subs}\n"
+        f"⚠️ پرداخت بدون تحویل: {stuck}\n\n"
+        "📊 وضعیت پرداخت‌ها (۳۰ روز):\n"
+    )
+    for status, count in sorted(status_counts.items(), key=lambda x: -x[1]):
+        icon = {"finished": "✅", "confirmed": "✅", "failed": "❌", "expired": "⏰", "waiting": "⏳", "refunded": "💸"}.get(status, "❓")
+        text += f"  {icon} {status}: {count}\n"
+
+    builder = InlineKeyboardBuilder()
+    if stuck > 0:
+        builder.button(text=f"⚠️ بررسی {stuck} پرداخت stuck", callback_data="admin:recovery")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:stats")
+    builder.adjust(1)
+
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())

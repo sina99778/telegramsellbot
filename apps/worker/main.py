@@ -13,6 +13,7 @@ from apps.worker.jobs.subscriptions import sync_all_subscription_states
 from apps.worker.jobs.expiry_notifications import send_expiry_notifications
 from apps.worker.jobs.server_health import check_server_health
 from apps.worker.jobs.backup import run_backup
+from apps.worker.jobs.reconciliation import run_reconciliation
 from core.config import settings
 from core.database import AsyncSessionFactory
 
@@ -68,6 +69,15 @@ async def main() -> None:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        run_reconciliation_job,
+        "cron",
+        hour="*/6",
+        minute=45,
+        kwargs={"bot": bot},
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.start()
 
     try:
@@ -103,6 +113,12 @@ async def run_server_health_check(bot: Bot) -> None:
 async def run_backup_job(bot: Bot) -> None:
     async with AsyncSessionFactory() as session:
         await run_backup(session, bot)
+        await session.commit()
+
+
+async def run_reconciliation_job(bot: Bot) -> None:
+    async with AsyncSessionFactory() as session:
+        await run_reconciliation(session, bot)
         await session.commit()
 
 
