@@ -727,10 +727,12 @@ async def _finalize_purchase(
 
     builder = InlineKeyboardBuilder()
     if vless_uri:
+        from core.config import settings
+        base = settings.web_base_url.rstrip("/")
         encoded_uri = urllib.parse.quote(vless_uri, safe="")
-        builder.button(text="🟢 اتصال v2rayNG", url=f"v2rayng://install-config?url={encoded_uri}")
-        builder.button(text="🍎 اتصال Shadowrocket", url=f"shadowrocket://install-sub?url={encoded_uri}")
-        builder.button(text="🍎 اتصال V2Box", url=f"v2box://install-sub?url={encoded_uri}")
+        builder.button(text="🟢 اتصال v2rayNG", url=f"{base}/api/dl/v2rayng?url={encoded_uri}")
+        builder.button(text="🍎 اتصال Shadowrocket", url=f"{base}/api/dl/shadowrocket?url={encoded_uri}")
+        builder.button(text="🍎 اتصال V2Box", url=f"{base}/api/dl/v2box?url={encoded_uri}")
         builder.adjust(2)
 
     # Generate Banner

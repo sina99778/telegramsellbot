@@ -309,9 +309,11 @@ async def my_config_detail_handler(
         
     if vless_uri:
         encoded_uri = urllib.parse.quote(vless_uri, safe="")
-        builder.button(text="🟢 اتصال v2rayNG", url=f"v2rayng://install-config?url={encoded_uri}")
-        builder.button(text="🍎 اتصال Shadowrocket", url=f"shadowrocket://install-sub?url={encoded_uri}")
-        builder.button(text="🍎 اتصال V2Box", url=f"v2box://install-sub?url={encoded_uri}")
+        from core.config import settings
+        base = settings.web_base_url.rstrip("/")
+        builder.button(text="🟢 اتصال v2rayNG", url=f"{base}/api/dl/v2rayng?url={encoded_uri}")
+        builder.button(text="🍎 اتصال Shadowrocket", url=f"{base}/api/dl/shadowrocket?url={encoded_uri}")
+        builder.button(text="🍎 اتصال V2Box", url=f"{base}/api/dl/v2box?url={encoded_uri}")
 
     builder.button(text=Buttons.BACK, callback_data="myconfig:back_to_list")
     builder.adjust(2)
