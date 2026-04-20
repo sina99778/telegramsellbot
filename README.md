@@ -2,126 +2,137 @@
 
 Persian README: [README-FA.md](README-FA.md)
 
-TelegramSellBot is a production-oriented Telegram sales bot for selling and managing VPN or proxy subscriptions. The project combines:
+TelegramSellBot is a self-hosted Telegram sales bot for operators who sell and manage VPN or proxy subscriptions through an X-UI panel. It bundles a Telegram bot, HTTP API, payment webhooks, background jobs, and deployment scripts into a single repository.
 
-- `aiogram` for the Telegram bot
-- `FastAPI` for webhooks and admin APIs
-- PostgreSQL for persistent data
-- Redis for queueing and background coordination
-- X-UI integration for provisioning and lifecycle management
-- NOWPayments and TetraPay payment integrations
+## Install On A Server
 
-## Current Release Status
+### One-Line Installer
 
-This repository is now documented for public visibility, but it is still intended for operators who are comfortable deploying Python services with Docker.
+Run this on a fresh Ubuntu server as `root`:
 
-Important operational notes:
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/sina99778/telegramsellbot/master/setup.sh)
+```
 
-- The application currently bootstraps database tables with SQLAlchemy `create_all`.
-- The `migrations/` directory does not yet contain a complete Alembic history for fresh-to-latest upgrades.
-- `NOWPAYMENTS_IPN_SECRET` should always be configured in production.
+What it does:
 
-## Features
+- installs required base packages
+- downloads the project into `/opt/telegramsellbot`
+- launches the interactive installer
 
-- Telegram bot flows for purchase, renewal, wallet top-up, support, and self-service actions
-- Admin panels for plans, discounts, broadcasts, users, stats, support, subscriptions, and servers
-- Payment webhook handling for NOWPayments and TetraPay
-- Background workers for expiry notifications, broadcasts, reconciliation, backups, and health checks
-- Dockerized deployment for API, bot, worker, PostgreSQL, and Redis
-- Automated tests covering payments, discounts, and webhook validation paths
+### Manual Installation
 
-## Repository Layout
+If you prefer to install manually on the server:
 
-- `apps/api/` FastAPI application and HTTP routes
-- `apps/bot/` Telegram bot handlers, keyboards, states, and middleware
-- `apps/worker/` scheduled jobs and worker entrypoint
-- `core/` settings, database bootstrap, security helpers, and shared utilities
-- `models/` SQLAlchemy models
-- `repositories/` data access layer
-- `services/` external integrations and business services
-- `tests/` regression tests
+```bash
+sudo -i
+apt-get update
+apt-get install -y git curl rsync
+git clone https://github.com/sina99778/telegramsellbot.git /opt/telegramsellbot
+cd /opt/telegramsellbot
+chmod +x setup.sh install.sh deploy.sh
+bash install.sh
+```
+
+The interactive installer then helps you:
+
+- build `.env`
+- install Docker, Nginx, and Certbot
+- deploy API, bot, worker, PostgreSQL, and Redis
+- reload services later
+- update project files without touching `.env`
+
+## What It Does
+
+- sells plans through Telegram
+- provisions configs on X-UI after successful payment
+- supports renewals, top-ups, discounts, support tickets, and admin workflows
+- exposes webhook endpoints for payment providers
+- runs scheduled jobs for expiry reminders, reconciliation, broadcasts, backups, and health checks
+
+## Stack
+
+- Bot: `aiogram`
+- API: `FastAPI`
+- Database: `PostgreSQL`
+- Cache and coordination: `Redis`
+- ORM: `SQLAlchemy`
+- Scheduler: `APScheduler`
+- Providers: `NOWPayments`, `TetraPay`, `Sanaei X-UI`
+
+## Main Components
+
+- `apps/bot/` Telegram bot handlers, keyboards, states, and middlewares
+- `apps/api/` FastAPI app, admin endpoints, mini-app routes, and payment webhooks
+- `apps/worker/` background jobs for operational automation
+- `services/` payment, wallet, provisioning, notification, and X-UI integrations
+- `models/` and `repositories/` persistence layer
+- `core/` settings, database bootstrap, security, and shared utilities
+- `tests/` regression coverage for critical flows
+
+## Feature Overview
+
+### User Flows
+
+- start and onboarding
+- purchase and automatic provisioning
+- renewal and top-up flows
+- wallet charging and spending
+- support tickets
+- config delivery and resend flows
+
+### Admin Flows
+
+- plan management
+- discount code management
+- user lookup and search
+- subscription management
+- support and recovery actions
+- broadcast and retargeting tools
+- server and X-UI credential management
+- stats and financial overview
+
+### Background Jobs
+
+- payment reconciliation
+- expiry notifications
+- broadcast delivery
+- retargeting
+- backup jobs
+- server health monitoring
 
 ## Requirements
 
-- Python `3.12+`
-- Docker Engine with either `docker compose` plugin or `docker-compose`
-- A PostgreSQL-compatible runtime through the bundled Docker Compose stack
-- A Redis runtime through the bundled Docker Compose stack
+- Ubuntu server with root access
+- domain pointed to the server for webhook and SSL setup
 - Telegram bot token
-- X-UI panel credentials
+- X-UI panel URL and credentials
 - NOWPayments credentials
-- Optional TetraPay credentials
+- optional TetraPay credentials
 
-## Quick Start
-
-1. Copy `.env.example` to `.env`.
-2. Fill in all required secrets and callback URLs.
-3. Review `docker-compose.prod.yml`.
-4. Run the installer or deploy scripts on a Linux host:
-
-```bash
-chmod +x install.sh setup.sh deploy.sh
-./install.sh
-```
-
-For an existing prepared host you can also run:
-
-```bash
-./deploy.sh full
-```
-
-## Environment Variables
-
-Use `.env.example` as the canonical reference. The most important values are:
-
-- `BOT_TOKEN`
-- `OWNER_TELEGRAM_ID`
-- `APP_SECRET_KEY`
-- `DATABASE_URL`
-- `REDIS_URL`
-- `POSTGRES_PASSWORD`
-- `REDIS_PASSWORD`
-- `XUI_BASE_URL`
-- `XUI_USERNAME`
-- `XUI_PASSWORD`
-- `NOWPAYMENTS_API_KEY`
-- `NOWPAYMENTS_IPN_SECRET`
-- `NOWPAYMENTS_IPN_CALLBACK_URL`
-- `ADMIN_API_KEY`
-
-## Development
-
-Install dependencies:
+## Local Development
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate
 pip install -e .[dev]
-```
-
-Run tests:
-
-```bash
 pytest -q
 ```
 
+## Operational Notes
+
+- The repository is public, but the software remains proprietary. See [LICENSE](LICENSE).
+- Production deployments should always define `NOWPAYMENTS_IPN_SECRET`.
+- Production deployments should always use strong secrets for app, database, Redis, and admin access.
+- The current database bootstrap path still relies on SQLAlchemy metadata creation.
+- The `migrations/` directory is not yet a full Alembic history for every historical upgrade path.
+- the one-line installer uses `setup.sh`, not `install.sh`, because `setup.sh` is responsible for fetching the repository to the server first
+
+More details:
+
+- security guidance: [SECURITY.md](SECURITY.md)
+- database notes: [docs/DATABASE.md](docs/DATABASE.md)
+
 ## CI
 
-GitHub Actions runs the test suite on pushes and pull requests to `master` and `main`.
-
-## Security
-
-- Never commit a real `.env`.
-- Rotate all provider secrets before using this project in production.
-- Use strong, unique values for `APP_SECRET_KEY`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, and `ADMIN_API_KEY`.
-- Do not expose internal admin routes without network controls.
-
-See [SECURITY.md](SECURITY.md) for disclosure guidance and deployment cautions.
-
-## Database Notes
-
-See [docs/DATABASE.md](docs/DATABASE.md) for the current bootstrap and migration story.
-
-## License
-
-This repository is released publicly for visibility, but the code remains proprietary. See [LICENSE](LICENSE).
+GitHub Actions runs the test suite on pushes and pull requests targeting `master` and `main`.

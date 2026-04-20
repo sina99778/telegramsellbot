@@ -9,7 +9,7 @@ NC='\033[0m'
 
 SETUP_VERSION="2026-04-12-3"
 REPO_URL="https://github.com/sina99778/telegramsellbot.git"
-REPO_BRANCH="main"
+REPO_BRANCH="master"
 INSTALL_DIR="/opt/telegramsellbot"
 TMP_DIR="/tmp/telegramsellbot-sync"
 MODE="${1:-install}"

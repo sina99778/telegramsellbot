@@ -1,125 +1,138 @@
 # TelegramSellBot
 
-نسخه فارسی README: [README.md](README.md)
+English README: [README.md](README.md)
 
-TelegramSellBot یک ربات فروش تلگرام برای فروش و مدیریت اشتراک‌های VPN یا Proxy است که با نگاه عملیاتی و مناسب استقرار ساخته شده. این پروژه این بخش‌ها را کنار هم قرار می‌دهد:
+TelegramSellBot یک ربات سلف‌هاست برای فروش و مدیریت اشتراک VPN یا Proxy در تلگرام است. این پروژه فقط یک بات ساده نیست؛ API، وبهوک پرداخت، پردازش‌های پس‌زمینه، اتصال به X-UI و اسکریپت‌های استقرار را هم در یک مخزن کنار هم می‌آورد.
 
-- `aiogram` برای ربات تلگرام
-- `FastAPI` برای وبهوک‌ها و API ادمین
-- PostgreSQL برای داده‌های پایدار
-- Redis برای صف و هماهنگی پردازش‌های پس‌زمینه
-- اتصال به X-UI برای ساخت و مدیریت سرویس
-- اتصال به NOWPayments و TetraPay برای پرداخت
+## نصب روی سرور
 
-## وضعیت فعلی انتشار
+### نصب یک‌خطی
 
-این مخزن حالا برای دیده‌شدن عمومی مستندسازی شده، اما همچنان بیشتر مناسب اپراتورهایی است که با استقرار سرویس‌های Python و Docker راحت هستند.
+روی یک سرور Ubuntu و با کاربر `root` این دستور را اجرا کنید:
 
-نکات مهم عملیاتی:
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/sina99778/telegramsellbot/master/setup.sh)
+```
 
-- ساختار دیتابیس فعلاً با `SQLAlchemy create_all` هم bootstrap می‌شود.
-- پوشه `migrations/` هنوز history کامل Alembic برای ارتقا از اولین نسخه تا آخرین نسخه را ندارد.
-- در محیط production باید حتماً `NOWPAYMENTS_IPN_SECRET` تنظیم شود.
+این دستور:
+
+- پیش‌نیازهای پایه را نصب می‌کند
+- پروژه را داخل `/opt/telegramsellbot` می‌ریزد
+- نصاب تعاملی را اجرا می‌کند
+
+### نصب دستی روی سرور
+
+اگر بخواهید همه‌چیز را دستی انجام بدهید:
+
+```bash
+sudo -i
+apt-get update
+apt-get install -y git curl rsync
+git clone https://github.com/sina99778/telegramsellbot.git /opt/telegramsellbot
+cd /opt/telegramsellbot
+chmod +x setup.sh install.sh deploy.sh
+bash install.sh
+```
+
+بعد از آن، نصاب تعاملی این کارها را برایت جلو می‌برد:
+
+- ساخت `.env`
+- نصب Docker، Nginx و Certbot
+- استقرار API، bot، worker، PostgreSQL و Redis
+- reload سرویس‌ها
+- آپدیت فایل‌های پروژه بدون دست‌زدن به `.env`
+
+## این پروژه چه کاری انجام می‌دهد
+
+- فروش پلن از داخل تلگرام
+- ساخت خودکار کانفیگ بعد از پرداخت موفق
+- پشتیبانی از تمدید، شارژ کیف پول، کد تخفیف و تیکت
+- دریافت وبهوک از درگاه‌های پرداخت
+- اجرای jobهای زمان‌بندی‌شده برای اعلان انقضا، reconciliation، برودکست، بکاپ و مانیتورینگ
+
+## تکنولوژی‌ها
+
+- بات: `aiogram`
+- API: `FastAPI`
+- دیتابیس: `PostgreSQL`
+- کش و هماهنگی: `Redis`
+- ORM: `SQLAlchemy`
+- زمان‌بندی: `APScheduler`
+- سرویس‌های خارجی: `NOWPayments`، `TetraPay`، `Sanaei X-UI`
+
+## بخش‌های اصلی پروژه
+
+- `apps/bot/` هندلرها، کیبوردها، stateها و middlewareهای ربات
+- `apps/api/` اپ FastAPI، مسیرهای ادمین، mini-app و وبهوک‌های پرداخت
+- `apps/worker/` jobهای پس‌زمینه
+- `services/` منطق پرداخت، کیف پول، provision، نوتیفیکیشن و X-UI
+- `models/` و `repositories/` لایه داده
+- `core/` تنظیمات، bootstrap دیتابیس، امنیت و ابزارهای مشترک
+- `tests/` تست‌های رگرشن مسیرهای حساس
 
 ## قابلیت‌ها
 
-- فرایندهای خرید، تمدید، شارژ کیف پول، پشتیبانی و self-service در ربات
-- پنل‌های ادمین برای پلن‌ها، کد تخفیف، برودکست، کاربران، آمار، تیکت‌ها، اشتراک‌ها و سرورها
-- پردازش وبهوک‌های پرداخت NOWPayments و TetraPay
-- workerهای پس‌زمینه برای اعلان انقضا، برودکست، reconciliation، بکاپ و بررسی سلامت سرورها
-- استقرار Dockerized برای API، bot، worker، PostgreSQL و Redis
-- تست‌های خودکار برای مسیرهای مهم پرداخت، تخفیف و اعتبارسنجی وبهوک
+### سمت کاربر
 
-## ساختار مخزن
+- شروع و onboarding
+- خرید و دریافت خودکار کانفیگ
+- تمدید سرویس
+- شارژ و مصرف کیف پول
+- ارسال تیکت پشتیبانی
+- دریافت مجدد کانفیگ
 
-- `apps/api/` اپ FastAPI و routeهای HTTP
-- `apps/bot/` handlerها، keyboardها، stateها و middlewareهای ربات
-- `apps/worker/` jobهای زمان‌بندی‌شده و entrypoint ورکر
-- `core/` تنظیمات، bootstrap دیتابیس، امنیت و ابزارهای مشترک
-- `models/` مدل‌های SQLAlchemy
-- `repositories/` لایه دسترسی به داده
-- `services/` سرویس‌های کسب‌وکاری و اتصال به سرویس‌های خارجی
-- `tests/` تست‌های رگرشن
+### سمت ادمین
+
+- مدیریت پلن‌ها
+- مدیریت کدهای تخفیف
+- جست‌وجوی کاربر و سفارش
+- مدیریت اشتراک‌ها
+- رسیدگی به تیکت و recovery
+- برودکست و retargeting
+- مدیریت سرورها و اطلاعات X-UI
+- آمار و نمای مالی
+
+### پردازش‌های پس‌زمینه
+
+- reconciliation پرداخت
+- اعلان انقضا
+- ارسال برودکست
+- retargeting
+- بکاپ
+- بررسی سلامت سرورها
 
 ## پیش‌نیازها
 
-- Python `3.12+`
-- Docker Engine به همراه `docker compose` یا `docker-compose`
+- سرور Ubuntu با دسترسی `root`
+- دامنه‌ای که به سرور اشاره کند تا وبهوک و SSL درست بالا بیاید
 - توکن ربات تلگرام
-- اطلاعات پنل X-UI
+- آدرس و اطلاعات پنل X-UI
 - اطلاعات NOWPayments
 - اطلاعات TetraPay در صورت نیاز
 
-## شروع سریع
-
-1. فایل `.env.example` را به `.env` کپی کنید.
-2. همه secretها و callback URLهای لازم را پر کنید.
-3. فایل `docker-compose.prod.yml` را مرور کنید.
-4. روی یک هاست لینوکسی اسکریپت نصب یا استقرار را اجرا کنید:
-
-```bash
-chmod +x install.sh setup.sh deploy.sh
-./install.sh
-```
-
-اگر هاست از قبل آماده است، می‌توانید این را هم اجرا کنید:
-
-```bash
-./deploy.sh full
-```
-
-## متغیرهای محیطی مهم
-
-فایل `.env.example` مرجع اصلی تنظیمات است. مهم‌ترین متغیرها:
-
-- `BOT_TOKEN`
-- `OWNER_TELEGRAM_ID`
-- `APP_SECRET_KEY`
-- `DATABASE_URL`
-- `REDIS_URL`
-- `POSTGRES_PASSWORD`
-- `REDIS_PASSWORD`
-- `XUI_BASE_URL`
-- `XUI_USERNAME`
-- `XUI_PASSWORD`
-- `NOWPAYMENTS_API_KEY`
-- `NOWPAYMENTS_IPN_SECRET`
-- `NOWPAYMENTS_IPN_CALLBACK_URL`
-- `ADMIN_API_KEY`
-
-## توسعه
-
-نصب وابستگی‌ها:
+## توسعه محلی
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate
 pip install -e .[dev]
-```
-
-اجرای تست‌ها:
-
-```bash
 pytest -q
 ```
+
+## نکات عملیاتی مهم
+
+- مخزن عمومی است، اما کد همچنان proprietary است. فایل [LICENSE](LICENSE) را ببینید.
+- در محیط production باید `NOWPAYMENTS_IPN_SECRET` حتما تنظیم شود.
+- برای app، دیتابیس، Redis و دسترسی ادمین از secretهای قوی و یکتا استفاده کنید.
+- مسیر فعلی bootstrap دیتابیس هنوز به ساخت schema از روی metadata متکی است.
+- پوشه `migrations/` هنوز history کامل Alembic برای همه سناریوهای ارتقا را پوشش نمی‌دهد.
+- برای نصب یک‌خطی باید از `setup.sh` استفاده شود، نه `install.sh`، چون `setup.sh` اول مخزن را روی سرور دریافت می‌کند
+
+جزئیات بیشتر:
+
+- راهنمای امنیت: [SECURITY.md](SECURITY.md)
+- وضعیت دیتابیس: [docs/DATABASE.md](docs/DATABASE.md)
 
 ## CI
 
 در GitHub Actions روی push و pull requestهای `master` و `main` تست‌ها اجرا می‌شوند.
-
-## امنیت
-
-- هیچ‌وقت فایل واقعی `.env` را commit نکنید.
-- قبل از استفاده production همه secretها را rotate کنید.
-- برای `APP_SECRET_KEY`، `POSTGRES_PASSWORD`، `REDIS_PASSWORD` و `ADMIN_API_KEY` از مقادیر قوی و یکتا استفاده کنید.
-- routeهای ادمین را بدون کنترل دسترسی شبکه در معرض اینترنت باز نگذارید.
-
-برای جزئیات بیشتر فایل [SECURITY.md](SECURITY.md) را ببینید.
-
-## وضعیت دیتابیس
-
-شرح فعلی bootstrap و migration در [docs/DATABASE.md](docs/DATABASE.md) آمده است.
-
-## لایسنس
-
-این مخزن به‌صورت عمومی قابل مشاهده است، اما کد همچنان proprietary باقی می‌ماند. فایل [LICENSE](LICENSE) را ببینید.
