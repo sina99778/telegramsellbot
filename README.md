@@ -1,5 +1,7 @@
 # TelegramSellBot
 
+Persian README: [README-FA.md](README-FA.md)
+
 TelegramSellBot is a production-oriented Telegram sales bot for selling and managing VPN or proxy subscriptions. The project combines:
 
 - `aiogram` for the Telegram bot
