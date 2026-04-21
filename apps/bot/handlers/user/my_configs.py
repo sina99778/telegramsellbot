@@ -290,8 +290,11 @@ async def my_config_detail_handler(
     builder = InlineKeyboardBuilder()
     if sub.status in ("active", "pending_activation") and not server_deleted:
         builder.button(text="📊 بروزرسانی حجم", callback_data=MyConfigCallback(action="refresh_usage", subscription_id=sub.id).pack())
+        
+    if sub.status in ("active", "pending_activation", "expired") and not server_deleted:
         builder.button(text=Buttons.RENEW_SERVICE, callback_data=MyConfigCallback(action="renew", subscription_id=sub.id).pack())
         
+    if sub.status in ("active", "pending_activation") and not server_deleted:
         # New Feature: Change Link / Reset UUID
         builder.button(text="🔄 تغییر لینک", callback_data=MyConfigCallback(action="reset_uuid", subscription_id=sub.id).pack())
         
