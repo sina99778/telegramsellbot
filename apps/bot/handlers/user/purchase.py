@@ -341,7 +341,7 @@ async def pay_with_tetrapay(
     except Exception as exc:
         logger.error("TetraPay purchase failed: %s", exc, exc_info=True)
         await state.clear()
-        await safe_edit_or_send(callback, f"خطا در ایجاد فاکتور ریالی:\n{exc}")
+        await safe_edit_or_send(callback, f"❌ خطا در ایجاد فاکتور ریالی:\n<code>{exc}</code>", parse_mode="HTML")
 
 
 async def _process_wallet_purchase(
@@ -544,8 +544,29 @@ async def _process_tetrapay_purchase(
 
     from repositories.settings import AppSettingsRepository
     toman_rate = await AppSettingsRepository(session).get_toman_rate()
+    if not toman_rate or toman_rate <= 0:
+        await state.clear()
+        await safe_edit_or_send(callback, "❌ نرخ تبدیل تومان تنظیم نشده. لطفاً با پشتیبانی تماس بگیرید.")
+        return
+
     # Cost in tomans
     toman_amount = int((final_price * toman_rate).quantize(Decimal("1")))
+    rial_amount = toman_amount * 10
+    
+    # TetraPay minimum amount check (10,000 Rials = 1,000 Tomans)
+    if rial_amount < 10000:
+        await state.clear()
+        await safe_edit_or_send(
+            callback,
+            f"❌ مبلغ پرداخت ({toman_amount:,} تومان) کمتر از حداقل مبلغ مجاز درگاه (۱,۰۰۰ تومان) است.\n"
+            "لطفاً از کیف پول یا درگاه ارزی استفاده کنید."
+        )
+        return
+
+    logger.info(
+        "TetraPay purchase: user=%s, plan=%s, price_usd=%s, toman=%s, rial=%s",
+        user.telegram_id, plan.name, final_price, toman_amount, rial_amount
+    )
     
     from uuid import uuid4
     from core.config import settings
@@ -571,21 +592,27 @@ async def _process_tetrapay_purchase(
         ) as client:
             tx = await client.create_order(
                 hash_id=local_order_id,
-                amount=toman_amount * 10, # Convert Toman to Rial for TetraPay API
+                amount=rial_amount,
                 description=f"خرید سرویس {plan.name} - کاربر {user.telegram_id}",
                 email=f"{user.telegram_id}@telegram.org",
-                mobile="09111111111", # Placeholder usually accepted unless strict check
+                mobile="09111111111",
             )
-    except TetraPayRequestError:
+    except TetraPayRequestError as exc:
+        logger.error("TetraPay create_order failed for user %s: %s", user.telegram_id, exc)
         await state.clear()
-        await safe_edit_or_send(callback, Messages.PAYMENT_GATEWAY_UNAVAILABLE)
+        await safe_edit_or_send(
+            callback,
+            f"❌ خطا در ساخت فاکتور تتراپی:\n<code>{exc}</code>\n\n"
+            "لطفاً دوباره تلاش کنید یا از روش پرداخت دیگری استفاده کنید.",
+            parse_mode="HTML"
+        )
         return
 
     payment = Payment(
         user_id=user.id,
         provider="tetrapay",
         kind="direct_purchase",
-        provider_payment_id=tx.Authority,  # We can save it later or now
+        provider_payment_id=tx.Authority,
         order_id=local_order_id,
         payment_status="waiting",
         pay_currency="IRT",

@@ -81,20 +81,25 @@ class TetraPayClient:
         )
 
         try:
-            response = await session.post(url, json=request_obj.model_dump(exclude_none=True))
+            request_data = request_obj.model_dump(exclude_none=True)
+            logger.info("TetraPay create_order request: amount=%s, hash_id=%s", request_data.get('Amount'), request_data.get('Hash_id'))
+            response = await session.post(url, json=request_data)
             response.raise_for_status()
             data = response.json()
+            logger.info("TetraPay create_order response: %s", data)
             
             if str(data.get("status")) != "100":
                 logger.error("TetraPay API error (create_order): %s", data)
-                raise TetraPayRequestError(f"API Error. Status: {data.get('status')}")
+                raise TetraPayRequestError(f"API Error. Status: {data.get('status')}, Message: {data.get('message', 'N/A')}")
 
             return TetraPayCreateOrderResponse.model_validate(data)
+        except TetraPayRequestError:
+            raise
         except httpx.HTTPError as exc:
             logger.error("TetraPay connection error (create_order): %s", exc)
             raise TetraPayRequestError(f"Connection Error: {exc}") from exc
         except Exception as exc:
-            logger.error("Failed to parse TetraPay response (create_order): %s", exc)
+            logger.error("Failed to parse TetraPay response (create_order): %s", exc, exc_info=True)
             raise TetraPayRequestError(f"Parse Error: {exc}") from exc
 
     async def verify_payment(self, authority: str) -> TetraPayVerifyResponse:
@@ -107,14 +112,18 @@ class TetraPayClient:
         )
 
         try:
+            logger.info("TetraPay verify_payment request: authority=%s", authority)
             response = await session.post(url, json=request_obj.model_dump(exclude_none=True))
             response.raise_for_status()
             data = response.json()
+            logger.info("TetraPay verify_payment response: %s", data)
 
             return TetraPayVerifyResponse.model_validate(data)
+        except TetraPayRequestError:
+            raise
         except httpx.HTTPError as exc:
             logger.error("TetraPay connection error (verify_payment): %s", exc)
             raise TetraPayRequestError(f"Connection Error: {exc}") from exc
         except Exception as exc:
-            logger.error("Failed to parse TetraPay verify response: %s", exc)
+            logger.error("Failed to parse TetraPay verify response: %s", exc, exc_info=True)
             raise TetraPayRequestError(f"Parse Error: {exc}") from exc

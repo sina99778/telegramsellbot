@@ -290,7 +290,27 @@ async def _create_tetrapay_topup_invoice(
 
     from repositories.settings import AppSettingsRepository
     toman_rate = await AppSettingsRepository(session).get_toman_rate()
+    if not toman_rate or toman_rate <= 0:
+        await message.answer("❌ نرخ تبدیل تومان تنظیم نشده. لطفاً با پشتیبانی تماس بگیرید.")
+        return
+
     toman_amount = int((amount * toman_rate).quantize(Decimal("1")))
+    rial_amount = toman_amount * 10
+
+    # TetraPay minimum amount check (10,000 Rials = 1,000 Tomans)
+    if rial_amount < 10000:
+        await message.answer(
+            f"❌ مبلغ پرداخت ({toman_amount:,} تومان) کمتر از حداقل مبلغ مجاز درگاه (۱,۰۰۰ تومان) است.\n"
+            "لطفاً مبلغ بیشتری وارد کنید یا از درگاه ارزی استفاده کنید."
+        )
+        return
+
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "TetraPay topup: user=%s, amount_usd=%s, toman=%s, rial=%s",
+        user.telegram_id, amount, toman_amount, rial_amount
+    )
 
     local_order_id = str(uuid4())
     
@@ -305,13 +325,14 @@ async def _create_tetrapay_topup_invoice(
         ) as client:
             tx = await client.create_order(
                 hash_id=local_order_id,
-                amount=toman_amount * 10, # TetraPay accepts RIALS
+                amount=rial_amount,
                 description=f"شارژ کیف پول - کاربر {user.telegram_id}",
                 email=f"{user.telegram_id}@telegram.org",
                 mobile="09111111111",
             )
-    except TetraPayRequestError:
-        await message.answer(Messages.PAYMENT_GATEWAY_UNAVAILABLE)
+    except TetraPayRequestError as exc:
+        logger.error("TetraPay topup create_order failed for user %s: %s", user.telegram_id, exc)
+        await message.answer(f"❌ خطا در ساخت فاکتور تتراپی:\n{exc}\n\nلطفاً دوباره تلاش کنید.")
         return
 
     payment = Payment(
