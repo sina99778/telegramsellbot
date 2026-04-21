@@ -305,6 +305,15 @@ async def _create_tetrapay_topup_invoice(
         )
         return
 
+    # TetraPay maximum amount check
+    max_toman = settings.tetrapay_max_amount_toman
+    if toman_amount > max_toman:
+        await message.answer(
+            f"❌ مبلغ پرداخت ({toman_amount:,} تومان) بیشتر از سقف مجاز درگاه تتراپی ({max_toman:,} تومان) است.\n\n"
+            "💡 لطفاً مبلغ کمتری وارد کنید یا از درگاه ارزی (NOWPayments) استفاده کنید."
+        )
+        return
+
     import logging
     logger = logging.getLogger(__name__)
     logger.info(

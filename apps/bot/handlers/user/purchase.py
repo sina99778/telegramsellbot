@@ -563,6 +563,20 @@ async def _process_tetrapay_purchase(
         )
         return
 
+    # TetraPay maximum amount check
+    from core.config import settings as app_settings
+    max_toman = app_settings.tetrapay_max_amount_toman
+    if toman_amount > max_toman:
+        await state.clear()
+        await safe_edit_or_send(
+            callback,
+            f"❌ مبلغ پرداخت ({toman_amount:,} تومان) بیشتر از سقف مجاز درگاه تتراپی ({max_toman:,} تومان) است.\n\n"
+            "💡 راه‌حل:\n"
+            "• از **درگاه ارزی (NOWPayments)** استفاده کنید\n"
+            "• یا ابتدا **کیف پول** خود را شارژ کنید و سپس با کیف پول خرید کنید"
+        )
+        return
+
     logger.info(
         "TetraPay purchase: user=%s, plan=%s, price_usd=%s, toman=%s, rial=%s",
         user.telegram_id, plan.name, final_price, toman_amount, rial_amount
