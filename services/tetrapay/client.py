@@ -45,7 +45,10 @@ class TetraPayClient:
             self._session = httpx.AsyncClient(
                 base_url=self.config.base_url,
                 timeout=self.config.timeout,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                }
             )
 
     async def close(self) -> None:
@@ -82,15 +85,25 @@ class TetraPayClient:
 
         try:
             request_data = request_obj.model_dump(exclude_none=True)
-            logger.info("TetraPay create_order request: amount=%s, hash_id=%s", request_data.get('Amount'), request_data.get('Hash_id'))
+            logger.info("TetraPay create_order request: amount=%s, hash_id=%s, callback=%s", 
+                       request_data.get('Amount'), request_data.get('Hash_id'), request_data.get('CallbackURL'))
             response = await session.post(url, json=request_data)
-            response.raise_for_status()
-            data = response.json()
-            logger.info("TetraPay create_order response: %s", data)
             
-            if str(data.get("status")) != "100":
-                logger.error("TetraPay API error (create_order): %s", data)
-                raise TetraPayRequestError(f"API Error. Status: {data.get('status')}, Message: {data.get('message', 'N/A')}")
+            # Read body BEFORE checking status — 422 responses contain error details
+            try:
+                data = response.json()
+            except Exception:
+                raw_text = response.text[:500]
+                logger.error("TetraPay non-JSON response (create_order): HTTP %s, body=%s", response.status_code, raw_text)
+                raise TetraPayRequestError(f"API Error: HTTP {response.status_code}, body: {raw_text}")
+
+            logger.info("TetraPay create_order response (HTTP %s): %s", response.status_code, data)
+
+            # Check HTTP status and API status
+            if response.status_code != 200 or str(data.get("status")) != "100":
+                logger.error("TetraPay API error (create_order): HTTP %s, response=%s", response.status_code, data)
+                msg = data.get('message') or data.get('error') or data.get('detail') or str(data)
+                raise TetraPayRequestError(f"API Error (HTTP {response.status_code}): {msg}")
 
             return TetraPayCreateOrderResponse.model_validate(data)
         except TetraPayRequestError:
@@ -114,9 +127,16 @@ class TetraPayClient:
         try:
             logger.info("TetraPay verify_payment request: authority=%s", authority)
             response = await session.post(url, json=request_obj.model_dump(exclude_none=True))
-            response.raise_for_status()
-            data = response.json()
-            logger.info("TetraPay verify_payment response: %s", data)
+            
+            # Read body BEFORE checking status
+            try:
+                data = response.json()
+            except Exception:
+                raw_text = response.text[:500]
+                logger.error("TetraPay non-JSON response (verify): HTTP %s, body=%s", response.status_code, raw_text)
+                raise TetraPayRequestError(f"API Error: HTTP {response.status_code}, body: {raw_text}")
+
+            logger.info("TetraPay verify_payment response (HTTP %s): %s", response.status_code, data)
 
             return TetraPayVerifyResponse.model_validate(data)
         except TetraPayRequestError:
