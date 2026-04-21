@@ -40,13 +40,15 @@ class RenewConfirmCallback(CallbackData, prefix="renew_confirm"):
     price: float
 
 
+from apps.bot.utils.messaging import safe_edit_or_send
+
 @router.callback_query(MyConfigCallback.filter(F.action == "renew"))
 async def renew_config_start(callback: CallbackQuery, callback_data: MyConfigCallback, state: FSMContext) -> None:
     await callback.answer()
     await state.clear()
     
     markup = build_renewal_keyboard(callback_data.subscription_id)
-    await callback.message.edit_text(Messages.RENEWAL_OPTIONS, reply_markup=markup)
+    await safe_edit_or_send(callback, Messages.RENEWAL_OPTIONS, reply_markup=markup)
 
 
 @router.callback_query(RenewTypeCallback.filter())
