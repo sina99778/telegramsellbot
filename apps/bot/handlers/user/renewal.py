@@ -148,7 +148,7 @@ async def renew_confirm_payment(
             Subscription.user_id == user.id,
         )
     )
-    if sub is None or sub.status not in ("active", "pending_activation"):
+    if sub is None or sub.status not in ("active", "pending_activation", "expired"):
         await callback.message.edit_text("سرویس نامعتبر است.")
         return
 
@@ -201,6 +201,7 @@ async def renew_confirm_payment(
 
     # Calculate actual bytes or timeframe
     from datetime import datetime, timezone, timedelta
+    now_utc = datetime.now(timezone.utc)
 
     if callback_data.type == "volume":
         bytes_to_add = int(callback_data.amount * 1024**3)
@@ -211,8 +212,17 @@ async def renew_confirm_payment(
         if sub.ends_at is None:
             if sub.activated_at is not None:
                 sub.ends_at = sub.activated_at + timedelta(days=days_to_add)
+            elif sub.status == "expired":
+                sub.ends_at = now_utc + timedelta(days=days_to_add)
         else:
-            sub.ends_at += timedelta(days=days_to_add)
+            if sub.ends_at < now_utc:
+                sub.ends_at = now_utc + timedelta(days=days_to_add)
+            else:
+                sub.ends_at += timedelta(days=days_to_add)
+
+    # Change status back to active if it was expired
+    if sub.status == "expired":
+        sub.status = "active"
 
     # Sync with X-UI panel
     xui = sub.xui_client
@@ -244,6 +254,7 @@ async def renew_confirm_payment(
                     if current_sub_link and "/" in current_sub_link:
                         existing_sub_id = current_sub_link.rsplit("/", 1)[-1]
 
+                    # Reset X-UI state and make active
                     xui_c = XUIClient(
                         id=xui_full.client_uuid,
                         uuid=xui_full.client_uuid,
@@ -255,6 +266,10 @@ async def renew_confirm_payment(
                         subId=existing_sub_id,
                         comment=xui_full.username or "",
                     )
+                    
+                    # Ensure XUI record is also marked as active locally
+                    xui_full.is_active = True
+                    
                     await client.update_client(
                         inbound_id=xui_full.inbound.xui_inbound_remote_id,
                         client_id=xui_full.client_uuid,
