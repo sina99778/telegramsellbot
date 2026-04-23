@@ -135,6 +135,13 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
                 sub_id=sub_id, type=renew_type, amount=amount, price=price, method="nowpay"
             ).pack()
         )
+    if gw.manual_crypto_enabled and gw.manual_crypto_address:
+        builder.button(
+            text="💰 پرداخت به ولت (دستی)",
+            callback_data=RenewPayMethodCallback(
+                sub_id=sub_id, type=renew_type, amount=amount, price=price, method="manual"
+            ).pack()
+        )
     builder.button(text=Buttons.BACK, callback_data=MyConfigCallback(action="view", subscription_id=sub_id).pack())
     builder.adjust(1)
     
@@ -511,3 +518,25 @@ async def _notify_renewal_admins(callback, user, callback_data, price, session) 
         await notify_admins(session, bot, admin_text)
     except Exception as exc:
         logger.warning("Failed to notify admins about renewal: %s", exc)
+
+
+@router.callback_query(RenewPayMethodCallback.filter(F.method == "manual"))
+async def renew_pay_manual(
+    callback: CallbackQuery,
+    callback_data: RenewPayMethodCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Pay renewal via manual crypto — redirect to manual topup flow."""
+    if callback.from_user is None:
+        return
+    await callback.answer()
+
+    from decimal import Decimal
+    price = Decimal(str(callback_data.price))
+
+    # Store the topup amount and redirect to manual crypto handler
+    await state.update_data(topup_amount=str(price))
+
+    from apps.bot.handlers.user.topup import topup_pay_manual
+    await topup_pay_manual(callback, state, session)

@@ -203,7 +203,9 @@ async def _show_payment_method_choice(
 
     from core.formatting import format_price_with_toman
     from repositories.settings import AppSettingsRepository
-    toman_rate = await AppSettingsRepository(session).get_toman_rate()
+    settings_repo = AppSettingsRepository(session)
+    toman_rate = await settings_repo.get_toman_rate()
+    gw = await settings_repo.get_gateway_settings()
     price_display = format_price_with_toman(final_price, toman_rate)
 
     discount_line = ""
@@ -221,8 +223,12 @@ async def _show_payment_method_choice(
 
     builder = InlineKeyboardBuilder()
     builder.button(text="👛 کیف پول", callback_data="purchase:pay:wallet")
-    builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="purchase:pay:tetrapay")
-    builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
+    if gw.tetrapay_enabled:
+        builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="purchase:pay:tetrapay")
+    if gw.nowpayments_enabled:
+        builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
+    if gw.manual_crypto_enabled and gw.manual_crypto_address:
+        builder.button(text="💰 پرداخت به ولت (دستی)", callback_data="purchase:pay:manual")
     builder.button(text=Buttons.BACK, callback_data="purchase:cancel")
     builder.adjust(1)
 
@@ -251,7 +257,9 @@ async def _show_payment_method_choice_msg(
 
     from core.formatting import format_price_with_toman
     from repositories.settings import AppSettingsRepository
-    toman_rate = await AppSettingsRepository(session).get_toman_rate()
+    settings_repo = AppSettingsRepository(session)
+    toman_rate = await settings_repo.get_toman_rate()
+    gw = await settings_repo.get_gateway_settings()
     price_display = format_price_with_toman(final_price, toman_rate)
 
     discount_line = ""
@@ -269,8 +277,12 @@ async def _show_payment_method_choice_msg(
 
     builder = InlineKeyboardBuilder()
     builder.button(text="👛 کیف پول", callback_data="purchase:pay:wallet")
-    builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="purchase:pay:tetrapay")
-    builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
+    if gw.tetrapay_enabled:
+        builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="purchase:pay:tetrapay")
+    if gw.nowpayments_enabled:
+        builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
+    if gw.manual_crypto_enabled and gw.manual_crypto_address:
+        builder.button(text="💰 پرداخت به ولت (دستی)", callback_data="purchase:pay:manual")
     builder.button(text=Buttons.BACK, callback_data="purchase:cancel")
     builder.adjust(1)
 
@@ -342,6 +354,41 @@ async def pay_with_tetrapay(
         logger.error("TetraPay purchase failed: %s", exc, exc_info=True)
         await state.clear()
         await safe_edit_or_send(callback, f"❌ خطا در ایجاد فاکتور ریالی:\n<code>{exc}</code>", parse_mode="HTML")
+
+
+@router.callback_query(F.data == "purchase:pay:manual")
+async def pay_with_manual_crypto(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Redirect to manual crypto topup for the purchase amount, then user pays from wallet."""
+    await callback.answer()
+
+    data = await state.get_data()
+    plan_id_str = data.get("plan_id")
+    if not plan_id_str:
+        await safe_edit_or_send(callback, "❌ اطلاعات پلن یافت نشد.")
+        return
+
+    plan = await session.get(Plan, UUID(plan_id_str))
+    if plan is None or not plan.is_active:
+        await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
+        return
+
+    discount_percent = data.get("discount_percent", 0)
+    original_price = plan.price
+    if discount_percent > 0:
+        final_price = (original_price * (Decimal(100 - discount_percent) / Decimal(100))).quantize(Decimal("0.01"))
+    else:
+        final_price = original_price
+
+    # Store the topup amount in state and redirect to manual crypto handler
+    await state.update_data(topup_amount=str(final_price))
+
+    # Import and call the manual crypto handler directly
+    from apps.bot.handlers.user.topup import topup_pay_manual
+    await topup_pay_manual(callback, state, session)
 
 
 async def _process_wallet_purchase(
