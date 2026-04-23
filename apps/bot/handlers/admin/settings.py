@@ -384,18 +384,19 @@ async def edit_manual_currency_start(callback: CallbackQuery, state: FSMContext)
     await state.set_state(GatewaySettingsStates.waiting_for_manual_currency)
 
     builder = InlineKeyboardBuilder()
-    builder.button(text="USDT TRC20", callback_data="admin:gw:quick_cur:USDT TRC20")
-    builder.button(text="USDT ERC20", callback_data="admin:gw:quick_cur:USDT ERC20")
-    builder.button(text="BTC", callback_data="admin:gw:quick_cur:BTC")
-    builder.button(text="ETH", callback_data="admin:gw:quick_cur:ETH")
-    builder.button(text="LTC", callback_data="admin:gw:quick_cur:LTC")
-    builder.button(text="TRX", callback_data="admin:gw:quick_cur:TRX")
+    builder.button(text="💲 USDT TRC20", callback_data="admin:gw:quick_cur:USDT TRC20")
+    builder.button(text="💲 USDT ERC20", callback_data="admin:gw:quick_cur:USDT ERC20")
+    builder.button(text="₿ BTC", callback_data="admin:gw:quick_cur:BTC")
+    builder.button(text="⟠ ETH", callback_data="admin:gw:quick_cur:ETH")
+    builder.button(text="💎 TON", callback_data="admin:gw:quick_cur:TON")
+    builder.button(text="Ł LTC", callback_data="admin:gw:quick_cur:LTC")
+    builder.button(text="◈ TRX", callback_data="admin:gw:quick_cur:TRX")
     builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
-    builder.adjust(2, 2, 2, 1)
+    builder.adjust(2, 2, 3, 1)
 
     await safe_edit_or_send(callback,
-        "💱 نوع ارز را انتخاب کنید یا نام ارز را تایپ کنید:\n\n"
-        "مثلاً: USDT TRC20، BTC، LTC",
+        "💱 نوع ارز پرداخت دستی را انتخاب کنید:\n\n"
+        "یکی از ارزهای زیر را بزنید یا نام ارز دلخواه را تایپ کنید.",
         reply_markup=builder.as_markup(),
     )
 

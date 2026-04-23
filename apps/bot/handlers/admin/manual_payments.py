@@ -4,14 +4,12 @@ Admin handler for approving/rejecting manual crypto payments.
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
 from uuid import UUID
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.utils.messaging import safe_edit_or_send
@@ -39,17 +37,13 @@ async def approve_manual_payment(
         await safe_edit_or_send(callback, "❌ شناسه پرداخت نامعتبر.")
         return
 
-    payment = await session.scalar(
-        Payment.__table__.select().where(Payment.id == payment_id)
-    )
-    # Re-fetch with ORM for relationship access
     payment = await session.get(Payment, payment_id)
     if payment is None:
         await safe_edit_or_send(callback, "❌ پرداخت یافت نشد.")
         return
 
     if payment.payment_status not in {"pending_approval", "waiting_hash"}:
-        await safe_edit_or_send(callback, f"⚠️ این پرداخت قبلاً پردازش شده. وضعیت: {payment.payment_status}")
+        await safe_edit_or_send(callback, f"⚠️ این پرداخت قبلاً پردازش شده.\nوضعیت: {payment.payment_status}")
         return
 
     # Process the payment (credit wallet)
@@ -68,29 +62,42 @@ async def approve_manual_payment(
         return
 
     # Update admin message
-    tx_hash = (payment.callback_payload or {}).get("tx_hash", "N/A")
-    admin_user = await session.get(User, payment.user_id)
-    user_info = f"{admin_user.first_name or '-'} ({admin_user.telegram_id})" if admin_user else "?"
+    payload = payment.callback_payload or {}
+    tx_hash = payload.get("tx_hash", "N/A")
+    crypto_amt = payload.get("crypto_amount")
+    target_user = await session.get(User, payment.user_id)
+    user_info = f"<b>{target_user.first_name or '-'}</b> (<code>{target_user.telegram_id}</code>)" if target_user else "?"
+    admin_name = callback.from_user.first_name if callback.from_user else "Admin"
+
+    crypto_line = f"🪙 معادل: {crypto_amt} {payment.pay_currency}\n" if crypto_amt else ""
 
     await safe_edit_or_send(
         callback,
-        f"✅ **پرداخت دستی تأیید شد**\n\n"
+        "✅━━━━━━━━━━━━━━━━━━━━━✅\n"
+        "  پرداخت تأیید شد\n"
+        "✅━━━━━━━━━━━━━━━━━━━━━✅\n\n"
         f"👤 کاربر: {user_info}\n"
-        f"💵 مبلغ: {payment.price_amount:.2f} USD\n"
-        f"🔗 TX Hash: `{tx_hash}`\n\n"
+        f"💵 مبلغ: <b>{payment.price_amount:.2f} USD</b>\n"
+        f"💱 ارز: {payment.pay_currency}\n"
+        f"{crypto_line}"
+        f"🔗 Hash: <code>{tx_hash}</code>\n\n"
         f"💰 مبلغ به کیف پول کاربر واریز شد.\n"
-        f"✅ تأیید شده توسط ادمین {callback.from_user.first_name}",
+        f"👤 تأیید: {admin_name}",
     )
 
     # Notify user
-    if admin_user:
+    if target_user:
         try:
             bot = callback.bot
             await bot.send_message(
-                admin_user.telegram_id,
-                f"✅ پرداخت شما تأیید شد!\n\n"
-                f"💰 مبلغ {payment.price_amount:.2f} USD به کیف پول شما واریز شد.\n"
-                f"اکنون می‌توانید از موجودی کیف پول خرید کنید.",
+                target_user.telegram_id,
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "  ✅ پرداخت تأیید شد!\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"💰 مبلغ <b>{payment.price_amount:.2f} USD</b> به کیف پول\n"
+                "شما واریز شد.\n\n"
+                "🛒 اکنون می‌توانید از موجودی کیف پول\n"
+                "برای خرید سرویس استفاده کنید.",
             )
         except TelegramForbiddenError:
             pass
@@ -118,23 +125,28 @@ async def reject_manual_payment(
         return
 
     if payment.payment_status not in {"pending_approval", "waiting_hash"}:
-        await safe_edit_or_send(callback, f"⚠️ این پرداخت قبلاً پردازش شده. وضعیت: {payment.payment_status}")
+        await safe_edit_or_send(callback, f"⚠️ این پرداخت قبلاً پردازش شده.\nوضعیت: {payment.payment_status}")
         return
 
     payment.payment_status = "rejected"
     await session.flush()
 
-    tx_hash = (payment.callback_payload or {}).get("tx_hash", "N/A")
+    payload = payment.callback_payload or {}
+    tx_hash = payload.get("tx_hash", "N/A")
     rejected_user = await session.get(User, payment.user_id)
-    user_info = f"{rejected_user.first_name or '-'} ({rejected_user.telegram_id})" if rejected_user else "?"
+    user_info = f"<b>{rejected_user.first_name or '-'}</b> (<code>{rejected_user.telegram_id}</code>)" if rejected_user else "?"
+    admin_name = callback.from_user.first_name if callback.from_user else "Admin"
 
     await safe_edit_or_send(
         callback,
-        f"❌ **پرداخت دستی رد شد**\n\n"
+        "❌━━━━━━━━━━━━━━━━━━━━━❌\n"
+        "  پرداخت رد شد\n"
+        "❌━━━━━━━━━━━━━━━━━━━━━❌\n\n"
         f"👤 کاربر: {user_info}\n"
-        f"💵 مبلغ: {payment.price_amount:.2f} USD\n"
-        f"🔗 TX Hash: `{tx_hash}`\n\n"
-        f"❌ رد شده توسط ادمین {callback.from_user.first_name}",
+        f"💵 مبلغ: <b>{payment.price_amount:.2f} USD</b>\n"
+        f"💱 ارز: {payment.pay_currency}\n"
+        f"🔗 Hash: <code>{tx_hash}</code>\n\n"
+        f"❌ رد توسط: {admin_name}",
     )
 
     # Notify user
@@ -143,10 +155,13 @@ async def reject_manual_payment(
             bot = callback.bot
             await bot.send_message(
                 rejected_user.telegram_id,
-                f"❌ پرداخت شما رد شد.\n\n"
-                f"💰 مبلغ: {payment.price_amount:.2f} USD\n"
-                f"🔗 TX Hash: `{tx_hash[:20]}...`\n\n"
-                "در صورت مشکل با پشتیبانی تماس بگیرید.",
+                "━━━━━━━━━━━━━━━━━━━━━\n"
+                "  ❌ پرداخت رد شد\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"💵 مبلغ: <b>{payment.price_amount:.2f} USD</b>\n"
+                f"🔗 Hash: <code>{tx_hash}</code>\n\n"
+                "⚠️ اگر واقعاً پرداخت انجام شده،\n"
+                "لطفاً با پشتیبانی تماس بگیرید.",
             )
         except TelegramForbiddenError:
             pass

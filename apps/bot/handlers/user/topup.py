@@ -454,14 +454,54 @@ async def topup_pay_manual(
     currency = gw.manual_crypto_currency or "Crypto"
     address = gw.manual_crypto_address
 
+    # Convert USD to crypto amount in real-time
+    from services.crypto_price import convert_usd_to_crypto
+    crypto_amount, unit_price = await convert_usd_to_crypto(amount, currency)
+
+    # Currency emoji map
+    _cur_emoji = {
+        "BTC": "₿", "ETH": "⟠", "TON": "💎", "LTC": "Ł",
+        "TRX": "◈", "USDT TRC20": "💲", "USDT ERC20": "💲", "USDT": "💲",
+    }
+    cur_icon = _cur_emoji.get(currency, "🪙")
+
     text = (
-        f"💰 **پرداخت دستی {currency}**\n\n"
-        f"📌 مبلغ: `{amount:.2f}` دلار\n"
-        f"💱 ارز: {currency}\n\n"
-        f"📍 آدرس ولت:\n`{address}`\n\n"
-        "⚠️ لطفاً دقیقاً به همین آدرس ارسال کنید.\n"
-        "پس از پرداخت، **هش تراکنش (TX Hash)** خود را ارسال کنید.\n\n"
-        "💡 برای لغو /cancel بزنید."
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"  {cur_icon} پرداخت {currency}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"💵 مبلغ:  <b>{amount:.2f} USD</b>\n"
+    )
+
+    if crypto_amount is not None and unit_price is not None:
+        # Format based on currency precision
+        if currency in {"BTC"}:
+            crypto_display = f"{crypto_amount:.8f}"
+        elif currency in {"ETH", "LTC", "TON"}:
+            crypto_display = f"{crypto_amount:.6f}"
+        else:
+            crypto_display = f"{crypto_amount:.4f}"
+
+        text += (
+            f"{cur_icon} معادل:  <b>{crypto_display} {currency}</b>\n"
+            f"📊 نرخ لحظه‌ای:  1 {currency} = {unit_price:,.2f} USD\n"
+        )
+    else:
+        text += f"⚠️ نرخ لحظه‌ای در دسترس نیست.\n"
+
+    text += (
+        f"\n"
+        f"┌─────────────────────\n"
+        f"│ 📍 آدرس ولت:\n"
+        f"│\n"
+        f"│ <code>{address}</code>\n"
+        f"└─────────────────────\n"
+        f"\n"
+        f"⚠️ لطفاً <b>دقیقاً</b> به همین آدرس واریز کنید.\n"
+        f"\n"
+        f"📝 پس از پرداخت، <b>هش تراکنش (TX Hash)</b>\n"
+        f"    خود را در همینجا ارسال کنید.\n"
+        f"\n"
+        f"💡 برای لغو /cancel بزنید."
     )
 
     # Create a pending payment record
@@ -480,7 +520,12 @@ async def topup_pay_manual(
         pay_currency=currency,
         price_currency="USD",
         price_amount=amount,
-        callback_payload={"manual": True, "currency": currency},
+        callback_payload={
+            "manual": True,
+            "currency": currency,
+            "crypto_amount": str(crypto_amount) if crypto_amount else None,
+            "unit_price": str(unit_price) if unit_price else None,
+        },
     )
     session.add(payment)
     await session.flush()
@@ -490,7 +535,7 @@ async def topup_pay_manual(
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
-    builder.button(text="❌ لغو", callback_data="wallet:topup")
+    builder.button(text="❌ لغو عملیات", callback_data="wallet:topup")
     builder.adjust(1)
 
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
@@ -540,34 +585,53 @@ async def manual_hash_submitted(
     await session.flush()
 
     await message.answer(
-        "✅ هش تراکنش دریافت شد!\n\n"
-        f"🔗 Hash: `{tx_hash[:20]}...`\n"
-        f"💰 مبلغ: {payment.price_amount:.2f} USD\n\n"
-        "⏳ پرداخت شما در انتظار تأیید مدیر است.\n"
-        "پس از تأیید، مبلغ به کیف پول شما واریز خواهد شد."
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "  ✅ هش تراکنش ثبت شد\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🔗 Hash:\n<code>{tx_hash}</code>\n\n"
+        f"💵 مبلغ: <b>{payment.price_amount:.2f} USD</b>\n"
+        f"💱 ارز: {payment.pay_currency}\n\n"
+        "⏳ پرداخت شما در صف بررسی قرار گرفت.\n"
+        "پس از تأیید مدیر، مبلغ به کیف پول\n"
+        "شما واریز خواهد شد.\n\n"
+        "🔔 نتیجه از طریق ربات اطلاع‌رسانی می‌شود."
     )
 
     # Notify admins with approve/reject buttons
-    from services.notifications import notify_admins
     from aiogram.utils.keyboard import InlineKeyboardBuilder
 
     user = await UserRepository(session).get_by_telegram_id(message.from_user.id)
     user_display = f"{user.first_name or '-'}" if user else "-"
     user_tg = message.from_user.id
 
+    # Get crypto amount from payload if available
+    payload = payment.callback_payload or {}
+    crypto_amt = payload.get("crypto_amount")
+    crypto_rate = payload.get("unit_price")
+    crypto_info = ""
+    if crypto_amt and crypto_rate:
+        crypto_info = (
+            f"🪙 معادل ارزی: <b>{crypto_amt} {payment.pay_currency}</b>\n"
+            f"📊 نرخ: 1 {payment.pay_currency} = {crypto_rate} USD\n"
+        )
+
     admin_text = (
-        "💰 **درخواست پرداخت دستی کریپتو**\n\n"
-        f"👤 کاربر: {user_display} (ID: `{user_tg}`)\n"
-        f"💵 مبلغ: {payment.price_amount:.2f} USD\n"
+        "🔔━━━━━━━━━━━━━━━━━━━━━🔔\n"
+        "  💰 درخواست پرداخت دستی\n"
+        "🔔━━━━━━━━━━━━━━━━━━━━━🔔\n\n"
+        f"👤 کاربر: <b>{user_display}</b>\n"
+        f"🆔 Telegram ID: <code>{user_tg}</code>\n\n"
+        f"💵 مبلغ: <b>{payment.price_amount:.2f} USD</b>\n"
         f"💱 ارز: {payment.pay_currency}\n"
-        f"🔗 TX Hash:\n`{tx_hash}`\n\n"
-        "برای تأیید یا رد از دکمه‌های زیر استفاده کنید."
+        f"{crypto_info}\n"
+        f"🔗 TX Hash:\n<code>{tx_hash}</code>\n\n"
+        "👇 لطفاً پس از بررسی تراکنش تأیید یا رد کنید."
     )
 
     builder = InlineKeyboardBuilder()
-    builder.button(text="✅ تأیید و واریز", callback_data=f"admin:manual_pay:approve:{payment.id}")
+    builder.button(text="✅ تأیید و واریز به کیف پول", callback_data=f"admin:manual_pay:approve:{payment.id}")
     builder.button(text="❌ رد پرداخت", callback_data=f"admin:manual_pay:reject:{payment.id}")
-    builder.adjust(2)
+    builder.adjust(1)
 
     # Send to all admins with buttons
     from core.config import settings as app_settings
