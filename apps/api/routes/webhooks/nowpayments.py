@@ -31,9 +31,17 @@ async def handle_nowpayments_ipn(
 
     logger.info("IPN received. Signature present: %s, Body length: %d", bool(signature), len(raw_body))
 
+    # Determine effective IPN secret: DB override takes priority over env
+    from repositories.settings import AppSettingsRepository
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    effective_ipn_secret = gw.nowpayments_ipn_secret or (
+        settings.nowpayments_ipn_secret.get_secret_value()
+        if settings.nowpayments_ipn_secret is not None else None
+    )
+
     # Validate signature — REJECT invalid signatures to prevent forged callbacks
-    if settings.nowpayments_ipn_secret is not None:
-        if not _is_valid_nowpayments_signature(raw_body=raw_body, signature=signature):
+    if effective_ipn_secret is not None:
+        if not _is_valid_nowpayments_signature(raw_body=raw_body, signature=signature, ipn_secret=effective_ipn_secret):
             logger.warning(
                 "IPN signature validation FAILED — REJECTING request. "
                 "Please check NOWPAYMENTS_IPN_SECRET matches your NowPayments dashboard setting!"
@@ -136,7 +144,7 @@ async def handle_nowpayments_ipn(
     return {"status": "processed"}
 
 
-def _is_valid_nowpayments_signature(*, raw_body: bytes, signature: str | None) -> bool:
+def _is_valid_nowpayments_signature(*, raw_body: bytes, signature: str | None, ipn_secret: str) -> bool:
     if not signature:
         return False
 
@@ -150,7 +158,7 @@ def _is_valid_nowpayments_signature(*, raw_body: bytes, signature: str | None) -
         return False
 
     expected_signature = hmac.HMAC(
-        key=settings.nowpayments_ipn_secret.get_secret_value().encode("utf-8"),
+        key=ipn_secret.encode("utf-8"),
         msg=canonical_body,
         digestmod=hashlib.sha512,
     ).hexdigest()

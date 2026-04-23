@@ -180,6 +180,7 @@ class AppSettingsRepository:
         tetrapay_enabled: bool
         nowpayments_api_key: str | None
         tetrapay_api_key: str | None
+        nowpayments_ipn_secret: str | None
 
     async def get_gateway_settings(self) -> GatewaySettings:
         record = await self.session.get(AppSetting, self.GATEWAY_SETTINGS_KEY)
@@ -189,6 +190,7 @@ class AppSettingsRepository:
                 tetrapay_enabled=True,
                 nowpayments_api_key=None,
                 tetrapay_api_key=None,
+                nowpayments_ipn_secret=None,
             )
         payload = dict(record.value_json)
         return self.GatewaySettings(
@@ -196,6 +198,7 @@ class AppSettingsRepository:
             tetrapay_enabled=bool(payload.get("tetrapay_enabled", True)),
             nowpayments_api_key=payload.get("nowpayments_api_key"),
             tetrapay_api_key=payload.get("tetrapay_api_key"),
+            nowpayments_ipn_secret=payload.get("nowpayments_ipn_secret"),
         )
 
     async def update_gateway_settings(
@@ -205,6 +208,7 @@ class AppSettingsRepository:
         tetrapay_enabled: bool | None = None,
         nowpayments_api_key: str | None = _SENTINEL,
         tetrapay_api_key: str | None = _SENTINEL,
+        nowpayments_ipn_secret: str | None = _SENTINEL,
     ) -> "AppSettingsRepository.GatewaySettings":
         record = await self.session.get(AppSetting, self.GATEWAY_SETTINGS_KEY)
         if record is None:
@@ -219,6 +223,8 @@ class AppSettingsRepository:
             payload["nowpayments_api_key"] = nowpayments_api_key
         if tetrapay_api_key is not _SENTINEL:
             payload["tetrapay_api_key"] = tetrapay_api_key
+        if nowpayments_ipn_secret is not _SENTINEL:
+            payload["nowpayments_ipn_secret"] = nowpayments_ipn_secret
 
         record.value_json = payload
         self.session.add(record)

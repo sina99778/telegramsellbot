@@ -166,11 +166,13 @@ async def gateway_settings_menu(callback: CallbackQuery, session: AsyncSession) 
     # Mask API keys for display
     nowpay_key_display = _mask_api_key(gw.nowpayments_api_key) if gw.nowpayments_api_key else "پیش‌فرض (env)"
     tetra_key_display = _mask_api_key(gw.tetrapay_api_key) if gw.tetrapay_api_key else "پیش‌فرض (env)"
+    ipn_secret_display = _mask_api_key(gw.nowpayments_ipn_secret) if gw.nowpayments_ipn_secret else "پیش‌فرض (env)"
 
     text = (
         "💳 مدیریت درگاه‌های پرداخت\n\n"
         f"💎 NOWPayments (ارزی): {nowpay_status}\n"
-        f"   🔑 API Key: {nowpay_key_display}\n\n"
+        f"   🔑 API Key: {nowpay_key_display}\n"
+        f"   🔐 IPN Secret: {ipn_secret_display}\n\n"
         f"💳 تتراپی (ریالی): {tetra_status}\n"
         f"   🔑 API Key: {tetra_key_display}\n"
     )
@@ -182,6 +184,7 @@ async def gateway_settings_menu(callback: CallbackQuery, session: AsyncSession) 
     builder.button(text=toggle_nowpay_text, callback_data="admin:gw:toggle_nowpay")
     builder.button(text=toggle_tetra_text, callback_data="admin:gw:toggle_tetra")
     builder.button(text="🔑 تغییر API Key نوپیمنتز", callback_data="admin:gw:edit_nowpay_key")
+    builder.button(text="🔐 تغییر IPN Secret نوپیمنتز", callback_data="admin:gw:edit_ipn")
     builder.button(text="🔑 تغییر API Key تتراپی", callback_data="admin:gw:edit_tetra_key")
     builder.button(text=AdminButtons.BACK, callback_data="admin:bot_settings")
     builder.adjust(1)
@@ -301,6 +304,58 @@ async def edit_tetra_key_submit(message: Message, state: FSMContext, session: As
     except Exception:
         pass
     await message.answer(f"✅ API Key تتراپی به‌روزرسانی شد.\n🔑 {_mask_api_key(api_key)}")
+
+
+# ─── NOWPayments IPN Secret ───────────────────────────────────────────────────
+
+
+@router.callback_query(F.data == "admin:gw:edit_ipn")
+async def edit_ipn_secret_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(GatewaySettingsStates.waiting_for_nowpayments_ipn_secret)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🗑 حذف (استفاده از env)", callback_data="admin:gw:clear_ipn")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
+    builder.adjust(1)
+
+    await safe_edit_or_send(callback,
+        "🔐 IPN Secret جدید NOWPayments را وارد کنید:\n\n"
+        "این مقدار باید با IPN Secret در داشبورد NOWPayments یکی باشد.\n"
+        "برای بازگشت به مقدار پیش‌فرض (env) دکمه حذف را بزنید.",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "admin:gw:clear_ipn")
+async def clear_ipn_secret(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    await callback.answer()
+    await state.clear()
+    settings_repo = AppSettingsRepository(session)
+    await settings_repo.update_gateway_settings(nowpayments_ipn_secret=None)
+    await gateway_settings_menu(callback, session)
+
+
+@router.message(GatewaySettingsStates.waiting_for_nowpayments_ipn_secret)
+async def edit_ipn_secret_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text:
+        return
+
+    ipn_secret = message.text.strip()
+    if len(ipn_secret) < 3:
+        await message.answer("❌ IPN Secret خیلی کوتاه است. لطفاً مقدار معتبر وارد کنید.")
+        return
+
+    settings_repo = AppSettingsRepository(session)
+    await settings_repo.update_gateway_settings(nowpayments_ipn_secret=ipn_secret)
+
+    await state.clear()
+    # Delete the message containing the secret for security
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    await message.answer(f"✅ IPN Secret نوپیمنتز به‌روزرسانی شد.\n🔐 {_mask_api_key(ipn_secret)}")
 
 
 # ─── Referral Settings ────────────────────────────────────────────────────────
