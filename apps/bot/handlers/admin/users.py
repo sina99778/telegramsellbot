@@ -465,7 +465,7 @@ async def view_user_configs(
     session: AsyncSession,
 ) -> None:
     """Redirect to the full paginated subscription management list in subs.py."""
-    from apps.bot.handlers.admin.subs import AdminSubscriptionListPageCallback, _render_user_configs
+    from apps.bot.handlers.admin.subs import _render_user_configs
 
     await callback.answer()
     await _render_user_configs(

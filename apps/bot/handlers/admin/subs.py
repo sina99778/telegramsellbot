@@ -59,14 +59,13 @@ class SubManageStates(StatesGroup):
 # ─── Callback Data ────────────────────────────────────────────────────────────
 
 
-class AdminSubscriptionActionCallback(CallbackData, prefix="admin_sub"):
-    action: str  # detail, revoke, toggle, extend, add_vol, resend, refund
-    subscription_id: UUID
-    user_id: UUID
+class AdminSubscriptionActionCallback(CallbackData, prefix="as"):
+    action: str  # d(etail), r(evoke), t(oggle), e(xtend), v(ol), s(end), f(und)
+    sid: UUID  # subscription_id
     page: int = 1
 
 
-class AdminSubscriptionListPageCallback(CallbackData, prefix="admin_sub_list"):
+class AdminSubscriptionListPageCallback(CallbackData, prefix="asl"):
     user_id: UUID
     page: int = 1
 
@@ -137,9 +136,8 @@ async def _render_user_configs(
         builder.button(
             text=f"{status_icon} {plan_name} | {str(sub.id)[:8]}",
             callback_data=AdminSubscriptionActionCallback(
-                action="detail",
-                subscription_id=sub.id,
-                user_id=user.id,
+                action="d",
+                sid=sub.id,
                 page=page,
             ).pack(),
         )
@@ -162,14 +160,16 @@ async def _render_user_configs(
 # ─── Subscription Detail ─────────────────────────────────────────────────────
 
 
-@router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "detail"))
+@router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "d"))
 async def subscription_detail(
     callback: CallbackQuery,
     callback_data: AdminSubscriptionActionCallback,
     session: AsyncSession,
 ) -> None:
     await callback.answer()
-    await _render_sub_detail(callback, callback_data.subscription_id, callback_data.user_id, callback_data.page, session)
+    sub = await session.get(Subscription, callback_data.sid)
+    user_id = sub.user_id if sub else callback_data.sid
+    await _render_sub_detail(callback, callback_data.sid, user_id, callback_data.page, session)
 
 
 async def _render_sub_detail(
@@ -208,27 +208,27 @@ async def _render_sub_detail(
 
     builder = InlineKeyboardBuilder()
     cb = lambda action: AdminSubscriptionActionCallback(
-        action=action, subscription_id=sub.id, user_id=user_id, page=page,
+        action=action, sid=sub.id, page=page,
     ).pack()
 
     if sub.status in {"active", "pending_activation"}:
-        builder.button(text="📅 تمدید (روز)", callback_data=cb("extend"))
-        builder.button(text="📦 افزایش حجم (GB)", callback_data=cb("add_vol"))
-        builder.button(text="⛔ غیرفعال کردن", callback_data=cb("toggle"))
-        builder.button(text="🗑 لغو و حذف از سرور", callback_data=cb("revoke"))
+        builder.button(text="📅 تمدید (روز)", callback_data=cb("e"))
+        builder.button(text="📦 افزایش حجم (GB)", callback_data=cb("v"))
+        builder.button(text="⛔ غیرفعال کردن", callback_data=cb("t"))
+        builder.button(text="🗑 لغو و حذف از سرور", callback_data=cb("r"))
 
         if sub.sub_link:
-            builder.button(text="📨 ارسال مجدد کانفیگ", callback_data=cb("resend"))
+            builder.button(text="📨 ارسال مجدد کانفیگ", callback_data=cb("s"))
 
         if sub.used_bytes == 0:
-            builder.button(text="💸 بازپرداخت (مصرف صفر)", callback_data=cb("refund"))
+            builder.button(text="💸 بازپرداخت (مصرف صفر)", callback_data=cb("f"))
 
     elif sub.status == "expired":
-        builder.button(text="📅 تمدید (روز)", callback_data=cb("extend"))
-        builder.button(text="🟢 فعال کردن مجدد", callback_data=cb("toggle"))
+        builder.button(text="📅 تمدید (روز)", callback_data=cb("e"))
+        builder.button(text="🟢 فعال کردن مجدد", callback_data=cb("t"))
 
     elif sub.status == "cancelled":
-        builder.button(text="🟢 فعال کردن مجدد", callback_data=cb("toggle"))
+        builder.button(text="🟢 فعال کردن مجدد", callback_data=cb("t"))
 
     builder.button(text=AdminButtons.BACK, callback_data=AdminSubscriptionListPageCallback(user_id=user_id, page=page).pack())
     builder.adjust(2, 2, 1, 1, 1)
@@ -239,7 +239,7 @@ async def _render_sub_detail(
 # ─── Toggle Enable/Disable ───────────────────────────────────────────────────
 
 
-@router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "toggle"))
+@router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "t"))
 async def toggle_subscription(
     callback: CallbackQuery,
     callback_data: AdminSubscriptionActionCallback,
@@ -248,7 +248,7 @@ async def toggle_subscription(
 ) -> None:
     await callback.answer()
 
-    sub = await session.scalar(select(Subscription).where(Subscription.id == callback_data.subscription_id))
+    sub = await session.scalar(select(Subscription).where(Subscription.id == callback_data.sid))
     if sub is None:
         await safe_edit_or_send(callback, AdminMessages.SUBSCRIPTION_NOT_FOUND)
         return
@@ -271,13 +271,13 @@ async def toggle_subscription(
         payload={"old_status": old_status, "new_status": new_status},
     )
     await session.flush()
-    await _render_sub_detail(callback, sub.id, callback_data.user_id, callback_data.page, session)
+    await _render_sub_detail(callback, sub.id, sub.user_id, callback_data.page, session)
 
 
 # ─── Extend Days ──────────────────────────────────────────────────────────────
 
 
-@router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "extend"))
+@router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "e"))
 async def extend_prompt(
     callback: CallbackQuery,
     callback_data: AdminSubscriptionActionCallback,
@@ -286,8 +286,7 @@ async def extend_prompt(
     await callback.answer()
     await state.set_state(SubManageStates.waiting_for_extend_days)
     await state.update_data(
-        sub_id=str(callback_data.subscription_id),
-        user_id=str(callback_data.user_id),
+        sub_id=str(callback_data.sid),
         page=callback_data.page,
     )
     await safe_edit_or_send(callback, "📅 چند روز تمدید شود؟ عدد وارد کنید.\nبرای لغو /cancel بزنید.")
@@ -347,7 +346,7 @@ async def extend_submit(
 # ─── Add Volume ───────────────────────────────────────────────────────────────
 
 
-@router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "add_vol"))
+@router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "v"))
 async def add_volume_prompt(
     callback: CallbackQuery,
     callback_data: AdminSubscriptionActionCallback,
@@ -356,8 +355,7 @@ async def add_volume_prompt(
     await callback.answer()
     await state.set_state(SubManageStates.waiting_for_add_volume_gb)
     await state.update_data(
-        sub_id=str(callback_data.subscription_id),
-        user_id=str(callback_data.user_id),
+        sub_id=str(callback_data.sid),
         page=callback_data.page,
     )
     await safe_edit_or_send(callback, "📦 چند گیگابایت اضافه شود؟ عدد وارد کنید.\nبرای لغو /cancel بزنید.")
@@ -413,7 +411,7 @@ async def add_volume_submit(
 # ─── Resend Config ────────────────────────────────────────────────────────────
 
 
-@router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "resend"))
+@router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "s"))
 async def resend_config(
     callback: CallbackQuery,
     callback_data: AdminSubscriptionActionCallback,
@@ -425,7 +423,7 @@ async def resend_config(
 
     sub = await session.scalar(
         select(Subscription).options(selectinload(Subscription.user))
-        .where(Subscription.id == callback_data.subscription_id)
+        .where(Subscription.id == callback_data.sid)
     )
     if sub is None or sub.user is None or not sub.sub_link:
         await safe_edit_or_send(callback, "اشتراک یا لینک یافت نشد.")
@@ -466,7 +464,7 @@ async def resend_config(
 # ─── Zero-Usage Refund ────────────────────────────────────────────────────────
 
 
-@router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "refund"))
+@router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "f"))
 async def zero_usage_refund(
     callback: CallbackQuery,
     callback_data: AdminSubscriptionActionCallback,
@@ -484,7 +482,7 @@ async def zero_usage_refund(
             .selectinload(XUIInboundRecord.server)
             .selectinload(XUIServerRecord.credentials),
         )
-        .where(Subscription.id == callback_data.subscription_id)
+        .where(Subscription.id == callback_data.sid)
     )
     if sub is None:
         await safe_edit_or_send(callback, AdminMessages.SUBSCRIPTION_NOT_FOUND)
@@ -554,7 +552,7 @@ async def zero_usage_refund(
 # ─── Revoke (Delete from X-UI) ───────────────────────────────────────────────
 
 
-@router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "revoke"))
+@router.callback_query(AdminSubscriptionActionCallback.filter(F.action == "r"))
 async def revoke_user_config(
     callback: CallbackQuery,
     callback_data: AdminSubscriptionActionCallback,
@@ -570,7 +568,7 @@ async def revoke_user_config(
             .selectinload(XUIInboundRecord.server)
             .selectinload(XUIServerRecord.credentials)
         )
-        .where(Subscription.id == callback_data.subscription_id)
+        .where(Subscription.id == callback_data.sid)
     )
     if subscription is None:
         await safe_edit_or_send(callback, AdminMessages.SUBSCRIPTION_NOT_FOUND)
@@ -602,6 +600,6 @@ async def revoke_user_config(
     await _render_user_configs(
         callback=callback,
         session=session,
-        user_id=callback_data.user_id,
+        user_id=subscription.user_id,
         page=callback_data.page,
     )
