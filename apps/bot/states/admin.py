@@ -55,6 +55,9 @@ class DiscountStates(StatesGroup):
     waiting_for_code = State()
     waiting_for_percent = State()
     waiting_for_max_uses = State()
+    waiting_for_edit_percent = State()
+    waiting_for_edit_expiry = State()
+    waiting_for_edit_max_uses = State()
 
 
 class GlobalSearchStates(StatesGroup):

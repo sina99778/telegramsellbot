@@ -108,7 +108,7 @@ async def _render_user_configs(
         await safe_edit_or_send(callback, AdminMessages.USER_NOT_FOUND)
         return
 
-    all_subs = sorted(user.subscriptions, key=lambda s: s.created_at or datetime.min, reverse=True)
+    all_subs = sorted(user.subscriptions, key=lambda s: s.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     if not all_subs:
         builder = InlineKeyboardBuilder()
         builder.button(text=AdminButtons.BACK, callback_data="admin:users")

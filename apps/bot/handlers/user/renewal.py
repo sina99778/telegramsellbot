@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from uuid import UUID
+from decimal import Decimal
+from uuid import UUID, uuid4
 
 from aiogram import Bot, F, Router
 from aiogram.filters.callback_data import CallbackData
@@ -38,6 +39,14 @@ class RenewConfirmCallback(CallbackData, prefix="renew_confirm"):
     type: str
     amount: float
     price: float
+
+
+class RenewPayMethodCallback(CallbackData, prefix="renew_pay"):
+    sub_id: UUID
+    type: str
+    amount: float
+    price: float
+    method: str  # 'wallet', 'nowpay', 'tetrapay'
 
 
 from apps.bot.utils.messaging import safe_edit_or_send
@@ -101,36 +110,52 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
         time_added_days = amount
         
     price = round(price, 2)
-    
-    confirm_markup = InlineKeyboardBuilder()
-    confirm_markup.button(
-        text="✅ تایید و پرداخت",
-        callback_data=RenewConfirmCallback(
-            sub_id=sub_id,
-            type=renew_type,
-            amount=amount,
-            price=price
+
+    # Show payment method selection
+    gw = await settings_repo.get_gateway_settings()
+
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="👛 کیف پول",
+        callback_data=RenewPayMethodCallback(
+            sub_id=sub_id, type=renew_type, amount=amount, price=price, method="wallet"
         ).pack()
     )
-    confirm_markup.button(text=Buttons.BACK, callback_data=MyConfigCallback(action="view", subscription_id=sub_id).pack())
-    confirm_markup.adjust(1)
+    if gw.tetrapay_enabled:
+        builder.button(
+            text="💳 درگاه ریالی (تتراپی)",
+            callback_data=RenewPayMethodCallback(
+                sub_id=sub_id, type=renew_type, amount=amount, price=price, method="tetrapay"
+            ).pack()
+        )
+    if gw.nowpayments_enabled:
+        builder.button(
+            text="💎 درگاه ارزی (NOWPayments)",
+            callback_data=RenewPayMethodCallback(
+                sub_id=sub_id, type=renew_type, amount=amount, price=price, method="nowpay"
+            ).pack()
+        )
+    builder.button(text=Buttons.BACK, callback_data=MyConfigCallback(action="view", subscription_id=sub_id).pack())
+    builder.adjust(1)
     
     text = Messages.RENEWAL_INVOICE.format(
         volume=volume_added,
         time=time_added_days,
         price=price
     )
+    text += "\n\n💳 روش پرداخت را انتخاب کنید:"
     
-    await message.answer(text, reply_markup=confirm_markup.as_markup())
+    await message.answer(text, reply_markup=builder.as_markup())
     await state.clear()
 
 
-@router.callback_query(RenewConfirmCallback.filter())
-async def renew_confirm_payment(
+@router.callback_query(RenewPayMethodCallback.filter(F.method == "wallet"))
+async def renew_pay_wallet(
     callback: CallbackQuery,
-    callback_data: RenewConfirmCallback,
+    callback_data: RenewPayMethodCallback,
     session: AsyncSession,
 ) -> None:
+    """Pay renewal with wallet balance."""
     if callback.from_user is None:
         return
 
@@ -158,7 +183,6 @@ async def renew_confirm_payment(
         await callback.message.edit_text("پلن این سرویس حذف شده. امکان تمدید وجود ندارد.")
         return
 
-    from decimal import Decimal
     price = Decimal(str(callback_data.price))
 
     if user.wallet.balance < price:
@@ -201,16 +225,203 @@ async def renew_confirm_payment(
         metadata={"sub_id": str(sub.id), "type": callback_data.type},
     )
 
-    # Calculate actual bytes or timeframe
+    # Apply renewal
+    await _apply_renewal(sub, callback_data.type, callback_data.amount, session)
+
+    await callback.message.edit_text(Messages.RENEWAL_SUCCESS)
+
+    # Notify admins
+    await _notify_renewal_admins(callback, user, callback_data, price, session)
+
+
+@router.callback_query(RenewPayMethodCallback.filter(F.method == "nowpay"))
+async def renew_pay_nowpay(
+    callback: CallbackQuery,
+    callback_data: RenewPayMethodCallback,
+    session: AsyncSession,
+) -> None:
+    """Pay renewal with NOWPayments gateway."""
+    if callback.from_user is None:
+        return
+    await callback.answer()
+
+    from core.config import settings
+    from models.payment import Payment
+    from schemas.internal.nowpayments import NowPaymentsPaymentCreateRequest
+    from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        await safe_edit_or_send(callback, "حساب پیدا نشد.")
+        return
+
+    price = Decimal(str(callback_data.price))
+    local_order_id = str(uuid4())
+
+    renewal_meta = {
+        "purpose": "renewal",
+        "sub_id": str(callback_data.sub_id),
+        "renew_type": callback_data.type,
+        "renew_amount": callback_data.amount,
+    }
+
+    payload = NowPaymentsPaymentCreateRequest(
+        price_amount=price,
+        price_currency="usd",
+        order_id=local_order_id,
+        order_description=f"Renewal for user {user.id}",
+        ipn_callback_url=settings.nowpayments_ipn_callback_url,
+    )
+
+    # Use DB-configured API key if available
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    from pydantic import SecretStr
+    effective_api_key = SecretStr(gw.nowpayments_api_key) if gw.nowpayments_api_key else settings.nowpayments_api_key
+
+    try:
+        async with NowPaymentsClient(
+            NowPaymentsClientConfig(
+                api_key=effective_api_key,
+                base_url=settings.nowpayments_base_url,
+            )
+        ) as client:
+            invoice = await client.create_payment_invoice(payload)
+    except NowPaymentsRequestError:
+        await safe_edit_or_send(callback, Messages.PAYMENT_GATEWAY_UNAVAILABLE)
+        return
+
+    payment = Payment(
+        user_id=user.id,
+        provider="nowpayments",
+        kind="wallet_topup",
+        provider_invoice_id=str(invoice.id),
+        order_id=local_order_id,
+        payment_status="waiting",
+        price_currency="USD",
+        price_amount=price,
+        invoice_url=str(invoice.invoice_url),
+        callback_payload=renewal_meta,
+    )
+    session.add(payment)
+    await session.flush()
+
+    from apps.bot.keyboards.inline import build_topup_link_keyboard
+    await safe_edit_or_send(
+        callback,
+        f"🧾 فاکتور تمدید ساخته شد:\n\n"
+        f"💰 مبلغ: {price} USD\n\n"
+        "بعد از پرداخت، مبلغ به کیف پول واریز می‌شود.\n"
+        "سپس مجدداً از طریق کیف پول تمدید کنید.",
+        reply_markup=build_topup_link_keyboard(str(invoice.invoice_url)),
+    )
+
+
+@router.callback_query(RenewPayMethodCallback.filter(F.method == "tetrapay"))
+async def renew_pay_tetrapay(
+    callback: CallbackQuery,
+    callback_data: RenewPayMethodCallback,
+    session: AsyncSession,
+) -> None:
+    """Pay renewal with TetraPay gateway."""
+    if callback.from_user is None:
+        return
+    await callback.answer()
+
+    from core.config import settings
+    from models.payment import Payment
+    from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        await safe_edit_or_send(callback, "حساب پیدا نشد.")
+        return
+
+    price = Decimal(str(callback_data.price))
+
+    toman_rate = await AppSettingsRepository(session).get_toman_rate()
+    if not toman_rate or toman_rate <= 0:
+        await safe_edit_or_send(callback, "❌ نرخ تبدیل تومان تنظیم نشده.")
+        return
+
+    toman_amount = int((price * toman_rate).quantize(Decimal("1")))
+    rial_amount = toman_amount * 10
+
+    if rial_amount < 10000:
+        await safe_edit_or_send(callback, "❌ مبلغ کمتر از حداقل مجاز درگاه است.")
+        return
+
+    local_order_id = str(uuid4())
+
+    renewal_meta = {
+        "purpose": "renewal",
+        "sub_id": str(callback_data.sub_id),
+        "renew_type": callback_data.type,
+        "renew_amount": callback_data.amount,
+    }
+
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    effective_key = gw.tetrapay_api_key if gw.tetrapay_api_key else settings.tetrapay_api_key.get_secret_value()
+
+    try:
+        async with TetraPayClient(
+            TetraPayClientConfig(
+                api_key=effective_key,
+                base_url=settings.tetrapay_base_url,
+            )
+        ) as client:
+            tx = await client.create_order(
+                hash_id=local_order_id,
+                amount=rial_amount,
+                description=f"تمدید سرویس - کاربر {user.telegram_id}",
+                email=f"{user.telegram_id}@telegram.org",
+                mobile="09111111111",
+            )
+    except TetraPayRequestError as exc:
+        await safe_edit_or_send(callback, f"❌ خطا در ساخت فاکتور: {exc}")
+        return
+
+    payment = Payment(
+        user_id=user.id,
+        provider="tetrapay",
+        kind="wallet_topup",
+        provider_payment_id=tx.Authority,
+        order_id=local_order_id,
+        payment_status="waiting",
+        pay_currency="IRT",
+        price_currency="USD",
+        price_amount=price,
+        pay_amount=toman_amount,
+        invoice_url=tx.payment_url_bot,
+        callback_payload=renewal_meta,
+    )
+    session.add(payment)
+    await session.flush()
+
+    from apps.bot.keyboards.inline import build_topup_link_keyboard
+    await safe_edit_or_send(
+        callback,
+        f"🔖 فاکتور تمدید (ریالی):\n\n"
+        f"💵 مبلغ: {toman_amount:,} تومان\n\n"
+        "بعد از پرداخت، مبلغ به کیف پول واریز می‌شود.\n"
+        "سپس مجدداً از طریق کیف پول تمدید کنید.",
+        reply_markup=build_topup_link_keyboard(invoice_url=tx.payment_url_bot, bot_url=tx.payment_url_bot),
+    )
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+
+async def _apply_renewal(sub, renew_type: str, amount: float, session: AsyncSession) -> None:
+    """Apply the actual renewal (volume or time) to the subscription and sync with X-UI."""
     from datetime import datetime, timezone, timedelta
     now_utc = datetime.now(timezone.utc)
 
-    if callback_data.type == "volume":
-        bytes_to_add = int(callback_data.amount * 1024**3)
+    if renew_type == "volume":
+        bytes_to_add = int(amount * 1024**3)
         sub.volume_bytes += bytes_to_add
 
-    if callback_data.type == "time":
-        days_to_add = int(callback_data.amount)
+    if renew_type == "time":
+        days_to_add = int(amount)
         if sub.ends_at is None:
             if sub.activated_at is not None:
                 sub.ends_at = sub.activated_at + timedelta(days=days_to_add)
@@ -281,9 +492,10 @@ async def renew_confirm_payment(
                 logger.error("Failed to sync X-UI limit on renewal: %s", e, exc_info=True)
 
     await session.flush()
-    await callback.message.edit_text(Messages.RENEWAL_SUCCESS)
 
-    # Notify admins
+
+async def _notify_renewal_admins(callback, user, callback_data, price, session) -> None:
+    """Notify admins about a renewal."""
     from services.notifications import notify_admins
     user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
     renew_type_label = "حجم" if callback_data.type == "volume" else "زمان"

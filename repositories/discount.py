@@ -13,6 +13,9 @@ class DiscountRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
+    async def get_by_id(self, discount_id: UUID) -> DiscountCode | None:
+        return await self.session.get(DiscountCode, discount_id)
+
     async def get_by_code(self, code: str) -> DiscountCode | None:
         result = await self.session.execute(
             select(DiscountCode).where(DiscountCode.code == code.strip().upper())
