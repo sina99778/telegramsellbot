@@ -45,7 +45,7 @@ async def main() -> None:
     scheduler.add_job(
         run_expiry_notifications,
         "cron",
-        hour="*/6",
+        hour="*/3",
         minute=30,
         kwargs={"bot": bot},
         max_instances=1,
