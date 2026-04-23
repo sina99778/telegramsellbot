@@ -34,6 +34,7 @@ def create_traffic_banner(
     total_gb: float,
     days_left: int,
     is_active: bool,
+    bot_username: str | None = None,
 ) -> io.BytesIO:
     """
     Generate a modern dark-mode visual banner displaying config status.
@@ -98,7 +99,8 @@ def create_traffic_banner(
 
     # Footer
     draw.text((40, height - 40), reshape_text(f"User ID: {user_id}"), fill="#6b7280", font=font_small)
-    draw.text((width - 250, height - 40), reshape_text("@DbV2raysEmergencybot"), fill="#6b7280", font=font_small)
+    footer_tag = f"@{bot_username}" if bot_username else ""
+    draw.text((width - 250, height - 40), reshape_text(footer_tag), fill="#6b7280", font=font_small)
 
     out_bio = io.BytesIO()
     image.save(out_bio, format="PNG")

@@ -831,7 +831,8 @@ async def _finalize_purchase(
         used_gb=0.0,
         total_gb=plan.volume_bytes / (1024**3),
         days_left=plan.duration_days,
-        is_active=True
+        is_active=True,
+        bot_username=(await bot.get_me()).username,
     )
     
     if banner_bytes:

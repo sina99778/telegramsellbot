@@ -334,7 +334,8 @@ async def my_config_detail_handler(
             used_gb=sub.used_bytes / (1024**3),
             total_gb=sub.volume_bytes / (1024**3),
             days_left=days_left,
-            is_active=(sub.status in ["active", "pending_activation"])
+            is_active=(sub.status in ["active", "pending_activation"]),
+            bot_username=(await bot.get_me()).username,
         )
         if banner_bytes:
             try:
