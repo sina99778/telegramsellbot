@@ -59,13 +59,16 @@ def build_wallet_history_keyboard() -> InlineKeyboardMarkup:
 def build_gateway_selection_keyboard(
     nowpayments_enabled: bool = True,
     tetrapay_enabled: bool = True,
+    manual_crypto_enabled: bool = False,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     if tetrapay_enabled:
         builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="wallet:topup:pay:tetrapay")
     if nowpayments_enabled:
         builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="wallet:topup:pay:gateway")
-    if not tetrapay_enabled and not nowpayments_enabled:
+    if manual_crypto_enabled:
+        builder.button(text="💰 پرداخت به ولت (دستی)", callback_data="wallet:topup:pay:manual")
+    if not tetrapay_enabled and not nowpayments_enabled and not manual_crypto_enabled:
         # No gateways available — show a disabled placeholder
         builder.button(text="❌ درگاه پرداختی فعال نیست", callback_data="pagination:noop")
     builder.button(text=Buttons.BACK, callback_data="wallet:topup")

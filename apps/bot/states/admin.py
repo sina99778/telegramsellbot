@@ -68,6 +68,8 @@ class GatewaySettingsStates(StatesGroup):
     waiting_for_nowpayments_api_key = State()
     waiting_for_tetrapay_api_key = State()
     waiting_for_nowpayments_ipn_secret = State()
+    waiting_for_manual_currency = State()
+    waiting_for_manual_address = State()
 
 
 class ReferralSettingsStates(StatesGroup):

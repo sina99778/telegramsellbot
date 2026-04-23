@@ -162,6 +162,7 @@ async def gateway_settings_menu(callback: CallbackQuery, session: AsyncSession) 
 
     nowpay_status = "🟢 فعال" if gw.nowpayments_enabled else "🔴 غیرفعال"
     tetra_status = "🟢 فعال" if gw.tetrapay_enabled else "🔴 غیرفعال"
+    manual_status = "🟢 فعال" if gw.manual_crypto_enabled else "🔴 غیرفعال"
 
     # Mask API keys for display
     nowpay_key_display = _mask_api_key(gw.nowpayments_api_key) if gw.nowpayments_api_key else "پیش‌فرض (env)"
@@ -174,18 +175,25 @@ async def gateway_settings_menu(callback: CallbackQuery, session: AsyncSession) 
         f"   🔑 API Key: {nowpay_key_display}\n"
         f"   🔐 IPN Secret: {ipn_secret_display}\n\n"
         f"💳 تتراپی (ریالی): {tetra_status}\n"
-        f"   🔑 API Key: {tetra_key_display}\n"
+        f"   🔑 API Key: {tetra_key_display}\n\n"
+        f"💰 پرداخت دستی کریپتو: {manual_status}\n"
+        f"   💱 ارز: {gw.manual_crypto_currency or 'تنظیم نشده'}\n"
+        f"   📍 آدرس: {_mask_api_key(gw.manual_crypto_address) if gw.manual_crypto_address else 'تنظیم نشده'}\n"
     )
 
     builder = InlineKeyboardBuilder()
     toggle_nowpay_text = "🔴 غیرفعال کردن NOWPayments" if gw.nowpayments_enabled else "🟢 فعال کردن NOWPayments"
     toggle_tetra_text = "🔴 غیرفعال کردن تتراپی" if gw.tetrapay_enabled else "🟢 فعال کردن تتراپی"
+    toggle_manual_text = "🔴 غیرفعال کردن پرداخت دستی" if gw.manual_crypto_enabled else "🟢 فعال کردن پرداخت دستی"
 
     builder.button(text=toggle_nowpay_text, callback_data="admin:gw:toggle_nowpay")
     builder.button(text=toggle_tetra_text, callback_data="admin:gw:toggle_tetra")
     builder.button(text="🔑 تغییر API Key نوپیمنتز", callback_data="admin:gw:edit_nowpay_key")
     builder.button(text="🔐 تغییر IPN Secret نوپیمنتز", callback_data="admin:gw:edit_ipn")
     builder.button(text="🔑 تغییر API Key تتراپی", callback_data="admin:gw:edit_tetra_key")
+    builder.button(text=toggle_manual_text, callback_data="admin:gw:toggle_manual")
+    builder.button(text="💱 تغییر ارز پرداخت دستی", callback_data="admin:gw:edit_manual_cur")
+    builder.button(text="📍 تغییر آدرس ولت", callback_data="admin:gw:edit_manual_addr")
     builder.button(text=AdminButtons.BACK, callback_data="admin:bot_settings")
     builder.adjust(1)
 
@@ -357,6 +365,100 @@ async def edit_ipn_secret_submit(message: Message, state: FSMContext, session: A
         pass
     await message.answer(f"✅ IPN Secret نوپیمنتز به‌روزرسانی شد.\n🔐 {_mask_api_key(ipn_secret)}")
 
+
+# ─── Manual Crypto Wallet ─────────────────────────────────────────────────────
+
+
+@router.callback_query(F.data == "admin:gw:toggle_manual")
+async def toggle_manual_crypto(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    settings_repo = AppSettingsRepository(session)
+    gw = await settings_repo.get_gateway_settings()
+    await settings_repo.update_gateway_settings(manual_crypto_enabled=not gw.manual_crypto_enabled)
+    await gateway_settings_menu(callback, session)
+
+
+@router.callback_query(F.data == "admin:gw:edit_manual_cur")
+async def edit_manual_currency_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(GatewaySettingsStates.waiting_for_manual_currency)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="USDT TRC20", callback_data="admin:gw:quick_cur:USDT TRC20")
+    builder.button(text="USDT ERC20", callback_data="admin:gw:quick_cur:USDT ERC20")
+    builder.button(text="BTC", callback_data="admin:gw:quick_cur:BTC")
+    builder.button(text="ETH", callback_data="admin:gw:quick_cur:ETH")
+    builder.button(text="LTC", callback_data="admin:gw:quick_cur:LTC")
+    builder.button(text="TRX", callback_data="admin:gw:quick_cur:TRX")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
+    builder.adjust(2, 2, 2, 1)
+
+    await safe_edit_or_send(callback,
+        "💱 نوع ارز را انتخاب کنید یا نام ارز را تایپ کنید:\n\n"
+        "مثلاً: USDT TRC20، BTC، LTC",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("admin:gw:quick_cur:"))
+async def quick_set_currency(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    await callback.answer()
+    await state.clear()
+    currency = callback.data.split(":", 3)[3]  # "admin:gw:quick_cur:USDT TRC20"
+    settings_repo = AppSettingsRepository(session)
+    await settings_repo.update_gateway_settings(manual_crypto_currency=currency)
+    await gateway_settings_menu(callback, session)
+
+
+@router.message(GatewaySettingsStates.waiting_for_manual_currency)
+async def edit_manual_currency_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text:
+        return
+    currency = message.text.strip().upper()
+    if len(currency) < 2:
+        await message.answer("❌ نام ارز خیلی کوتاه است.")
+        return
+
+    settings_repo = AppSettingsRepository(session)
+    await settings_repo.update_gateway_settings(manual_crypto_currency=currency)
+    await state.clear()
+    await message.answer(f"✅ نوع ارز به «{currency}» تنظیم شد.")
+
+
+@router.callback_query(F.data == "admin:gw:edit_manual_addr")
+async def edit_manual_address_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(GatewaySettingsStates.waiting_for_manual_address)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
+    builder.adjust(1)
+
+    await safe_edit_or_send(callback,
+        "📍 آدرس ولت خود را وارد کنید:\n\n"
+        "مشتری‌ها این آدرس را برای ارسال رمزارز می‌بینند.",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.message(GatewaySettingsStates.waiting_for_manual_address)
+async def edit_manual_address_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text:
+        return
+    address = message.text.strip()
+    if len(address) < 10:
+        await message.answer("❌ آدرس ولت خیلی کوتاه است.")
+        return
+
+    settings_repo = AppSettingsRepository(session)
+    await settings_repo.update_gateway_settings(manual_crypto_address=address)
+    await state.clear()
+    # Delete message for security
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    await message.answer(f"✅ آدرس ولت تنظیم شد.\n📍 {_mask_api_key(address)}")
 
 # ─── Referral Settings ────────────────────────────────────────────────────────
 

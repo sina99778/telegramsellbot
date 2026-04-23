@@ -156,6 +156,7 @@ async def topup_preset_handler(
         reply_markup=build_gateway_selection_keyboard(
             nowpayments_enabled=gw.nowpayments_enabled,
             tetrapay_enabled=gw.tetrapay_enabled,
+            manual_crypto_enabled=gw.manual_crypto_enabled and bool(gw.manual_crypto_address),
         )
     )
 
@@ -197,6 +198,7 @@ async def topup_custom_amount_handler(
         reply_markup=build_gateway_selection_keyboard(
             nowpayments_enabled=gw.nowpayments_enabled,
             tetrapay_enabled=gw.tetrapay_enabled,
+            manual_crypto_enabled=gw.manual_crypto_enabled and bool(gw.manual_crypto_address),
         )
     )
 
@@ -418,3 +420,184 @@ async def _create_tetrapay_topup_invoice(
         text,
         reply_markup=build_topup_link_keyboard(invoice_url=tx.payment_url_web, bot_url=tx.payment_url_bot),
     )
+
+
+# ─── Manual Crypto Payment ────────────────────────────────────────────────────
+
+
+@router.callback_query(F.data == "wallet:topup:pay:manual")
+async def topup_pay_manual(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Show admin wallet address and ask user to send crypto, then submit hash."""
+    await callback.answer()
+
+    if callback.from_user is None:
+        return
+
+    from repositories.settings import AppSettingsRepository
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+
+    if not gw.manual_crypto_enabled or not gw.manual_crypto_address:
+        await safe_edit_or_send(callback, "❌ پرداخت دستی کریپتو غیرفعال یا آدرس تنظیم نشده.")
+        return
+
+    data = await state.get_data()
+    amount_str = data.get("topup_amount")
+    if not amount_str:
+        await safe_edit_or_send(callback, Messages.TOPUP_AMOUNT_GT_ZERO)
+        return
+
+    amount = Decimal(amount_str)
+    currency = gw.manual_crypto_currency or "Crypto"
+    address = gw.manual_crypto_address
+
+    text = (
+        f"💰 **پرداخت دستی {currency}**\n\n"
+        f"📌 مبلغ: `{amount:.2f}` دلار\n"
+        f"💱 ارز: {currency}\n\n"
+        f"📍 آدرس ولت:\n`{address}`\n\n"
+        "⚠️ لطفاً دقیقاً به همین آدرس ارسال کنید.\n"
+        "پس از پرداخت، **هش تراکنش (TX Hash)** خود را ارسال کنید.\n\n"
+        "💡 برای لغو /cancel بزنید."
+    )
+
+    # Create a pending payment record
+    local_order_id = str(uuid4())
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        await safe_edit_or_send(callback, "حساب پیدا نشد.")
+        return
+
+    payment = Payment(
+        user_id=user.id,
+        provider="manual_crypto",
+        kind="wallet_topup",
+        order_id=local_order_id,
+        payment_status="waiting_hash",
+        pay_currency=currency,
+        price_currency="USD",
+        price_amount=amount,
+        callback_payload={"manual": True, "currency": currency},
+    )
+    session.add(payment)
+    await session.flush()
+
+    await state.update_data(manual_payment_id=str(payment.id))
+    await state.set_state(TopUpStates.waiting_for_manual_hash)
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ لغو", callback_data="wallet:topup")
+    builder.adjust(1)
+
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+
+
+@router.message(TopUpStates.waiting_for_manual_hash)
+async def manual_hash_submitted(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """User submits the transaction hash after sending crypto."""
+    if not message.text or message.from_user is None:
+        return
+
+    if message.text.strip().lower() == "/cancel":
+        await state.clear()
+        await message.answer("❌ لغو شد.")
+        return
+
+    tx_hash = message.text.strip()
+    if len(tx_hash) < 10:
+        await message.answer("❌ هش تراکنش خیلی کوتاه است. لطفاً هش کامل را ارسال کنید.")
+        return
+
+    data = await state.get_data()
+    await state.clear()
+
+    payment_id = data.get("manual_payment_id")
+    if not payment_id:
+        await message.answer("❌ اطلاعات پرداخت یافت نشد. لطفاً دوباره تلاش کنید.")
+        return
+
+    from uuid import UUID
+    payment = await session.get(Payment, UUID(payment_id))
+    if payment is None:
+        await message.answer("❌ رکورد پرداخت یافت نشد.")
+        return
+
+    # Update payment with hash
+    payment.payment_status = "pending_approval"
+    payment.provider_payment_id = tx_hash
+    if isinstance(payment.callback_payload, dict):
+        payment.callback_payload = {**payment.callback_payload, "tx_hash": tx_hash}
+    else:
+        payment.callback_payload = {"tx_hash": tx_hash}
+    await session.flush()
+
+    await message.answer(
+        "✅ هش تراکنش دریافت شد!\n\n"
+        f"🔗 Hash: `{tx_hash[:20]}...`\n"
+        f"💰 مبلغ: {payment.price_amount:.2f} USD\n\n"
+        "⏳ پرداخت شما در انتظار تأیید مدیر است.\n"
+        "پس از تأیید، مبلغ به کیف پول شما واریز خواهد شد."
+    )
+
+    # Notify admins with approve/reject buttons
+    from services.notifications import notify_admins
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    user = await UserRepository(session).get_by_telegram_id(message.from_user.id)
+    user_display = f"{user.first_name or '-'}" if user else "-"
+    user_tg = message.from_user.id
+
+    admin_text = (
+        "💰 **درخواست پرداخت دستی کریپتو**\n\n"
+        f"👤 کاربر: {user_display} (ID: `{user_tg}`)\n"
+        f"💵 مبلغ: {payment.price_amount:.2f} USD\n"
+        f"💱 ارز: {payment.pay_currency}\n"
+        f"🔗 TX Hash:\n`{tx_hash}`\n\n"
+        "برای تأیید یا رد از دکمه‌های زیر استفاده کنید."
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ تأیید و واریز", callback_data=f"admin:manual_pay:approve:{payment.id}")
+    builder.button(text="❌ رد پرداخت", callback_data=f"admin:manual_pay:reject:{payment.id}")
+    builder.adjust(2)
+
+    # Send to all admins with buttons
+    from core.config import settings as app_settings
+    from sqlalchemy import select
+    from models.user import User
+    from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
+    import logging
+
+    _logger = logging.getLogger(__name__)
+    admin_ids: set[int] = set()
+    if app_settings.owner_telegram_id:
+        admin_ids.add(app_settings.owner_telegram_id)
+    try:
+        result = await session.execute(
+            select(User.telegram_id).where(User.role.in_(["admin", "owner"]))
+        )
+        for row in result.scalars().all():
+            admin_ids.add(row)
+    except Exception:
+        pass
+
+    bot = message.bot
+    for admin_tg_id in admin_ids:
+        try:
+            await bot.send_message(
+                admin_tg_id,
+                admin_text,
+                reply_markup=builder.as_markup(),
+            )
+        except (TelegramForbiddenError, TelegramBadRequest):
+            pass
+        except Exception as exc:
+            _logger.warning("Could not notify admin %s: %s", admin_tg_id, exc)

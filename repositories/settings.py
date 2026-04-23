@@ -181,6 +181,9 @@ class AppSettingsRepository:
         nowpayments_api_key: str | None
         tetrapay_api_key: str | None
         nowpayments_ipn_secret: str | None
+        manual_crypto_enabled: bool
+        manual_crypto_currency: str | None  # e.g. "USDT TRC20"
+        manual_crypto_address: str | None
 
     async def get_gateway_settings(self) -> GatewaySettings:
         record = await self.session.get(AppSetting, self.GATEWAY_SETTINGS_KEY)
@@ -191,6 +194,9 @@ class AppSettingsRepository:
                 nowpayments_api_key=None,
                 tetrapay_api_key=None,
                 nowpayments_ipn_secret=None,
+                manual_crypto_enabled=False,
+                manual_crypto_currency=None,
+                manual_crypto_address=None,
             )
         payload = dict(record.value_json)
         return self.GatewaySettings(
@@ -199,6 +205,9 @@ class AppSettingsRepository:
             nowpayments_api_key=payload.get("nowpayments_api_key"),
             tetrapay_api_key=payload.get("tetrapay_api_key"),
             nowpayments_ipn_secret=payload.get("nowpayments_ipn_secret"),
+            manual_crypto_enabled=bool(payload.get("manual_crypto_enabled", False)),
+            manual_crypto_currency=payload.get("manual_crypto_currency"),
+            manual_crypto_address=payload.get("manual_crypto_address"),
         )
 
     async def update_gateway_settings(
@@ -209,6 +218,9 @@ class AppSettingsRepository:
         nowpayments_api_key: str | None = _SENTINEL,
         tetrapay_api_key: str | None = _SENTINEL,
         nowpayments_ipn_secret: str | None = _SENTINEL,
+        manual_crypto_enabled: bool | None = None,
+        manual_crypto_currency: str | None = _SENTINEL,
+        manual_crypto_address: str | None = _SENTINEL,
     ) -> "AppSettingsRepository.GatewaySettings":
         record = await self.session.get(AppSetting, self.GATEWAY_SETTINGS_KEY)
         if record is None:
@@ -225,6 +237,12 @@ class AppSettingsRepository:
             payload["tetrapay_api_key"] = tetrapay_api_key
         if nowpayments_ipn_secret is not _SENTINEL:
             payload["nowpayments_ipn_secret"] = nowpayments_ipn_secret
+        if manual_crypto_enabled is not None:
+            payload["manual_crypto_enabled"] = manual_crypto_enabled
+        if manual_crypto_currency is not _SENTINEL:
+            payload["manual_crypto_currency"] = manual_crypto_currency
+        if manual_crypto_address is not _SENTINEL:
+            payload["manual_crypto_address"] = manual_crypto_address
 
         record.value_json = payload
         self.session.add(record)
