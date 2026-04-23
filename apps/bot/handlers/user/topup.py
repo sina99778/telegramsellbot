@@ -629,8 +629,8 @@ async def manual_hash_submitted(
     )
 
     builder = InlineKeyboardBuilder()
-    builder.button(text="✅ تأیید و واریز به کیف پول", callback_data=f"admin:manual_pay:approve:{payment.id}")
-    builder.button(text="❌ رد پرداخت", callback_data=f"admin:manual_pay:reject:{payment.id}")
+    builder.button(text="✅ تأیید و واریز به کیف پول", callback_data=f"mp:ok:{payment.id}")
+    builder.button(text="❌ رد پرداخت", callback_data=f"mp:no:{payment.id}")
     builder.adjust(1)
 
     # Send to all admins with buttons

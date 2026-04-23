@@ -21,7 +21,7 @@ class Payment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     provider: Mapped[str] = mapped_column(String(24), nullable=False, default="nowpayments")
     kind: Mapped[str] = mapped_column(String(24), nullable=False, default="wallet_topup")
-    provider_payment_id: Mapped[str | None] = mapped_column(String(128), unique=True, nullable=True)
+    provider_payment_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     provider_invoice_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     payment_status: Mapped[str] = mapped_column(String(24), nullable=False, default="waiting")

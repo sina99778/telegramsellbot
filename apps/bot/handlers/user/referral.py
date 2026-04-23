@@ -95,7 +95,7 @@ async def _show_referral_menu(
 
     text = (
         "🔗 سیستم معرفی دوستان\n\n"
-        f"📎 لینک دعوت شما:\n`{ref_link}`\n\n"
+        f"📎 لینک دعوت شما:\n<code>{ref_link}</code>\n\n"
         f"👥 تعداد افراد دعوت‌شده: {total_referrals} نفر\n"
         f"💰 پاداش هر معرفی: {ref_settings.referrer_bonus_usd:.2f} دلار\n"
     )

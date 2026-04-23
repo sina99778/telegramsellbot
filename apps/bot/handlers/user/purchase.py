@@ -332,6 +332,11 @@ async def pay_with_gateway(
 ) -> None:
     """Pay with NowPayments gateway."""
     await callback.answer()
+    from repositories.settings import AppSettingsRepository
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    if not gw.nowpayments_enabled:
+        await safe_edit_or_send(callback, "❌ درگاه ارزی غیرفعال است.")
+        return
     try:
         await _process_gateway_purchase(callback, state, session)
     except Exception as exc:
@@ -348,6 +353,11 @@ async def pay_with_tetrapay(
 ) -> None:
     """Pay with TetraPay gateway (Tomans)."""
     await callback.answer()
+    from repositories.settings import AppSettingsRepository
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    if not gw.tetrapay_enabled:
+        await safe_edit_or_send(callback, "❌ درگاه ریالی غیرفعال است.")
+        return
     try:
         await _process_tetrapay_purchase(callback, state, session)
     except Exception as exc:
@@ -832,7 +842,7 @@ async def _finalize_purchase(
         total_gb=plan.volume_bytes / (1024**3),
         days_left=plan.duration_days,
         is_active=True,
-        bot_username=(await bot.get_me()).username,
+        bot_username=(bot._me.username if bot._me else (await bot.get_me()).username) if bot else None,
     )
     
     if banner_bytes:

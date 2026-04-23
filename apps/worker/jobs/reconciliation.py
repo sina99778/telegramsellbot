@@ -55,8 +55,16 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
         )
     ) or 0
 
+    # 4. Manual crypto payments pending admin approval for >24h
+    stale_manual = await session.scalar(
+        select(func.count()).select_from(Payment).where(
+            Payment.payment_status.in_(["pending_approval", "waiting_hash"]),
+            Payment.created_at < cutoff_24h,
+        )
+    ) or 0
+
     # Only alert if there are issues
-    if stuck_count == 0 and stale_waiting == 0 and recent_failed == 0:
+    if stuck_count == 0 and stale_waiting == 0 and recent_failed == 0 and stale_manual == 0:
         logger.info("Reconciliation: no issues found")
         return
 
@@ -64,7 +72,8 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
         "🔔 گزارش Reconciliation خودکار\n\n"
         f"⚠️ پرداخت موفق بدون تحویل: {stuck_count}\n"
         f"⏳ پرداخت در انتظار (+24 ساعت): {stale_waiting}\n"
-        f"❌ پرداخت ناموفق (24 ساعت اخیر): {recent_failed}\n\n"
+        f"❌ پرداخت ناموفق (24 ساعت اخیر): {recent_failed}\n"
+        f"🔐 پرداخت دستی منتظر تأیید (+24 ساعت): {stale_manual}\n\n"
         "از منوی 🔧 Recovery اقدام کنید."
     )
 

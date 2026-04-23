@@ -22,6 +22,11 @@ from services.wallet.manager import WalletManager
 logger = logging.getLogger(__name__)
 
 
+def _get_shared_bot() -> Bot:
+    """Get or create a shared Bot instance to avoid creating multiple sessions."""
+    return Bot(token=settings.bot_token.get_secret_value())
+
+
 async def process_successful_payment(
     session: AsyncSession,
     payment: Payment,
@@ -166,9 +171,10 @@ async def _handle_direct_purchase(
     )
     logger.info("[PROVISION] Wallet debited OK")
 
-    # Provision
-    bot = Bot(token=settings.bot_token.get_secret_value())
+    # Use a single shared Bot for all messaging
+    bot = _get_shared_bot()
     try:
+        # Provision
         provisioning_manager = ProvisioningManager(session)
         logger.info("[PROVISION] Calling provision_subscription...")
         provisioned = await provisioning_manager.provision_subscription(
@@ -178,6 +184,57 @@ async def _handle_direct_purchase(
             config_name=config_name,
         )
         logger.info("[PROVISION] Provisioning SUCCESS — sub_link=%s", provisioned.sub_link[:50] if provisioned.sub_link else "NONE")
+
+        order.status = "provisioned"
+
+        volume_label = format_volume_bytes(plan.volume_bytes)
+        sub_link = provisioned.sub_link
+        vless_uri = provisioned.vless_uri
+
+        # Send config to user
+        text = (
+            "✅ کانفیگ شما آماده است!\n\n"
+            f"📛 نام: {config_name}\n"
+            f"📦 پلن: {plan.name}\n"
+            f"💾 حجم: {volume_label}\n"
+            f"📅 مدت: {plan.duration_days} روز\n"
+            f"💰 پرداخت شده: {final_price:.2f} {plan.currency}\n"
+            f"💳 روش: درگاه پرداخت\n"
+            f"🕐 فعال‌سازی: از اولین اتصال\n\n"
+            "━━━━━━━━━━━━━━━━\n"
+            f"🔗 ساب لینک:\n{sub_link}\n\n"
+            f"📋 کانفیگ مستقیم:\n{vless_uri}"
+        )
+        await bot.send_message(user.telegram_id, text)
+        logger.info("[PROVISION] Config sent to user %s", user.telegram_id)
+
+        # QR Code
+        from core.qr import make_qr_bytes
+        from aiogram.types import BufferedInputFile
+        qr_bytes = make_qr_bytes(vless_uri)
+        if qr_bytes:
+            await bot.send_photo(
+                chat_id=user.telegram_id,
+                photo=BufferedInputFile(qr_bytes, filename="config_qr.png"),
+                caption=f"📷 QR کد کانفیگ {config_name}",
+            )
+
+        # Notify admins
+        from services.notifications import notify_admins
+        user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
+        admin_text = (
+            "🛒 خرید جدید (درگاه)!\n\n"
+            f"👤 کاربر: {user.first_name or '-'} | {user_link} (ID: <code>{user.telegram_id}</code>)\n"
+            f"📦 پلن: {plan.name}\n"
+            f"💰 مبلغ: {final_price:.2f} {plan.currency}\n"
+            f"📛 کانفیگ: {config_name}\n"
+            f"💳 روش: درگاه پرداخت"
+        )
+        try:
+            await notify_admins(session, bot, admin_text)
+        except Exception as exc:
+            logger.warning("[PROVISION] Failed to notify admins: %s", exc)
+
     except ProvisioningError as exc:
         logger.error("[PROVISION] Provisioning FAILED: %s", exc)
         # Refund
@@ -200,66 +257,10 @@ async def _handle_direct_purchase(
             )
         except Exception as bot_exc:
             logger.error("[PROVISION] Failed to send refund message: %s", bot_exc)
-        return
-    finally:
-        await bot.session.close()
-
-    order.status = "provisioned"
-
-    volume_label = format_volume_bytes(plan.volume_bytes)
-    sub_link = provisioned.sub_link
-    vless_uri = provisioned.vless_uri
-
-    # Send config to user
-    bot2 = Bot(token=settings.bot_token.get_secret_value())
-    try:
-        text = (
-            "✅ کانفیگ شما آماده است!\n\n"
-            f"📛 نام: {config_name}\n"
-            f"📦 پلن: {plan.name}\n"
-            f"💾 حجم: {volume_label}\n"
-            f"📅 مدت: {plan.duration_days} روز\n"
-            f"💰 پرداخت شده: {final_price:.2f} {plan.currency}\n"
-            f"💳 روش: درگاه پرداخت\n"
-            f"🕐 فعال‌سازی: از اولین اتصال\n\n"
-            "━━━━━━━━━━━━━━━━\n"
-            f"🔗 ساب لینک:\n{sub_link}\n\n"
-            f"📋 کانفیگ مستقیم:\n{vless_uri}"
-        )
-        await bot2.send_message(user.telegram_id, text)
-        logger.info("[PROVISION] Config sent to user %s", user.telegram_id)
-
-        # QR Code
-        from core.qr import make_qr_bytes
-        from aiogram.types import BufferedInputFile
-        qr_bytes = make_qr_bytes(vless_uri)
-        if qr_bytes:
-            await bot2.send_photo(
-                chat_id=user.telegram_id,
-                photo=BufferedInputFile(qr_bytes, filename="config_qr.png"),
-                caption=f"📷 QR کد کانفیگ {config_name}",
-            )
-
-        # Notify admins
-        from services.notifications import notify_admins
-        user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
-        admin_text = (
-            "🛒 خرید جدید (درگاه)!\n\n"
-            f"👤 کاربر: {user.first_name or '-'} | {user_link} (ID: <code>{user.telegram_id}</code>)\n"
-            f"📦 پلن: {plan.name}\n"
-            f"💰 مبلغ: {final_price:.2f} {plan.currency}\n"
-            f"📛 کانفیگ: {config_name}\n"
-            f"💳 روش: درگاه پرداخت"
-        )
-        try:
-            await notify_admins(session, bot2, admin_text)
-        except Exception as exc:
-            logger.warning("[PROVISION] Failed to notify admins: %s", exc)
-
     except Exception as exc:
         logger.error("[PROVISION] Failed to send config to user: %s", exc, exc_info=True)
     finally:
-        await bot2.session.close()
+        await bot.session.close()
 
     # ── Referral bonus on first purchase ──
     try:
@@ -299,7 +300,7 @@ async def _process_gateway_referral_bonus(
         return
 
     wallet_manager = WalletManager(session)
-    bot = Bot(token=settings.bot_token.get_secret_value())
+    bot = _get_shared_bot()
 
     try:
         # Credit referrer

@@ -23,7 +23,7 @@ router = Router(name="admin-manual-payments")
 router.callback_query.middleware(AdminOnlyMiddleware())
 
 
-@router.callback_query(F.data.startswith("admin:manual_pay:approve:"))
+@router.callback_query(F.data.startswith("mp:ok:"))
 async def approve_manual_payment(
     callback: CallbackQuery,
     session: AsyncSession,
@@ -88,7 +88,10 @@ async def approve_manual_payment(
     # Notify user
     if target_user:
         try:
-            bot = callback.bot
+            from aiogram.utils.keyboard import InlineKeyboardBuilder
+            user_builder = InlineKeyboardBuilder()
+            user_builder.button(text="🛒 خرید کانفیگ", callback_data="wallet:topup")
+            user_builder.adjust(1)
             await bot.send_message(
                 target_user.telegram_id,
                 "━━━━━━━━━━━━━━━━━━━━━\n"
@@ -96,8 +99,10 @@ async def approve_manual_payment(
                 "━━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"💰 مبلغ <b>{payment.price_amount:.2f} USD</b> به کیف پول\n"
                 "شما واریز شد.\n\n"
-                "🛒 اکنون می‌توانید از موجودی کیف پول\n"
-                "برای خرید سرویس استفاده کنید.",
+                "🛒 اکنون می‌توانید از بخش «خرید کانفیگ»\n"
+                "سرویس مورد نظر را خریداری کنید.\n"
+                "روش پرداخت «👛 کیف پول» را انتخاب کنید.",
+                reply_markup=user_builder.as_markup(),
             )
         except TelegramForbiddenError:
             pass
@@ -105,7 +110,7 @@ async def approve_manual_payment(
             logger.warning("Could not notify user about approval: %s", exc)
 
 
-@router.callback_query(F.data.startswith("admin:manual_pay:reject:"))
+@router.callback_query(F.data.startswith("mp:no:"))
 async def reject_manual_payment(
     callback: CallbackQuery,
     session: AsyncSession,
