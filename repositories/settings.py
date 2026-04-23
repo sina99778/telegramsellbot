@@ -11,6 +11,9 @@ from models.app_setting import AppSetting
 
 RETARGETING_SETTINGS_KEY = "marketing.retargeting"
 
+# Sentinel value to distinguish "not provided" from None (which clears a key)
+_SENTINEL = object()
+
 
 RENEWAL_SETTINGS_KEY = "service.renewal"
 
@@ -166,3 +169,107 @@ class AppSettingsRepository:
         record.value_json = {"rate": rate}
         self.session.add(record)
         await self.session.flush()
+
+    # ── Payment gateway settings ─────────────────────────────────────────────
+
+    GATEWAY_SETTINGS_KEY = "payment.gateways"
+
+    @dataclass(slots=True)
+    class GatewaySettings:
+        nowpayments_enabled: bool
+        tetrapay_enabled: bool
+        nowpayments_api_key: str | None
+        tetrapay_api_key: str | None
+
+    async def get_gateway_settings(self) -> GatewaySettings:
+        record = await self.session.get(AppSetting, self.GATEWAY_SETTINGS_KEY)
+        if record is None or not record.value_json:
+            return self.GatewaySettings(
+                nowpayments_enabled=True,
+                tetrapay_enabled=True,
+                nowpayments_api_key=None,
+                tetrapay_api_key=None,
+            )
+        payload = dict(record.value_json)
+        return self.GatewaySettings(
+            nowpayments_enabled=bool(payload.get("nowpayments_enabled", True)),
+            tetrapay_enabled=bool(payload.get("tetrapay_enabled", True)),
+            nowpayments_api_key=payload.get("nowpayments_api_key"),
+            tetrapay_api_key=payload.get("tetrapay_api_key"),
+        )
+
+    async def update_gateway_settings(
+        self,
+        *,
+        nowpayments_enabled: bool | None = None,
+        tetrapay_enabled: bool | None = None,
+        nowpayments_api_key: str | None = _SENTINEL,
+        tetrapay_api_key: str | None = _SENTINEL,
+    ) -> "AppSettingsRepository.GatewaySettings":
+        record = await self.session.get(AppSetting, self.GATEWAY_SETTINGS_KEY)
+        if record is None:
+            record = AppSetting(key=self.GATEWAY_SETTINGS_KEY, value_json={})
+        payload = dict(record.value_json or {})
+
+        if nowpayments_enabled is not None:
+            payload["nowpayments_enabled"] = nowpayments_enabled
+        if tetrapay_enabled is not None:
+            payload["tetrapay_enabled"] = tetrapay_enabled
+        if nowpayments_api_key is not _SENTINEL:
+            payload["nowpayments_api_key"] = nowpayments_api_key
+        if tetrapay_api_key is not _SENTINEL:
+            payload["tetrapay_api_key"] = tetrapay_api_key
+
+        record.value_json = payload
+        self.session.add(record)
+        await self.session.flush()
+        return await self.get_gateway_settings()
+
+    # ── Referral settings ────────────────────────────────────────────────────
+
+    REFERRAL_SETTINGS_KEY = "referral.settings"
+
+    @dataclass(slots=True)
+    class ReferralSettings:
+        enabled: bool
+        referrer_bonus_usd: float
+        referee_bonus_usd: float
+
+    async def get_referral_settings(self) -> ReferralSettings:
+        record = await self.session.get(AppSetting, self.REFERRAL_SETTINGS_KEY)
+        if record is None or not record.value_json:
+            return self.ReferralSettings(
+                enabled=False,
+                referrer_bonus_usd=0.5,
+                referee_bonus_usd=0.0,
+            )
+        payload = dict(record.value_json)
+        return self.ReferralSettings(
+            enabled=bool(payload.get("enabled", False)),
+            referrer_bonus_usd=float(payload.get("referrer_bonus_usd", 0.5)),
+            referee_bonus_usd=float(payload.get("referee_bonus_usd", 0.0)),
+        )
+
+    async def update_referral_settings(
+        self,
+        *,
+        enabled: bool | None = None,
+        referrer_bonus_usd: float | None = None,
+        referee_bonus_usd: float | None = None,
+    ) -> "AppSettingsRepository.ReferralSettings":
+        record = await self.session.get(AppSetting, self.REFERRAL_SETTINGS_KEY)
+        if record is None:
+            record = AppSetting(key=self.REFERRAL_SETTINGS_KEY, value_json={})
+        payload = dict(record.value_json or {})
+
+        if enabled is not None:
+            payload["enabled"] = enabled
+        if referrer_bonus_usd is not None:
+            payload["referrer_bonus_usd"] = referrer_bonus_usd
+        if referee_bonus_usd is not None:
+            payload["referee_bonus_usd"] = referee_bonus_usd
+
+        record.value_json = payload
+        self.session.add(record)
+        await self.session.flush()
+        return await self.get_referral_settings()

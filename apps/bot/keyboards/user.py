@@ -15,6 +15,9 @@ def get_main_menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
             KeyboardButton(text=Buttons.SUPPORT),
             KeyboardButton(text=Buttons.MY_CONFIGS),
         ],
+        [
+            KeyboardButton(text=Buttons.REFERRAL),
+        ],
     ]
     if is_admin:
         keyboard.append([KeyboardButton(text="پنل مدیریت ⚙️")])

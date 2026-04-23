@@ -820,3 +820,88 @@ async def _finalize_purchase(
     except Exception as exc:
         logger.warning("Failed to notify admins about purchase: %s", exc)
 
+    # ── Referral bonus on first purchase ──
+    try:
+        await _process_referral_bonus(session, bot, user)
+    except Exception as exc:
+        logger.warning("Failed to process referral bonus: %s", exc)
+
+
+async def _process_referral_bonus(session, bot, user) -> None:
+    """Credit referral bonus to both referrer and referee on first purchase."""
+    from sqlalchemy import func, select as sel
+    from repositories.settings import AppSettingsRepository
+    from services.wallet.manager import WalletManager
+
+    settings_repo = AppSettingsRepository(session)
+    ref_settings = await settings_repo.get_referral_settings()
+
+    if not ref_settings.enabled:
+        return
+
+    if user.referred_by_user_id is None:
+        return
+
+    # Check if this is the user's first completed order
+    order_count = int(
+        await session.scalar(
+            sel(func.count()).select_from(Order)
+            .where(
+                Order.user_id == user.id,
+                Order.status.in_(["provisioned", "paid", "completed"]),
+            )
+        ) or 0
+    )
+    if order_count != 1:
+        # Only give bonus on the very first purchase
+        return
+
+    wallet_manager = WalletManager(session)
+
+    # Credit referrer
+    if ref_settings.referrer_bonus_usd > 0:
+        await wallet_manager.process_transaction(
+            user_id=user.referred_by_user_id,
+            amount=Decimal(str(ref_settings.referrer_bonus_usd)),
+            transaction_type="referral_bonus",
+            direction="credit",
+            currency="USD",
+            reference_type="referral",
+            reference_id=user.id,
+            description=f"Referral bonus for inviting user {user.telegram_id}",
+            metadata={"referred_user_id": str(user.id), "referred_telegram_id": user.telegram_id},
+        )
+        # Notify referrer
+        try:
+            from models.user import User as UserModel
+            referrer = await session.get(UserModel, user.referred_by_user_id)
+            if referrer:
+                await bot.send_message(
+                    referrer.telegram_id,
+                    f"🎉 تبریک! کاربری که دعوت کرده بودید اولین خرید خود را انجام داد.\n"
+                    f"💰 {ref_settings.referrer_bonus_usd:.2f} دلار به کیف پول شما اضافه شد!",
+                )
+        except Exception as exc:
+            logger.warning("Failed to notify referrer: %s", exc)
+
+    # Credit referee (the buying user)
+    if ref_settings.referee_bonus_usd > 0:
+        await wallet_manager.process_transaction(
+            user_id=user.id,
+            amount=Decimal(str(ref_settings.referee_bonus_usd)),
+            transaction_type="referral_bonus",
+            direction="credit",
+            currency="USD",
+            reference_type="referral",
+            reference_id=user.referred_by_user_id,
+            description="Referral welcome bonus",
+            metadata={"referrer_user_id": str(user.referred_by_user_id)},
+        )
+        try:
+            await bot.send_message(
+                user.telegram_id,
+                f"🎁 خوش آمدید! به خاطر عضویت از طریق لینک دعوت، "
+                f"{ref_settings.referee_bonus_usd:.2f} دلار به کیف پول شما اضافه شد!",
+            )
+        except Exception as exc:
+            logger.warning("Failed to notify referee: %s", exc)

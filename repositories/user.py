@@ -54,6 +54,10 @@ class UserRepository(AsyncRepository[User]):
 
         try:
             async with self.session.begin_nested():
+                # Generate a unique referral code
+                import secrets
+                ref_code = secrets.token_hex(4)  # 8-char hex string
+
                 user = User(
                     telegram_id=telegram_id,
                     username=username,
@@ -62,6 +66,7 @@ class UserRepository(AsyncRepository[User]):
                     language_code=language_code,
                     last_seen_at=utcnow(),
                     role="owner" if telegram_id == settings.owner_telegram_id else "user",
+                    ref_code=ref_code,
                 )
                 self.session.add(user)
                 await self.session.flush()

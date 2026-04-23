@@ -6,6 +6,7 @@ class Buttons:
     PROFILE_WALLET = "👤 | حساب کاربری و شارژ"
     SUPPORT = "💬 | پشتیبانی آنلاین"
     MY_CONFIGS = "📋 | سرویس‌های من"
+    REFERRAL = "🔗 | دعوت دوستان"
     TOPUP_CRYPTO = "💳 | شارژ با کریپتو"
     CUSTOM_AMOUNT = "🔢 | مبلغ دلخواه"
     OPEN_PAYMENT = "🔗 | ورود به درگاه پرداخت"

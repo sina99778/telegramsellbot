@@ -139,6 +139,7 @@ async def topup_options_handler(callback: CallbackQuery) -> None:
 async def topup_preset_handler(
     callback: CallbackQuery,
     state: FSMContext,
+    session: AsyncSession,
 ) -> None:
     await callback.answer()
     raw_amount = callback.data.rsplit(":", 1)[-1]
@@ -147,10 +148,15 @@ async def topup_preset_handler(
     await state.update_data(topup_amount=str(amount))
     
     from apps.bot.keyboards.inline import build_gateway_selection_keyboard
+    from repositories.settings import AppSettingsRepository
+    gw = await AppSettingsRepository(session).get_gateway_settings()
     await safe_edit_or_send(
         callback,
         "💳 لطفاً درگاه پرداخت را انتخاب کنید:",
-        reply_markup=build_gateway_selection_keyboard()
+        reply_markup=build_gateway_selection_keyboard(
+            nowpayments_enabled=gw.nowpayments_enabled,
+            tetrapay_enabled=gw.tetrapay_enabled,
+        )
     )
 
 
@@ -165,6 +171,7 @@ async def topup_custom_amount_prompt(callback: CallbackQuery, state: FSMContext)
 async def topup_custom_amount_handler(
     message: Message,
     state: FSMContext,
+    session: AsyncSession,
 ) -> None:
     if message.from_user is None or message.text is None:
         return
@@ -183,9 +190,14 @@ async def topup_custom_amount_handler(
     await state.set_state(None) # clear state
     
     from apps.bot.keyboards.inline import build_gateway_selection_keyboard
+    from repositories.settings import AppSettingsRepository
+    gw = await AppSettingsRepository(session).get_gateway_settings()
     await message.answer(
         "💳 لطفاً درگاه پرداخت را انتخاب کنید:",
-        reply_markup=build_gateway_selection_keyboard()
+        reply_markup=build_gateway_selection_keyboard(
+            nowpayments_enabled=gw.nowpayments_enabled,
+            tetrapay_enabled=gw.tetrapay_enabled,
+        )
     )
 
 @router.callback_query(F.data == "wallet:topup:pay:gateway")
@@ -196,13 +208,25 @@ async def topup_pay_gateway(
 ) -> None:
     """Pay with NOWPayments"""
     await callback.answer()
+
+    # Check gateway enabled
+    from repositories.settings import AppSettingsRepository
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    if not gw.nowpayments_enabled:
+        await safe_edit_or_send(callback, "❌ درگاه NOWPayments در حال حاضر غیرفعال است.")
+        return
+
     data = await state.get_data()
     amount_str = data.get("topup_amount")
     if not amount_str:
         await safe_edit_or_send(callback, Messages.TOPUP_AMOUNT_GT_ZERO)
         return
         
-    await _create_nowpayments_topup_invoice(callback.from_user.id, Decimal(amount_str), callback.message, session)
+    await _create_nowpayments_topup_invoice(
+        callback.from_user.id, Decimal(amount_str), callback.message, session,
+        api_key_override=gw.nowpayments_api_key,
+    )
+
 
 @router.callback_query(F.data == "wallet:topup:pay:tetrapay")
 async def topup_pay_tetrapay(
@@ -212,13 +236,24 @@ async def topup_pay_tetrapay(
 ) -> None:
     """Pay with TetraPay"""
     await callback.answer()
+
+    # Check gateway enabled
+    from repositories.settings import AppSettingsRepository
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    if not gw.tetrapay_enabled:
+        await safe_edit_or_send(callback, "❌ درگاه تتراپی در حال حاضر غیرفعال است.")
+        return
+
     data = await state.get_data()
     amount_str = data.get("topup_amount")
     if not amount_str:
         await safe_edit_or_send(callback, Messages.TOPUP_AMOUNT_GT_ZERO)
         return
         
-    await _create_tetrapay_topup_invoice(callback.from_user.id, Decimal(amount_str), callback.message, session)
+    await _create_tetrapay_topup_invoice(
+        callback.from_user.id, Decimal(amount_str), callback.message, session,
+        api_key_override=gw.tetrapay_api_key,
+    )
 
 
 
@@ -228,6 +263,8 @@ async def _create_nowpayments_topup_invoice(
     amount: Decimal,
     message: Message,
     session: AsyncSession,
+    *,
+    api_key_override: str | None = None,
 ) -> None:
     user = await UserRepository(session).get_by_telegram_id(telegram_id)
     if user is None:
@@ -243,10 +280,14 @@ async def _create_nowpayments_topup_invoice(
         ipn_callback_url=settings.nowpayments_ipn_callback_url,
     )
 
+    # Use DB-configured API key if available, otherwise fall back to env
+    from pydantic import SecretStr
+    effective_api_key = SecretStr(api_key_override) if api_key_override else settings.nowpayments_api_key
+
     try:
         async with NowPaymentsClient(
             NowPaymentsClientConfig(
-                api_key=settings.nowpayments_api_key,
+                api_key=effective_api_key,
                 base_url=settings.nowpayments_base_url,
             )
         ) as client:
@@ -282,6 +323,8 @@ async def _create_tetrapay_topup_invoice(
     amount: Decimal,
     message: Message,
     session: AsyncSession,
+    *,
+    api_key_override: str | None = None,
 ) -> None:
     user = await UserRepository(session).get_by_telegram_id(telegram_id)
     if user is None:
@@ -324,11 +367,14 @@ async def _create_tetrapay_topup_invoice(
     local_order_id = str(uuid4())
     
     from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
+
+    # Use DB-configured API key if available, otherwise fall back to env
+    effective_tetra_key = api_key_override if api_key_override else settings.tetrapay_api_key.get_secret_value()
     
     try:
         async with TetraPayClient(
             TetraPayClientConfig(
-                api_key=settings.tetrapay_api_key.get_secret_value(),
+                api_key=effective_tetra_key,
                 base_url=settings.tetrapay_base_url,
             )
         ) as client:

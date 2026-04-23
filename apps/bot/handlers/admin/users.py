@@ -464,50 +464,16 @@ async def view_user_configs(
     callback_data: AdminUserActionCallback,
     session: AsyncSession,
 ) -> None:
-    """Show active subscriptions/configs for a user."""
-    logger = logging.getLogger(__name__)
-    try:
-        user = await session.scalar(
-            select(User)
-            .options(
-                selectinload(User.subscriptions)
-                .selectinload(Subscription.xui_client)
-                .selectinload(XUIClientRecord.inbound)
-            )
-            .where(User.id == callback_data.user_id)
-        )
-        if user is None:
-            await callback.answer("کاربر یافت نشد.", show_alert=True)
-            return
+    """Redirect to the full paginated subscription management list in subs.py."""
+    from apps.bot.handlers.admin.subs import AdminSubscriptionListPageCallback, _render_user_configs
 
-        active_subs = [s for s in user.subscriptions if s.status in {"pending_activation", "active"}]
-        if not active_subs:
-            await callback.answer(AdminMessages.NO_ACTIVE_CONFIGS, show_alert=True)
-            return
-
-        text = "\n\n".join(
-            [
-                (
-                    f"📦 اشتراک: {str(sub.id)[:8]}\n"
-                    f"وضعیت: {'✅ فعال' if sub.status == 'active' else '⏳ در انتظار فعال‌سازی'}\n"
-                    f"مصرف: {format_volume_bytes(sub.used_bytes)} / {format_volume_bytes(sub.volume_bytes)}\n"
-                    f"{format_usage_bar(sub.used_bytes, sub.volume_bytes)}\n"
-                    f"{'📅 انقضا: ' + sub.ends_at.strftime('%Y-%m-%d') if sub.ends_at else ''}\n"
-                    f"🔗 لینک: {sub.sub_link or '-'}"
-                )
-                for sub in active_subs
-            ]
-        )
-        builder = InlineKeyboardBuilder()
-        builder.button(text=AdminButtons.BACK, callback_data=AdminUserActionCallback(action="profile", user_id=user.id).pack())
-        builder.adjust(1)
-        try:
-            await callback.message.edit_text(text, reply_markup=builder.as_markup())
-        except TelegramBadRequest:
-            await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
-    except Exception as exc:
-        logger.error("Error rendering user configs: %s", exc, exc_info=True)
-        await callback.answer(f"خطا: {exc}", show_alert=True)
+    await callback.answer()
+    await _render_user_configs(
+        callback=callback,
+        session=session,
+        user_id=callback_data.user_id,
+        page=1,
+    )
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────

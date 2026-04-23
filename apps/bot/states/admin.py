@@ -60,3 +60,12 @@ class DiscountStates(StatesGroup):
 class GlobalSearchStates(StatesGroup):
     waiting_for_query = State()
 
+
+class GatewaySettingsStates(StatesGroup):
+    waiting_for_nowpayments_api_key = State()
+    waiting_for_tetrapay_api_key = State()
+
+
+class ReferralSettingsStates(StatesGroup):
+    waiting_for_referrer_bonus = State()
+    waiting_for_referee_bonus = State()
