@@ -12,6 +12,7 @@ from apps.bot.handlers.admin.settings import router as settings_router
 from apps.bot.handlers.admin.discounts import router as discounts_router
 from apps.bot.handlers.admin.recovery import router as recovery_router
 from apps.bot.handlers.admin.manual_payments import router as manual_payments_router
+from apps.bot.handlers.admin.customers import router as customers_router
 
 
 router = Router(name="admin")
@@ -27,5 +28,6 @@ router.include_router(settings_router)
 router.include_router(discounts_router)
 router.include_router(recovery_router)
 router.include_router(manual_payments_router)
+router.include_router(customers_router)
 
 __all__ = ["router"]

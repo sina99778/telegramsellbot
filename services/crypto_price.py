@@ -21,6 +21,7 @@ _COINGECKO_IDS: dict[str, str] = {
     "TON": "the-open-network",
     "USDT TRC20": "tether",
     "USDT ERC20": "tether",
+    "USDT BSC": "tether",
     "USDT": "tether",
     "DOGE": "dogecoin",
     "BNB": "binancecoin",

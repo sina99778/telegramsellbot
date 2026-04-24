@@ -70,6 +70,7 @@ class GatewaySettingsStates(StatesGroup):
     waiting_for_nowpayments_ipn_secret = State()
     waiting_for_manual_currency = State()
     waiting_for_manual_address = State()
+    waiting_for_force_join_channel = State()
 
 
 class ReferralSettingsStates(StatesGroup):

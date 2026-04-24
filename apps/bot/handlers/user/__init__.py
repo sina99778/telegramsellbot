@@ -7,12 +7,16 @@ from apps.bot.handlers.user.start import router as start_router
 from apps.bot.handlers.user.support import router as support_router
 from apps.bot.handlers.user.topup import router as topup_router
 from apps.bot.handlers.user.renewal import router as renewal_router
+from apps.bot.handlers.user.transfer import router as transfer_router
 from apps.bot.middlewares.user import UserAccessMiddleware
+from apps.bot.middlewares.force_join import ForceJoinMiddleware
 
 
 router = Router(name="user")
 router.message.middleware(UserAccessMiddleware())
 router.callback_query.middleware(UserAccessMiddleware())
+router.message.middleware(ForceJoinMiddleware())
+router.callback_query.middleware(ForceJoinMiddleware())
 router.include_router(start_router)
 router.include_router(topup_router)
 router.include_router(purchase_router)
@@ -20,5 +24,6 @@ router.include_router(my_configs_router)
 router.include_router(support_router)
 router.include_router(renewal_router)
 router.include_router(referral_router)
+router.include_router(transfer_router)
 
 __all__ = ["router"]

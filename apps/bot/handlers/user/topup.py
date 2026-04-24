@@ -461,7 +461,7 @@ async def topup_pay_manual(
     # Currency emoji map
     _cur_emoji = {
         "BTC": "₿", "ETH": "⟠", "TON": "💎", "LTC": "Ł",
-        "TRX": "◈", "USDT TRC20": "💲", "USDT ERC20": "💲", "USDT": "💲",
+        "TRX": "◈", "USDT TRC20": "💲", "USDT ERC20": "💲", "USDT BSC": "💲", "USDT": "💲",
     }
     cur_icon = _cur_emoji.get(currency, "🪙")
 

@@ -42,6 +42,7 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     builder.button(text="💱 تغییر نرخ دلار به تومان", callback_data="admin:settings:edit_toman")
     builder.button(text="💳 مدیریت درگاه‌های پرداخت", callback_data="admin:settings:gateways")
     builder.button(text="🔗 تنظیمات رفرال", callback_data="admin:settings:referral")
+    builder.button(text="📢 جوین اجباری کانال", callback_data="admin:settings:force_join")
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
     builder.adjust(1)
 
@@ -386,13 +387,14 @@ async def edit_manual_currency_start(callback: CallbackQuery, state: FSMContext)
     builder = InlineKeyboardBuilder()
     builder.button(text="💲 USDT TRC20", callback_data="admin:gw:quick_cur:USDT TRC20")
     builder.button(text="💲 USDT ERC20", callback_data="admin:gw:quick_cur:USDT ERC20")
+    builder.button(text="💲 USDT BSC", callback_data="admin:gw:quick_cur:USDT BSC")
     builder.button(text="₿ BTC", callback_data="admin:gw:quick_cur:BTC")
     builder.button(text="⟠ ETH", callback_data="admin:gw:quick_cur:ETH")
     builder.button(text="💎 TON", callback_data="admin:gw:quick_cur:TON")
     builder.button(text="Ł LTC", callback_data="admin:gw:quick_cur:LTC")
     builder.button(text="◈ TRX", callback_data="admin:gw:quick_cur:TRX")
     builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
-    builder.adjust(2, 2, 3, 1)
+    builder.adjust(2, 2, 2, 2, 1)
 
     await safe_edit_or_send(callback,
         "💱 نوع ارز پرداخت دستی را انتخاب کنید:\n\n"
@@ -604,3 +606,106 @@ def _mask_api_key(key: str) -> str:
     if len(key) <= 10:
         return key[:2] + "***" + key[-2:]
     return key[:4] + "***" + key[-4:]
+
+
+# ─── Force Join Channel Settings ─────────────────────────────────────────────
+
+
+@router.callback_query(F.data == "admin:settings:force_join")
+async def force_join_menu(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+
+    status = "✅ فعال" if gw.force_join_enabled else "❌ غیرفعال"
+    channel = gw.force_join_channel or "تنظیم نشده"
+
+    text = (
+        "📢 <b>جوین اجباری کانال</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📊 وضعیت: {status}\n"
+        f"📢 کانال: <code>{channel}</code>\n\n"
+        "⚠️ ربات باید ادمین کانال باشد تا بتواند عضویت را بررسی کند.\n"
+        "آی‌دی کانال را به فرمت <code>@channel_username</code> یا <code>-100xxxx</code> وارد کنید."
+    )
+
+    builder = InlineKeyboardBuilder()
+    toggle_text = "❌ غیرفعال کردن" if gw.force_join_enabled else "✅ فعال کردن"
+    builder.button(text=toggle_text, callback_data="admin:fj:toggle")
+    builder.button(text="📢 تغییر کانال", callback_data="admin:fj:set_channel")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:bot_settings")
+    builder.adjust(1)
+
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data == "admin:fj:toggle")
+async def force_join_toggle(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    new_state = not gw.force_join_enabled
+    await AppSettingsRepository(session).update_gateway_settings(force_join_enabled=new_state)
+    status = "فعال ✅" if new_state else "غیرفعال ❌"
+    await safe_edit_or_send(callback, f"📢 جوین اجباری {status} شد.")
+
+    # Re-show menu
+    await force_join_menu(callback, session)
+
+
+@router.callback_query(F.data == "admin:fj:set_channel")
+async def force_join_set_channel_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(GatewaySettingsStates.waiting_for_force_join_channel)
+    await safe_edit_or_send(
+        callback,
+        "📢 آی‌دی یا یوزرنیم کانال را ارسال کنید:\n\n"
+        "مثال: <code>@mychannel</code> یا <code>-1001234567890</code>"
+    )
+
+
+@router.message(GatewaySettingsStates.waiting_for_force_join_channel)
+async def force_join_set_channel_done(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text:
+        return
+
+    channel = message.text.strip()
+    if not channel.startswith("@") and not channel.startswith("-"):
+        await message.answer("❌ فرمت نامعتبر. باید با @ یا - شروع شود.")
+        return
+
+    await AppSettingsRepository(session).update_gateway_settings(force_join_channel=channel)
+    await state.clear()
+    await message.answer(f"✅ کانال جوین اجباری به <code>{channel}</code> تغییر کرد.")
+
+
+# ─── Force Join Check (User callback) ────────────────────────────────────────
+# This handler is for the "عضو شدم" button — registered on the MAIN router
+# so it works even without admin middleware
+
+from aiogram import Router as _Router
+_force_join_check_router = _Router(name="force-join-check")
+
+
+@_force_join_check_router.callback_query(F.data == "force_join:check")
+async def force_join_check(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Check if user has joined the required channel."""
+    if callback.from_user is None:
+        return
+
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    if not gw.force_join_enabled or not gw.force_join_channel:
+        await callback.answer("✅ عضویت تأیید شد!", show_alert=True)
+        await safe_edit_or_send(callback, "✅ عضویت تأیید شد! لطفاً دوباره از منو استفاده کنید.")
+        return
+
+    try:
+        member = await callback.bot.get_chat_member(
+            chat_id=gw.force_join_channel.strip(),
+            user_id=callback.from_user.id,
+        )
+        if member.status in ("member", "administrator", "creator"):
+            await callback.answer("✅ عضویت تأیید شد!", show_alert=True)
+            await safe_edit_or_send(callback, "✅ عضویت تأیید شد! لطفاً دوباره از منو استفاده کنید.")
+        else:
+            await callback.answer("❌ هنوز عضو کانال نشده‌اید!", show_alert=True)
+    except Exception:
+        await callback.answer("❌ خطا در بررسی عضویت. لطفاً دوباره تلاش کنید.", show_alert=True)

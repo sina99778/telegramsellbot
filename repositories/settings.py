@@ -184,6 +184,8 @@ class AppSettingsRepository:
         manual_crypto_enabled: bool
         manual_crypto_currency: str | None  # e.g. "USDT TRC20"
         manual_crypto_address: str | None
+        force_join_channel: str | None  # e.g. "@mychannel" or "-1001234567890"
+        force_join_enabled: bool
 
     async def get_gateway_settings(self) -> GatewaySettings:
         record = await self.session.get(AppSetting, self.GATEWAY_SETTINGS_KEY)
@@ -197,6 +199,8 @@ class AppSettingsRepository:
                 manual_crypto_enabled=False,
                 manual_crypto_currency=None,
                 manual_crypto_address=None,
+                force_join_channel=None,
+                force_join_enabled=False,
             )
         payload = dict(record.value_json)
         return self.GatewaySettings(
@@ -208,6 +212,8 @@ class AppSettingsRepository:
             manual_crypto_enabled=bool(payload.get("manual_crypto_enabled", False)),
             manual_crypto_currency=payload.get("manual_crypto_currency"),
             manual_crypto_address=payload.get("manual_crypto_address"),
+            force_join_channel=payload.get("force_join_channel"),
+            force_join_enabled=bool(payload.get("force_join_enabled", False)),
         )
 
     async def update_gateway_settings(
@@ -221,6 +227,8 @@ class AppSettingsRepository:
         manual_crypto_enabled: bool | None = None,
         manual_crypto_currency: str | None = _SENTINEL,
         manual_crypto_address: str | None = _SENTINEL,
+        force_join_channel: str | None = _SENTINEL,
+        force_join_enabled: bool | None = None,
     ) -> "AppSettingsRepository.GatewaySettings":
         record = await self.session.get(AppSetting, self.GATEWAY_SETTINGS_KEY)
         if record is None:
@@ -243,6 +251,10 @@ class AppSettingsRepository:
             payload["manual_crypto_currency"] = manual_crypto_currency
         if manual_crypto_address is not _SENTINEL:
             payload["manual_crypto_address"] = manual_crypto_address
+        if force_join_channel is not _SENTINEL:
+            payload["force_join_channel"] = force_join_channel
+        if force_join_enabled is not None:
+            payload["force_join_enabled"] = force_join_enabled
 
         record.value_json = payload
         self.session.add(record)

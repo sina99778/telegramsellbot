@@ -45,6 +45,9 @@ async def main() -> None:
     dispatcher.callback_query.middleware(GlobalErrorMiddleware())
     dispatcher.include_router(admin_router)
     dispatcher.include_router(user_router)
+    # Force join check needs to be at top level (no admin/user middleware)
+    from apps.bot.handlers.admin.settings import _force_join_check_router
+    dispatcher.include_router(_force_join_check_router)
     dispatcher.startup.register(on_startup)
     dispatcher.shutdown.register(on_shutdown)
 

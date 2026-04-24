@@ -302,6 +302,9 @@ async def my_config_detail_handler(
         is_enabled = xui.is_active if xui else False
         toggle_text = "🔴 خاموش کردن" if is_enabled else "🟢 روشن کردن"
         builder.button(text=toggle_text, callback_data=MyConfigCallback(action="toggle_enable", subscription_id=sub.id).pack())
+        
+        # Transfer config to another user
+        builder.button(text="🔀 انتقال کانفیگ", callback_data=MyConfigCallback(action="transfer", subscription_id=sub.id).pack())
 
     # Cancel & refund for unused configs OR configs with deleted server
     if sub.status == "pending_activation" and sub.used_bytes == 0:
