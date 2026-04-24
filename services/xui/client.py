@@ -153,7 +153,16 @@ class SanaeiXUIClient:
         return api_response
 
     async def restart_xray_core(self) -> XUIAPIResponse[Any]:
-        response = await self._request("POST", "server/restartXrayService")
+        # Try Sanaei specific endpoint first
+        try:
+            response = await self._request("POST", "panel/api/server/restartXrayService")
+        except XUIRequestError as e:
+            # Fallback to standard x-ui endpoint
+            if "status 404" in str(e):
+                response = await self._request("POST", "server/restartXrayService")
+            else:
+                raise
+
         api_response = XUIAPIResponse[Any].model_validate(response or {"success": True, "obj": None})
         if api_response.success is False:
             raise XUIRequestError(api_response.msg or "Failed to restart Xray core.")
