@@ -157,9 +157,17 @@ class SanaeiXUIClient:
         try:
             response = await self._request("POST", "panel/api/server/restartXrayService")
         except XUIRequestError as e:
+            # If the server disconnected, it means the restart was successful and the process was killed!
+            if "RemoteProtocolError" in str(e) or "Server disconnected" in str(e):
+                return XUIAPIResponse(success=True, msg="Restarted successfully (connection dropped)", obj=None)
             # Fallback to standard x-ui endpoint
             if "status 404" in str(e):
-                response = await self._request("POST", "server/restartXrayService")
+                try:
+                    response = await self._request("POST", "server/restartXrayService")
+                except XUIRequestError as e2:
+                    if "RemoteProtocolError" in str(e2) or "Server disconnected" in str(e2):
+                        return XUIAPIResponse(success=True, msg="Restarted successfully (connection dropped)", obj=None)
+                    raise e2
             else:
                 raise
 
