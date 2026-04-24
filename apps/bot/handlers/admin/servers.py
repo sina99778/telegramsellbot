@@ -365,6 +365,49 @@ async def toggle_server(
     await list_servers(callback, ServerListPageCallback(page=callback_data.page), session)
 
 
+@router.callback_query(ServerActionCallback.filter(F.action == "restart"))
+async def restart_xray_core_handler(
+    callback: CallbackQuery,
+    callback_data: ServerActionCallback,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    await callback.answer()
+    server = await session.scalar(
+        select(XUIServerRecord)
+        .options(selectinload(XUIServerRecord.credentials))
+        .where(XUIServerRecord.id == callback_data.server_id)
+    )
+    if server is None:
+        await safe_edit_or_send(callback, AdminMessages.SERVER_NOT_FOUND)
+        return
+    if server.credentials is None:
+        await safe_edit_or_send(callback, "اطلاعات ورود سرور موجود نیست.")
+        return
+
+    try:
+        async with SanaeiXUIClient(
+            XUIClientConfig(
+                base_url=server.base_url,
+                username=server.credentials.username,
+                password=SecretStr(decrypt_secret(server.credentials.password_encrypted)),
+            )
+        ) as client:
+            await client.login()
+            await client.restart_xray_core()
+        
+        await AuditLogRepository(session).log_action(
+            actor_user_id=admin_user.id,
+            action="restart_xray_core",
+            entity_type="server",
+            entity_id=server.id,
+            payload={},
+        )
+        await callback.answer("✅ هسته ایکس ری با موفقیت ریستارت شد.", show_alert=True)
+    except Exception as exc:
+        await safe_edit_or_send(callback, f"❌ خطا در ریستارت هسته:\n`{exc}`", parse_mode="MarkdownV2")
+
+
 @router.callback_query(ServerActionCallback.filter(F.action == "delete"))
 async def delete_server(
     callback: CallbackQuery,
@@ -474,6 +517,10 @@ async def server_manage_menu(
         builder.button(
             text="🛑 تغییر وضعیت (ON/OFF)",
             callback_data=ServerActionCallback(action="toggle", server_id=server.id, page=callback_data.page).pack(),
+        )
+        builder.button(
+            text="⚡ ריستارت هسته",
+            callback_data=ServerActionCallback(action="restart", server_id=server.id, page=callback_data.page).pack(),
         )
         builder.button(
             text="✏️ ویرایش آدرس سرور",

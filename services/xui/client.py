@@ -152,6 +152,13 @@ class SanaeiXUIClient:
             raise XUIRequestError(api_response.msg or "Failed to delete inbound client.")
         return api_response
 
+    async def restart_xray_core(self) -> XUIAPIResponse[Any]:
+        response = await self._request("POST", "server/restartXrayService")
+        api_response = XUIAPIResponse[Any].model_validate(response or {"success": True, "obj": None})
+        if api_response.success is False:
+            raise XUIRequestError(api_response.msg or "Failed to restart Xray core.")
+        return api_response
+
     async def get_client_traffic(self, email: str) -> XUIClientTraffic:
         response = await self._request("GET", f"panel/api/inbounds/getClientTraffics/{email}")
         if isinstance(response, dict) and "obj" in response:

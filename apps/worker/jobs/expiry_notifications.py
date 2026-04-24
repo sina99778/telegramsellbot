@@ -39,6 +39,7 @@ async def send_expiry_notifications(session: AsyncSession, bot: Bot) -> None:
         .options(
             selectinload(Subscription.user),
             selectinload(Subscription.plan),
+            selectinload(Subscription.xui_client),
         )
         .where(
             Subscription.status == "active",
@@ -60,6 +61,7 @@ async def send_expiry_notifications(session: AsyncSession, bot: Bot) -> None:
             continue
 
         plan_name = sub.plan.name if sub.plan else "نامشخص"
+        sub_name = sub.xui_client.username if (sub.xui_client and sub.xui_client.username) else str(sub.id)[:8]
         remaining_hours = max(int((sub.ends_at - now).total_seconds() / 3600), 0)
         volume_remaining = format_volume_bytes(max(sub.volume_bytes - sub.used_bytes, 0))
 
@@ -69,6 +71,7 @@ async def send_expiry_notifications(session: AsyncSession, bot: Bot) -> None:
 
         text = (
             "⚠️ سرویس شما رو به اتمام است!\n\n"
+            f"👤 سرویس: {sub_name}\n"
             f"📦 پلن: {plan_name}\n"
             f"⏰ زمان باقی‌مانده: {remaining_hours} ساعت\n"
             f"💾 حجم باقی‌مانده: {volume_remaining}\n\n"
@@ -94,6 +97,7 @@ async def _send_volume_warnings(session: AsyncSession, bot: Bot) -> None:
         .options(
             selectinload(Subscription.user),
             selectinload(Subscription.plan),
+            selectinload(Subscription.xui_client),
         )
         .where(
             Subscription.status == "active",
@@ -131,6 +135,7 @@ async def _send_volume_warnings(session: AsyncSession, bot: Bot) -> None:
             continue
 
         plan_name = sub.plan.name if sub.plan else "نامشخص"
+        sub_name = sub.xui_client.username if (sub.xui_client and sub.xui_client.username) else str(sub.id)[:8]
         volume_remaining = format_volume_bytes(max(sub.volume_bytes - sub.used_bytes, 0))
         volume_total = format_volume_bytes(sub.volume_bytes)
         pct_used = round(usage_ratio * 100)
@@ -141,6 +146,7 @@ async def _send_volume_warnings(session: AsyncSession, bot: Bot) -> None:
 
         text = (
             f"{emoji} هشدار: حجم سرویس شما {urgency} است!\n\n"
+            f"👤 سرویس: {sub_name}\n"
             f"📦 پلن: {plan_name}\n"
             f"📊 مصرف: {pct_used}% ({format_volume_bytes(sub.used_bytes)} از {volume_total})\n"
             f"💾 باقی‌مانده: {volume_remaining} ({pct_remaining}%)\n\n"
