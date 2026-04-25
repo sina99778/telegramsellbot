@@ -49,14 +49,17 @@ router = APIRouter()
 
 async def _get_current_user(
     init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+    _auth: str | None = None,  # Query param fallback
     session: AsyncSession = Depends(get_db_session),
 ) -> tuple[User, AsyncSession]:
-    if not init_data:
+    # Try header first, then query param fallback
+    auth_data = init_data or _auth
+    if not auth_data:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="لطفاً از داخل ربات تلگرام وارد شوید. (initData is empty)",
         )
-    telegram_user_id = validate_telegram_init_data(init_data)
+    telegram_user_id = validate_telegram_init_data(auth_data)
     query = (
         select(User)
         .options(
