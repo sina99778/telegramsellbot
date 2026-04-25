@@ -1,11 +1,14 @@
 from __future__ import annotations
 
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import KeyboardButton, ReplyKeyboardMarkup, WebAppInfo
 
+from core.config import settings
 from core.texts import Buttons, Messages
 
 
 def get_main_menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
+    miniapp_url = f"{settings.web_base_url.rstrip('/')}/miniapp/"
+
     keyboard = [
         [
             KeyboardButton(text=Buttons.BUY_CONFIG),
@@ -18,6 +21,9 @@ def get_main_menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
         [
             KeyboardButton(text=Buttons.REFERRAL),
             KeyboardButton(text=Buttons.TEST_CONFIG),
+        ],
+        [
+            KeyboardButton(text="📱 پنل کاربری", web_app=WebAppInfo(url=miniapp_url)),
         ],
     ]
     if is_admin:

@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>VPN Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Loading -->
+        <div id="loading-screen" class="loading-screen">
+            <div class="loading-spinner"></div>
+            <p>در حال بارگذاری...</p>
+        </div>
+
+        <!-- Header -->
+        <header id="app-header" class="app-header hidden">
+            <div class="header-content">
+                <div class="user-info">
+                    <div class="user-avatar" id="user-avatar">U</div>
+                    <div class="user-details">
+                        <span class="user-name" id="user-name">کاربر</span>
+                        <span class="user-balance" id="user-balance">$0.00</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Pages -->
+        <main id="main-content" class="main-content hidden">
+            <!-- Dashboard Page -->
+            <section id="page-dashboard" class="page active">
+                <div class="page-scroll">
+                    <!-- Stats Cards -->
+                    <div class="stats-grid" id="stats-grid"></div>
+                    <!-- Active Configs -->
+                    <h3 class="section-title">📋 سرویس‌های فعال</h3>
+                    <div id="configs-list" class="configs-list"></div>
+                </div>
+            </section>
+
+            <!-- Store Page -->
+            <section id="page-store" class="page">
+                <div class="page-scroll">
+                    <h3 class="section-title">🛒 فروشگاه پلن‌ها</h3>
+                    <div id="plans-list" class="plans-grid"></div>
+                </div>
+            </section>
+
+            <!-- Configs Page -->
+            <section id="page-configs" class="page">
+                <div class="page-scroll">
+                    <h3 class="section-title">📋 سرویس‌های من</h3>
+                    <div id="all-configs-list" class="configs-list"></div>
+                </div>
+            </section>
+
+            <!-- Wallet Page -->
+            <section id="page-wallet" class="page">
+                <div class="page-scroll">
+                    <div class="wallet-card" id="wallet-card"></div>
+                    <h3 class="section-title">📜 تاریخچه تراکنش‌ها</h3>
+                    <div id="transactions-list" class="transactions-list"></div>
+                </div>
+            </section>
+
+            <!-- Support Page -->
+            <section id="page-support" class="page">
+                <div class="page-scroll">
+                    <h3 class="section-title">🎫 پشتیبانی</h3>
+                    <div id="tickets-container" class="tickets-container"></div>
+                    <div class="ticket-input-area">
+                        <textarea id="ticket-input" placeholder="پیام خود را بنویسید..." rows="3"></textarea>
+                        <button id="ticket-send-btn" class="btn btn-primary">ارسال</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Referral Page -->
+            <section id="page-referral" class="page">
+                <div class="page-scroll">
+                    <h3 class="section-title">👥 دعوت دوستان</h3>
+                    <div id="referral-container"></div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Bottom Navigation -->
+        <nav id="bottom-nav" class="bottom-nav hidden">
+            <button class="nav-btn active" data-page="dashboard">
+                <span class="nav-icon">🏠</span>
+                <span class="nav-label">خانه</span>
+            </button>
+            <button class="nav-btn" data-page="store">
+                <span class="nav-icon">🛒</span>
+                <span class="nav-label">فروشگاه</span>
+            </button>
+            <button class="nav-btn" data-page="configs">
+                <span class="nav-icon">📋</span>
+                <span class="nav-label">سرویس‌ها</span>
+            </button>
+            <button class="nav-btn" data-page="wallet">
+                <span class="nav-icon">💰</span>
+                <span class="nav-label">کیف پول</span>
+            </button>
+            <button class="nav-btn" data-page="support">
+                <span class="nav-icon">🎫</span>
+                <span class="nav-label">پشتیبانی</span>
+            </button>
+            <button class="nav-btn" data-page="referral">
+                <span class="nav-icon">👥</span>
+                <span class="nav-label">دعوت</span>
+            </button>
+        </nav>
+    </div>
+
+    <!-- Toast notification -->
+    <div id="toast" class="toast hidden"></div>
+
+    <!-- Modal -->
+    <div id="modal-overlay" class="modal-overlay hidden">
+        <div class="modal-content" id="modal-content"></div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/ui.js"></script>
+    <script src="js/pages.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>

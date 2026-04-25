@@ -1,5 +1,9 @@
+"""
+Extended Mini App schemas for the full-featured dashboard.
+"""
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -8,7 +12,6 @@ from pydantic import BaseModel, ConfigDict
 
 class WalletView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     balance: Decimal
     credit_limit: Decimal
     hold_balance: Decimal
@@ -16,16 +19,89 @@ class WalletView(BaseModel):
 
 class SubscriptionView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-
     id: UUID
     status: str
     used_bytes: int
     volume_bytes: int
     sub_link: str | None
+    plan_name: str | None = None
+    plan_price: Decimal | None = None
+    plan_duration_days: int | None = None
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+    config_name: str | None = None  # xui_client username
+
+
+class PlanView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    code: str
+    name: str
+    protocol: str
+    duration_days: int
+    volume_gb: float
+    price: Decimal
+    currency: str
+
+
+class TransactionView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    type: str
+    direction: str
+    amount: Decimal
+    currency: str
+    balance_before: Decimal
+    balance_after: Decimal
+    description: str | None
+    created_at: datetime
+
+
+class TicketView(BaseModel):
+    id: UUID
+    status: str
+    created_at: datetime
+    messages: list[TicketMessageView]
+
+
+class TicketMessageView(BaseModel):
+    sender_type: str  # "user" or "admin"
+    text: str | None
+    photo_id: str | None
+    created_at: datetime
+
+
+class ReferralView(BaseModel):
+    ref_code: str | None
+    referral_count: int
+    total_earned: Decimal
+    enabled: bool
 
 
 class MiniAppDashboardResponse(BaseModel):
     user_id: UUID
     telegram_id: int
+    first_name: str | None
+    username: str | None
     wallet: WalletView
     subscriptions: list[SubscriptionView]
+    active_config_count: int
+    total_volume_used: int
+    total_volume: int
+
+
+class PlanListResponse(BaseModel):
+    plans: list[PlanView]
+
+
+class TransactionListResponse(BaseModel):
+    transactions: list[TransactionView]
+    total: int
+
+
+class TicketListResponse(BaseModel):
+    tickets: list[TicketView]
+
+
+class SendTicketRequest(BaseModel):
+    text: str
