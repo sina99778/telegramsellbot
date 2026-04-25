@@ -200,6 +200,8 @@ async def admin_export_weekly_sales_csv(callback: CallbackQuery, session: AsyncS
     from sqlalchemy import select, desc
     from datetime import datetime, timedelta
     from models.order import Order
+    from models.payment import Payment
+    from models.subscription import Subscription
     from sqlalchemy.orm import selectinload
     import io
     import csv
@@ -209,7 +211,11 @@ async def admin_export_weekly_sales_csv(callback: CallbackQuery, session: AsyncS
     
     stmt = (
         select(Order)
-        .options(selectinload(Order.user), selectinload(Order.plan))
+        .options(
+            selectinload(Order.user),
+            selectinload(Order.plan),
+            selectinload(Order.subscription).selectinload(Subscription.xui_client),
+        )
         .where(Order.created_at >= one_week_ago, Order.status.in_(["paid", "provisioned", "completed"]))
         .order_by(desc(Order.created_at))
     )
@@ -219,13 +225,25 @@ async def admin_export_weekly_sales_csv(callback: CallbackQuery, session: AsyncS
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow([
-        "Order ID", "Date", "User ID", "Name", "Username", "Plan",
+        "Order ID", "Date", "User ID", "Name", "Username", "Plan", "Config Name",
         "Amount Paid", "Currency", "Payment Method"
     ])
     
     for order in orders:
         user = order.user
         plan = order.plan
+        config_name = ""
+        if order.subscription is not None and order.subscription.xui_client is not None:
+            config_name = order.subscription.xui_client.username
+        if not config_name:
+            payment = await session.scalar(
+                select(Payment)
+                .where(Payment.user_id == order.user_id)
+                .order_by(Payment.created_at.desc())
+                .limit(1)
+            )
+            if payment is not None and isinstance(payment.callback_payload, dict):
+                config_name = str(payment.callback_payload.get("config_name") or "")
         
         provider_mapped = "درگاه (Gateway)" if order.source == "gateway" else "موجودی کیف پول (Wallet)"
         
@@ -236,6 +254,7 @@ async def admin_export_weekly_sales_csv(callback: CallbackQuery, session: AsyncS
             user.first_name if user else "",
             user.username if (user and user.username) else "",
             plan.name if plan else "Unknown Plan",
+            config_name,
             f"{order.amount:.2f}",
             order.currency,
             provider_mapped
