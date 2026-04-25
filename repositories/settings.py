@@ -30,6 +30,11 @@ class RetargetingSettings:
     message: str
 
 
+@dataclass(slots=True)
+class TrialSettings:
+    enabled: bool
+
+
 REVENUE_SETTINGS_KEY = "admin.revenue_reset"
 
 class AppSettingsRepository:
@@ -99,6 +104,27 @@ class AppSettingsRepository:
         self.session.add(record)
         await self.session.flush()
         return record
+
+    TRIAL_SETTINGS_KEY = "service.trial"
+
+    async def get_trial_settings(self) -> TrialSettings:
+        record = await self.session.get(AppSetting, self.TRIAL_SETTINGS_KEY)
+        if record is None or not record.value_json:
+            return TrialSettings(enabled=True)
+        payload = dict(record.value_json)
+        return TrialSettings(enabled=bool(payload.get("enabled", True)))
+
+    async def update_trial_settings(self, *, enabled: bool | None = None) -> TrialSettings:
+        record = await self.session.get(AppSetting, self.TRIAL_SETTINGS_KEY)
+        if record is None:
+            record = AppSetting(key=self.TRIAL_SETTINGS_KEY, value_json={})
+        payload = dict(record.value_json or {})
+        if enabled is not None:
+            payload["enabled"] = enabled
+        record.value_json = payload
+        self.session.add(record)
+        await self.session.flush()
+        return await self.get_trial_settings()
 
     async def get_retargeting_settings(self) -> RetargetingSettings:
         record = await self._get_or_create_retargeting_record()
@@ -184,6 +210,7 @@ class AppSettingsRepository:
         manual_crypto_enabled: bool
         manual_crypto_currency: str | None  # e.g. "USDT TRC20"
         manual_crypto_address: str | None
+        manual_crypto_wallets: list[dict[str, str]]
         force_join_channel: str | None  # e.g. "@mychannel" or "-1001234567890"
         force_join_enabled: bool
 
@@ -199,10 +226,19 @@ class AppSettingsRepository:
                 manual_crypto_enabled=False,
                 manual_crypto_currency=None,
                 manual_crypto_address=None,
+                manual_crypto_wallets=[],
                 force_join_channel=None,
                 force_join_enabled=False,
             )
         payload = dict(record.value_json)
+        manual_wallets = payload.get("manual_crypto_wallets") or []
+        if not manual_wallets and payload.get("manual_crypto_address"):
+            manual_wallets = [
+                {
+                    "currency": str(payload.get("manual_crypto_currency") or "Crypto"),
+                    "address": str(payload.get("manual_crypto_address")),
+                }
+            ]
         return self.GatewaySettings(
             nowpayments_enabled=bool(payload.get("nowpayments_enabled", True)),
             tetrapay_enabled=bool(payload.get("tetrapay_enabled", True)),
@@ -212,6 +248,7 @@ class AppSettingsRepository:
             manual_crypto_enabled=bool(payload.get("manual_crypto_enabled", False)),
             manual_crypto_currency=payload.get("manual_crypto_currency"),
             manual_crypto_address=payload.get("manual_crypto_address"),
+            manual_crypto_wallets=manual_wallets if isinstance(manual_wallets, list) else [],
             force_join_channel=payload.get("force_join_channel"),
             force_join_enabled=bool(payload.get("force_join_enabled", False)),
         )
@@ -227,6 +264,7 @@ class AppSettingsRepository:
         manual_crypto_enabled: bool | None = None,
         manual_crypto_currency: str | None = _SENTINEL,
         manual_crypto_address: str | None = _SENTINEL,
+        manual_crypto_wallets: list[dict[str, str]] | None = _SENTINEL,
         force_join_channel: str | None = _SENTINEL,
         force_join_enabled: bool | None = None,
     ) -> "AppSettingsRepository.GatewaySettings":
@@ -251,6 +289,8 @@ class AppSettingsRepository:
             payload["manual_crypto_currency"] = manual_crypto_currency
         if manual_crypto_address is not _SENTINEL:
             payload["manual_crypto_address"] = manual_crypto_address
+        if manual_crypto_wallets is not _SENTINEL:
+            payload["manual_crypto_wallets"] = manual_crypto_wallets
         if force_join_channel is not _SENTINEL:
             payload["force_join_channel"] = force_join_channel
         if force_join_enabled is not None:

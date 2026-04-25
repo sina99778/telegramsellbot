@@ -156,7 +156,8 @@ async def topup_preset_handler(
         reply_markup=build_gateway_selection_keyboard(
             nowpayments_enabled=gw.nowpayments_enabled,
             tetrapay_enabled=gw.tetrapay_enabled,
-            manual_crypto_enabled=gw.manual_crypto_enabled and bool(gw.manual_crypto_address),
+            manual_crypto_enabled=gw.manual_crypto_enabled and bool(gw.manual_crypto_wallets or gw.manual_crypto_address),
+            manual_wallets=gw.manual_crypto_wallets,
         )
     )
 
@@ -198,7 +199,8 @@ async def topup_custom_amount_handler(
         reply_markup=build_gateway_selection_keyboard(
             nowpayments_enabled=gw.nowpayments_enabled,
             tetrapay_enabled=gw.tetrapay_enabled,
-            manual_crypto_enabled=gw.manual_crypto_enabled and bool(gw.manual_crypto_address),
+            manual_crypto_enabled=gw.manual_crypto_enabled and bool(gw.manual_crypto_wallets or gw.manual_crypto_address),
+            manual_wallets=gw.manual_crypto_wallets,
         )
     )
 
@@ -425,7 +427,7 @@ async def _create_tetrapay_topup_invoice(
 # ─── Manual Crypto Payment ────────────────────────────────────────────────────
 
 
-@router.callback_query(F.data == "wallet:topup:pay:manual")
+@router.callback_query(F.data.startswith("wallet:topup:pay:manual"))
 async def topup_pay_manual(
     callback: CallbackQuery,
     state: FSMContext,
@@ -440,7 +442,19 @@ async def topup_pay_manual(
     from repositories.settings import AppSettingsRepository
     gw = await AppSettingsRepository(session).get_gateway_settings()
 
-    if not gw.manual_crypto_enabled or not gw.manual_crypto_address:
+    selected_wallet: dict[str, str] | None = None
+    if callback.data and (
+        callback.data.startswith("wallet:topup:pay:manual:")
+        or callback.data.startswith("purchase:pay:manual:")
+    ):
+        try:
+            selected_wallet = gw.manual_crypto_wallets[int(callback.data.rsplit(":", 1)[-1])]
+        except (ValueError, IndexError):
+            selected_wallet = None
+    if not selected_wallet and gw.manual_crypto_wallets:
+        selected_wallet = gw.manual_crypto_wallets[0]
+
+    if not gw.manual_crypto_enabled or not (selected_wallet or gw.manual_crypto_address):
         await safe_edit_or_send(callback, "❌ پرداخت دستی کریپتو غیرفعال یا آدرس تنظیم نشده.")
         return
 
@@ -451,8 +465,8 @@ async def topup_pay_manual(
         return
 
     amount = Decimal(amount_str)
-    currency = gw.manual_crypto_currency or "Crypto"
-    address = gw.manual_crypto_address
+    currency = (selected_wallet or {}).get("currency") or gw.manual_crypto_currency or "Crypto"
+    address = (selected_wallet or {}).get("address") or gw.manual_crypto_address
 
     # Convert USD to crypto amount in real-time
     from services.crypto_price import convert_usd_to_crypto

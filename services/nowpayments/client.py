@@ -66,6 +66,9 @@ class NowPaymentsClient:
         data = await self._request("GET", f"payment/{payment_id}")
         return NowPaymentsPaymentStatusResponse.model_validate(data)
 
+    async def get_invoice_status(self, invoice_id: str | int) -> dict[str, Any]:
+        return await self._request("GET", f"invoice/{invoice_id}")
+
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         try:
             response = await self._client.request(method, path, **kwargs)

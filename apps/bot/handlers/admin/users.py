@@ -458,6 +458,40 @@ async def admin_user_toggle_admin(
             )
 
 
+@router.callback_query(AdminUserActionCallback.filter(F.action == "reset_trial"))
+async def admin_user_reset_trial(
+    callback: CallbackQuery,
+    callback_data: AdminUserActionCallback,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    await callback.answer()
+    user = await session.scalar(
+        select(User)
+        .options(selectinload(User.wallet), selectinload(User.subscriptions))
+        .where(User.id == callback_data.user_id)
+    )
+    if user is None:
+        await safe_edit_or_send(callback, AdminMessages.USER_NOT_FOUND)
+        return
+    user.has_received_free_trial = False
+    await AuditLogRepository(session).log_action(
+        actor_user_id=admin_user.id,
+        action="reset_trial",
+        entity_type="user",
+        entity_id=user.id,
+        payload={"telegram_id": user.telegram_id},
+    )
+    total_orders = int(
+        await session.scalar(select(func.count()).select_from(Order).where(Order.user_id == user.id)) or 0
+    )
+    await safe_edit_or_send(
+        callback,
+        _build_user_profile_text(user=user, total_orders=total_orders) + "\n\n✅ محدودیت تست کاربر ریست شد.",
+        reply_markup=_build_user_profile_keyboard(user.id, user.status),
+    )
+
+
 @router.callback_query(AdminUserActionCallback.filter(F.action == "view_configs"))
 async def view_user_configs(
     callback: CallbackQuery,
@@ -516,6 +550,10 @@ def _build_user_profile_keyboard(user_id: UUID, status: str):
     builder.button(
         text="👑 تغییر نقش (ادمین/کاربر)",
         callback_data=AdminUserActionCallback(action="toggle_admin", user_id=user_id).pack(),
+    )
+    builder.button(
+        text="🧪 ریست کانفیگ تست",
+        callback_data=AdminUserActionCallback(action="reset_trial", user_id=user_id).pack(),
     )
     builder.button(
         text=AdminButtons.BACK,

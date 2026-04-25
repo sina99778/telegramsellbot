@@ -227,7 +227,7 @@ async def _show_payment_method_choice(
         builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="purchase:pay:tetrapay")
     if gw.nowpayments_enabled:
         builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
-    if gw.manual_crypto_enabled and gw.manual_crypto_address:
+    if gw.manual_crypto_enabled and (gw.manual_crypto_wallets or gw.manual_crypto_address):
         builder.button(text="💰 پرداخت به ولت (دستی)", callback_data="purchase:pay:manual")
     builder.button(text=Buttons.BACK, callback_data="purchase:cancel")
     builder.adjust(1)
@@ -281,7 +281,7 @@ async def _show_payment_method_choice_msg(
         builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="purchase:pay:tetrapay")
     if gw.nowpayments_enabled:
         builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
-    if gw.manual_crypto_enabled and gw.manual_crypto_address:
+    if gw.manual_crypto_enabled and (gw.manual_crypto_wallets or gw.manual_crypto_address):
         builder.button(text="💰 پرداخت به ولت (دستی)", callback_data="purchase:pay:manual")
     builder.button(text=Buttons.BACK, callback_data="purchase:cancel")
     builder.adjust(1)
@@ -366,7 +366,7 @@ async def pay_with_tetrapay(
         await safe_edit_or_send(callback, f"❌ خطا در ایجاد فاکتور ریالی:\n<code>{exc}</code>", parse_mode="HTML")
 
 
-@router.callback_query(F.data == "purchase:pay:manual")
+@router.callback_query(F.data.startswith("purchase:pay:manual"))
 async def pay_with_manual_crypto(
     callback: CallbackQuery,
     state: FSMContext,

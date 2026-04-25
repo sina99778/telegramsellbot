@@ -15,8 +15,12 @@ from sqlalchemy.orm import selectinload
 
 from core.config import settings
 from models.payment import Payment
+from models.order import Order
 from models.plan import Plan
 from models.user import User
+from repositories.settings import AppSettingsRepository
+from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
+from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
 from services.wallet.manager import WalletManager
 
 logger = logging.getLogger(__name__)
@@ -33,6 +37,7 @@ async def process_successful_payment(
     amount_to_credit: Decimal,
 ) -> None:
     logger.info("[PAYMENT] Processing payment %s (kind=%s, amount=%s)", payment.id, payment.kind, amount_to_credit)
+    payment.payment_status = "finished"
 
     # Idempotency: skip wallet credit if already done, but still allow provisioning retry
     wallet_already_credited = payment.actually_paid is not None
@@ -73,9 +78,9 @@ async def process_successful_payment(
         try:
             await _handle_direct_purchase(session, payment)
             # Mark as provisioned so retries don't duplicate
-            if payment.callback_payload is None:
-                payment.callback_payload = {}
-            payment.callback_payload["provisioned"] = True
+            payload = dict(payment.callback_payload or {})
+            payload["provisioned"] = True
+            payment.callback_payload = payload
             logger.info("[PAYMENT] Direct purchase provisioning COMPLETED")
         except Exception as exc:
             logger.error("[PAYMENT] Direct purchase provisioning FAILED: %s", exc, exc_info=True)
@@ -131,7 +136,6 @@ async def _handle_direct_purchase(
         final_price = original_price
 
     from services.provisioning.manager import ProvisioningManager, ProvisioningError
-    from models.order import Order
     from core.formatting import format_volume_bytes
 
     # Consume discount code NOW (after payment confirmed), not at invoice creation
@@ -144,32 +148,55 @@ async def _handle_direct_purchase(
             await DiscountRepository(session).use_code(dc)
             logger.info("[PROVISION] Consumed discount code %s", dc.id)
 
-    order = Order(
-        user_id=user.id,
-        plan_id=plan.id,
-        status="processing",
-        source="gateway",
-        amount=final_price,
-        currency=plan.currency,
-    )
-    session.add(order)
-    await session.flush()
-    logger.info("[PROVISION] Order created: %s", order.id)
+    order = None
+    existing_order_id = purchase_meta.get("order_id") if purchase_meta else None
+    if existing_order_id:
+        try:
+            order = await session.get(Order, UUID(str(existing_order_id)))
+        except ValueError:
+            order = None
 
-    # Debit from wallet (was credited above)
+    debited = bool(purchase_meta.get("wallet_debited")) if purchase_meta else False
+    if order is None:
+        order = Order(
+            user_id=user.id,
+            plan_id=plan.id,
+            status="processing",
+            source="gateway",
+            amount=final_price,
+            currency=plan.currency,
+        )
+        session.add(order)
+        await session.flush()
+        payload = dict(payment.callback_payload or {})
+        payload["order_id"] = str(order.id)
+        payment.callback_payload = payload
+        purchase_meta = payload
+        logger.info("[PROVISION] Order created: %s", order.id)
+    else:
+        logger.info("[PROVISION] Reusing order %s for payment %s", order.id, payment.id)
+
+    # Debit from wallet once (it was credited above)
     wallet_manager = WalletManager(session)
-    await wallet_manager.process_transaction(
-        user_id=user.id,
-        amount=Decimal(str(final_price)),
-        transaction_type="purchase",
-        direction="debit",
-        currency=plan.currency,
-        reference_type="order",
-        reference_id=order.id,
-        description=f"Purchase of plan {plan.code}",
-        metadata={"plan_id": str(plan.id), "config_name": config_name},
-    )
-    logger.info("[PROVISION] Wallet debited OK")
+    if not debited:
+        await wallet_manager.process_transaction(
+            user_id=user.id,
+            amount=Decimal(str(final_price)),
+            transaction_type="purchase",
+            direction="debit",
+            currency=plan.currency,
+            reference_type="order",
+            reference_id=order.id,
+            description=f"Purchase of plan {plan.code}",
+            metadata={"plan_id": str(plan.id), "config_name": config_name},
+        )
+        payload = dict(payment.callback_payload or {})
+        payload["wallet_debited"] = True
+        payload["order_id"] = str(order.id)
+        payment.callback_payload = payload
+        logger.info("[PROVISION] Wallet debited OK")
+    else:
+        logger.info("[PROVISION] Wallet debit already recorded for order %s", order.id)
 
     # Use a single shared Bot for all messaging
     bot = _get_shared_bot()
@@ -250,6 +277,10 @@ async def _handle_direct_purchase(
             metadata={"plan_id": str(plan.id)},
         )
         order.status = "refunded"
+        payload = dict(payment.callback_payload or {})
+        payload["wallet_debited"] = False
+        payload["order_id"] = str(order.id)
+        payment.callback_payload = payload
         try:
             await bot.send_message(
                 user.telegram_id,
@@ -267,6 +298,103 @@ async def _handle_direct_purchase(
         await _process_gateway_referral_bonus(session, user)
     except Exception as exc:
         logger.warning("[PROVISION] Referral bonus failed: %s", exc)
+
+
+async def review_gateway_payment(session: AsyncSession, payment: Payment) -> str:
+    if payment.provider == "nowpayments":
+        return await _review_nowpayments_payment(session, payment)
+    if payment.provider == "tetrapay":
+        return await _review_tetrapay_payment(session, payment)
+    return "unsupported_provider"
+
+
+async def _review_nowpayments_payment(session: AsyncSession, payment: Payment) -> str:
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    api_key = gw.nowpayments_api_key
+    from pydantic import SecretStr
+    effective_key = SecretStr(api_key) if api_key else settings.nowpayments_api_key
+
+    async with NowPaymentsClient(
+        NowPaymentsClientConfig(api_key=effective_key, base_url=settings.nowpayments_base_url)
+    ) as client:
+        try:
+            if payment.provider_payment_id:
+                status = await client.get_payment_status(payment.provider_payment_id)
+                status_payload = status.model_dump(mode="json")
+            elif payment.provider_invoice_id:
+                status_payload = await client.get_invoice_status(payment.provider_invoice_id)
+                payments = status_payload.get("payments")
+                if isinstance(payments, list) and payments:
+                    latest = payments[-1]
+                    if isinstance(latest, dict):
+                        status_payload = {**status_payload, **latest}
+            else:
+                return "missing_provider_reference"
+        except NowPaymentsRequestError as exc:
+            logger.warning("NOWPayments review failed for %s: %s", payment.id, exc)
+            return "provider_error"
+
+    provider_payment_id = status_payload.get("payment_id") or status_payload.get("id")
+    if provider_payment_id and not payment.provider_payment_id:
+        payment.provider_payment_id = str(provider_payment_id)
+
+    payment_status = str(status_payload.get("payment_status") or status_payload.get("status") or "").lower()
+    if payment_status:
+        payment.payment_status = payment_status
+
+    payload = dict(payment.callback_payload or {})
+    payload["manual_review"] = status_payload
+    payment.callback_payload = payload
+
+    if payment_status not in {"finished", "confirmed"}:
+        return "not_paid"
+
+    if payment.actually_paid is not None and (payment.kind != "direct_purchase" or payload.get("provisioned")):
+        return "already_processed"
+
+    paid_amount = status_payload.get("price_amount") or payment.price_amount
+    await process_successful_payment(
+        session=session,
+        payment=payment,
+        amount_to_credit=Decimal(str(paid_amount)),
+    )
+    return "processed"
+
+
+async def _review_tetrapay_payment(session: AsyncSession, payment: Payment) -> str:
+    authority = payment.provider_payment_id
+    if not authority:
+        return "missing_provider_reference"
+
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    api_key = gw.tetrapay_api_key or settings.tetrapay_api_key.get_secret_value()
+    async with TetraPayClient(
+        TetraPayClientConfig(api_key=api_key, base_url=settings.tetrapay_base_url)
+    ) as client:
+        try:
+            verify_res = await client.verify_payment(authority)
+        except TetraPayRequestError as exc:
+            logger.warning("TetraPay review failed for %s: %s", payment.id, exc)
+            return "provider_error"
+
+    payload = dict(payment.callback_payload or {})
+    payload["manual_review"] = verify_res.model_dump(mode="json")
+    payment.callback_payload = payload
+
+    if str(verify_res.status) != "100":
+        payment.payment_status = "failed"
+        return "not_paid"
+
+    payment.payment_status = "finished"
+    if payment.actually_paid is not None and (payment.kind != "direct_purchase" or payload.get("provisioned")):
+        return "already_processed"
+
+    await process_successful_payment(
+        session=session,
+        payment=payment,
+        amount_to_credit=payment.price_amount,
+    )
+    return "processed"
 
 
 async def _process_gateway_referral_bonus(

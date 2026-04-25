@@ -61,7 +61,7 @@ class TimelineCallback(CallbackData, prefix="timeline"):
 # ─── Recovery Main Menu ───────────────────────────────────────────────────────
 
 
-@router.callback_query(F.data == "admin:recovery")
+@router.callback_query(F.data.in_({"admin:recovery", "admin:finance"}))
 async def recovery_main_menu(callback: CallbackQuery, session: AsyncSession) -> None:
     await callback.answer()
 
@@ -259,6 +259,12 @@ async def recovery_payment_detail(
     builder = InlineKeyboardBuilder()
 
     # Show relevant actions based on state
+    if payment.provider in {"nowpayments", "tetrapay"} and payment.actually_paid is None:
+        builder.button(
+            text="ðŸ” Ø¨Ø§Ø²Ø¨ÛŒÙ†ÛŒ Ø®ÙˆØ¯Ú©Ø§Ø± Ø¯Ø±Ú¯Ø§Ù‡",
+            callback_data=RecoveryPaymentCallback(action="review", payment_id=payment.id).pack(),
+        )
+
     if payment.kind == "direct_purchase" and payment.actually_paid is not None and not provisioned:
         builder.button(
             text="🔄 Retry Provisioning",
@@ -297,6 +303,38 @@ async def recovery_payment_detail(
 
 
 # ─── Retry Provisioning ──────────────────────────────────────────────────────
+
+
+@router.callback_query(RecoveryPaymentCallback.filter(F.action == "review"))
+async def recovery_review_gateway_payment(
+    callback: CallbackQuery,
+    callback_data: RecoveryPaymentCallback,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    await callback.answer("â³ Ø¯Ø± Ø­Ø§Ù„ Ø¨Ø§Ø²Ø¨ÛŒÙ†ÛŒ...")
+
+    payment = await session.scalar(
+        select(Payment).where(Payment.id == callback_data.payment_id)
+    )
+    if payment is None:
+        await safe_edit_or_send(callback, "Ù¾Ø±Ø¯Ø§Ø®Øª ÛŒØ§ÙØª Ù†Ø´Ø¯.")
+        return
+
+    from services.payment import review_gateway_payment
+
+    result = await review_gateway_payment(session, payment)
+    await AuditLogRepository(session).log_action(
+        actor_user_id=admin_user.id,
+        action="review_gateway_payment",
+        entity_type="payment",
+        entity_id=payment.id,
+        payload={"result": result, "provider": payment.provider},
+    )
+    await safe_edit_or_send(
+        callback,
+        f"Review result: {result}\nPayment: {str(payment.id)[:8]}\nStatus: {payment.payment_status}",
+    )
 
 
 @router.callback_query(RecoveryPaymentCallback.filter(F.action == "retry"))

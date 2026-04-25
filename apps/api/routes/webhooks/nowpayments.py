@@ -114,7 +114,10 @@ async def handle_nowpayments_ipn(
         return {"status": "ignored"}
 
     # Idempotency guard
-    if payment.actually_paid is not None:
+    if (
+        payment.actually_paid is not None
+        and (payment.kind != "direct_purchase" or (payment.callback_payload or {}).get("provisioned"))
+    ):
         logger.info("IPN: Payment %s already processed (actually_paid=%s)", payment.id, payment.actually_paid)
         return {"status": "already_processed"}
 
@@ -144,9 +147,18 @@ async def handle_nowpayments_ipn(
     return {"status": "processed"}
 
 
-def _is_valid_nowpayments_signature(*, raw_body: bytes, signature: str | None, ipn_secret: str) -> bool:
+def _is_valid_nowpayments_signature(
+    *,
+    raw_body: bytes,
+    signature: str | None,
+    ipn_secret: str | None = None,
+) -> bool:
     if not signature:
         return False
+    if ipn_secret is None:
+        if settings.nowpayments_ipn_secret is None:
+            return False
+        ipn_secret = settings.nowpayments_ipn_secret.get_secret_value()
 
     try:
         canonical_body = json.dumps(

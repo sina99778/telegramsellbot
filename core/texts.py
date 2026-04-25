@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 class Buttons:
+    TEST_CONFIG = "🧪 | کانفیگ تست"
     BUY_CONFIG = "🛒 | خرید سرویس جدید"
     PROFILE_WALLET = "👤 | حساب کاربری و شارژ"
     SUPPORT = "💬 | پشتیبانی آنلاین"

@@ -116,7 +116,11 @@ async def support_reply_start(
 ) -> None:
     await callback.answer()
     await state.set_state(SupportReplyStates.waiting_for_reply)
-    await state.update_data(ticket_id=str(callback_data.ticket_id))
+    await state.update_data(
+        ticket_id=str(callback_data.ticket_id),
+        prompt_chat_id=callback.message.chat.id if callback.message else None,
+        prompt_message_id=callback.message.message_id if callback.message else None,
+    )
     await safe_edit_or_send(callback, SupportTexts.ADMIN_REPLY_PROMPT)
 
 
@@ -200,6 +204,18 @@ async def support_reply_submit(
         payload={"user_id": str(ticket.user_id), "status": ticket.status},
     )
     await state.clear()
+    prompt_chat_id = state_data.get("prompt_chat_id")
+    prompt_message_id = state_data.get("prompt_message_id")
+    if prompt_chat_id and prompt_message_id:
+        try:
+            await bot.edit_message_text(
+                chat_id=int(prompt_chat_id),
+                message_id=int(prompt_message_id),
+                text=f"{SupportTexts.ADMIN_REPLY_SENT}\n\nTicket: #{str(ticket.id)[:8]}",
+            )
+            return
+        except Exception:
+            pass
     await message.answer(SupportTexts.ADMIN_REPLY_SENT)
 
 

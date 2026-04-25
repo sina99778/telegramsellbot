@@ -41,6 +41,7 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     builder.button(text="تغییر قیمت تمدید هر ۱۰ روز", callback_data="admin:settings:edit_days")
     builder.button(text="💱 تغییر نرخ دلار به تومان", callback_data="admin:settings:edit_toman")
     builder.button(text="💳 مدیریت درگاه‌های پرداخت", callback_data="admin:settings:gateways")
+    builder.button(text="🧪 فعال/غیرفعال کانفیگ تست", callback_data="admin:settings:trial_toggle")
     builder.button(text="🔗 تنظیمات رفرال", callback_data="admin:settings:referral")
     builder.button(text="📢 جوین اجباری کانال", callback_data="admin:settings:force_join")
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
@@ -169,6 +170,11 @@ async def gateway_settings_menu(callback: CallbackQuery, session: AsyncSession) 
     nowpay_key_display = _mask_api_key(gw.nowpayments_api_key) if gw.nowpayments_api_key else "پیش‌فرض (env)"
     tetra_key_display = _mask_api_key(gw.tetrapay_api_key) if gw.tetrapay_api_key else "پیش‌فرض (env)"
     ipn_secret_display = _mask_api_key(gw.nowpayments_ipn_secret) if gw.nowpayments_ipn_secret else "پیش‌فرض (env)"
+    manual_wallets = gw.manual_crypto_wallets or []
+    wallets_display = "\n".join(
+        f"   {index}. {wallet.get('currency', 'Crypto')}: {_mask_api_key(wallet.get('address', ''))}"
+        for index, wallet in enumerate(manual_wallets, start=1)
+    ) or "   تنظیم نشده"
 
     text = (
         "💳 مدیریت درگاه‌های پرداخت\n\n"
@@ -180,6 +186,7 @@ async def gateway_settings_menu(callback: CallbackQuery, session: AsyncSession) 
         f"💰 پرداخت دستی کریپتو: {manual_status}\n"
         f"   💱 ارز: {gw.manual_crypto_currency or 'تنظیم نشده'}\n"
         f"   📍 آدرس: {_mask_api_key(gw.manual_crypto_address) if gw.manual_crypto_address else 'تنظیم نشده'}\n"
+        f"   👛 ولت‌ها:\n{wallets_display}\n"
     )
 
     builder = InlineKeyboardBuilder()
@@ -195,10 +202,21 @@ async def gateway_settings_menu(callback: CallbackQuery, session: AsyncSession) 
     builder.button(text=toggle_manual_text, callback_data="admin:gw:toggle_manual")
     builder.button(text="💱 تغییر ارز پرداخت دستی", callback_data="admin:gw:edit_manual_cur")
     builder.button(text="📍 تغییر آدرس ولت", callback_data="admin:gw:edit_manual_addr")
+    builder.button(text="🗑 حذف ولت‌های دستی", callback_data="admin:gw:clear_manual_wallets")
     builder.button(text=AdminButtons.BACK, callback_data="admin:bot_settings")
     builder.adjust(1)
 
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data == "admin:settings:trial_toggle")
+async def toggle_trial_config(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    repo = AppSettingsRepository(session)
+    trial = await repo.get_trial_settings()
+    updated = await repo.update_trial_settings(enabled=not trial.enabled)
+    status = "فعال" if updated.enabled else "غیرفعال"
+    await safe_edit_or_send(callback, f"کانفیگ تست {status} شد.")
 
 
 @router.callback_query(F.data == "admin:gw:toggle_nowpay")
@@ -454,7 +472,17 @@ async def edit_manual_address_submit(message: Message, state: FSMContext, sessio
         return
 
     settings_repo = AppSettingsRepository(session)
-    await settings_repo.update_gateway_settings(manual_crypto_address=address)
+    gw = await settings_repo.get_gateway_settings()
+    currency = gw.manual_crypto_currency or "Crypto"
+    wallets = [
+        wallet for wallet in gw.manual_crypto_wallets
+        if wallet.get("address") != address or wallet.get("currency") != currency
+    ]
+    wallets.append({"currency": currency, "address": address})
+    await settings_repo.update_gateway_settings(
+        manual_crypto_address=address,
+        manual_crypto_wallets=wallets,
+    )
     await state.clear()
     # Delete message for security
     try:
@@ -464,6 +492,16 @@ async def edit_manual_address_submit(message: Message, state: FSMContext, sessio
     await message.answer(f"✅ آدرس ولت تنظیم شد.\n📍 {_mask_api_key(address)}")
 
 # ─── Referral Settings ────────────────────────────────────────────────────────
+
+
+@router.callback_query(F.data == "admin:gw:clear_manual_wallets")
+async def clear_manual_wallets(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    await AppSettingsRepository(session).update_gateway_settings(
+        manual_crypto_address=None,
+        manual_crypto_wallets=[],
+    )
+    await gateway_settings_menu(callback, session)
 
 
 @router.callback_query(F.data == "admin:settings:referral")

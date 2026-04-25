@@ -17,6 +17,7 @@ def get_main_menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
         ],
         [
             KeyboardButton(text=Buttons.REFERRAL),
+            KeyboardButton(text=Buttons.TEST_CONFIG),
         ],
     ]
     if is_admin:

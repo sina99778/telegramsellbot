@@ -92,7 +92,7 @@ async def approve_manual_payment(
             user_builder = InlineKeyboardBuilder()
             user_builder.button(text="🛒 خرید کانفیگ", callback_data="wallet:topup")
             user_builder.adjust(1)
-            await bot.send_message(
+            await callback.bot.send_message(
                 target_user.telegram_id,
                 "━━━━━━━━━━━━━━━━━━━━━\n"
                 "  ✅ پرداخت تأیید شد!\n"
