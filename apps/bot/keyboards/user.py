@@ -7,7 +7,11 @@ from core.texts import Buttons, Messages
 
 
 def get_main_menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
-    miniapp_url = f"{settings.web_base_url.rstrip('/')}/miniapp/"
+    base = settings.web_base_url.rstrip('/')
+    # Telegram requires HTTPS for WebApp URLs
+    if base.startswith('http://'):
+        base = 'https://' + base[7:]
+    miniapp_url = f"{base}/miniapp/"
 
     keyboard = [
         [

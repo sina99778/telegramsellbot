@@ -4,18 +4,15 @@
 (async function init() {
     // ─── Telegram WebApp setup ──────────────────────────────────────────
     const tg = window.Telegram?.WebApp;
+
+    console.log('[App] Telegram WebApp available:', !!tg);
+    console.log('[App] initData:', tg?.initData?.substring(0, 60) + '...');
+    console.log('[App] initDataUnsafe:', JSON.stringify(tg?.initDataUnsafe || {}));
+
     if (tg) {
         tg.ready();
         tg.expand();
-        tg.enableClosingConfirmation();
-
-        // Apply Telegram theme colors if available
-        if (tg.themeParams) {
-            const root = document.documentElement;
-            if (tg.themeParams.bg_color) {
-                // Keep our dark theme — don't override
-            }
-        }
+        try { tg.enableClosingConfirmation(); } catch {}
     }
 
     // ─── Navigation binding ─────────────────────────────────────────────
@@ -52,6 +49,13 @@
 
     // ─── Load dashboard ─────────────────────────────────────────────────
     try {
+        // Small delay to ensure Telegram SDK is fully ready
+        if (tg && !tg.initData) {
+            console.log('[App] Waiting for initData...');
+            await new Promise(resolve => setTimeout(resolve, 500));
+            console.log('[App] initData after wait:', tg.initData?.substring(0, 60));
+        }
+
         await Pages.load_dashboard();
 
         // Show UI
@@ -60,13 +64,14 @@
         document.getElementById('main-content').classList.remove('hidden');
         document.getElementById('bottom-nav').classList.remove('hidden');
     } catch (e) {
-        document.getElementById('loading-screen').innerHTML = `
-            <div class="empty-state">
-                <div class="empty-icon">❌</div>
-                <p>خطا در بارگذاری</p>
-                <p style="font-size:12px;color:var(--text-muted);margin-top:8px">${e.message}</p>
-                <button class="btn btn-primary" style="margin-top:16px" onclick="location.reload()">🔄 تلاش مجدد</button>
-            </div>
-        `;
+        console.error('[App] Boot error:', e);
+
+        // Show UI anyway with error
+        document.getElementById('loading-screen').classList.add('hidden');
+        document.getElementById('app-header').classList.remove('hidden');
+        document.getElementById('main-content').classList.remove('hidden');
+        document.getElementById('bottom-nav').classList.remove('hidden');
+
+        UI.toast('❌ خطا در بارگذاری: ' + e.message, 'error');
     }
 })();
