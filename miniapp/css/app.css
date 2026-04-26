@@ -991,3 +991,57 @@ body::before {
     color: var(--text-primary);
     font-size: 18px;
 }
+
+.admin-overview {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 16px;
+}
+
+.admin-stat {
+    background: var(--bg-card);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-md);
+    padding: 14px;
+}
+
+.admin-stat span {
+    display: block;
+    color: var(--text-muted);
+    font-size: 11px;
+    margin-bottom: 4px;
+}
+
+.admin-stat strong {
+    color: var(--text-primary);
+    font-size: 20px;
+}
+
+.admin-modules {
+    display: grid;
+    gap: 10px;
+}
+
+.admin-module {
+    width: 100%;
+    text-align: right;
+    background: var(--bg-card);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-md);
+    padding: 14px 16px;
+    color: var(--text-primary);
+    font-family: var(--font);
+}
+
+.admin-module strong {
+    display: block;
+    font-size: 14px;
+    margin-bottom: 4px;
+}
+
+.admin-module span {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.6;
+}

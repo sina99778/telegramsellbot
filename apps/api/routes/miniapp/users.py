@@ -31,12 +31,14 @@ from models.subscription import Subscription
 from models.ticket import Ticket, TicketMessage
 from models.user import User
 from models.wallet import WalletTransaction
-from models.xui import XUIClientRecord
+from models.xui import XUIClientRecord, XUIServerRecord
 from repositories.settings import AppSettingsRepository
 from repositories.ticket import TicketRepository
 from schemas.api.miniapp import (
     MiniAppConfigResponse,
     MiniAppDashboardResponse,
+    MiniAppAdminOverviewResponse,
+    AdminModuleView,
     PlanListResponse,
     PlanView,
     PurchaseRequest,
@@ -65,6 +67,10 @@ from services.wallet.manager import InsufficientBalanceError, WalletManager
 logger = logging.getLogger(__name__)
 router = APIRouter()
 CONFIG_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]{3,32}$")
+
+
+def _is_admin_user(user: User) -> bool:
+    return user.role in {"admin", "owner"} or user.telegram_id == settings.owner_telegram_id
 
 
 @router.get("/config", response_model=MiniAppConfigResponse)
@@ -156,11 +162,71 @@ async def get_dashboard(
         telegram_id=user.telegram_id,
         first_name=user.first_name,
         username=user.username,
+        is_admin=_is_admin_user(user),
         wallet=WalletView.model_validate(user.wallet),
         subscriptions=subs,
         active_config_count=active_count,
         total_volume_used=total_used,
         total_volume=total_vol,
+    )
+
+
+@router.get("/admin/overview", response_model=MiniAppAdminOverviewResponse)
+async def get_admin_overview(
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> MiniAppAdminOverviewResponse:
+    user, session = auth
+    if not _is_admin_user(user):
+        raise HTTPException(status_code=403, detail="دسترسی مدیریت ندارید.")
+
+    users_count = await session.scalar(select(func.count()).select_from(User)) or 0
+    customers_count = await session.scalar(
+        select(func.count(func.distinct(Order.user_id))).where(
+            Order.status.in_(["provisioned", "paid", "completed"])
+        )
+    ) or 0
+    active_subscriptions_count = await session.scalar(
+        select(func.count()).select_from(Subscription).where(
+            Subscription.status.in_(["active", "pending_activation"])
+        )
+    ) or 0
+    open_tickets_count = await session.scalar(
+        select(func.count()).select_from(Ticket).where(Ticket.status.in_(["open", "answered"]))
+    ) or 0
+    waiting_payments_count = await session.scalar(
+        select(func.count()).select_from(Payment).where(Payment.payment_status.in_(["waiting", "pending"]))
+    ) or 0
+    active_servers_count = await session.scalar(
+        select(func.count()).select_from(XUIServerRecord).where(XUIServerRecord.is_active.is_(True))
+    ) or 0
+    active_plans_count = await session.scalar(
+        select(func.count()).select_from(Plan).where(Plan.is_active.is_(True))
+    ) or 0
+
+    modules = [
+        AdminModuleView(title="آمار و گزارش‌ها", description="وضعیت فروش، کاربران و سرویس‌ها", callback="admin:stats"),
+        AdminModuleView(title="مدیریت مالی", description="بازبینی پرداخت‌ها، پرداخت دستی و ریکاوری", callback="admin:finance"),
+        AdminModuleView(title="کاربران", description="لیست، جستجو، موجودی، بن و نقش‌ها", callback="admin:users"),
+        AdminModuleView(title="مشتریان", description="کاربران خریدار و کانفیگ‌هایشان", callback="admin:customers"),
+        AdminModuleView(title="سرویس‌ها", description="اشتراک‌ها، کانفیگ‌ها و وضعیت‌ها", callback="admin:subs"),
+        AdminModuleView(title="پلن‌ها", description="ساخت، مشاهده و فعال/غیرفعال کردن پلن‌ها", callback="admin:plans"),
+        AdminModuleView(title="سرورها", description="مدیریت سرورهای X-UI و اینباندها", callback="admin:servers"),
+        AdminModuleView(title="تیکت‌ها", description="بررسی و پاسخ به پشتیبانی", callback="admin:tickets"),
+        AdminModuleView(title="تخفیف‌ها", description="ساخت و مدیریت کدهای تخفیف", callback="admin:discounts"),
+        AdminModuleView(title="تنظیمات ربات", description="درگاه‌ها، تست کانفیگ، ریفرال و نرخ‌ها", callback="admin:settings"),
+        AdminModuleView(title="پیام همگانی", description="ارسال پیام به کاربران", callback="admin:broadcast"),
+        AdminModuleView(title="ریتارگتینگ", description="تنظیم یادآوری کاربران غیرفعال", callback="admin:retargeting"),
+        AdminModuleView(title="بکاپ", description="دریافت فایل پشتیبان", callback="admin:backup"),
+    ]
+    return MiniAppAdminOverviewResponse(
+        users_count=int(users_count),
+        customers_count=int(customers_count),
+        active_subscriptions_count=int(active_subscriptions_count),
+        open_tickets_count=int(open_tickets_count),
+        waiting_payments_count=int(waiting_payments_count),
+        active_servers_count=int(active_servers_count),
+        active_plans_count=int(active_plans_count),
+        modules=modules,
     )
 
 

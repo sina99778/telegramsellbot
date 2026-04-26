@@ -57,6 +57,14 @@ async def start_deep_link_handler(
         except Exception as exc:
             logger.warning("Failed to process referral for user %s: %s", user.id, exc)
 
+    from core.config import settings
+    is_admin = user.role in {"admin", "owner"} or telegram_user.id == settings.owner_telegram_id
+
+    if command.args == "admin" and is_admin:
+        from apps.bot.handlers.admin.servers import admin_main_menu
+        await admin_main_menu(message)
+        return
+
     if command.args == "topup":
         await state.clear()
         await message.answer(
@@ -73,9 +81,6 @@ async def start_deep_link_handler(
         welcome_text = Messages.WELCOME_NEW.format(name=welcome_name)
     else:
         welcome_text = Messages.WELCOME_BACK.format(name=welcome_name)
-
-    from core.config import settings
-    is_admin = user.role in {"admin", "owner"} or telegram_user.id == settings.owner_telegram_id
 
     await message.answer(
         welcome_text,

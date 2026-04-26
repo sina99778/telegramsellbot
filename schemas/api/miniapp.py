@@ -83,6 +83,7 @@ class MiniAppDashboardResponse(BaseModel):
     telegram_id: int
     first_name: str | None
     username: str | None
+    is_admin: bool = False
     wallet: WalletView
     subscriptions: list[SubscriptionView]
     active_config_count: int
@@ -151,3 +152,20 @@ class RenewalResponse(BaseModel):
     message: str
     price: Decimal
     balance: Decimal | None = None
+
+
+class AdminModuleView(BaseModel):
+    title: str
+    description: str
+    callback: str
+
+
+class MiniAppAdminOverviewResponse(BaseModel):
+    users_count: int
+    customers_count: int
+    active_subscriptions_count: int
+    open_tickets_count: int
+    waiting_payments_count: int
+    active_servers_count: int
+    active_plans_count: int
+    modules: list[AdminModuleView]

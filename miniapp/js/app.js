@@ -49,6 +49,10 @@
     try {
         window.AppConfig = await API.getConfig().catch(() => ({}));
         await Pages.load_dashboard();
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('page') === 'admin' && window.AppState?.is_admin) {
+            UI.navigate('admin');
+        }
     } catch (e) {
         UI.toast('❌ ' + e.message, 'error');
     }

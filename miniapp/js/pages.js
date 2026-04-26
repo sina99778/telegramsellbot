@@ -32,6 +32,9 @@ const Pages = (() => {
     }
 
     function renderDashboard(data) {
+        window.AppState = data;
+        const adminNav = document.getElementById('admin-nav-btn');
+        if (adminNav) adminNav.classList.toggle('hidden', !data.is_admin);
         // Update header
         document.getElementById('user-name').textContent = data.first_name || 'کاربر';
         document.getElementById('user-balance').textContent = `$${UI.formatMoney(data.wallet.balance)}`;
@@ -509,6 +512,57 @@ const Pages = (() => {
         }
     }
 
+    async function load_admin() {
+        try {
+            const data = await API.getAdminOverview();
+            renderAdminPanel(data);
+        } catch (e) {
+            UI.toast('❌ ' + e.message, 'error');
+        }
+    }
+
+    function renderAdminPanel(data) {
+        const overview = document.getElementById('admin-overview');
+        const modules = document.getElementById('admin-modules');
+        if (!overview || !modules) return;
+
+        overview.innerHTML = `
+            <div class="admin-stat"><span>کاربران</span><strong>${data.users_count}</strong></div>
+            <div class="admin-stat"><span>مشتریان</span><strong>${data.customers_count}</strong></div>
+            <div class="admin-stat"><span>سرویس فعال</span><strong>${data.active_subscriptions_count}</strong></div>
+            <div class="admin-stat"><span>تیکت باز</span><strong>${data.open_tickets_count}</strong></div>
+            <div class="admin-stat"><span>پرداخت منتظر</span><strong>${data.waiting_payments_count}</strong></div>
+            <div class="admin-stat"><span>سرور فعال</span><strong>${data.active_servers_count}</strong></div>
+        `;
+
+        modules.innerHTML = data.modules.map(item => `
+            <button class="admin-module" onclick="Pages.openAdminModule('${escapeHtml(item.callback)}')">
+                <strong>${escapeHtml(item.title)}</strong>
+                <span>${escapeHtml(item.description)}</span>
+            </button>
+        `).join('');
+    }
+
+    function openAdminModule(callback) {
+        UI.showModal(`
+            <div class="modal-title">ادامه در ربات</div>
+            <p class="form-hint" style="text-align:center">
+                این بخش در پنل مدیریت ربات وجود دارد. برای عملیات‌های حساس مثل تغییر موجودی، ساخت پلن، تنظیم درگاه‌ها و پاسخ تیکت‌ها از پنل ربات استفاده کنید.
+            </p>
+            <button class="btn btn-primary btn-block" onclick="Pages.openBotAdmin()">باز کردن ربات</button>
+            <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">بستن</button>
+        `);
+    }
+
+    function openBotAdmin() {
+        const botUsername = getBotUsername();
+        if (botUsername) {
+            window.Telegram?.WebApp?.openTelegramLink(`https://t.me/${botUsername}?start=admin`);
+        } else {
+            UI.toast('یوزرنیم ربات پیدا نشد', 'error');
+        }
+    }
+
     function renderReferral(data) {
         const container = document.getElementById('referral-container');
         const botUsername = getBotUsername() || 'bot';
@@ -553,9 +607,9 @@ const Pages = (() => {
     // ─── Expose ─────────────────────────────────────────────────────────
     return {
         load_dashboard, load_store, load_configs,
-        load_wallet, load_support, load_referral,
+        load_wallet, load_support, load_referral, load_admin,
         showConfigDetail, showRenewal, setRenewalType, submitRenewal,
-        buyPlan, submitPurchase, openInvoice, topupWallet,
+        buyPlan, submitPurchase, openInvoice, topupWallet, openAdminModule, openBotAdmin,
     };
 })();
 

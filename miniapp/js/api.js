@@ -2,9 +2,6 @@
  * API client — sends initData as query param to avoid header issues.
  */
 const API = (() => {
-    const INIT_DATA_WAIT_MS = 3000;
-    const INIT_DATA_POLL_MS = 100;
-
     function readTelegramDataFromUrl() {
         const sources = [window.location.hash, window.location.search];
         for (const source of sources) {
@@ -43,23 +40,9 @@ const API = (() => {
         }
     }
 
-    function sleep(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
-    }
-
-    async function waitForInitData() {
-        const startedAt = Date.now();
-        let initData = getInitData();
-        while (!initData && Date.now() - startedAt < INIT_DATA_WAIT_MS) {
-            await sleep(INIT_DATA_POLL_MS);
-            initData = getInitData();
-        }
-        return initData;
-    }
-
     async function request(method, path, body = null) {
-        const initData = await waitForInitData();
         const sessionToken = getSessionToken();
+        const initData = sessionToken ? '' : getInitData();
 
         // Send initData as query parameter (avoids header stripping by proxies)
         const separator = path.includes('?') ? '&' : '?';
@@ -91,6 +74,7 @@ const API = (() => {
         createPurchase:  (payload)    => request('POST', '/purchase', payload),
         getRenewalQuote:(payload)    => request('POST', '/renewal/quote', payload),
         renewConfig:     (payload)    => request('POST', '/renewal', payload),
+        getAdminOverview:()           => request('GET', '/admin/overview'),
         getTransactions: (page = 1)   => request('GET', `/wallet/transactions?page=${page}`),
         getTickets:      ()           => request('GET', '/tickets'),
         sendTicket:      (text)       => request('POST', '/tickets/send', { text }),
