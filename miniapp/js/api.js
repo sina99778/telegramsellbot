@@ -3,9 +3,26 @@
  */
 const API = (() => {
 
+    function readTelegramDataFromUrl() {
+        const sources = [window.location.hash, window.location.search];
+        for (const source of sources) {
+            if (!source) continue;
+            const params = new URLSearchParams(source.replace(/^[#?]/, ''));
+            const webAppData = params.get('tgWebAppData');
+            if (webAppData) return webAppData;
+        }
+        return '';
+    }
+
     function getInitData() {
         try {
-            return window.Telegram?.WebApp?.initData || '';
+            const sdkInitData = window.Telegram?.WebApp?.initData || '';
+            const initData = sdkInitData || readTelegramDataFromUrl();
+            if (initData) {
+                sessionStorage.setItem('telegram_init_data', initData);
+                return initData;
+            }
+            return sessionStorage.getItem('telegram_init_data') || '';
         } catch {
             return '';
         }
