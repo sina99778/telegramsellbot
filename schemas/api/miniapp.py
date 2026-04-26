@@ -105,3 +105,8 @@ class TicketListResponse(BaseModel):
 
 class SendTicketRequest(BaseModel):
     text: str
+
+
+class MiniAppConfigResponse(BaseModel):
+    bot_username: str | None
+    web_base_url: str

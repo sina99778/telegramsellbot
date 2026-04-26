@@ -27,6 +27,7 @@ from models.user import User
 from models.wallet import WalletTransaction
 from repositories.ticket import TicketRepository
 from schemas.api.miniapp import (
+    MiniAppConfigResponse,
     MiniAppDashboardResponse,
     PlanListResponse,
     PlanView,
@@ -43,6 +44,14 @@ from schemas.api.miniapp import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.get("/config", response_model=MiniAppConfigResponse)
+async def get_miniapp_config() -> MiniAppConfigResponse:
+    return MiniAppConfigResponse(
+        bot_username=settings.bot_username.lstrip("@") if settings.bot_username else None,
+        web_base_url=settings.web_base_url.rstrip("/"),
+    )
 
 
 # ─── Auth helper ─────────────────────────────────────────────────────────────

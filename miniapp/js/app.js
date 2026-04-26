@@ -47,6 +47,7 @@
 
     // Load dashboard
     try {
+        window.AppConfig = await API.getConfig().catch(() => ({}));
         await Pages.load_dashboard();
     } catch (e) {
         UI.toast('❌ ' + e.message, 'error');

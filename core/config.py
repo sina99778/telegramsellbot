@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     bot_token: SecretStr = SecretStr("CHANGE_ME")
+    bot_username: str | None = None
     bot_parse_mode: str = "HTML"
     bot_drop_pending_updates: bool = False
 

@@ -34,6 +34,7 @@ const API = (() => {
 
     return {
         getInitData,
+        getConfig:       ()           => request('GET', '/config'),
         getDashboard:    ()           => request('GET', '/me'),
         getPlans:        ()           => request('GET', '/plans'),
         getTransactions: (page = 1)   => request('GET', `/wallet/transactions?page=${page}`),

@@ -4,6 +4,14 @@
 const Pages = (() => {
     let dashboardData = null;
 
+    function getBotUsername() {
+        return (
+            window.AppConfig?.bot_username ||
+            window.Telegram?.WebApp?.initDataUnsafe?.bot?.username ||
+            ''
+        ).replace(/^@/, '');
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // DASHBOARD
     // ═══════════════════════════════════════════════════════════════════════
@@ -190,16 +198,16 @@ const Pages = (() => {
                     <span class="plan-spec">🔐 ${plan.protocol}</span>
                 </div>
                 <div class="plan-price">$${UI.formatMoney(plan.price)} <small>/ ${plan.currency}</small></div>
-                <button class="btn btn-primary btn-block plan-buy-btn" onclick="Pages.buyPlan('${plan.id}', '${plan.name}')">
+                <button class="btn btn-primary btn-block plan-buy-btn" onclick="Pages.buyPlan('${plan.id}')">
                     🛒 خرید
                 </button>
             </div>
         `).join('');
     }
 
-    function buyPlan(planId, planName) {
+    function buyPlan(planId) {
         // Redirect to bot with deep link
-        const botUsername = window.Telegram?.WebApp?.initDataUnsafe?.bot?.username;
+        const botUsername = getBotUsername();
         if (botUsername) {
             window.Telegram.WebApp.openTelegramLink(`https://t.me/${botUsername}?start=buy_${planId}`);
         } else {
@@ -282,7 +290,7 @@ const Pages = (() => {
     }
 
     function topupWallet() {
-        const botUsername = window.Telegram?.WebApp?.initDataUnsafe?.bot?.username;
+        const botUsername = getBotUsername();
         if (botUsername) {
             window.Telegram.WebApp.openTelegramLink(`https://t.me/${botUsername}?start=topup`);
         } else {
@@ -336,7 +344,7 @@ const Pages = (() => {
 
     function renderReferral(data) {
         const container = document.getElementById('referral-container');
-        const botUsername = window.Telegram?.WebApp?.initDataUnsafe?.bot?.username || 'bot';
+        const botUsername = getBotUsername() || 'bot';
 
         if (!data.enabled) {
             container.innerHTML = '<div class="empty-state"><div class="empty-icon">🔒</div><p>سیستم دعوت فعلاً غیرفعال است</p></div>';
