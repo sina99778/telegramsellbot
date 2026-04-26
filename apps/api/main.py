@@ -37,7 +37,11 @@ if MINIAPP_DIR.exists():
     @app.get("/miniapp")
     @app.get("/miniapp/")
     async def serve_miniapp():
-        return FileResponse(str(MINIAPP_DIR / "index.html"), media_type="text/html")
+        return FileResponse(
+            str(MINIAPP_DIR / "index.html"),
+            media_type="text/html",
+            headers={"Cache-Control": "no-store"},
+        )
 
     logger.info("Mini App mounted at /miniapp/")
 else:

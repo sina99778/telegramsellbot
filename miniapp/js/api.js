@@ -2,12 +2,16 @@
  * API client — sends initData as query param to avoid header issues.
  */
 const API = (() => {
+    const INIT_DATA_WAIT_MS = 3000;
+    const INIT_DATA_POLL_MS = 100;
 
     function readTelegramDataFromUrl() {
         const sources = [window.location.hash, window.location.search];
         for (const source of sources) {
             if (!source) continue;
-            const params = new URLSearchParams(source.replace(/^[#?]/, ''));
+            const queryStart = source.indexOf('tgWebAppData=');
+            const rawParams = queryStart >= 0 ? source.slice(queryStart) : source.replace(/^[#?]/, '');
+            const params = new URLSearchParams(rawParams);
             const webAppData = params.get('tgWebAppData');
             if (webAppData) return webAppData;
         }
@@ -28,8 +32,22 @@ const API = (() => {
         }
     }
 
+    function sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    async function waitForInitData() {
+        const startedAt = Date.now();
+        let initData = getInitData();
+        while (!initData && Date.now() - startedAt < INIT_DATA_WAIT_MS) {
+            await sleep(INIT_DATA_POLL_MS);
+            initData = getInitData();
+        }
+        return initData;
+    }
+
     async function request(method, path, body = null) {
-        const initData = getInitData();
+        const initData = await waitForInitData();
 
         // Send initData as query parameter (avoids header stripping by proxies)
         const separator = path.includes('?') ? '&' : '?';
@@ -38,6 +56,7 @@ const API = (() => {
             : `/api/miniapp${path}`;
 
         const headers = { 'Content-Type': 'application/json' };
+        if (initData) headers['X-Telegram-Init-Data'] = initData;
         const opts = { method, headers };
         if (body) opts.body = JSON.stringify(body);
 
