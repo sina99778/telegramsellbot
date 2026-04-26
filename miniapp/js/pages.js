@@ -536,22 +536,60 @@ const Pages = (() => {
         `;
 
         modules.innerHTML = data.modules.map(item => `
-            <button class="admin-module" onclick="Pages.openAdminModule('${escapeHtml(item.callback)}')">
+            <button class="admin-module" onclick="Pages.openAdminModule('${escapeHtml(item.callback.replace('admin:', ''))}')">
                 <strong>${escapeHtml(item.title)}</strong>
                 <span>${escapeHtml(item.description)}</span>
             </button>
         `).join('');
     }
 
-    function openAdminModule(callback) {
-        UI.showModal(`
-            <div class="modal-title">ادامه در ربات</div>
-            <p class="form-hint" style="text-align:center">
-                این بخش در پنل مدیریت ربات وجود دارد. برای عملیات‌های حساس مثل تغییر موجودی، ساخت پلن، تنظیم درگاه‌ها و پاسخ تیکت‌ها از پنل ربات استفاده کنید.
-            </p>
-            <button class="btn btn-primary btn-block" onclick="Pages.openBotAdmin()">باز کردن ربات</button>
-            <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">بستن</button>
-        `);
+    async function openAdminModule(section) {
+        try {
+            const data = await API.getAdminSection(section);
+            renderAdminSection(section, data);
+        } catch (e) {
+            UI.toast('❌ ' + e.message, 'error');
+        }
+    }
+
+    function renderAdminSection(section, data) {
+        const modules = document.getElementById('admin-modules');
+        if (!modules) return;
+        const items = data.items || [];
+        modules.innerHTML = `
+            <button class="btn btn-secondary btn-block" onclick="Pages.load_admin()">بازگشت به مدیریت</button>
+            <h3 class="section-title" style="margin-top:16px">${escapeHtml(data.title || 'مدیریت')}</h3>
+            <div class="admin-list">
+                ${items.length ? items.map(item => renderAdminItem(section, item)).join('') : '<div class="empty-state"><p>موردی برای نمایش نیست</p></div>'}
+            </div>
+        `;
+    }
+
+    function renderAdminItem(section, item) {
+        const actions = item.actions || [];
+        return `
+            <div class="admin-item">
+                <div>
+                    <strong>${escapeHtml(item.title ?? item.value ?? '-')}</strong>
+                    <span>${escapeHtml(item.subtitle ?? (item.value !== undefined ? item.value : ''))}</span>
+                </div>
+                ${actions.length ? `<div class="admin-actions">
+                    ${actions.map(action => `
+                        <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminAction('${section}', '${escapeHtml(action.action)}', '${escapeHtml(item.id)}')">${escapeHtml(action.label)}</button>
+                    `).join('')}
+                </div>` : ''}
+            </div>
+        `;
+    }
+
+    async function runAdminAction(section, action, id) {
+        try {
+            const result = await API.runAdminAction({ action, id });
+            UI.toast(result.message || 'انجام شد');
+            await openAdminModule(section);
+        } catch (e) {
+            UI.toast('❌ ' + e.message, 'error');
+        }
     }
 
     function openBotAdmin() {
@@ -609,7 +647,7 @@ const Pages = (() => {
         load_dashboard, load_store, load_configs,
         load_wallet, load_support, load_referral, load_admin,
         showConfigDetail, showRenewal, setRenewalType, submitRenewal,
-        buyPlan, submitPurchase, openInvoice, topupWallet, openAdminModule, openBotAdmin,
+        buyPlan, submitPurchase, openInvoice, topupWallet, openAdminModule, runAdminAction, openBotAdmin,
     };
 })();
 

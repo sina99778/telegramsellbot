@@ -75,6 +75,8 @@ const API = (() => {
         getRenewalQuote:(payload)    => request('POST', '/renewal/quote', payload),
         renewConfig:     (payload)    => request('POST', '/renewal', payload),
         getAdminOverview:()           => request('GET', '/admin/overview'),
+        getAdminSection:(section)     => request('GET', `/admin/section/${encodeURIComponent(section)}`),
+        runAdminAction: (payload)     => request('POST', '/admin/action', payload),
         getTransactions: (page = 1)   => request('GET', `/wallet/transactions?page=${page}`),
         getTickets:      ()           => request('GET', '/tickets'),
         sendTicket:      (text)       => request('POST', '/tickets/send', { text }),

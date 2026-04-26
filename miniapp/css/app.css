@@ -1045,3 +1045,36 @@ body::before {
     font-size: 12px;
     line-height: 1.6;
 }
+
+.admin-list {
+    display: grid;
+    gap: 10px;
+}
+
+.admin-item {
+    background: var(--bg-card);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-md);
+    padding: 14px;
+}
+
+.admin-item strong {
+    display: block;
+    font-size: 14px;
+    margin-bottom: 4px;
+}
+
+.admin-item span {
+    display: block;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.6;
+    word-break: break-word;
+}
+
+.admin-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+}

@@ -12,6 +12,7 @@ import re
 from collections.abc import Mapping
 from decimal import Decimal
 from datetime import datetime, timezone
+from typing import Any
 from urllib.parse import parse_qsl
 from uuid import UUID, uuid4
 
@@ -25,6 +26,7 @@ from apps.api.dependencies.db import get_db_session
 from core.config import settings
 from core.miniapp_auth import verify_miniapp_session_token
 from models.plan import Plan
+from models.discount import DiscountCode
 from models.order import Order
 from models.payment import Payment
 from models.subscription import Subscription
@@ -59,6 +61,7 @@ from schemas.api.miniapp import (
 )
 from schemas.internal.nowpayments import NowPaymentsPaymentCreateRequest
 from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
+from services.payment import review_gateway_payment
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
 from services.renewal import apply_renewal, calculate_renewal_price
 from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
@@ -228,6 +231,267 @@ async def get_admin_overview(
         active_plans_count=int(active_plans_count),
         modules=modules,
     )
+
+
+@router.get("/admin/section/{section}")
+async def get_admin_section(
+    section: str,
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    _require_admin(user)
+
+    if section == "stats":
+        return {"title": "آمار و گزارش‌ها", "items": await _admin_stats(session)}
+    if section == "finance":
+        payments = await _admin_payments(session)
+        return {"title": "مدیریت مالی", "items": payments}
+    if section in {"users", "customers"}:
+        users = await _admin_users(session, customers_only=section == "customers")
+        return {"title": "کاربران" if section == "users" else "مشتریان", "items": users}
+    if section == "subs":
+        return {"title": "سرویس‌ها", "items": await _admin_subscriptions(session)}
+    if section == "plans":
+        return {"title": "پلن‌ها", "items": await _admin_plans(session)}
+    if section == "servers":
+        return {"title": "سرورها", "items": await _admin_servers(session)}
+    if section == "tickets":
+        return {"title": "تیکت‌ها", "items": await _admin_tickets(session)}
+    if section == "discounts":
+        return {"title": "تخفیف‌ها", "items": await _admin_discounts(session)}
+    if section == "settings":
+        return {"title": "تنظیمات", "items": await _admin_settings(session)}
+    if section in {"broadcast", "retargeting", "backup"}:
+        return {
+            "title": {
+                "broadcast": "پیام همگانی",
+                "retargeting": "ریتارگتینگ",
+                "backup": "بکاپ",
+            }[section],
+            "items": [
+                {
+                    "id": section,
+                    "title": "این بخش نیازمند ورودی چندمرحله‌ای است",
+                    "subtitle": "نسخه وب در حال آماده‌سازی است؛ فعلاً از پنل ربات استفاده کنید.",
+                    "actions": [],
+                }
+            ],
+        }
+    raise HTTPException(status_code=404, detail="بخش مدیریت پیدا نشد.")
+
+
+@router.post("/admin/action")
+async def post_admin_action(
+    body: dict[str, Any],
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    _require_admin(user)
+    action = str(body.get("action") or "")
+    target_id_raw = str(body.get("id") or "")
+
+    try:
+        target_id = UUID(target_id_raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="شناسه نامعتبر است.") from exc
+
+    if action == "toggle_plan":
+        plan = await session.get(Plan, target_id)
+        if plan is None:
+            raise HTTPException(status_code=404, detail="پلن پیدا نشد.")
+        plan.is_active = not plan.is_active
+        await session.flush()
+        return {"ok": True, "message": "وضعیت پلن تغییر کرد."}
+
+    if action == "toggle_server":
+        server = await session.get(XUIServerRecord, target_id)
+        if server is None:
+            raise HTTPException(status_code=404, detail="سرور پیدا نشد.")
+        server.is_active = not server.is_active
+        await session.flush()
+        return {"ok": True, "message": "وضعیت سرور تغییر کرد."}
+
+    if action == "toggle_discount":
+        discount = await session.get(DiscountCode, target_id)
+        if discount is None:
+            raise HTTPException(status_code=404, detail="کد تخفیف پیدا نشد.")
+        discount.is_active = not discount.is_active
+        await session.flush()
+        return {"ok": True, "message": "وضعیت تخفیف تغییر کرد."}
+
+    if action == "toggle_user_ban":
+        target = await session.get(User, target_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="کاربر پیدا نشد.")
+        target.status = "active" if target.status == "banned" else "banned"
+        await session.flush()
+        return {"ok": True, "message": "وضعیت کاربر تغییر کرد."}
+
+    if action == "reset_trial":
+        target = await session.get(User, target_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="کاربر پیدا نشد.")
+        target.has_received_free_trial = False
+        await session.flush()
+        return {"ok": True, "message": "محدودیت تست کاربر ریست شد."}
+
+    if action == "review_payment":
+        payment = await session.get(Payment, target_id)
+        if payment is None:
+            raise HTTPException(status_code=404, detail="پرداخت پیدا نشد.")
+        result = await review_gateway_payment(session, payment)
+        return {"ok": True, "message": f"نتیجه بازبینی: {result}"}
+
+    if action == "close_ticket":
+        ticket = await session.get(Ticket, target_id)
+        if ticket is None:
+            raise HTTPException(status_code=404, detail="تیکت پیدا نشد.")
+        ticket.status = "closed"
+        await session.flush()
+        return {"ok": True, "message": "تیکت بسته شد."}
+
+    raise HTTPException(status_code=400, detail="اکشن نامعتبر است.")
+
+
+def _require_admin(user: User) -> None:
+    if not _is_admin_user(user):
+        raise HTTPException(status_code=403, detail="دسترسی مدیریت ندارید.")
+
+
+async def _admin_stats(session: AsyncSession) -> list[dict[str, Any]]:
+    return [
+        {"title": "کل کاربران", "value": int(await session.scalar(select(func.count()).select_from(User)) or 0)},
+        {"title": "سرویس‌های فعال", "value": int(await session.scalar(select(func.count()).select_from(Subscription).where(Subscription.status.in_(["active", "pending_activation"]))) or 0)},
+        {"title": "پلن‌های فعال", "value": int(await session.scalar(select(func.count()).select_from(Plan).where(Plan.is_active.is_(True))) or 0)},
+        {"title": "پرداخت‌های منتظر", "value": int(await session.scalar(select(func.count()).select_from(Payment).where(Payment.payment_status.in_(["waiting", "pending"]))) or 0)},
+    ]
+
+
+async def _admin_payments(session: AsyncSession) -> list[dict[str, Any]]:
+    result = await session.execute(
+        select(Payment).order_by(Payment.created_at.desc()).limit(30)
+    )
+    return [
+        {
+            "id": str(p.id),
+            "title": f"{p.provider} | {p.kind}",
+            "subtitle": f"{p.payment_status} | {p.price_amount} {p.price_currency}",
+            "actions": [{"label": "بازبینی", "action": "review_payment"}] if p.provider in {"nowpayments", "tetrapay"} else [],
+        }
+        for p in result.scalars().all()
+    ]
+
+
+async def _admin_users(session: AsyncSession, *, customers_only: bool = False) -> list[dict[str, Any]]:
+    stmt = select(User).options(selectinload(User.wallet)).order_by(User.created_at.desc()).limit(30)
+    if customers_only:
+        stmt = (
+            select(User)
+            .join(Order, Order.user_id == User.id)
+            .options(selectinload(User.wallet))
+            .where(Order.status.in_(["provisioned", "paid", "completed"]))
+            .group_by(User.id)
+            .order_by(User.created_at.desc())
+            .limit(30)
+        )
+    result = await session.execute(stmt)
+    users = result.scalars().unique().all()
+    return [
+        {
+            "id": str(u.id),
+            "title": u.first_name or u.username or str(u.telegram_id),
+            "subtitle": f"{u.telegram_id} | {u.role} | {u.status} | ${u.wallet.balance if u.wallet else 0}",
+            "actions": [
+                {"label": "بن/رفع بن", "action": "toggle_user_ban"},
+                {"label": "ریست تست", "action": "reset_trial"},
+            ],
+        }
+        for u in users
+    ]
+
+
+async def _admin_subscriptions(session: AsyncSession) -> list[dict[str, Any]]:
+    result = await session.execute(
+        select(Subscription)
+        .options(selectinload(Subscription.user), selectinload(Subscription.plan), selectinload(Subscription.xui_client))
+        .order_by(Subscription.created_at.desc())
+        .limit(30)
+    )
+    return [
+        {
+            "id": str(s.id),
+            "title": (s.xui_client.username if s.xui_client else None) or (s.plan.name if s.plan else "سرویس"),
+            "subtitle": f"{s.status} | {s.user.telegram_id if s.user else '-'} | {s.used_bytes}/{s.volume_bytes}",
+            "actions": [],
+        }
+        for s in result.scalars().unique().all()
+    ]
+
+
+async def _admin_plans(session: AsyncSession) -> list[dict[str, Any]]:
+    result = await session.execute(select(Plan).order_by(Plan.created_at.desc()).limit(50))
+    return [
+        {
+            "id": str(p.id),
+            "title": p.name,
+            "subtitle": f"{p.price} {p.currency} | {p.duration_days} روز | {'فعال' if p.is_active else 'غیرفعال'}",
+            "actions": [{"label": "فعال/غیرفعال", "action": "toggle_plan"}],
+        }
+        for p in result.scalars().all()
+    ]
+
+
+async def _admin_servers(session: AsyncSession) -> list[dict[str, Any]]:
+    result = await session.execute(select(XUIServerRecord).order_by(XUIServerRecord.created_at.desc()).limit(50))
+    return [
+        {
+            "id": str(s.id),
+            "title": s.name,
+            "subtitle": f"{s.health_status} | {'فعال' if s.is_active else 'غیرفعال'} | priority {s.priority}",
+            "actions": [{"label": "فعال/غیرفعال", "action": "toggle_server"}],
+        }
+        for s in result.scalars().all()
+    ]
+
+
+async def _admin_tickets(session: AsyncSession) -> list[dict[str, Any]]:
+    tickets = await TicketRepository(session).list_open_tickets(limit=30)
+    return [
+        {
+            "id": str(t.id),
+            "title": f"تیکت {str(t.id)[:8]}",
+            "subtitle": f"{t.status} | {t.user.telegram_id if t.user else '-'} | {(t.messages[-1].text if t.messages else '') or ''}",
+            "actions": [{"label": "بستن", "action": "close_ticket"}],
+        }
+        for t in tickets
+    ]
+
+
+async def _admin_discounts(session: AsyncSession) -> list[dict[str, Any]]:
+    result = await session.execute(select(DiscountCode).order_by(DiscountCode.created_at.desc()).limit(50))
+    return [
+        {
+            "id": str(d.id),
+            "title": d.code,
+            "subtitle": f"{d.discount_percent}% | {d.used_count}/{d.max_uses} | {'فعال' if d.is_active else 'غیرفعال'}",
+            "actions": [{"label": "فعال/غیرفعال", "action": "toggle_discount"}],
+        }
+        for d in result.scalars().all()
+    ]
+
+
+async def _admin_settings(session: AsyncSession) -> list[dict[str, Any]]:
+    repo = AppSettingsRepository(session)
+    trial = await repo.get_trial_settings()
+    gw = await repo.get_gateway_settings()
+    toman = await repo.get_toman_rate()
+    return [
+        {"id": "trial", "title": "کانفیگ تست", "subtitle": "فعال" if trial.enabled else "غیرفعال", "actions": []},
+        {"id": "tetrapay", "title": "درگاه تتراپی", "subtitle": "فعال" if gw.tetrapay_enabled else "غیرفعال", "actions": []},
+        {"id": "nowpayments", "title": "NOWPayments", "subtitle": "فعال" if gw.nowpayments_enabled else "غیرفعال", "actions": []},
+        {"id": "manual", "title": "پرداخت دستی", "subtitle": "فعال" if gw.manual_crypto_enabled else "غیرفعال", "actions": []},
+        {"id": "rate", "title": "نرخ دلار/تومان", "subtitle": str(toman), "actions": []},
+    ]
 
 
 # ─── Plans ───────────────────────────────────────────────────────────────────
