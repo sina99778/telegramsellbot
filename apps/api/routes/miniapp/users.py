@@ -23,6 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from apps.api.dependencies.db import get_db_session
 from core.config import settings
+from core.miniapp_auth import verify_miniapp_session_token
 from models.plan import Plan
 from models.order import Order
 from models.payment import Payment
@@ -73,16 +74,22 @@ async def get_miniapp_config() -> MiniAppConfigResponse:
 async def _get_current_user(
     init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
     _auth: str | None = None,  # Query param fallback
+    _session: str | None = None,  # Bot-signed fallback
     session: AsyncSession = Depends(get_db_session),
 ) -> tuple[User, AsyncSession]:
     # Try header first, then query param fallback
     auth_data = init_data or _auth
-    if not auth_data:
+    if not auth_data and not _session:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="لطفاً از داخل ربات تلگرام وارد شوید. (initData is empty)",
         )
-    telegram_user_id = validate_telegram_init_data(auth_data)
+    telegram_user_id = validate_telegram_init_data(auth_data) if auth_data else verify_miniapp_session_token(_session or "")
+    if telegram_user_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="لطفاً /start را بزنید و پنل کاربری را از دکمه جدید ربات باز کنید.",
+        )
     query = (
         select(User)
         .options(

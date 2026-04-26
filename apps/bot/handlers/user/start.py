@@ -79,7 +79,7 @@ async def start_deep_link_handler(
 
     await message.answer(
         welcome_text,
-        reply_markup=get_main_menu_keyboard(is_admin=is_admin),
+        reply_markup=get_main_menu_keyboard(is_admin=is_admin, telegram_id=telegram_user.id),
     )
 
 
@@ -144,7 +144,7 @@ async def start_command_handler(message: Message, session: AsyncSession) -> None
 
     await message.answer(
         welcome_text,
-        reply_markup=get_main_menu_keyboard(is_admin=is_admin),
+        reply_markup=get_main_menu_keyboard(is_admin=is_admin, telegram_id=telegram_user.id),
     )
 
 

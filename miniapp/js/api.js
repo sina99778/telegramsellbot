@@ -18,6 +18,17 @@ const API = (() => {
         return '';
     }
 
+    function getSessionToken() {
+        try {
+            const params = new URLSearchParams(window.location.search.replace(/^[?]/, ''));
+            const token = params.get('session') || '';
+            if (token) sessionStorage.setItem('miniapp_session', token);
+            return token || sessionStorage.getItem('miniapp_session') || '';
+        } catch {
+            return '';
+        }
+    }
+
     function getInitData() {
         try {
             const sdkInitData = window.Telegram?.WebApp?.initData || '';
@@ -48,12 +59,16 @@ const API = (() => {
 
     async function request(method, path, body = null) {
         const initData = await waitForInitData();
+        const sessionToken = getSessionToken();
 
         // Send initData as query parameter (avoids header stripping by proxies)
         const separator = path.includes('?') ? '&' : '?';
-        const url = initData
-            ? `/api/miniapp${path}${separator}_auth=${encodeURIComponent(initData)}`
-            : `/api/miniapp${path}`;
+        let url = `/api/miniapp${path}`;
+        if (initData) {
+            url += `${separator}_auth=${encodeURIComponent(initData)}`;
+        } else if (sessionToken) {
+            url += `${separator}_session=${encodeURIComponent(sessionToken)}`;
+        }
 
         const headers = { 'Content-Type': 'application/json' };
         if (initData) headers['X-Telegram-Init-Data'] = initData;
