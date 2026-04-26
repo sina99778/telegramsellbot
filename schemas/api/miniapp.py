@@ -100,6 +100,26 @@ class TransactionListResponse(BaseModel):
     total: int
 
 
+class PaymentView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    provider: str
+    kind: str
+    payment_status: str
+    price_amount: Decimal
+    price_currency: str
+    pay_amount: Decimal | None = None
+    pay_currency: str | None = None
+    invoice_url: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PaymentListResponse(BaseModel):
+    payments: list[PaymentView]
+    total: int
+
+
 class TicketListResponse(BaseModel):
     tickets: list[TicketView]
 

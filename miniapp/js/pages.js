@@ -413,6 +413,8 @@ const Pages = (() => {
         try {
             if (!dashboardData) dashboardData = await API.getDashboard();
             renderWalletCard(dashboardData.wallet);
+            const paymentData = await API.getPayments(1);
+            renderPayments(paymentData.payments || []);
             const txData = await API.getTransactions(1);
             renderTransactions(txData.transactions);
         } catch (e) {
@@ -428,6 +430,44 @@ const Pages = (() => {
                 <button class="btn" onclick="Pages.topupWallet()">➕ شارژ</button>
             </div>
         `;
+    }
+
+    function renderPayments(payments) {
+        const container = document.getElementById('payments-list');
+        if (!container) return;
+        if (!payments.length) {
+            container.innerHTML = '<div class="empty-state compact"><p>پرداختی ثبت نشده</p></div>';
+            return;
+        }
+
+        container.innerHTML = payments.map(payment => {
+            const canRefresh = ['nowpayments', 'tetrapay'].includes(payment.provider)
+                && ['waiting', 'pending', 'confirming'].includes(payment.payment_status);
+            const amount = payment.pay_amount
+                ? `${UI.formatMoney(payment.pay_amount)} ${payment.pay_currency || ''}`
+                : `${UI.formatMoney(payment.price_amount)} ${payment.price_currency}`;
+            return `
+                <div class="payment-item">
+                    <div>
+                        <strong>${escapeHtml(payment.provider)} | ${escapeHtml(payment.kind)}</strong>
+                        <span>${escapeHtml(payment.payment_status)} | ${escapeHtml(amount)} | ${UI.formatDate(payment.created_at)}</span>
+                    </div>
+                    ${canRefresh ? `<button class="btn btn-secondary btn-sm" onclick="Pages.refreshPayment('${payment.id}')">بررسی</button>` : ''}
+                </div>
+            `;
+        }).join('');
+    }
+
+    async function refreshPayment(paymentId) {
+        try {
+            UI.toast('در حال بررسی پرداخت...');
+            const result = await API.refreshPayment(paymentId);
+            UI.toast(result.message || 'وضعیت پرداخت بررسی شد');
+            const paymentData = await API.getPayments(1);
+            renderPayments(paymentData.payments || []);
+        } catch (e) {
+            UI.toast('❌ ' + e.message, 'error');
+        }
     }
 
     function renderTransactions(txs) {
@@ -647,7 +687,7 @@ const Pages = (() => {
         load_dashboard, load_store, load_configs,
         load_wallet, load_support, load_referral, load_admin,
         showConfigDetail, showRenewal, setRenewalType, submitRenewal,
-        buyPlan, submitPurchase, openInvoice, topupWallet, openAdminModule, runAdminAction, openBotAdmin,
+        buyPlan, submitPurchase, openInvoice, topupWallet, refreshPayment, openAdminModule, runAdminAction, openBotAdmin,
     };
 })();
 

@@ -6,7 +6,9 @@ import pathlib
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
+from sqlalchemy import text
 
+from core.database import AsyncSessionFactory
 from apps.api.routes.admin import router as admin_router
 from apps.api.routes.miniapp.users import router as miniapp_users_router
 from apps.api.routes.webhooks.nowpayments import router as nowpayments_webhook_router
@@ -23,6 +25,13 @@ app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
 app.include_router(nowpayments_webhook_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(tetrapay_webhook_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(dl_router, prefix="/api", tags=["dl"])
+
+
+@app.get("/healthz", tags=["health"])
+async def healthz() -> dict[str, str]:
+    async with AsyncSessionFactory() as session:
+        await session.execute(text("SELECT 1"))
+    return {"status": "ok", "database": "ok"}
 
 # ─── Serve Mini App static files ─────────────────────────────────────────────
 logger.info("Looking for miniapp at: %s (exists=%s)", MINIAPP_DIR, MINIAPP_DIR.exists())

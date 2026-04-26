@@ -26,6 +26,7 @@ from apps.api.dependencies.db import get_db_session
 from core.config import settings
 from core.miniapp_auth import verify_miniapp_session_token
 from models.plan import Plan
+from models.audit import AuditLog
 from models.discount import DiscountCode
 from models.order import Order
 from models.payment import Payment
@@ -41,6 +42,8 @@ from schemas.api.miniapp import (
     MiniAppDashboardResponse,
     MiniAppAdminOverviewResponse,
     AdminModuleView,
+    PaymentListResponse,
+    PaymentView,
     PlanListResponse,
     PlanView,
     PurchaseRequest,
@@ -217,6 +220,7 @@ async def get_admin_overview(
         AdminModuleView(title="تیکت‌ها", description="بررسی و پاسخ به پشتیبانی", callback="admin:tickets"),
         AdminModuleView(title="تخفیف‌ها", description="ساخت و مدیریت کدهای تخفیف", callback="admin:discounts"),
         AdminModuleView(title="تنظیمات ربات", description="درگاه‌ها، تست کانفیگ، ریفرال و نرخ‌ها", callback="admin:settings"),
+        AdminModuleView(title="ادیت لاگ", description="ردیابی اکشن‌های حساس مدیریت", callback="admin:audit"),
         AdminModuleView(title="پیام همگانی", description="ارسال پیام به کاربران", callback="admin:broadcast"),
         AdminModuleView(title="ریتارگتینگ", description="تنظیم یادآوری کاربران غیرفعال", callback="admin:retargeting"),
         AdminModuleView(title="بکاپ", description="دریافت فایل پشتیبان", callback="admin:backup"),
@@ -261,6 +265,8 @@ async def get_admin_section(
         return {"title": "تخفیف‌ها", "items": await _admin_discounts(session)}
     if section == "settings":
         return {"title": "تنظیمات", "items": await _admin_settings(session)}
+    if section == "audit":
+        return {"title": "ادیت لاگ", "items": await _admin_audit_logs(session)}
     if section in {"broadcast", "retargeting", "backup"}:
         return {
             "title": {
@@ -300,6 +306,7 @@ async def post_admin_action(
         if plan is None:
             raise HTTPException(status_code=404, detail="پلن پیدا نشد.")
         plan.is_active = not plan.is_active
+        _record_admin_action(session, user, action, "plan", plan.id, {"is_active": plan.is_active})
         await session.flush()
         return {"ok": True, "message": "وضعیت پلن تغییر کرد."}
 
@@ -308,6 +315,7 @@ async def post_admin_action(
         if server is None:
             raise HTTPException(status_code=404, detail="سرور پیدا نشد.")
         server.is_active = not server.is_active
+        _record_admin_action(session, user, action, "server", server.id, {"is_active": server.is_active})
         await session.flush()
         return {"ok": True, "message": "وضعیت سرور تغییر کرد."}
 
@@ -316,6 +324,7 @@ async def post_admin_action(
         if discount is None:
             raise HTTPException(status_code=404, detail="کد تخفیف پیدا نشد.")
         discount.is_active = not discount.is_active
+        _record_admin_action(session, user, action, "discount", discount.id, {"is_active": discount.is_active})
         await session.flush()
         return {"ok": True, "message": "وضعیت تخفیف تغییر کرد."}
 
@@ -324,6 +333,7 @@ async def post_admin_action(
         if target is None:
             raise HTTPException(status_code=404, detail="کاربر پیدا نشد.")
         target.status = "active" if target.status == "banned" else "banned"
+        _record_admin_action(session, user, action, "user", target.id, {"status": target.status})
         await session.flush()
         return {"ok": True, "message": "وضعیت کاربر تغییر کرد."}
 
@@ -332,6 +342,7 @@ async def post_admin_action(
         if target is None:
             raise HTTPException(status_code=404, detail="کاربر پیدا نشد.")
         target.has_received_free_trial = False
+        _record_admin_action(session, user, action, "user", target.id, {"has_received_free_trial": False})
         await session.flush()
         return {"ok": True, "message": "محدودیت تست کاربر ریست شد."}
 
@@ -340,6 +351,7 @@ async def post_admin_action(
         if payment is None:
             raise HTTPException(status_code=404, detail="پرداخت پیدا نشد.")
         result = await review_gateway_payment(session, payment)
+        _record_admin_action(session, user, action, "payment", payment.id, {"result": result})
         return {"ok": True, "message": f"نتیجه بازبینی: {result}"}
 
     if action == "close_ticket":
@@ -347,6 +359,7 @@ async def post_admin_action(
         if ticket is None:
             raise HTTPException(status_code=404, detail="تیکت پیدا نشد.")
         ticket.status = "closed"
+        _record_admin_action(session, user, action, "ticket", ticket.id, {"status": "closed"})
         await session.flush()
         return {"ok": True, "message": "تیکت بسته شد."}
 
@@ -356,6 +369,25 @@ async def post_admin_action(
 def _require_admin(user: User) -> None:
     if not _is_admin_user(user):
         raise HTTPException(status_code=403, detail="دسترسی مدیریت ندارید.")
+
+
+def _record_admin_action(
+    session: AsyncSession,
+    actor: User,
+    action: str,
+    entity_type: str,
+    entity_id: UUID | None,
+    payload: dict[str, object] | None = None,
+) -> None:
+    session.add(
+        AuditLog(
+            actor_user_id=actor.id,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            payload=payload or {},
+        )
+    )
 
 
 async def _admin_stats(session: AsyncSession) -> list[dict[str, Any]]:
@@ -492,6 +524,28 @@ async def _admin_settings(session: AsyncSession) -> list[dict[str, Any]]:
         {"id": "manual", "title": "پرداخت دستی", "subtitle": "فعال" if gw.manual_crypto_enabled else "غیرفعال", "actions": []},
         {"id": "rate", "title": "نرخ دلار/تومان", "subtitle": str(toman), "actions": []},
     ]
+
+
+async def _admin_audit_logs(session: AsyncSession) -> list[dict[str, Any]]:
+    result = await session.execute(
+        select(AuditLog)
+        .options(selectinload(AuditLog.actor))
+        .order_by(AuditLog.created_at.desc())
+        .limit(50)
+    )
+    items = []
+    for log in result.scalars().unique().all():
+        actor = log.actor
+        actor_label = actor.first_name or actor.username or str(actor.telegram_id) if actor else "system"
+        items.append(
+            {
+                "id": str(log.id),
+                "title": f"{log.action} روی {log.entity_type}",
+                "subtitle": f"{actor_label} | {log.created_at:%Y-%m-%d %H:%M}",
+                "actions": [],
+            }
+        )
+    return items
 
 
 # ─── Plans ───────────────────────────────────────────────────────────────────
@@ -930,6 +984,51 @@ async def get_wallet_transactions(
         ],
         total=total,
     )
+
+
+@router.get("/payments", response_model=PaymentListResponse)
+async def get_payments(
+    page: int = 1,
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> PaymentListResponse:
+    user, session = auth
+    page_size = 20
+    offset = (max(page, 1) - 1) * page_size
+
+    total = await session.scalar(
+        select(func.count()).select_from(Payment).where(Payment.user_id == user.id)
+    ) or 0
+    result = await session.execute(
+        select(Payment)
+        .where(Payment.user_id == user.id)
+        .order_by(Payment.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+    )
+    payments = list(result.scalars().all())
+    return PaymentListResponse(payments=[PaymentView.model_validate(p) for p in payments], total=total)
+
+
+@router.post("/payments/{payment_id}/refresh")
+async def refresh_payment(
+    payment_id: UUID,
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    payment = await session.scalar(
+        select(Payment).where(Payment.id == payment_id, Payment.user_id == user.id)
+    )
+    if payment is None:
+        raise HTTPException(status_code=404, detail="پرداخت پیدا نشد.")
+    if payment.provider not in {"nowpayments", "tetrapay"}:
+        raise HTTPException(status_code=400, detail="این پرداخت قابل بازبینی خودکار نیست.")
+    result = await review_gateway_payment(session, payment)
+    await session.refresh(payment)
+    return {
+        "ok": True,
+        "message": f"وضعیت پرداخت بررسی شد: {result}",
+        "payment": PaymentView.model_validate(payment),
+    }
 
 
 # ─── Tickets ─────────────────────────────────────────────────────────────────

@@ -1078,3 +1078,42 @@ body::before {
     flex-wrap: wrap;
     margin-top: 10px;
 }
+
+.payments-list {
+    display: grid;
+    gap: 10px;
+    margin-bottom: 18px;
+}
+
+.payment-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+}
+
+.payment-item strong,
+.payment-item span {
+    display: block;
+}
+
+.payment-item strong {
+    color: var(--text-primary);
+    font-size: 13px;
+    margin-bottom: 4px;
+}
+
+.payment-item span {
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.5;
+    word-break: break-word;
+}
+
+.empty-state.compact {
+    padding: 14px;
+}
