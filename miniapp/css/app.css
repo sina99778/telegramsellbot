@@ -260,7 +260,7 @@ body::before {
     background: var(--bg-card);
     backdrop-filter: blur(12px);
     border: 1px solid var(--border-glass);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-md);
     padding: 16px;
     transition: all 0.3s ease;
     cursor: pointer;
@@ -336,15 +336,15 @@ body::before {
 }
 
 .config-actions {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
     gap: 8px;
     margin-top: 12px;
-    flex-wrap: wrap;
 }
 
 .config-actions .btn {
-    flex: 1;
-    min-width: 80px;
+    min-width: 0;
+    padding-inline: 8px;
 }
 
 /* ─── Plans Grid ─────────────────────────────────────────────────────────── */
@@ -359,7 +359,7 @@ body::before {
     background: var(--bg-card);
     backdrop-filter: blur(12px);
     border: 1px solid var(--border-glass);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-md);
     padding: 20px;
     transition: all 0.3s ease;
     position: relative;
@@ -800,7 +800,7 @@ body::before {
 .modal-content {
     background: var(--bg-secondary);
     border: 1px solid var(--border-glass);
-    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     padding: 24px;
     width: 100%;
     max-width: 600px;
@@ -942,4 +942,52 @@ body::before {
     display: flex;
     flex-direction: column;
     gap: 8px;
+}
+
+.renewal-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 14px;
+}
+
+.renewal-tab {
+    background: var(--bg-glass);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 700;
+    padding: 11px 12px;
+}
+
+.renewal-tab.active {
+    background: var(--accent-gradient);
+    border-color: transparent;
+    color: white;
+    box-shadow: 0 4px 14px var(--accent-glow);
+}
+
+.renewal-price-box {
+    background: var(--bg-glass);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    margin: 12px 0;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.renewal-price-box span {
+    display: block;
+    color: var(--text-muted);
+    font-size: 11px;
+    margin-bottom: 4px;
+}
+
+.renewal-price-box strong {
+    color: var(--text-primary);
+    font-size: 18px;
 }

@@ -89,6 +89,8 @@ const API = (() => {
         getDashboard:    ()           => request('GET', '/me'),
         getPlans:        ()           => request('GET', '/plans'),
         createPurchase:  (payload)    => request('POST', '/purchase', payload),
+        getRenewalQuote:(payload)    => request('POST', '/renewal/quote', payload),
+        renewConfig:     (payload)    => request('POST', '/renewal', payload),
         getTransactions: (page = 1)   => request('GET', `/wallet/transactions?page=${page}`),
         getTickets:      ()           => request('GET', '/tickets'),
         sendTicket:      (text)       => request('POST', '/tickets/send', { text }),

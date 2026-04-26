@@ -32,6 +32,7 @@ from models.ticket import Ticket, TicketMessage
 from models.user import User
 from models.wallet import WalletTransaction
 from models.xui import XUIClientRecord
+from repositories.settings import AppSettingsRepository
 from repositories.ticket import TicketRepository
 from schemas.api.miniapp import (
     MiniAppConfigResponse,
@@ -41,6 +42,10 @@ from schemas.api.miniapp import (
     PurchaseRequest,
     PurchaseResponse,
     ReferralView,
+    RenewalQuoteRequest,
+    RenewalQuoteResponse,
+    RenewalRequest,
+    RenewalResponse,
     SendTicketRequest,
     SubscriptionView,
     TicketListResponse,
@@ -53,6 +58,7 @@ from schemas.api.miniapp import (
 from schemas.internal.nowpayments import NowPaymentsPaymentCreateRequest
 from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
+from services.renewal import apply_renewal, calculate_renewal_price
 from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
 from services.wallet.manager import InsufficientBalanceError, WalletManager
 
@@ -428,6 +434,125 @@ async def _create_tetrapay_purchase(
         invoice_url=tx.payment_url_bot,
         payment_id=payment.id,
     )
+
+
+# ─── Renewal ─────────────────────────────────────────────────────────────────
+
+@router.post("/renewal/quote", response_model=RenewalQuoteResponse)
+async def get_renewal_quote(
+    body: RenewalQuoteRequest,
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> RenewalQuoteResponse:
+    user, session = auth
+    subscription = await _get_user_subscription(session, user, body.subscription_id)
+    _validate_renewal_request(subscription, body.renew_type, body.amount)
+    settings_repo = AppSettingsRepository(session)
+    renewal_settings = await settings_repo.get_renewal_settings()
+    price = calculate_renewal_price(
+        renew_type=body.renew_type,
+        amount=body.amount,
+        settings=renewal_settings,
+    )
+    return RenewalQuoteResponse(
+        renew_type=body.renew_type,
+        amount=body.amount,
+        price=price,
+    )
+
+
+@router.post("/renewal", response_model=RenewalResponse)
+async def renew_subscription(
+    body: RenewalRequest,
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> RenewalResponse:
+    user, session = auth
+    if body.payment_method != "wallet":
+        raise HTTPException(status_code=400, detail="فعلاً تمدید داخل مینی‌اپ با کیف پول انجام می‌شود.")
+    if user.wallet is None:
+        raise HTTPException(status_code=404, detail="کیف پول پیدا نشد.")
+
+    subscription = await _get_user_subscription(session, user, body.subscription_id)
+    _validate_renewal_request(subscription, body.renew_type, body.amount)
+
+    renewal_settings = await AppSettingsRepository(session).get_renewal_settings()
+    price = calculate_renewal_price(
+        renew_type=body.renew_type,
+        amount=body.amount,
+        settings=renewal_settings,
+    )
+    if user.wallet.balance < price:
+        raise HTTPException(status_code=402, detail="موجودی کیف پول برای تمدید کافی نیست.")
+
+    order = Order(
+        user_id=user.id,
+        plan_id=subscription.plan_id,
+        amount=price,
+        currency="USD",
+        status="completed",
+        source="miniapp",
+    )
+    session.add(order)
+    await session.flush()
+    subscription.order_id = order.id
+
+    await WalletManager(session).process_transaction(
+        user_id=user.id,
+        amount=price,
+        transaction_type="renewal",
+        direction="debit",
+        currency="USD",
+        reference_type="order",
+        reference_id=order.id,
+        description=f"Renewal of subscription {subscription.id}",
+        metadata={
+            "sub_id": str(subscription.id),
+            "type": body.renew_type,
+            "amount": body.amount,
+            "source": "miniapp",
+        },
+    )
+    await apply_renewal(
+        session=session,
+        subscription=subscription,
+        renew_type=body.renew_type,
+        amount=body.amount,
+    )
+    await session.refresh(user.wallet)
+    return RenewalResponse(
+        status="renewed",
+        message="تمدید با موفقیت انجام شد.",
+        price=price,
+        balance=user.wallet.balance,
+    )
+
+
+async def _get_user_subscription(
+    session: AsyncSession,
+    user: User,
+    subscription_id: UUID,
+) -> Subscription:
+    subscription = await session.scalar(
+        select(Subscription)
+        .options(selectinload(Subscription.xui_client))
+        .where(
+            Subscription.id == subscription_id,
+            Subscription.user_id == user.id,
+        )
+    )
+    if subscription is None:
+        raise HTTPException(status_code=404, detail="سرویس پیدا نشد.")
+    return subscription
+
+
+def _validate_renewal_request(subscription: Subscription, renew_type: str, amount: float) -> None:
+    if subscription.status not in {"active", "pending_activation", "expired"}:
+        raise HTTPException(status_code=400, detail="این سرویس قابل تمدید نیست.")
+    if subscription.plan_id is None:
+        raise HTTPException(status_code=400, detail="پلن این سرویس حذف شده و قابل تمدید نیست.")
+    if renew_type not in {"volume", "time"}:
+        raise HTTPException(status_code=400, detail="نوع تمدید نامعتبر است.")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="مقدار تمدید باید بیشتر از صفر باشد.")
 
 
 # ─── Wallet Transactions ────────────────────────────────────────────────────

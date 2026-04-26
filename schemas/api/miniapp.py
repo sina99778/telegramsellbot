@@ -127,3 +127,27 @@ class PurchaseResponse(BaseModel):
     subscription_id: UUID | None = None
     sub_link: str | None = None
     vless_uri: str | None = None
+
+
+class RenewalQuoteRequest(BaseModel):
+    subscription_id: UUID
+    renew_type: str
+    amount: float
+
+
+class RenewalQuoteResponse(BaseModel):
+    renew_type: str
+    amount: float
+    price: Decimal
+    currency: str = "USD"
+
+
+class RenewalRequest(RenewalQuoteRequest):
+    payment_method: str = "wallet"
+
+
+class RenewalResponse(BaseModel):
+    status: str
+    message: str
+    price: Decimal
+    balance: Decimal | None = None

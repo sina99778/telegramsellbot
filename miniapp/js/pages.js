@@ -41,7 +41,7 @@ const Pages = (() => {
         const usagePct = UI.getUsagePercent(data.total_volume_used, data.total_volume);
         document.getElementById('stats-grid').innerHTML = `
             <div class="stat-card">
-                <div class="stat-icon">📱</div>
+                <div class="stat-icon">📶</div>
                 <div class="stat-value">${data.active_config_count}</div>
                 <div class="stat-label">سرویس فعال</div>
             </div>
@@ -51,7 +51,7 @@ const Pages = (() => {
                 <div class="stat-label">موجودی کیف پول</div>
             </div>
             <div class="stat-card">
-                <div class="stat-icon">📊</div>
+                <div class="stat-icon">📈</div>
                 <div class="stat-value">${usagePct}%</div>
                 <div class="stat-label">مصرف کل</div>
             </div>
@@ -87,15 +87,14 @@ const Pages = (() => {
         const statusClass = UI.getStatusClass(sub.status);
         const name = sub.config_name || sub.plan_name || 'سرویس';
 
-        let actionsHtml = '';
-        if (showActions && sub.sub_link) {
-            actionsHtml = `
-                <div class="config-actions">
-                    <button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard('${sub.sub_link}')">📋 کپی لینک</button>
-                    <button class="btn btn-secondary btn-sm" onclick="Pages.showConfigDetail('${sub.id}')">🔍 جزئیات</button>
-                </div>
-            `;
-        }
+        const safeSubLink = sub.sub_link ? encodeURIComponent(sub.sub_link) : '';
+        const actionsHtml = `
+            <div class="config-actions" onclick="event.stopPropagation()">
+                <button class="btn btn-primary btn-sm" onclick="Pages.showRenewal('${sub.id}')">تمدید</button>
+                ${sub.sub_link ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${safeSubLink}'))">کپی لینک</button>` : ''}
+                <button class="btn btn-secondary btn-sm" onclick="Pages.showConfigDetail('${sub.id}')">جزئیات</button>
+            </div>
+        `;
 
         return `
             <div class="config-card" onclick="Pages.showConfigDetail('${sub.id}')">
@@ -126,13 +125,14 @@ const Pages = (() => {
 
         let linkSection = '';
         if (sub.sub_link) {
+            const safeSubLink = encodeURIComponent(sub.sub_link);
             linkSection = `
                 <div style="margin-top:16px">
-                    <p style="font-size:12px;color:var(--text-muted);margin-bottom:6px">🔗 لینک اشتراک:</p>
-                    <div class="copy-box" onclick="UI.copyToClipboard('${sub.sub_link}')">${sub.sub_link}</div>
+                    <p style="font-size:12px;color:var(--text-muted);margin-bottom:6px">لینک اشتراک</p>
+                    <div class="copy-box" onclick="UI.copyToClipboard(decodeURIComponent('${safeSubLink}'))">${escapeHtml(sub.sub_link)}</div>
                 </div>
                 <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
-                    <button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard('${sub.sub_link}')">📋 کپی</button>
+                    <button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${safeSubLink}'))">کپی</button>
                 </div>
             `;
         }
@@ -173,8 +173,103 @@ const Pages = (() => {
                 </div>
             </div>
             ${linkSection}
-            <button class="btn btn-secondary btn-block" style="margin-top:16px" onclick="UI.closeModal()">بستن</button>
+            <button class="btn btn-primary btn-block" style="margin-top:16px" onclick="Pages.showRenewal('${sub.id}')">تمدید سرویس</button>
+            <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">بستن</button>
         `);
+    }
+
+    function showRenewal(subId) {
+        if (!dashboardData) return;
+        const sub = dashboardData.subscriptions.find(s => s.id === subId);
+        if (!sub) return;
+        const name = sub.config_name || sub.plan_name || 'سرویس';
+        UI.showModal(`
+            <div class="modal-title">تمدید ${escapeHtml(name)}</div>
+            <div class="renewal-tabs">
+                <button class="renewal-tab active" data-renew-type="time" onclick="Pages.setRenewalType('time')">زمان</button>
+                <button class="renewal-tab" data-renew-type="volume" onclick="Pages.setRenewalType('volume')">حجم</button>
+            </div>
+            <label class="form-label" id="renewal-amount-label" for="renewal-amount">تعداد روز</label>
+            <input id="renewal-amount" class="form-input" inputmode="decimal" dir="ltr" placeholder="30" value="30">
+            <p class="form-hint" id="renewal-hint">مدت موردنظر را به روز وارد کنید.</p>
+            <div class="renewal-price-box" id="renewal-price-box">برای محاسبه قیمت، مقدار را وارد کنید.</div>
+            <button class="btn btn-primary btn-block" onclick="Pages.submitRenewal('${sub.id}')">تمدید با کیف پول</button>
+            <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
+        `);
+        setRenewalType('time');
+        const input = document.getElementById('renewal-amount');
+        input?.addEventListener('input', () => updateRenewalQuote(sub.id));
+        updateRenewalQuote(sub.id);
+    }
+
+    function setRenewalType(type) {
+        document.querySelectorAll('.renewal-tab').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.renewType === type);
+        });
+        const input = document.getElementById('renewal-amount');
+        const label = document.getElementById('renewal-amount-label');
+        const hint = document.getElementById('renewal-hint');
+        if (type === 'volume') {
+            if (label) label.textContent = 'حجم اضافه';
+            if (hint) hint.textContent = 'حجم موردنظر را به گیگابایت وارد کنید.';
+            if (input) input.value = input.value || '10';
+        } else {
+            if (label) label.textContent = 'تعداد روز';
+            if (hint) hint.textContent = 'مدت موردنظر را به روز وارد کنید.';
+            if (input) input.value = input.value || '30';
+        }
+        const subId = document.querySelector('.btn.btn-primary.btn-block[onclick^="Pages.submitRenewal"]')
+            ?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
+        if (subId) updateRenewalQuote(subId);
+    }
+
+    function getSelectedRenewalType() {
+        return document.querySelector('.renewal-tab.active')?.dataset.renewType || 'time';
+    }
+
+    async function updateRenewalQuote(subId) {
+        const box = document.getElementById('renewal-price-box');
+        const amount = parseFloat(document.getElementById('renewal-amount')?.value || '0');
+        const renewType = getSelectedRenewalType();
+        if (!box || !amount || amount <= 0) {
+            if (box) box.textContent = 'مقدار تمدید معتبر نیست.';
+            return;
+        }
+        try {
+            const quote = await API.getRenewalQuote({
+                subscription_id: subId,
+                renew_type: renewType,
+                amount,
+            });
+            box.innerHTML = `<span>هزینه تمدید</span><strong>$${UI.formatMoney(quote.price)}</strong>`;
+        } catch (e) {
+            box.textContent = e.message;
+        }
+    }
+
+    async function submitRenewal(subId) {
+        const amount = parseFloat(document.getElementById('renewal-amount')?.value || '0');
+        const renewType = getSelectedRenewalType();
+        if (!amount || amount <= 0) {
+            UI.toast('مقدار تمدید معتبر نیست', 'error');
+            return;
+        }
+        try {
+            UI.toast('در حال تمدید...');
+            const result = await API.renewConfig({
+                subscription_id: subId,
+                renew_type: renewType,
+                amount,
+                payment_method: 'wallet',
+            });
+            UI.toast(result.message);
+            UI.closeModal();
+            dashboardData = await API.getDashboard();
+            renderDashboard(dashboardData);
+            renderAllConfigs(dashboardData.subscriptions);
+        } catch (e) {
+            UI.toast('❌ ' + e.message, 'error');
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -459,7 +554,8 @@ const Pages = (() => {
     return {
         load_dashboard, load_store, load_configs,
         load_wallet, load_support, load_referral,
-        showConfigDetail, buyPlan, submitPurchase, openInvoice, topupWallet,
+        showConfigDetail, showRenewal, setRenewalType, submitRenewal,
+        buyPlan, submitPurchase, openInvoice, topupWallet,
     };
 })();
 
