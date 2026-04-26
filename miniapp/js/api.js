@@ -77,6 +77,7 @@ const API = (() => {
         getAdminOverview:()           => request('GET', '/admin/overview'),
         getAdminSection:(section)     => request('GET', `/admin/section/${encodeURIComponent(section)}`),
         runAdminAction: (payload)     => request('POST', '/admin/action', payload),
+        createTopup:    (payload)     => request('POST', '/wallet/topup', payload),
         getTransactions: (page = 1)   => request('GET', `/wallet/transactions?page=${page}`),
         getPayments:     (page = 1)   => request('GET', `/payments?page=${page}`),
         refreshPayment:  (id)         => request('POST', `/payments/${encodeURIComponent(id)}/refresh`),

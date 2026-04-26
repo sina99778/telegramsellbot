@@ -150,6 +150,21 @@ class PurchaseResponse(BaseModel):
     vless_uri: str | None = None
 
 
+class TopUpRequest(BaseModel):
+    amount: Decimal
+    payment_method: str
+
+
+class TopUpResponse(BaseModel):
+    status: str
+    message: str
+    payment_method: str
+    invoice_url: str
+    payment_id: UUID
+    pay_amount: Decimal | None = None
+    pay_currency: str | None = None
+
+
 class RenewalQuoteRequest(BaseModel):
     subscription_id: UUID
     renew_type: str

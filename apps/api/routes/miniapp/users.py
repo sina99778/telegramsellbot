@@ -58,6 +58,8 @@ from schemas.api.miniapp import (
     TicketListResponse,
     TicketMessageView,
     TicketView,
+    TopUpRequest,
+    TopUpResponse,
     TransactionListResponse,
     TransactionView,
     WalletView,
@@ -1009,6 +1011,22 @@ async def get_payments(
     return PaymentListResponse(payments=[PaymentView.model_validate(p) for p in payments], total=total)
 
 
+@router.post("/wallet/topup", response_model=TopUpResponse)
+async def create_wallet_topup(
+    body: TopUpRequest,
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> TopUpResponse:
+    user, session = auth
+    amount = body.amount.quantize(Decimal("0.01"))
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="مبلغ شارژ باید بیشتر از صفر باشد.")
+    if body.payment_method == "nowpayments":
+        return await _create_nowpayments_topup(session, user, amount)
+    if body.payment_method == "tetrapay":
+        return await _create_tetrapay_topup(session, user, amount)
+    raise HTTPException(status_code=400, detail="روش شارژ نامعتبر است.")
+
+
 @router.post("/payments/{payment_id}/refresh")
 async def refresh_payment(
     payment_id: UUID,
@@ -1029,6 +1047,122 @@ async def refresh_payment(
         "message": f"وضعیت پرداخت بررسی شد: {result}",
         "payment": PaymentView.model_validate(payment),
     }
+
+
+async def _create_nowpayments_topup(
+    session: AsyncSession,
+    user: User,
+    amount: Decimal,
+) -> TopUpResponse:
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    if not gw.nowpayments_enabled:
+        raise HTTPException(status_code=400, detail="درگاه NOWPayments غیرفعال است.")
+
+    api_key = SecretStr(gw.nowpayments_api_key) if gw.nowpayments_api_key else settings.nowpayments_api_key
+    local_order_id = str(uuid4())
+    payload = NowPaymentsPaymentCreateRequest(
+        price_amount=amount,
+        price_currency="usd",
+        order_id=local_order_id,
+        order_description=f"Wallet top-up for user {user.id}",
+        ipn_callback_url=settings.nowpayments_ipn_callback_url,
+    )
+
+    try:
+        async with NowPaymentsClient(
+            NowPaymentsClientConfig(api_key=api_key, base_url=settings.nowpayments_base_url)
+        ) as client:
+            invoice = await client.create_payment_invoice(payload)
+    except NowPaymentsRequestError as exc:
+        raise HTTPException(status_code=502, detail="خطا در ساخت فاکتور درگاه ارزی.") from exc
+
+    payment = Payment(
+        user_id=user.id,
+        provider="nowpayments",
+        kind="wallet_topup",
+        provider_payment_id=None,
+        provider_invoice_id=str(invoice.id),
+        order_id=local_order_id,
+        payment_status="waiting",
+        pay_currency=None,
+        price_currency="USD",
+        price_amount=amount,
+        invoice_url=str(invoice.invoice_url),
+        callback_payload={"source": "miniapp"},
+    )
+    session.add(payment)
+    await session.flush()
+    return TopUpResponse(
+        status="invoice_created",
+        message="فاکتور شارژ ساخته شد. بعد از پرداخت، موجودی کیف پول خودکار بروزرسانی می‌شود.",
+        payment_method="nowpayments",
+        invoice_url=str(invoice.invoice_url),
+        payment_id=payment.id,
+    )
+
+
+async def _create_tetrapay_topup(
+    session: AsyncSession,
+    user: User,
+    amount: Decimal,
+) -> TopUpResponse:
+    settings_repo = AppSettingsRepository(session)
+    gw = await settings_repo.get_gateway_settings()
+    if not gw.tetrapay_enabled:
+        raise HTTPException(status_code=400, detail="درگاه تتراپی غیرفعال است.")
+
+    toman_rate = await settings_repo.get_toman_rate()
+    if not toman_rate or toman_rate <= 0:
+        raise HTTPException(status_code=400, detail="نرخ تبدیل تومان تنظیم نشده است.")
+    toman_amount = int((amount * toman_rate).quantize(Decimal("1")))
+    rial_amount = toman_amount * 10
+    if rial_amount < 10000:
+        raise HTTPException(status_code=400, detail="مبلغ کمتر از حداقل مجاز درگاه تتراپی است.")
+    if toman_amount > settings.tetrapay_max_amount_toman:
+        raise HTTPException(status_code=400, detail="مبلغ بیشتر از سقف مجاز درگاه تتراپی است.")
+
+    local_order_id = str(uuid4())
+    api_key = gw.tetrapay_api_key or settings.tetrapay_api_key.get_secret_value()
+    try:
+        async with TetraPayClient(
+            TetraPayClientConfig(api_key=api_key, base_url=settings.tetrapay_base_url)
+        ) as client:
+            tx = await client.create_order(
+                hash_id=local_order_id,
+                amount=rial_amount,
+                description=f"شارژ کیف پول - کاربر {user.telegram_id}",
+                email=f"{user.telegram_id}@telegram.org",
+                mobile="09111111111",
+            )
+    except TetraPayRequestError as exc:
+        raise HTTPException(status_code=502, detail="خطا در ساخت فاکتور تتراپی.") from exc
+
+    invoice_url = tx.payment_url_web or tx.payment_url_bot
+    payment = Payment(
+        user_id=user.id,
+        provider="tetrapay",
+        kind="wallet_topup",
+        provider_payment_id=tx.Authority,
+        order_id=local_order_id,
+        payment_status="waiting",
+        pay_currency="IRT",
+        price_currency="USD",
+        price_amount=amount,
+        pay_amount=toman_amount,
+        invoice_url=invoice_url,
+        callback_payload={"source": "miniapp"},
+    )
+    session.add(payment)
+    await session.flush()
+    return TopUpResponse(
+        status="invoice_created",
+        message="فاکتور شارژ ساخته شد. بعد از پرداخت، موجودی کیف پول خودکار بروزرسانی می‌شود.",
+        payment_method="tetrapay",
+        invoice_url=invoice_url,
+        payment_id=payment.id,
+        pay_amount=Decimal(toman_amount),
+        pay_currency="IRT",
+    )
 
 
 # ─── Tickets ─────────────────────────────────────────────────────────────────

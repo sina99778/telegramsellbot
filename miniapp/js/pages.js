@@ -500,11 +500,38 @@ const Pages = (() => {
     }
 
     function topupWallet() {
-        const botUsername = getBotUsername();
-        if (botUsername) {
-            window.Telegram.WebApp.openTelegramLink(`https://t.me/${botUsername}?start=topup`);
-        } else {
-            UI.toast('لطفاً از داخل ربات شارژ کنید', 'error');
+        UI.showModal(`
+            <div class="modal-title">افزایش موجودی</div>
+            <label class="form-label" for="topup-amount">مبلغ شارژ (دلار)</label>
+            <input id="topup-amount" class="form-input" inputmode="decimal" dir="ltr" placeholder="5" value="5">
+            <p class="form-hint">بعد از پرداخت موفق، موجودی کیف پول به صورت خودکار بروزرسانی می‌شود.</p>
+            <div class="checkout-methods">
+                <button class="btn btn-secondary btn-block" onclick="Pages.submitTopup('tetrapay')">درگاه ریالی تتراپی</button>
+                <button class="btn btn-secondary btn-block" onclick="Pages.submitTopup('nowpayments')">درگاه ارزی NOWPayments</button>
+            </div>
+            <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
+        `);
+        setTimeout(() => document.getElementById('topup-amount')?.focus(), 100);
+    }
+
+    async function submitTopup(paymentMethod) {
+        const amount = parseFloat(document.getElementById('topup-amount')?.value || '0');
+        if (!amount || amount <= 0) {
+            UI.toast('مبلغ شارژ معتبر نیست', 'error');
+            return;
+        }
+        try {
+            UI.toast('در حال ساخت فاکتور...');
+            const result = await API.createTopup({ amount, payment_method: paymentMethod });
+            UI.showModal(`
+                <div class="modal-title">فاکتور شارژ آماده است</div>
+                <p class="form-hint" style="text-align:center;margin-bottom:14px">${escapeHtml(result.message)}</p>
+                ${result.pay_amount ? `<div class="renewal-price-box"><span>مبلغ پرداخت</span><strong>${UI.formatMoney(result.pay_amount)} ${escapeHtml(result.pay_currency || '')}</strong></div>` : ''}
+                <button class="btn btn-primary btn-block" onclick="Pages.openInvoice(decodeURIComponent('${encodeURIComponent(result.invoice_url)}'))">پرداخت فاکتور</button>
+                <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal(); Pages.load_wallet()">بستن</button>
+            `);
+        } catch (e) {
+            UI.toast('❌ ' + e.message, 'error');
         }
     }
 
@@ -687,7 +714,7 @@ const Pages = (() => {
         load_dashboard, load_store, load_configs,
         load_wallet, load_support, load_referral, load_admin,
         showConfigDetail, showRenewal, setRenewalType, submitRenewal,
-        buyPlan, submitPurchase, openInvoice, topupWallet, refreshPayment, openAdminModule, runAdminAction, openBotAdmin,
+        buyPlan, submitPurchase, openInvoice, topupWallet, submitTopup, refreshPayment, openAdminModule, runAdminAction, openBotAdmin,
     };
 })();
 
