@@ -77,6 +77,8 @@ const API = (() => {
         getAdminOverview:()           => request('GET', '/admin/overview'),
         getAdminSection:(section)     => request('GET', `/admin/section/${encodeURIComponent(section)}`),
         runAdminAction: (payload)     => request('POST', '/admin/action', payload),
+        createReadyPlan:(payload)     => request('POST', '/admin/ready-configs/plans', payload),
+        addReadyConfigs:(id, content) => request('POST', `/admin/ready-configs/${encodeURIComponent(id)}/items`, { content }),
         createTopup:    (payload)     => request('POST', '/wallet/topup', payload),
         getTransactions: (page = 1)   => request('GET', `/wallet/transactions?page=${page}`),
         getPayments:     (page = 1)   => request('GET', `/payments?page=${page}`),

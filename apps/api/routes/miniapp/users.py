@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from collections.abc import Mapping
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import parse_qsl
@@ -28,6 +28,7 @@ from apps.api.dependencies.db import get_db_session
 from core.config import settings
 from core.miniapp_auth import verify_miniapp_session_token
 from models.plan import Plan
+from models.ready_config import ReadyConfigItem, ReadyConfigPool
 from models.audit import AuditLog
 from models.discount import DiscountCode
 from models.order import Order
@@ -220,6 +221,7 @@ async def get_admin_overview(
         AdminModuleView(title="مشتریان", description="کاربران خریدار و کانفیگ‌هایشان", callback="admin:customers"),
         AdminModuleView(title="سرویس‌ها", description="اشتراک‌ها، کانفیگ‌ها و وضعیت‌ها", callback="admin:subs"),
         AdminModuleView(title="پلن‌ها", description="ساخت، مشاهده و فعال/غیرفعال کردن پلن‌ها", callback="admin:plans"),
+        AdminModuleView(title="فروش کانفیگ آماده", description="موجودی فایل‌های آماده و تحویل خودکار", callback="admin:ready_configs"),
         AdminModuleView(title="سرورها", description="مدیریت سرورهای X-UI و اینباندها", callback="admin:servers"),
         AdminModuleView(title="تیکت‌ها", description="بررسی و پاسخ به پشتیبانی", callback="admin:tickets"),
         AdminModuleView(title="تخفیف‌ها", description="ساخت و مدیریت کدهای تخفیف", callback="admin:discounts"),
@@ -261,6 +263,8 @@ async def get_admin_section(
         return {"title": "سرویس‌ها", "items": await _admin_subscriptions(session)}
     if section == "plans":
         return {"title": "پلن‌ها", "items": await _admin_plans(session)}
+    if section == "ready_configs":
+        return {"title": "فروش کانفیگ آماده", "items": await _admin_ready_configs(session)}
     if section == "servers":
         return {"title": "سرورها", "items": await _admin_servers(session)}
     if section == "tickets":
@@ -323,6 +327,15 @@ async def post_admin_action(
         await session.flush()
         return {"ok": True, "message": "وضعیت سرور تغییر کرد."}
 
+    if action == "toggle_ready_pool":
+        pool = await session.get(ReadyConfigPool, target_id)
+        if pool is None:
+            raise HTTPException(status_code=404, detail="موجودی کانفیگ آماده پیدا نشد.")
+        pool.is_active = not pool.is_active
+        _record_admin_action(session, user, action, "ready_config_pool", pool.id, {"is_active": pool.is_active})
+        await session.flush()
+        return {"ok": True, "message": "وضعیت فروش کانفیگ آماده تغییر کرد."}
+
     if action == "toggle_discount":
         discount = await session.get(DiscountCode, target_id)
         if discount is None:
@@ -368,6 +381,98 @@ async def post_admin_action(
         return {"ok": True, "message": "تیکت بسته شد."}
 
     raise HTTPException(status_code=400, detail="اکشن نامعتبر است.")
+
+
+@router.post("/admin/ready-configs/plans")
+async def create_ready_config_plan(
+    body: dict[str, Any],
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    _require_admin(user)
+
+    name = str(body.get("name") or "").strip()
+    try:
+        duration_days = int(body.get("duration_days") or 0)
+        volume_gb = int(body.get("volume_gb") or 0)
+        price = Decimal(str(body.get("price") or "0"))
+    except (InvalidOperation, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="اطلاعات پلن معتبر نیست.") from exc
+
+    if not name or duration_days <= 0 or volume_gb <= 0 or price <= 0:
+        raise HTTPException(status_code=400, detail="نام، مدت، حجم و قیمت باید معتبر باشند.")
+
+    plan = Plan(
+        code=f"ready_{duration_days}d_{volume_gb}gb_{price.normalize()}_{uuid4().hex[:8]}",
+        name=name,
+        protocol="ready_config",
+        inbound_id=None,
+        duration_days=duration_days,
+        volume_bytes=volume_gb * 1024 * 1024 * 1024,
+        price=price,
+        renewal_price=price,
+        currency="USD",
+        is_active=True,
+    )
+    session.add(plan)
+    await session.flush()
+    pool = ReadyConfigPool(plan_id=plan.id, is_active=True)
+    session.add(pool)
+    _record_admin_action(
+        session,
+        user,
+        "create_ready_config_plan",
+        "plan",
+        plan.id,
+        {"pool_id": str(pool.id), "volume_gb": volume_gb, "price": str(price)},
+    )
+    await session.flush()
+    return {"ok": True, "message": "پلن آماده ساخته شد.", "pool_id": str(pool.id), "plan_id": str(plan.id)}
+
+
+@router.post("/admin/ready-configs/{pool_id}/items")
+async def add_ready_config_items(
+    pool_id: UUID,
+    body: dict[str, Any],
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    _require_admin(user)
+    pool = await session.get(ReadyConfigPool, pool_id)
+    if pool is None:
+        raise HTTPException(status_code=404, detail="موجودی کانفیگ آماده پیدا نشد.")
+
+    lines = [line.strip() for line in str(body.get("content") or "").splitlines() if line.strip()]
+    if not lines:
+        raise HTTPException(status_code=400, detail="حداقل یک کانفیگ وارد کنید.")
+
+    existing = set(await session.scalars(select(ReadyConfigItem.content).where(ReadyConfigItem.pool_id == pool_id)))
+    created = 0
+    for index, line in enumerate(lines, start=1):
+        if line in existing:
+            continue
+        session.add(
+            ReadyConfigItem(
+                pool_id=pool_id,
+                content=line,
+                status="available",
+                source_name="miniapp",
+                line_number=index,
+            )
+        )
+        existing.add(line)
+        created += 1
+
+    _record_admin_action(
+        session,
+        user,
+        "add_ready_config_items",
+        "ready_config_pool",
+        pool.id,
+        {"received": len(lines), "created": created},
+    )
+    await session.flush()
+    return {"ok": True, "message": f"{created} کانفیگ جدید اضافه شد.", "created": created}
 
 
 @router.get("/admin/tickets/{ticket_id}")
@@ -562,6 +667,58 @@ async def _admin_plans(session: AsyncSession) -> list[dict[str, Any]]:
         }
         for p in result.scalars().all()
     ]
+
+
+async def _admin_ready_configs(session: AsyncSession) -> list[dict[str, Any]]:
+    result = await session.execute(
+        select(ReadyConfigPool)
+        .options(selectinload(ReadyConfigPool.plan))
+        .join(ReadyConfigPool.plan)
+        .order_by(ReadyConfigPool.created_at.desc())
+        .limit(50)
+    )
+    pools = list(result.scalars().all())
+    items: list[dict[str, Any]] = []
+    for pool in pools:
+        available = int(
+            await session.scalar(
+                select(func.count()).select_from(ReadyConfigItem).where(
+                    ReadyConfigItem.pool_id == pool.id,
+                    ReadyConfigItem.status == "available",
+                )
+            )
+            or 0
+        )
+        sold = int(
+            await session.scalar(
+                select(func.count()).select_from(ReadyConfigItem).where(
+                    ReadyConfigItem.pool_id == pool.id,
+                    ReadyConfigItem.status == "sold",
+                )
+            )
+            or 0
+        )
+        items.append(
+            {
+                "id": str(pool.id),
+                "title": pool.plan.name,
+                "subtitle": (
+                    f"آماده: {available} | فروخته: {sold} | "
+                    f"{pool.plan.duration_days} روز | {pool.plan.price} {pool.plan.currency}"
+                ),
+                "actions": [{"label": "فعال/غیرفعال", "action": "toggle_ready_pool"}],
+            }
+        )
+    if not items:
+        items.append(
+            {
+                "id": "ready_configs_help",
+                "title": "هنوز پلن آماده‌ای ساخته نشده است",
+                "subtitle": "از پنل مدیریت ربات گزینه «فروش کانفیگ آماده» را بزنید، پلن بسازید و فایل txt را آپلود کنید.",
+                "actions": [],
+            }
+        )
+    return items
 
 
 async def _admin_servers(session: AsyncSession) -> list[dict[str, Any]]:

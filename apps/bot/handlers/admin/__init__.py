@@ -2,6 +2,7 @@ from aiogram import Router
 
 from apps.bot.handlers.admin.broadcast import router as broadcast_router
 from apps.bot.handlers.admin.plans import router as plans_router
+from apps.bot.handlers.admin.ready_configs import router as ready_configs_router
 from apps.bot.handlers.admin.retargeting import router as retargeting_router
 from apps.bot.handlers.admin.servers import router as servers_router
 from apps.bot.handlers.admin.support import router as support_router
@@ -18,6 +19,7 @@ from apps.bot.handlers.admin.customers import router as customers_router
 router = Router(name="admin")
 router.include_router(servers_router)
 router.include_router(plans_router)
+router.include_router(ready_configs_router)
 router.include_router(users_router)
 router.include_router(subs_router)
 router.include_router(broadcast_router)

@@ -28,7 +28,7 @@ const Pages = (() => {
             dashboardData = await API.getDashboard();
             renderDashboard(dashboardData);
         } catch (e) {
-            UI.toast('❌ خطا در بارگذاری: ' + e.message, 'error');
+            UI.toast('خطا در بارگذاری: ' + e.message, 'error');
         }
     }
 
@@ -45,22 +45,22 @@ const Pages = (() => {
         const usagePct = UI.getUsagePercent(data.total_volume_used, data.total_volume);
         document.getElementById('stats-grid').innerHTML = `
             <div class="stat-card">
-                <div class="stat-icon">📶</div>
+                <div class="stat-icon">${UI.icon('server')}</div>
                 <div class="stat-value">${data.active_config_count}</div>
                 <div class="stat-label">سرویس فعال</div>
             </div>
             <div class="stat-card">
-                <div class="stat-icon">💰</div>
+                <div class="stat-icon">${UI.icon('wallet')}</div>
                 <div class="stat-value">$${UI.formatMoney(data.wallet.balance)}</div>
                 <div class="stat-label">موجودی کیف پول</div>
             </div>
             <div class="stat-card">
-                <div class="stat-icon">📈</div>
+                <div class="stat-icon">${UI.icon('chart')}</div>
                 <div class="stat-value">${usagePct}%</div>
                 <div class="stat-label">مصرف کل</div>
             </div>
             <div class="stat-card">
-                <div class="stat-icon">💾</div>
+                <div class="stat-icon">${UI.icon('database')}</div>
                 <div class="stat-value">${UI.formatBytes(data.total_volume_used)}</div>
                 <div class="stat-label">ترافیک مصرفی</div>
             </div>
@@ -73,9 +73,9 @@ const Pages = (() => {
         if (activeSubs.length === 0) {
             container.innerHTML = `
                 <div class="empty-state">
-                    <div class="empty-icon">📦</div>
+                    <div class="empty-icon">${UI.icon('package')}</div>
                     <p>هنوز سرویسی ندارید</p>
-                    <button class="btn btn-primary" style="margin-top:12px" onclick="UI.navigate('store')">🛒 خرید سرویس</button>
+                    <button class="btn btn-primary" style="margin-top:12px" onclick="UI.navigate('store')">${UI.icon('store')} خرید سرویس</button>
                 </div>
             `;
             return;
@@ -142,7 +142,7 @@ const Pages = (() => {
         }
 
         UI.showModal(`
-            <div class="modal-title">📦 ${name}</div>
+            <div class="modal-title">${UI.icon('configs')} ${name}</div>
             <div style="text-align:center;margin-bottom:16px">
                 <div style="font-size:36px;font-weight:800;color:var(--accent-primary)">${pct}%</div>
                 <p style="font-size:12px;color:var(--text-muted)">مصرف شده</p>
@@ -152,27 +152,27 @@ const Pages = (() => {
             </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:13px">
                 <div>
-                    <span style="color:var(--text-muted)">📊 وضعیت</span>
+                    <span style="color:var(--text-muted)">وضعیت</span>
                     <div style="font-weight:600;margin-top:2px">${statusText}</div>
                 </div>
                 <div>
-                    <span style="color:var(--text-muted)">📅 باقیمانده</span>
+                    <span style="color:var(--text-muted)">باقیمانده</span>
                     <div style="font-weight:600;margin-top:2px">${UI.daysLeft(sub.ends_at)}</div>
                 </div>
                 <div>
-                    <span style="color:var(--text-muted)">💾 مصرف</span>
+                    <span style="color:var(--text-muted)">مصرف</span>
                     <div style="font-weight:600;margin-top:2px">${UI.formatBytes(sub.used_bytes)}</div>
                 </div>
                 <div>
-                    <span style="color:var(--text-muted)">📦 کل حجم</span>
+                    <span style="color:var(--text-muted)">کل حجم</span>
                     <div style="font-weight:600;margin-top:2px">${UI.formatBytes(sub.volume_bytes)}</div>
                 </div>
                 <div>
-                    <span style="color:var(--text-muted)">📛 پلن</span>
+                    <span style="color:var(--text-muted)">پلن</span>
                     <div style="font-weight:600;margin-top:2px">${sub.plan_name || '-'}</div>
                 </div>
                 <div>
-                    <span style="color:var(--text-muted)">📅 شروع</span>
+                    <span style="color:var(--text-muted)">شروع</span>
                     <div style="font-weight:600;margin-top:2px">${UI.formatDate(sub.starts_at)}</div>
                 </div>
             </div>
@@ -272,7 +272,7 @@ const Pages = (() => {
             renderDashboard(dashboardData);
             renderAllConfigs(dashboardData.subscriptions);
         } catch (e) {
-            UI.toast('❌ ' + e.message, 'error');
+            UI.toast(e.message, 'error');
         }
     }
 
@@ -285,14 +285,14 @@ const Pages = (() => {
             plansCache = data.plans || [];
             renderPlans(data.plans);
         } catch (e) {
-            UI.toast('❌ خطا: ' + e.message, 'error');
+            UI.toast('خطا: ' + e.message, 'error');
         }
     }
 
     function renderPlans(plans) {
         const container = document.getElementById('plans-list');
         if (!plans.length) {
-            container.innerHTML = '<div class="empty-state"><div class="empty-icon">🛒</div><p>هیچ پلنی موجود نیست</p></div>';
+            container.innerHTML = `<div class="empty-state"><div class="empty-icon">${UI.icon('store')}</div><p>هیچ پلنی موجود نیست</p></div>`;
             return;
         }
 
@@ -300,13 +300,13 @@ const Pages = (() => {
             <div class="plan-card ${i === 1 ? 'popular' : ''}">
                 <div class="plan-name">${plan.name}</div>
                 <div class="plan-specs">
-                    <span class="plan-spec">💾 ${plan.volume_gb} GB</span>
-                    <span class="plan-spec">📅 ${plan.duration_days} روز</span>
-                    <span class="plan-spec">🔐 ${plan.protocol}</span>
+                    <span class="plan-spec">${UI.icon('database')} ${plan.volume_gb} GB</span>
+                    <span class="plan-spec">${UI.icon('clock')} ${plan.duration_days} روز</span>
+                    <span class="plan-spec">${UI.icon('lock')} ${plan.protocol}</span>
                 </div>
                 <div class="plan-price">$${UI.formatMoney(plan.price)} <small>/ ${plan.currency}</small></div>
                 <button class="btn btn-primary btn-block plan-buy-btn" onclick="Pages.buyPlan('${plan.id}')">
-                    🛒 خرید
+                    ${UI.icon('store')} خرید
                 </button>
             </div>
         `).join('');
@@ -374,7 +374,7 @@ const Pages = (() => {
                 <button class="btn btn-primary btn-block" style="margin-top:12px" onclick="UI.closeModal(); Pages.load_dashboard(); UI.navigate('configs')">مشاهده سرویس‌ها</button>
             `);
         } catch (e) {
-            UI.toast('❌ ' + e.message, 'error');
+            UI.toast(e.message, 'error');
         }
     }
 
@@ -394,14 +394,14 @@ const Pages = (() => {
             if (!dashboardData) dashboardData = await API.getDashboard();
             renderAllConfigs(dashboardData.subscriptions);
         } catch (e) {
-            UI.toast('❌ خطا: ' + e.message, 'error');
+            UI.toast('خطا: ' + e.message, 'error');
         }
     }
 
     function renderAllConfigs(subs) {
         const container = document.getElementById('all-configs-list');
         if (!subs.length) {
-            container.innerHTML = '<div class="empty-state"><div class="empty-icon">📦</div><p>هنوز سرویسی ندارید</p></div>';
+            container.innerHTML = `<div class="empty-state"><div class="empty-icon">${UI.icon('package')}</div><p>هنوز سرویسی ندارید</p></div>`;
             return;
         }
         container.innerHTML = subs.map(sub => renderConfigCard(sub, true)).join('');
@@ -419,16 +419,16 @@ const Pages = (() => {
             const txData = await API.getTransactions(1);
             renderTransactions(txData.transactions);
         } catch (e) {
-            UI.toast('❌ خطا: ' + e.message, 'error');
+            UI.toast('خطا: ' + e.message, 'error');
         }
     }
 
     function renderWalletCard(wallet) {
         document.getElementById('wallet-card').innerHTML = `
-            <div class="wallet-label">💰 موجودی کیف پول</div>
+                <div class="wallet-label">${UI.icon('wallet')} موجودی کیف پول</div>
             <div class="wallet-balance-display">$${UI.formatMoney(wallet.balance)}</div>
             <div class="wallet-actions">
-                <button class="btn" onclick="Pages.topupWallet()">➕ شارژ</button>
+                <button class="btn" onclick="Pages.topupWallet()">${UI.icon('plus')} شارژ</button>
             </div>
         `;
     }
@@ -467,24 +467,24 @@ const Pages = (() => {
             const paymentData = await API.getPayments(1);
             renderPayments(paymentData.payments || []);
         } catch (e) {
-            UI.toast('❌ ' + e.message, 'error');
+            UI.toast(e.message, 'error');
         }
     }
 
     function renderTransactions(txs) {
         const container = document.getElementById('transactions-list');
         if (!txs.length) {
-            container.innerHTML = '<div class="empty-state"><div class="empty-icon">📜</div><p>تراکنشی ثبت نشده</p></div>';
+            container.innerHTML = `<div class="empty-state"><div class="empty-icon">${UI.icon('chart')}</div><p>تراکنشی ثبت نشده</p></div>`;
             return;
         }
 
         const typeMap = {
-            'topup': '💳 شارژ',
-            'purchase': '🛒 خرید',
-            'refund': '🔄 بازگشت',
-            'referral_bonus': '🎁 پاداش',
-            'admin_adjust': '⚙️ تنظیم',
-            'renewal': '🔄 تمدید',
+            'topup': 'شارژ',
+            'purchase': 'خرید',
+            'refund': 'بازگشت',
+            'referral_bonus': 'پاداش',
+            'admin_adjust': 'تنظیم',
+            'renewal': 'تمدید',
         };
 
         container.innerHTML = txs.map(tx => `
@@ -532,7 +532,7 @@ const Pages = (() => {
                 <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal(); Pages.load_wallet()">بستن</button>
             `);
         } catch (e) {
-            UI.toast('❌ ' + e.message, 'error');
+            UI.toast(e.message, 'error');
         }
     }
 
@@ -545,14 +545,14 @@ const Pages = (() => {
             supportTicketsCache = data.tickets || [];
             renderTickets(supportTicketsCache);
         } catch (e) {
-            UI.toast('❌ خطا: ' + e.message, 'error');
+            UI.toast('خطا: ' + e.message, 'error');
         }
     }
 
     function renderTickets(tickets) {
         const container = document.getElementById('tickets-container');
         if (!tickets.length) {
-            container.innerHTML = '<div class="empty-state"><div class="empty-icon">💬</div><p>پیامی وجود ندارد<br>اولین پیام خود را ارسال کنید</p></div>';
+            container.innerHTML = `<div class="empty-state"><div class="empty-icon">${UI.icon('support')}</div><p>پیامی وجود ندارد<br>اولین پیام خود را ارسال کنید</p></div>`;
             return;
         }
 
@@ -585,7 +585,7 @@ const Pages = (() => {
     function renderTicketMessage(message) {
         return `
             <div class="chat-bubble ${message.sender_type}">
-                ${escapeHtml(message.text || '📷 تصویر')}
+                ${escapeHtml(message.text || 'تصویر')}
                 <span class="bubble-time">${UI.formatDate(message.created_at)}</span>
             </div>
         `;
@@ -609,7 +609,7 @@ const Pages = (() => {
             UI.toast(result.message || 'تیکت بسته شد');
             await load_support();
         } catch (e) {
-            UI.toast('❌ ' + e.message, 'error');
+            UI.toast(e.message, 'error');
         }
     }
 
@@ -621,7 +621,7 @@ const Pages = (() => {
             const data = await API.getReferral();
             renderReferral(data);
         } catch (e) {
-            UI.toast('❌ خطا: ' + e.message, 'error');
+            UI.toast('خطا: ' + e.message, 'error');
         }
     }
 
@@ -630,7 +630,7 @@ const Pages = (() => {
             const data = await API.getAdminOverview();
             renderAdminPanel(data);
         } catch (e) {
-            UI.toast('❌ ' + e.message, 'error');
+            UI.toast(e.message, 'error');
         }
     }
 
@@ -661,7 +661,7 @@ const Pages = (() => {
             const data = await API.getAdminSection(section);
             renderAdminSection(section, data);
         } catch (e) {
-            UI.toast('❌ ' + e.message, 'error');
+            UI.toast(e.message, 'error');
         }
     }
 
@@ -669,12 +669,40 @@ const Pages = (() => {
         const modules = document.getElementById('admin-modules');
         if (!modules) return;
         const items = data.items || [];
+        const extra = section === 'ready_configs' ? renderReadyConfigTools(items) : '';
         modules.innerHTML = `
             <button class="btn btn-secondary btn-block" onclick="Pages.load_admin()">بازگشت به مدیریت</button>
             <h3 class="section-title" style="margin-top:16px">${escapeHtml(data.title || 'مدیریت')}</h3>
+            ${extra}
             <div class="admin-list">
                 ${items.length ? items.map(item => renderAdminItem(section, item)).join('') : '<div class="empty-state"><p>موردی برای نمایش نیست</p></div>'}
             </div>
+        `;
+    }
+
+    function renderReadyConfigTools(items) {
+        const pools = items.filter(item => item.id && item.id !== 'ready_configs_help');
+        return `
+            <div class="admin-form">
+                <strong>ساخت پلن آماده</strong>
+                <input id="ready-plan-name" class="form-input" placeholder="نام پلن">
+                <div class="form-grid">
+                    <input id="ready-plan-days" class="form-input" inputmode="numeric" placeholder="روز">
+                    <input id="ready-plan-volume" class="form-input" inputmode="numeric" placeholder="GB">
+                    <input id="ready-plan-price" class="form-input" inputmode="decimal" placeholder="قیمت دلار">
+                </div>
+                <button class="btn btn-primary btn-block" onclick="Pages.createReadyConfigPlan()">ساخت پلن</button>
+            </div>
+            ${pools.length ? `
+                <div class="admin-form">
+                    <strong>افزودن کانفیگ آماده</strong>
+                    <select id="ready-pool-select" class="form-input">
+                        ${pools.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.title)}</option>`).join('')}
+                    </select>
+                    <textarea id="ready-config-content" class="admin-ticket-reply" rows="6" placeholder="هر خط یک کانفیگ"></textarea>
+                    <button class="btn btn-primary btn-block" onclick="Pages.addReadyConfigItems()">افزودن به موجودی</button>
+                </div>
+            ` : ''}
         `;
     }
 
@@ -700,7 +728,7 @@ const Pages = (() => {
             const ticket = await API.getAdminTicket(ticketId);
             renderAdminTicket(ticket);
         } catch (e) {
-            UI.toast('❌ ' + e.message, 'error');
+            UI.toast(e.message, 'error');
         }
     }
 
@@ -742,7 +770,7 @@ const Pages = (() => {
             UI.toast(result.message || 'پاسخ ارسال شد');
             if (result.ticket) renderAdminTicket(result.ticket);
         } catch (e) {
-            UI.toast('❌ ' + e.message, 'error');
+            UI.toast(e.message, 'error');
         }
     }
 
@@ -752,7 +780,39 @@ const Pages = (() => {
             UI.toast(result.message || 'انجام شد');
             await openAdminModule(section);
         } catch (e) {
-            UI.toast('❌ ' + e.message, 'error');
+            UI.toast(e.message, 'error');
+        }
+    }
+
+    async function createReadyConfigPlan() {
+        const payload = {
+            name: document.getElementById('ready-plan-name')?.value.trim(),
+            duration_days: Number(document.getElementById('ready-plan-days')?.value || 0),
+            volume_gb: Number(document.getElementById('ready-plan-volume')?.value || 0),
+            price: document.getElementById('ready-plan-price')?.value || '0',
+        };
+        try {
+            const result = await API.createReadyPlan(payload);
+            UI.toast(result.message || 'پلن آماده ساخته شد');
+            await openAdminModule('ready_configs');
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
+    }
+
+    async function addReadyConfigItems() {
+        const poolId = document.getElementById('ready-pool-select')?.value;
+        const content = document.getElementById('ready-config-content')?.value || '';
+        if (!poolId || !content.trim()) {
+            UI.toast('پلن و متن کانفیگ را وارد کنید', 'error');
+            return;
+        }
+        try {
+            const result = await API.addReadyConfigs(poolId, content);
+            UI.toast(result.message || 'کانفیگ‌ها اضافه شدند');
+            await openAdminModule('ready_configs');
+        } catch (e) {
+            UI.toast(e.message, 'error');
         }
     }
 
@@ -770,7 +830,7 @@ const Pages = (() => {
         const botUsername = getBotUsername() || 'bot';
 
         if (!data.enabled) {
-            container.innerHTML = '<div class="empty-state"><div class="empty-icon">🔒</div><p>سیستم دعوت فعلاً غیرفعال است</p></div>';
+            container.innerHTML = `<div class="empty-state"><div class="empty-icon">${UI.icon('lock')}</div><p>سیستم دعوت فعلاً غیرفعال است</p></div>`;
             return;
         }
 
@@ -779,7 +839,7 @@ const Pages = (() => {
         container.innerHTML = `
             <div class="referral-card">
                 <div style="text-align:center;margin-bottom:8px">
-                    <span style="font-size:40px">🎁</span>
+                    <span class="empty-icon">${UI.icon('users')}</span>
                 </div>
                 <p style="text-align:center;font-size:14px;color:var(--text-secondary);margin-bottom:12px">
                     لینک دعوت خود را با دوستانتان به اشتراک بگذارید
@@ -789,7 +849,7 @@ const Pages = (() => {
                         ${data.ref_code}
                         <div style="font-size:10px;color:var(--text-muted);margin-top:4px">برای کپی لمس کنید</div>
                     </div>
-                    <button class="btn btn-primary btn-block" onclick="shareRefLink('${refLink}')">📤 اشتراک‌گذاری</button>
+                    <button class="btn btn-primary btn-block" onclick="shareRefLink('${refLink}')">${UI.icon('share')} اشتراک‌گذاری</button>
                 ` : '<p style="text-align:center;color:var(--text-muted)">کد رفرال شما هنوز ایجاد نشده</p>'}
 
                 <div class="ref-stats">
@@ -812,7 +872,8 @@ const Pages = (() => {
         load_wallet, load_support, load_referral, load_admin,
         showConfigDetail, showRenewal, setRenewalType, submitRenewal,
         buyPlan, submitPurchase, openInvoice, topupWallet, submitTopup, refreshPayment,
-        showTicketHistory, closeTicket, openAdminModule, openAdminTicket, submitAdminTicketReply, runAdminAction, openBotAdmin,
+        showTicketHistory, closeTicket, openAdminModule, openAdminTicket, submitAdminTicketReply, runAdminAction,
+        createReadyConfigPlan, addReadyConfigItems, openBotAdmin,
     };
 })();
 
@@ -820,7 +881,7 @@ const Pages = (() => {
 function shareRefLink(link) {
     try {
         window.Telegram?.WebApp?.openTelegramLink(
-            `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent('🎁 با لینک من عضو شو و تخفیف بگیر!')}`
+            `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent('با لینک من عضو شو و تخفیف بگیر!')}`
         );
     } catch {
         UI.copyToClipboard(link);

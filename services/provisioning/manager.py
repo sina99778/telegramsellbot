@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from models.order import Order
 from models.plan import Plan
+from models.ready_config import ReadyConfigItem, ReadyConfigPool
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from schemas.internal.xui import XUIClient
@@ -38,7 +39,7 @@ class ZeroUsageRefundError(ProvisioningError):
 @dataclass(slots=True, frozen=True)
 class ProvisioningResult:
     subscription: Subscription
-    xui_client: XUIClientRecord
+    xui_client: XUIClientRecord | None
     vless_uri: str
     sub_link: str
 
@@ -73,6 +74,20 @@ class ProvisioningManager:
         order = await self.session.get(Order, order_id)
         if order is None or order.user_id != user_id:
             raise ProvisioningError("Order not found for user.")
+
+        ready_pool = await self.session.scalar(
+            select(ReadyConfigPool).where(
+                ReadyConfigPool.plan_id == plan.id,
+                ReadyConfigPool.is_active.is_(True),
+            )
+        )
+        if ready_pool is not None:
+            return await self._provision_ready_config(
+                user_id=user_id,
+                plan=plan,
+                order=order,
+                pool=ready_pool,
+            )
 
         # Use the plan's specific inbound instead of random selection
         inbound: XUIInboundRecord | None = plan.inbound
@@ -188,6 +203,61 @@ class ProvisioningManager:
             xui_client=xui_record,
             vless_uri=vless_uri,
             sub_link=sub_link,
+        )
+
+    async def _provision_ready_config(
+        self,
+        *,
+        user_id: UUID,
+        plan: Plan,
+        order: Order,
+        pool: ReadyConfigPool,
+    ) -> ProvisioningResult:
+        item = await self.session.scalar(
+            select(ReadyConfigItem)
+            .where(
+                ReadyConfigItem.pool_id == pool.id,
+                ReadyConfigItem.status == "available",
+            )
+            .order_by(ReadyConfigItem.created_at.asc(), ReadyConfigItem.line_number.asc())
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        if item is None:
+            raise ProvisioningError("Ready config stock is empty for this plan.")
+
+        now = datetime.now(timezone.utc)
+        subscription = Subscription(
+            user_id=user_id,
+            order_id=order.id,
+            plan_id=plan.id,
+            status="active",
+            activation_mode="ready_config",
+            starts_at=now,
+            ends_at=now + timedelta(days=plan.duration_days),
+            activated_at=now,
+            expired_at=None,
+            volume_bytes=plan.volume_bytes,
+            used_bytes=0,
+            sub_link=item.content,
+        )
+        self.session.add(subscription)
+        await self.session.flush()
+
+        item.status = "sold"
+        item.assigned_user_id = user_id
+        item.order_id = order.id
+        item.subscription_id = subscription.id
+        item.sold_at = now
+        order.status = "provisioned"
+
+        await self.session.flush()
+        await self.session.refresh(subscription)
+        return ProvisioningResult(
+            subscription=subscription,
+            xui_client=None,
+            vless_uri=item.content,
+            sub_link=item.content,
         )
 
     async def process_zero_usage_refund(

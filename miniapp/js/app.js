@@ -9,6 +9,10 @@
         try { tg.enableClosingConfirmation(); } catch {}
     }
 
+    document.querySelectorAll('[data-icon]').forEach(el => {
+        el.innerHTML = UI.icon(el.dataset.icon, el.classList.contains('nav-icon') ? 'nav-svg' : 'inline-icon');
+    });
+
     // Navigation
     document.querySelectorAll('.nav-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -25,10 +29,10 @@
         try {
             await API.sendTicket(text);
             input.value = '';
-            UI.toast('✅ پیام ارسال شد');
+            UI.toast('پیام ارسال شد');
             Pages.load_support();
         } catch (e) {
-            UI.toast('❌ خطا: ' + e.message, 'error');
+            UI.toast('خطا: ' + e.message, 'error');
         }
     });
 
@@ -54,6 +58,6 @@
             UI.navigate('admin');
         }
     } catch (e) {
-        UI.toast('❌ ' + e.message, 'error');
+        UI.toast(e.message, 'error');
     }
 })();

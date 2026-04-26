@@ -76,3 +76,14 @@ class GatewaySettingsStates(StatesGroup):
 class ReferralSettingsStates(StatesGroup):
     waiting_for_referrer_bonus = State()
     waiting_for_referee_bonus = State()
+
+
+class ReadyConfigPlanStates(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_duration_days = State()
+    waiting_for_volume_gb = State()
+    waiting_for_price = State()
+
+
+class ReadyConfigUploadStates(StatesGroup):
+    waiting_for_file = State()

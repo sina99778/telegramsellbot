@@ -5,6 +5,7 @@ from models.broadcast import BroadcastJob
 from models.order import Order
 from models.payment import Payment
 from models.plan import Plan
+from models.ready_config import ReadyConfigItem, ReadyConfigPool
 from models.subscription import Subscription
 from models.ticket import Ticket, TicketMessage
 from models.user import User, UserProfile
@@ -18,6 +19,8 @@ __all__ = [
     "BroadcastJob",
     "Payment",
     "Plan",
+    "ReadyConfigItem",
+    "ReadyConfigPool",
     "Order",
     "Subscription",
     "Ticket",

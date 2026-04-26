@@ -212,6 +212,15 @@ button {
     gap: 8px;
 }
 
+.inline-icon,
+.icon {
+    width: 18px;
+    height: 18px;
+    display: inline-block;
+    vertical-align: -4px;
+    color: currentColor;
+}
+
 .section-title::after {
     content: '';
     height: 1px;
@@ -341,8 +350,18 @@ button {
 .stat-card:nth-child(4)::before { background: var(--blue); }
 
 .stat-icon {
-    font-size: 19px;
-    opacity: 0.9;
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border-radius: 10px;
+    color: var(--accent-primary);
+    background: rgba(124, 92, 255, 0.12);
+}
+
+.stat-icon .icon {
+    width: 19px;
+    height: 19px;
 }
 
 .stat-value {
@@ -695,6 +714,27 @@ button {
     border-color: var(--cyan);
 }
 
+.admin-form {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    margin-bottom: 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-surface);
+}
+
+.admin-form strong {
+    font-size: 13px;
+    color: var(--text);
+}
+
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
 .ticket-history-item {
     width: 100%;
     padding: 12px;
@@ -964,8 +1004,16 @@ button {
 }
 
 .nav-icon {
-    font-size: 18px;
+    width: 22px;
+    height: 22px;
+    display: grid;
+    place-items: center;
     line-height: 1;
+}
+
+.nav-svg {
+    width: 20px;
+    height: 20px;
 }
 
 .nav-label {
@@ -1052,7 +1100,18 @@ button {
 
 .empty-icon {
     margin-bottom: 8px;
-    font-size: 34px;
+    width: 46px;
+    height: 46px;
+    display: inline-grid;
+    place-items: center;
+    border-radius: 14px;
+    color: var(--accent-primary);
+    background: rgba(124, 92, 255, 0.12);
+}
+
+.empty-icon .icon {
+    width: 25px;
+    height: 25px;
 }
 
 @media (min-width: 720px) {

@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="/miniapp/css/app.css?v=20260426-11">
+    <link rel="stylesheet" href="/miniapp/css/app.css?v=20260427-1">
 </head>
 <body>
     <div id="app">
@@ -49,7 +49,7 @@
                         <button class="quick-action" onclick="UI.navigate('support')"><span>درخواست کمک</span><strong>پشتیبانی</strong></button>
                     </div>
                     <div class="stats-grid" id="stats-grid"></div>
-                    <h3 class="section-title">📋 سرویس‌های فعال</h3>
+                    <h3 class="section-title"><span data-icon="configs"></span> سرویس‌های فعال</h3>
                     <div id="configs-list" class="configs-list"></div>
                 </div>
             </section>
@@ -57,7 +57,7 @@
             <!-- Store Page -->
             <section id="page-store" class="page">
                 <div class="page-scroll">
-                    <h3 class="section-title">🛒 فروشگاه پلن‌ها</h3>
+                    <h3 class="section-title"><span data-icon="store"></span> فروشگاه پلن‌ها</h3>
                     <div id="plans-list" class="plans-grid"></div>
                 </div>
             </section>
@@ -65,7 +65,7 @@
             <!-- Configs Page -->
             <section id="page-configs" class="page">
                 <div class="page-scroll">
-                    <h3 class="section-title">📋 سرویس‌های من</h3>
+                    <h3 class="section-title"><span data-icon="configs"></span> سرویس‌های من</h3>
                     <div id="all-configs-list" class="configs-list"></div>
                 </div>
             </section>
@@ -74,9 +74,9 @@
             <section id="page-wallet" class="page">
                 <div class="page-scroll">
                     <div class="wallet-card" id="wallet-card"></div>
-                    <h3 class="section-title">💳 وضعیت پرداخت‌ها</h3>
+                    <h3 class="section-title"><span data-icon="wallet"></span> وضعیت پرداخت‌ها</h3>
                     <div id="payments-list" class="payments-list"></div>
-                    <h3 class="section-title">📜 تاریخچه تراکنش‌ها</h3>
+                    <h3 class="section-title"><span data-icon="chart"></span> تاریخچه تراکنش‌ها</h3>
                     <div id="transactions-list" class="transactions-list"></div>
                 </div>
             </section>
@@ -84,7 +84,7 @@
             <!-- Support Page -->
             <section id="page-support" class="page">
                 <div class="page-scroll">
-                    <h3 class="section-title">🎫 پشتیبانی</h3>
+                    <h3 class="section-title"><span data-icon="support"></span> پشتیبانی</h3>
                     <div id="tickets-container" class="tickets-container"></div>
                     <div class="ticket-input-area">
                         <textarea id="ticket-input" placeholder="پیام خود را بنویسید..." rows="3"></textarea>
@@ -96,7 +96,7 @@
             <!-- Referral Page -->
             <section id="page-referral" class="page">
                 <div class="page-scroll">
-                    <h3 class="section-title">👥 دعوت دوستان</h3>
+                    <h3 class="section-title"><span data-icon="users"></span> دعوت دوستان</h3>
                     <div id="referral-container"></div>
                 </div>
             </section>
@@ -112,31 +112,31 @@
         <!-- Bottom Navigation -->
         <nav id="bottom-nav" class="bottom-nav hidden">
             <button class="nav-btn active" data-page="dashboard">
-                <span class="nav-icon">🏠</span>
+                <span class="nav-icon" data-icon="home"></span>
                 <span class="nav-label">خانه</span>
             </button>
             <button class="nav-btn" data-page="store">
-                <span class="nav-icon">🛒</span>
+                <span class="nav-icon" data-icon="store"></span>
                 <span class="nav-label">فروشگاه</span>
             </button>
             <button class="nav-btn" data-page="configs">
-                <span class="nav-icon">📋</span>
+                <span class="nav-icon" data-icon="configs"></span>
                 <span class="nav-label">سرویس‌ها</span>
             </button>
             <button class="nav-btn" data-page="wallet">
-                <span class="nav-icon">💰</span>
+                <span class="nav-icon" data-icon="wallet"></span>
                 <span class="nav-label">کیف پول</span>
             </button>
             <button class="nav-btn" data-page="support">
-                <span class="nav-icon">🎫</span>
+                <span class="nav-icon" data-icon="support"></span>
                 <span class="nav-label">پشتیبانی</span>
             </button>
             <button class="nav-btn" data-page="referral">
-                <span class="nav-icon">👥</span>
+                <span class="nav-icon" data-icon="users"></span>
                 <span class="nav-label">دعوت</span>
             </button>
             <button id="admin-nav-btn" class="nav-btn hidden" data-page="admin">
-                <span class="nav-icon">🛠</span>
+                <span class="nav-icon" data-icon="admin"></span>
                 <span class="nav-label">مدیریت</span>
             </button>
         </nav>
@@ -147,9 +147,9 @@
         <div class="modal-content" id="modal-content"></div>
     </div>
 
-    <script src="/miniapp/js/api.js?v=20260426-11"></script>
-    <script src="/miniapp/js/ui.js?v=20260426-11"></script>
-    <script src="/miniapp/js/pages.js?v=20260426-11"></script>
-    <script src="/miniapp/js/app.js?v=20260426-11"></script>
+    <script src="/miniapp/js/api.js?v=20260427-1"></script>
+    <script src="/miniapp/js/ui.js?v=20260427-1"></script>
+    <script src="/miniapp/js/pages.js?v=20260427-1"></script>
+    <script src="/miniapp/js/app.js?v=20260427-1"></script>
 </body>
 </html>
