@@ -8,12 +8,15 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 from collections.abc import Mapping
+from decimal import Decimal
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
+from pydantic import SecretStr
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -21,16 +24,21 @@ from sqlalchemy.orm import selectinload
 from apps.api.dependencies.db import get_db_session
 from core.config import settings
 from models.plan import Plan
+from models.order import Order
+from models.payment import Payment
 from models.subscription import Subscription
 from models.ticket import Ticket, TicketMessage
 from models.user import User
 from models.wallet import WalletTransaction
+from models.xui import XUIClientRecord
 from repositories.ticket import TicketRepository
 from schemas.api.miniapp import (
     MiniAppConfigResponse,
     MiniAppDashboardResponse,
     PlanListResponse,
     PlanView,
+    PurchaseRequest,
+    PurchaseResponse,
     ReferralView,
     SendTicketRequest,
     SubscriptionView,
@@ -41,9 +49,15 @@ from schemas.api.miniapp import (
     TransactionView,
     WalletView,
 )
+from schemas.internal.nowpayments import NowPaymentsPaymentCreateRequest
+from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
+from services.provisioning.manager import ProvisioningError, ProvisioningManager
+from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
+from services.wallet.manager import InsufficientBalanceError, WalletManager
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+CONFIG_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]{3,32}$")
 
 
 @router.get("/config", response_model=MiniAppConfigResponse)
@@ -161,6 +175,251 @@ async def get_plans(
             )
             for p in plans
         ]
+    )
+
+
+# ─── Purchase ────────────────────────────────────────────────────────────────
+
+@router.post("/purchase", response_model=PurchaseResponse)
+async def create_purchase(
+    body: PurchaseRequest,
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> PurchaseResponse:
+    user, session = auth
+    config_name = body.config_name.strip()
+    payment_method = body.payment_method.strip().lower()
+
+    if not CONFIG_NAME_PATTERN.match(config_name):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="نام کانفیگ نامعتبر است. فقط حروف انگلیسی، عدد، خط تیره و آندرلاین مجاز است.",
+        )
+
+    duplicate_config = await session.scalar(
+        select(XUIClientRecord).where(XUIClientRecord.username == config_name)
+    )
+    if duplicate_config is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="این نام کانفیگ قبلاً استفاده شده است.",
+        )
+
+    plan = await session.get(Plan, body.plan_id)
+    if plan is None or not plan.is_active:
+        raise HTTPException(status_code=404, detail="این پلن در دسترس نیست.")
+
+    if user.wallet is None:
+        raise HTTPException(status_code=404, detail="کیف پول کاربر پیدا نشد.")
+
+    if payment_method == "wallet":
+        return await _purchase_with_wallet(session, user, plan, config_name)
+    if payment_method == "nowpayments":
+        return await _create_nowpayments_purchase(session, user, plan, config_name)
+    if payment_method == "tetrapay":
+        return await _create_tetrapay_purchase(session, user, plan, config_name)
+
+    raise HTTPException(status_code=400, detail="روش پرداخت نامعتبر است.")
+
+
+async def _purchase_with_wallet(
+    session: AsyncSession,
+    user: User,
+    plan: Plan,
+    config_name: str,
+) -> PurchaseResponse:
+    final_price = plan.price
+    order = Order(
+        user_id=user.id,
+        plan_id=plan.id,
+        status="processing",
+        source="miniapp",
+        amount=final_price,
+        currency=plan.currency,
+    )
+    session.add(order)
+    await session.flush()
+
+    try:
+        await WalletManager(session).process_transaction(
+            user_id=user.id,
+            amount=Decimal(str(final_price)),
+            transaction_type="purchase",
+            direction="debit",
+            currency=plan.currency,
+            reference_type="order",
+            reference_id=order.id,
+            description=f"Purchase of plan {plan.code}",
+            metadata={"plan_id": str(plan.id), "config_name": config_name, "source": "miniapp"},
+        )
+    except InsufficientBalanceError as exc:
+        order.status = "failed"
+        raise HTTPException(status_code=402, detail="موجودی کیف پول کافی نیست.") from exc
+
+    try:
+        provisioned = await ProvisioningManager(session).provision_subscription(
+            user_id=user.id,
+            plan_id=plan.id,
+            order_id=order.id,
+            config_name=config_name,
+        )
+    except ProvisioningError as exc:
+        order.status = "refunded"
+        await WalletManager(session).process_transaction(
+            user_id=user.id,
+            amount=Decimal(str(final_price)),
+            transaction_type="refund",
+            direction="credit",
+            currency=plan.currency,
+            reference_type="order",
+            reference_id=order.id,
+            description="Automatic refund after mini app provisioning failure",
+            metadata={"plan_id": str(plan.id), "source": "miniapp"},
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="ساخت کانفیگ انجام نشد و مبلغ به کیف پول برگشت داده شد.",
+        ) from exc
+
+    order.status = "provisioned"
+    return PurchaseResponse(
+        status="provisioned",
+        message="خرید با کیف پول انجام شد و کانفیگ ساخته شد.",
+        payment_method="wallet",
+        subscription_id=provisioned.subscription.id,
+        sub_link=provisioned.sub_link,
+        vless_uri=provisioned.vless_uri,
+    )
+
+
+async def _create_nowpayments_purchase(
+    session: AsyncSession,
+    user: User,
+    plan: Plan,
+    config_name: str,
+) -> PurchaseResponse:
+    from repositories.settings import AppSettingsRepository
+
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    if not gw.nowpayments_enabled:
+        raise HTTPException(status_code=400, detail="درگاه NOWPayments غیرفعال است.")
+
+    api_key = SecretStr(gw.nowpayments_api_key) if gw.nowpayments_api_key else settings.nowpayments_api_key
+    local_order_id = str(uuid4())
+    payload = NowPaymentsPaymentCreateRequest(
+        price_amount=plan.price,
+        price_currency="usd",
+        order_id=local_order_id,
+        order_description=f"Purchase plan {plan.name} for user {user.id}",
+        ipn_callback_url=settings.nowpayments_ipn_callback_url,
+    )
+
+    try:
+        async with NowPaymentsClient(
+            NowPaymentsClientConfig(api_key=api_key, base_url=settings.nowpayments_base_url)
+        ) as client:
+            invoice = await client.create_payment_invoice(payload)
+    except NowPaymentsRequestError as exc:
+        raise HTTPException(status_code=502, detail="خطا در ساخت فاکتور درگاه ارزی.") from exc
+
+    payment = Payment(
+        user_id=user.id,
+        provider="nowpayments",
+        kind="direct_purchase",
+        provider_payment_id=None,
+        provider_invoice_id=str(invoice.id),
+        order_id=local_order_id,
+        payment_status="waiting",
+        pay_currency=None,
+        price_currency="USD",
+        price_amount=plan.price,
+        invoice_url=str(invoice.invoice_url),
+        callback_payload={
+            "plan_id": str(plan.id),
+            "config_name": config_name,
+            "discount_percent": 0,
+            "discount_id": None,
+            "purpose": "direct_purchase",
+            "source": "miniapp",
+        },
+    )
+    session.add(payment)
+    await session.flush()
+
+    return PurchaseResponse(
+        status="invoice_created",
+        message="فاکتور پرداخت ساخته شد. بعد از پرداخت، کانفیگ خودکار ساخته می‌شود.",
+        payment_method="nowpayments",
+        invoice_url=str(invoice.invoice_url),
+        payment_id=payment.id,
+    )
+
+
+async def _create_tetrapay_purchase(
+    session: AsyncSession,
+    user: User,
+    plan: Plan,
+    config_name: str,
+) -> PurchaseResponse:
+    from repositories.settings import AppSettingsRepository
+
+    settings_repo = AppSettingsRepository(session)
+    gw = await settings_repo.get_gateway_settings()
+    if not gw.tetrapay_enabled:
+        raise HTTPException(status_code=400, detail="درگاه تتراپی غیرفعال است.")
+
+    toman_rate = await settings_repo.get_toman_rate()
+    toman_amount = int((plan.price * toman_rate).quantize(Decimal("1")))
+    rial_amount = toman_amount * 10
+    if rial_amount < 10000:
+        raise HTTPException(status_code=400, detail="مبلغ این پلن کمتر از حداقل مجاز درگاه تتراپی است.")
+
+    local_order_id = str(uuid4())
+    api_key = gw.tetrapay_api_key or settings.tetrapay_api_key.get_secret_value()
+
+    try:
+        async with TetraPayClient(
+            TetraPayClientConfig(api_key=api_key, base_url=settings.tetrapay_base_url)
+        ) as client:
+            tx = await client.create_order(
+                hash_id=local_order_id,
+                amount=rial_amount,
+                description=f"خرید سرویس {plan.name} - کاربر {user.telegram_id}",
+                email=f"{user.telegram_id}@telegram.org",
+                mobile="09111111111",
+            )
+    except TetraPayRequestError as exc:
+        raise HTTPException(status_code=502, detail="خطا در ساخت فاکتور تتراپی.") from exc
+
+    payment = Payment(
+        user_id=user.id,
+        provider="tetrapay",
+        kind="direct_purchase",
+        provider_payment_id=tx.Authority,
+        order_id=local_order_id,
+        payment_status="waiting",
+        pay_currency="IRT",
+        price_currency="USD",
+        price_amount=plan.price,
+        pay_amount=toman_amount,
+        invoice_url=tx.payment_url_bot,
+        callback_payload={
+            "plan_id": str(plan.id),
+            "config_name": config_name,
+            "discount_percent": 0,
+            "discount_id": None,
+            "purpose": "direct_purchase",
+            "source": "miniapp",
+        },
+    )
+    session.add(payment)
+    await session.flush()
+
+    return PurchaseResponse(
+        status="invoice_created",
+        message="فاکتور پرداخت ساخته شد. بعد از پرداخت، کانفیگ خودکار ساخته می‌شود.",
+        payment_method="tetrapay",
+        invoice_url=tx.payment_url_bot,
+        payment_id=payment.id,
     )
 
 

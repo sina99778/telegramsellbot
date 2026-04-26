@@ -110,3 +110,20 @@ class SendTicketRequest(BaseModel):
 class MiniAppConfigResponse(BaseModel):
     bot_username: str | None
     web_base_url: str
+
+
+class PurchaseRequest(BaseModel):
+    plan_id: UUID
+    config_name: str
+    payment_method: str
+
+
+class PurchaseResponse(BaseModel):
+    status: str
+    message: str
+    payment_method: str
+    invoice_url: str | None = None
+    payment_id: UUID | None = None
+    subscription_id: UUID | None = None
+    sub_link: str | None = None
+    vless_uri: str | None = None

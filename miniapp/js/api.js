@@ -73,6 +73,7 @@ const API = (() => {
         getConfig:       ()           => request('GET', '/config'),
         getDashboard:    ()           => request('GET', '/me'),
         getPlans:        ()           => request('GET', '/plans'),
+        createPurchase:  (payload)    => request('POST', '/purchase', payload),
         getTransactions: (page = 1)   => request('GET', `/wallet/transactions?page=${page}`),
         getTickets:      ()           => request('GET', '/tickets'),
         sendTicket:      (text)       => request('POST', '/tickets/send', { text }),

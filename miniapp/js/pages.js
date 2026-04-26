@@ -3,6 +3,7 @@
  */
 const Pages = (() => {
     let dashboardData = null;
+    let plansCache = [];
 
     function getBotUsername() {
         return (
@@ -10,6 +11,12 @@ const Pages = (() => {
             window.Telegram?.WebApp?.initDataUnsafe?.bot?.username ||
             ''
         ).replace(/^@/, '');
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, ch => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+        }[ch]));
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -176,6 +183,7 @@ const Pages = (() => {
     async function load_store() {
         try {
             const data = await API.getPlans();
+            plansCache = data.plans || [];
             renderPlans(data.plans);
         } catch (e) {
             UI.toast('❌ خطا: ' + e.message, 'error');
@@ -206,12 +214,76 @@ const Pages = (() => {
     }
 
     function buyPlan(planId) {
-        // Redirect to bot with deep link
-        const botUsername = getBotUsername();
-        if (botUsername) {
-            window.Telegram.WebApp.openTelegramLink(`https://t.me/${botUsername}?start=buy_${planId}`);
-        } else {
-            UI.toast('لطفاً از داخل ربات خرید کنید', 'error');
+        const plan = plansCache.find(item => item.id === planId);
+        if (!plan) {
+            UI.toast('پلن پیدا نشد', 'error');
+            return;
+        }
+
+        UI.showModal(`
+            <div class="modal-title">خرید ${escapeHtml(plan.name)}</div>
+            <div class="checkout-summary">
+                <div><span>حجم</span><strong>${escapeHtml(plan.volume_gb)} GB</strong></div>
+                <div><span>مدت</span><strong>${escapeHtml(plan.duration_days)} روز</strong></div>
+                <div><span>قیمت</span><strong>$${UI.formatMoney(plan.price)}</strong></div>
+            </div>
+            <label class="form-label" for="checkout-config-name">نام کانفیگ</label>
+            <input id="checkout-config-name" class="form-input" dir="ltr" maxlength="32" placeholder="MyVPN" autocomplete="off">
+            <p class="form-hint">فقط حروف انگلیسی، عدد، خط تیره و آندرلاین. ۳ تا ۳۲ کاراکتر.</p>
+            <div class="checkout-methods">
+                <button class="btn btn-primary btn-block" onclick="Pages.submitPurchase('${plan.id}', 'wallet')">پرداخت با کیف پول</button>
+                <button class="btn btn-secondary btn-block" onclick="Pages.submitPurchase('${plan.id}', 'tetrapay')">درگاه ریالی تتراپی</button>
+                <button class="btn btn-secondary btn-block" onclick="Pages.submitPurchase('${plan.id}', 'nowpayments')">درگاه ارزی NOWPayments</button>
+            </div>
+            <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
+        `);
+        setTimeout(() => document.getElementById('checkout-config-name')?.focus(), 100);
+    }
+
+    async function submitPurchase(planId, paymentMethod) {
+        const input = document.getElementById('checkout-config-name');
+        const configName = (input?.value || '').trim();
+        if (!/^[a-zA-Z0-9_-]{3,32}$/.test(configName)) {
+            UI.toast('نام کانفیگ نامعتبر است', 'error');
+            input?.focus();
+            return;
+        }
+
+        try {
+            UI.toast('در حال ساخت سفارش...');
+            const result = await API.createPurchase({
+                plan_id: planId,
+                config_name: configName,
+                payment_method: paymentMethod,
+            });
+
+            if (result.invoice_url) {
+                UI.showModal(`
+                    <div class="modal-title">فاکتور آماده است</div>
+                    <p class="form-hint" style="text-align:center;margin-bottom:14px">${escapeHtml(result.message)}</p>
+                    <button class="btn btn-primary btn-block" onclick="Pages.openInvoice(decodeURIComponent('${encodeURIComponent(result.invoice_url)}'))">پرداخت فاکتور</button>
+                    <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">بستن</button>
+                `);
+                return;
+            }
+
+            UI.showModal(`
+                <div class="modal-title">کانفیگ ساخته شد</div>
+                <p class="form-hint" style="text-align:center;margin-bottom:12px">${escapeHtml(result.message)}</p>
+                ${result.sub_link ? `<div class="copy-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(result.sub_link)}'))">${escapeHtml(result.sub_link)}</div>` : ''}
+                ${result.vless_uri ? `<div class="copy-box" style="margin-top:10px" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(result.vless_uri)}'))">${escapeHtml(result.vless_uri)}</div>` : ''}
+                <button class="btn btn-primary btn-block" style="margin-top:12px" onclick="UI.closeModal(); Pages.load_dashboard(); UI.navigate('configs')">مشاهده سرویس‌ها</button>
+            `);
+        } catch (e) {
+            UI.toast('❌ ' + e.message, 'error');
+        }
+    }
+
+    function openInvoice(url) {
+        try {
+            window.Telegram?.WebApp?.openLink(url);
+        } catch {
+            window.open(url, '_blank');
         }
     }
 
@@ -387,7 +459,7 @@ const Pages = (() => {
     return {
         load_dashboard, load_store, load_configs,
         load_wallet, load_support, load_referral,
-        showConfigDetail, buyPlan, topupWallet,
+        showConfigDetail, buyPlan, submitPurchase, openInvoice, topupWallet,
     };
 })();
 
