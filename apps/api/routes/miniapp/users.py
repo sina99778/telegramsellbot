@@ -16,6 +16,8 @@ from typing import Any
 from urllib.parse import parse_qsl
 from uuid import UUID, uuid4
 
+from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import SecretStr
 from sqlalchemy import func, select
@@ -368,6 +370,55 @@ async def post_admin_action(
     raise HTTPException(status_code=400, detail="اکشن نامعتبر است.")
 
 
+@router.get("/admin/tickets/{ticket_id}")
+async def get_admin_ticket(
+    ticket_id: UUID,
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    _require_admin(user)
+    ticket = await TicketRepository(session).get_ticket_with_messages(ticket_id)
+    if ticket is None or ticket.user is None:
+        raise HTTPException(status_code=404, detail="تیکت پیدا نشد.")
+    return _serialize_ticket_for_admin(ticket)
+
+
+@router.post("/admin/tickets/{ticket_id}/reply")
+async def reply_admin_ticket(
+    ticket_id: UUID,
+    body: SendTicketRequest,
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    admin, session = auth
+    _require_admin(admin)
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="متن پاسخ خالی است.")
+
+    repo = TicketRepository(session)
+    ticket = await repo.get_ticket_with_messages(ticket_id)
+    if ticket is None or ticket.user is None:
+        raise HTTPException(status_code=404, detail="تیکت پیدا نشد.")
+    if ticket.status == "closed":
+        raise HTTPException(status_code=400, detail="این تیکت بسته شده است.")
+
+    await repo.add_message(ticket_id=ticket.id, sender_id=admin.id, text=text)
+    ticket.status = "answered"
+    _record_admin_action(session, admin, "reply_ticket", "ticket", ticket.id, {"user_id": str(ticket.user_id)})
+
+    delivered = await _notify_ticket_user(ticket.user.telegram_id, ticket.id, text)
+    if not delivered:
+        ticket.user.is_bot_blocked = True
+
+    await session.flush()
+    ticket = await repo.get_ticket_with_messages(ticket.id)
+    return {
+        "ok": True,
+        "message": "پاسخ ثبت شد و برای کاربر ارسال شد." if delivered else "پاسخ ثبت شد، اما ارسال پیام تلگرام به کاربر انجام نشد.",
+        "ticket": _serialize_ticket_for_admin(ticket) if ticket else None,
+    }
+
+
 def _require_admin(user: User) -> None:
     if not _is_admin_user(user):
         raise HTTPException(status_code=403, detail="دسترسی مدیریت ندارید.")
@@ -390,6 +441,44 @@ def _record_admin_action(
             payload=payload or {},
         )
     )
+
+
+def _serialize_ticket_for_admin(ticket: Ticket) -> dict[str, Any]:
+    ticket_user = ticket.user
+    return {
+        "id": str(ticket.id),
+        "status": ticket.status,
+        "user": {
+            "id": str(ticket_user.id) if ticket_user else None,
+            "telegram_id": ticket_user.telegram_id if ticket_user else None,
+            "name": (ticket_user.first_name or ticket_user.username or str(ticket_user.telegram_id)) if ticket_user else "-",
+            "username": ticket_user.username if ticket_user else None,
+        },
+        "created_at": ticket.created_at,
+        "messages": [
+            {
+                "sender_type": "user" if msg.sender_id == ticket.user_id else "admin",
+                "text": msg.text,
+                "photo_id": msg.photo_id,
+                "created_at": msg.created_at,
+            }
+            for msg in sorted(ticket.messages, key=lambda item: item.created_at)
+        ],
+    }
+
+
+async def _notify_ticket_user(telegram_id: int, ticket_id: UUID, text: str) -> bool:
+    bot = Bot(token=settings.bot_token.get_secret_value())
+    try:
+        await bot.send_message(
+            chat_id=telegram_id,
+            text=f"پاسخ پشتیبانی برای تیکت #{str(ticket_id)[:8]}:\n\n{text}",
+        )
+        return True
+    except (TelegramBadRequest, TelegramForbiddenError):
+        return False
+    finally:
+        await bot.session.close()
 
 
 async def _admin_stats(session: AsyncSession) -> list[dict[str, Any]]:
@@ -495,7 +584,10 @@ async def _admin_tickets(session: AsyncSession) -> list[dict[str, Any]]:
             "id": str(t.id),
             "title": f"تیکت {str(t.id)[:8]}",
             "subtitle": f"{t.status} | {t.user.telegram_id if t.user else '-'} | {(t.messages[-1].text if t.messages else '') or ''}",
-            "actions": [{"label": "بستن", "action": "close_ticket"}],
+            "actions": [
+                {"label": "مشاهده/پاسخ", "action": "view_ticket"},
+                {"label": "بستن", "action": "close_ticket"},
+            ],
         }
         for t in tickets
     ]
@@ -1208,6 +1300,9 @@ async def send_ticket_message(
     auth: tuple[User, AsyncSession] = Depends(_get_current_user),
 ) -> dict:
     user, session = auth
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="متن پیام خالی است.")
     repo = TicketRepository(session)
     ticket = await repo.get_open_ticket_for_user(user.id)
 
@@ -1220,9 +1315,25 @@ async def send_ticket_message(
     await repo.add_message(
         ticket_id=ticket.id,
         sender_id=user.id,
-        text=body.text.strip(),
+        text=text,
     )
     return {"ok": True, "ticket_id": str(ticket.id)}
+
+
+@router.post("/tickets/{ticket_id}/close")
+async def close_own_ticket(
+    ticket_id: UUID,
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    ticket = await session.scalar(
+        select(Ticket).where(Ticket.id == ticket_id, Ticket.user_id == user.id)
+    )
+    if ticket is None:
+        raise HTTPException(status_code=404, detail="تیکت پیدا نشد.")
+    ticket.status = "closed"
+    await session.flush()
+    return {"ok": True, "message": "تیکت بسته شد."}
 
 
 # ─── Referral ────────────────────────────────────────────────────────────────

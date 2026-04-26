@@ -4,6 +4,7 @@
 const Pages = (() => {
     let dashboardData = null;
     let plansCache = [];
+    let supportTicketsCache = [];
 
     function getBotUsername() {
         return (
@@ -541,7 +542,8 @@ const Pages = (() => {
     async function load_support() {
         try {
             const data = await API.getTickets();
-            renderTickets(data.tickets);
+            supportTicketsCache = data.tickets || [];
+            renderTickets(supportTicketsCache);
         } catch (e) {
             UI.toast('❌ خطا: ' + e.message, 'error');
         }
@@ -549,22 +551,66 @@ const Pages = (() => {
 
     function renderTickets(tickets) {
         const container = document.getElementById('tickets-container');
-        if (!tickets.length || !tickets[0].messages.length) {
+        if (!tickets.length) {
             container.innerHTML = '<div class="empty-state"><div class="empty-icon">💬</div><p>پیامی وجود ندارد<br>اولین پیام خود را ارسال کنید</p></div>';
             return;
         }
 
-        // Show messages from the most recent ticket
         const ticket = tickets[0];
-        container.innerHTML = ticket.messages.map(m => `
-            <div class="chat-bubble ${m.sender_type}">
-                ${m.text || '📷 تصویر'}
-                <span class="bubble-time">${UI.formatDate(m.created_at)}</span>
+        const olderTickets = tickets.slice(1);
+        container.innerHTML = `
+            <div class="ticket-toolbar">
+                <span>تیکت #${String(ticket.id).slice(0, 8)} | ${escapeHtml(UI.getStatusText(ticket.status))}</span>
+                ${ticket.status !== 'closed' ? `<button class="btn btn-secondary btn-sm" onclick="Pages.closeTicket('${ticket.id}')">بستن تیکت</button>` : ''}
             </div>
-        `).join('');
+            <div class="ticket-thread">
+                ${ticket.messages.length ? ticket.messages.map(m => renderTicketMessage(m)).join('') : '<div class="empty-state compact"><p>هنوز پیامی ثبت نشده</p></div>'}
+            </div>
+            ${olderTickets.length ? `
+                <h3 class="section-title compact-title">تیکت‌های قبلی</h3>
+                <div class="ticket-history">
+                    ${olderTickets.map((t, index) => `
+                        <button class="ticket-history-item" onclick="Pages.showTicketHistory(${index + 1})">
+                            <strong>#${String(t.id).slice(0, 8)}</strong>
+                            <span>${escapeHtml(UI.getStatusText(t.status))} | ${UI.formatDate(t.created_at)}</span>
+                        </button>
+                    `).join('')}
+                </div>
+            ` : ''}
+        `;
 
-        // Scroll to bottom
         setTimeout(() => container.scrollTop = container.scrollHeight, 100);
+    }
+
+    function renderTicketMessage(message) {
+        return `
+            <div class="chat-bubble ${message.sender_type}">
+                ${escapeHtml(message.text || '📷 تصویر')}
+                <span class="bubble-time">${UI.formatDate(message.created_at)}</span>
+            </div>
+        `;
+    }
+
+    function showTicketHistory(index) {
+        const ticket = supportTicketsCache[index];
+        if (!ticket) return;
+        UI.showModal(`
+            <div class="modal-title">تیکت #${String(ticket.id).slice(0, 8)}</div>
+            <div class="ticket-thread modal-thread">
+                ${(ticket.messages || []).map(m => renderTicketMessage(m)).join('') || '<div class="empty-state compact"><p>پیامی ثبت نشده</p></div>'}
+            </div>
+            <button class="btn btn-secondary btn-block" style="margin-top:12px" onclick="UI.closeModal()">بستن</button>
+        `);
+    }
+
+    async function closeTicket(ticketId) {
+        try {
+            const result = await API.closeTicket(ticketId);
+            UI.toast(result.message || 'تیکت بسته شد');
+            await load_support();
+        } catch (e) {
+            UI.toast('❌ ' + e.message, 'error');
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -642,11 +688,62 @@ const Pages = (() => {
                 </div>
                 ${actions.length ? `<div class="admin-actions">
                     ${actions.map(action => `
-                        <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminAction('${section}', '${escapeHtml(action.action)}', '${escapeHtml(item.id)}')">${escapeHtml(action.label)}</button>
+                        <button class="btn btn-secondary btn-sm" onclick="${action.action === 'view_ticket' ? `Pages.openAdminTicket('${escapeHtml(item.id)}')` : `Pages.runAdminAction('${section}', '${escapeHtml(action.action)}', '${escapeHtml(item.id)}')`}">${escapeHtml(action.label)}</button>
                     `).join('')}
                 </div>` : ''}
             </div>
         `;
+    }
+
+    async function openAdminTicket(ticketId) {
+        try {
+            const ticket = await API.getAdminTicket(ticketId);
+            renderAdminTicket(ticket);
+        } catch (e) {
+            UI.toast('❌ ' + e.message, 'error');
+        }
+    }
+
+    function renderAdminTicket(ticket) {
+        const modules = document.getElementById('admin-modules');
+        if (!modules) return;
+        modules.innerHTML = `
+            <button class="btn btn-secondary btn-block" onclick="Pages.openAdminModule('tickets')">بازگشت به تیکت‌ها</button>
+            <div class="admin-ticket-head">
+                <strong>تیکت #${String(ticket.id).slice(0, 8)}</strong>
+                <span>${escapeHtml(ticket.user?.name || '-')} | ${escapeHtml(ticket.user?.telegram_id || '-')} | ${escapeHtml(UI.getStatusText(ticket.status))}</span>
+            </div>
+            <div class="ticket-thread admin-ticket-thread">
+                ${(ticket.messages || []).map(m => renderTicketMessage(m)).join('') || '<div class="empty-state compact"><p>پیامی ثبت نشده</p></div>'}
+            </div>
+            ${ticket.status !== 'closed' ? `
+                <textarea id="admin-ticket-reply" class="admin-ticket-reply" rows="4" placeholder="پاسخ ادمین..."></textarea>
+                <button class="btn btn-primary btn-block" onclick="Pages.submitAdminTicketReply('${ticket.id}')">ارسال پاسخ</button>
+                <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="Pages.runAdminAction('tickets', 'close_ticket', '${ticket.id}')">بستن تیکت</button>
+            ` : '<div class="empty-state compact"><p>این تیکت بسته شده است</p></div>'}
+        `;
+        setTimeout(() => {
+            const thread = modules.querySelector('.admin-ticket-thread');
+            if (thread) thread.scrollTop = thread.scrollHeight;
+        }, 100);
+    }
+
+    async function submitAdminTicketReply(ticketId) {
+        const input = document.getElementById('admin-ticket-reply');
+        const text = (input?.value || '').trim();
+        if (!text) {
+            UI.toast('متن پاسخ خالی است', 'error');
+            input?.focus();
+            return;
+        }
+        try {
+            UI.toast('در حال ارسال پاسخ...');
+            const result = await API.replyAdminTicket(ticketId, text);
+            UI.toast(result.message || 'پاسخ ارسال شد');
+            if (result.ticket) renderAdminTicket(result.ticket);
+        } catch (e) {
+            UI.toast('❌ ' + e.message, 'error');
+        }
     }
 
     async function runAdminAction(section, action, id) {
@@ -714,7 +811,8 @@ const Pages = (() => {
         load_dashboard, load_store, load_configs,
         load_wallet, load_support, load_referral, load_admin,
         showConfigDetail, showRenewal, setRenewalType, submitRenewal,
-        buyPlan, submitPurchase, openInvoice, topupWallet, submitTopup, refreshPayment, openAdminModule, runAdminAction, openBotAdmin,
+        buyPlan, submitPurchase, openInvoice, topupWallet, submitTopup, refreshPayment,
+        showTicketHistory, closeTicket, openAdminModule, openAdminTicket, submitAdminTicketReply, runAdminAction, openBotAdmin,
     };
 })();
 

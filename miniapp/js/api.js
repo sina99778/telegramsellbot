@@ -83,6 +83,9 @@ const API = (() => {
         refreshPayment:  (id)         => request('POST', `/payments/${encodeURIComponent(id)}/refresh`),
         getTickets:      ()           => request('GET', '/tickets'),
         sendTicket:      (text)       => request('POST', '/tickets/send', { text }),
+        closeTicket:     (id)         => request('POST', `/tickets/${encodeURIComponent(id)}/close`),
+        getAdminTicket:  (id)         => request('GET', `/admin/tickets/${encodeURIComponent(id)}`),
+        replyAdminTicket:(id, text)   => request('POST', `/admin/tickets/${encodeURIComponent(id)}/reply`, { text }),
         getReferral:     ()           => request('GET', '/referral'),
     };
 })();
