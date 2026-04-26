@@ -66,6 +66,9 @@ const UI = (() => {
             'active': 'فعال',
             'pending_activation': 'در انتظار',
             'expired': 'منقضی',
+            'open': 'باز',
+            'answered': 'پاسخ داده شده',
+            'closed': 'بسته',
         };
         return map[status] || status;
     }
@@ -75,6 +78,9 @@ const UI = (() => {
             'active': 'active',
             'pending_activation': 'pending',
             'expired': 'expired',
+            'open': 'pending',
+            'answered': 'active',
+            'closed': 'expired',
         };
         return map[status] || '';
     }
