@@ -9,7 +9,7 @@ from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import select
+from sqlalchemy import not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.bot.keyboards.inline import build_plan_selection_keyboard, build_wallet_topup_keyboard
@@ -53,7 +53,7 @@ async def ignore_pagination_noop(callback: CallbackQuery) -> None:
 async def show_available_plans(message: Message, session: AsyncSession) -> None:
     result = await session.execute(
         select(Plan)
-        .where(Plan.is_active.is_(True), ~Plan.code.startswith("custom_"))
+        .where(Plan.is_active.is_(True), not_(Plan.code.like("custom\\_%", escape="\\")))
         .order_by(Plan.price.asc(), Plan.duration_days.asc())
     )
     plans = list(result.scalars().all())

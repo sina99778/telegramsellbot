@@ -21,7 +21,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import SecretStr
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -230,7 +230,7 @@ async def get_admin_overview(
     active_plans_count = await session.scalar(
         select(func.count())
         .select_from(Plan)
-        .where(Plan.is_active.is_(True), ~Plan.code.startswith("custom_"))
+        .where(Plan.is_active.is_(True), not_(Plan.code.like("custom\\_%", escape="\\")))
     ) or 0
 
     modules = [
@@ -990,7 +990,7 @@ async def _admin_stats(session: AsyncSession) -> list[dict[str, Any]]:
     return [
         {"title": "کل کاربران", "value": int(await session.scalar(select(func.count()).select_from(User)) or 0)},
         {"title": "سرویس‌های فعال", "value": int(await session.scalar(select(func.count()).select_from(Subscription).where(Subscription.status.in_(["active", "pending_activation"]))) or 0)},
-        {"title": "پلن‌های فعال", "value": int(await session.scalar(select(func.count()).select_from(Plan).where(Plan.is_active.is_(True), ~Plan.code.startswith("custom_"))) or 0)},
+        {"title": "پلن‌های فعال", "value": int(await session.scalar(select(func.count()).select_from(Plan).where(Plan.is_active.is_(True), not_(Plan.code.like("custom\\_%", escape="\\")))) or 0)},
         {"title": "پرداخت‌های منتظر", "value": int(await session.scalar(select(func.count()).select_from(Payment).where(Payment.payment_status.in_(["waiting", "pending"]))) or 0)},
     ]
 
@@ -1147,7 +1147,7 @@ def _format_admin_stock(stock: Any) -> str:
 async def _admin_plans(session: AsyncSession) -> list[dict[str, Any]]:
     result = await session.execute(
         select(Plan)
-        .where(~Plan.code.startswith("custom_"))
+        .where(not_(Plan.code.like("custom\\_%", escape="\\")))
         .order_by(Plan.created_at.desc())
         .limit(50)
     )
@@ -1325,7 +1325,7 @@ async def get_plans(
 ) -> PlanListResponse:
     result = await session.execute(
         select(Plan)
-        .where(Plan.is_active.is_(True), ~Plan.code.startswith("custom_"))
+        .where(Plan.is_active.is_(True), not_(Plan.code.like("custom\\_%", escape="\\")))
         .order_by(Plan.price.asc())
     )
     plans = list(result.scalars().all())

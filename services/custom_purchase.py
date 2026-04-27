@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.plan import Plan
@@ -49,8 +49,8 @@ async def get_custom_purchase_template_plan(session: AsyncSession) -> Plan | Non
         .where(
             Plan.is_active.is_(True),
             Plan.inbound_id.isnot(None),
-            ~Plan.code.startswith(CUSTOM_PLAN_CODE_PREFIX),
-            ~Plan.code.startswith("ready_"),
+            not_(Plan.code.like("custom\\_%", escape="\\")),
+            not_(Plan.code.like("ready\\_%", escape="\\")),
             ~Plan.name.startswith("[حذف شده]"),
         )
         .order_by(Plan.created_at.asc())

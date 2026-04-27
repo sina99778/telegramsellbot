@@ -12,7 +12,7 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import func, select
+from sqlalchemy import func, not_, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -117,7 +117,7 @@ async def list_plans(
     
     query = select(Plan).where(
         ~Plan.name.startswith("[حذف شده]"),
-        ~Plan.code.startswith("custom_"),
+        not_(Plan.code.like("custom\\_%", escape="\\")),
     )
     total_plans = int(await session.scalar(select(func.count()).select_from(query.subquery())) or 0)
     

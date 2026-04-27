@@ -114,7 +114,9 @@ class AppSettingsRepository:
         return record
 
     async def get_custom_purchase_settings(self) -> CustomPurchaseSettings:
-        record = await self._get_or_create_custom_purchase_record()
+        record = await self.session.get(AppSetting, CUSTOM_PURCHASE_SETTINGS_KEY)
+        if record is None or not record.value_json:
+            return CustomPurchaseSettings(enabled=False, price_per_gb=0.1, price_per_day=0.1)
         payload = dict(record.value_json or {})
         return CustomPurchaseSettings(
             enabled=bool(payload.get("enabled", False)),
