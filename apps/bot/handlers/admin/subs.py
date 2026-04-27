@@ -37,6 +37,7 @@ from models.subscription import Subscription
 from models.user import User
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.audit import AuditLogRepository
+from services.renewal import apply_renewal
 from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
 
 logger = logging.getLogger(__name__)
@@ -322,12 +323,12 @@ async def extend_submit(
         await message.answer(AdminMessages.SUBSCRIPTION_NOT_FOUND)
         return
 
-    now = datetime.now(timezone.utc)
-    base = sub.ends_at if sub.ends_at and sub.ends_at > now else now
-    sub.ends_at = base + timedelta(days=days)
-
-    if sub.status in {"expired", "cancelled"}:
-        sub.status = "active"
+    await apply_renewal(
+        session=session,
+        subscription=sub,
+        renew_type="time",
+        amount=float(days),
+    )
 
     await AuditLogRepository(session).log_action(
         actor_user_id=admin_user.id,
@@ -390,9 +391,13 @@ async def add_volume_submit(
         await message.answer(AdminMessages.SUBSCRIPTION_NOT_FOUND)
         return
 
-    added_bytes = int(gb * 1024**3)
     old_vol = sub.volume_bytes
-    sub.volume_bytes += added_bytes
+    await apply_renewal(
+        session=session,
+        subscription=sub,
+        renew_type="volume",
+        amount=gb,
+    )
 
     await AuditLogRepository(session).log_action(
         actor_user_id=admin_user.id,

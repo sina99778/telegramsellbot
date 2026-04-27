@@ -81,6 +81,7 @@ const API = (() => {
         adjustAdminUserBalance:(id, amount) => request('POST', `/admin/users/${encodeURIComponent(id)}/balance`, { amount }),
         sendAdminUserMessage:(id, text) => request('POST', `/admin/users/${encodeURIComponent(id)}/message`, { text }),
         runAdminAction: (payload)     => request('POST', '/admin/action', payload),
+        grantAdminGift:(payload)      => request('POST', '/admin/gifts', payload),
         updateAdminPlanDuration:(id, duration_days) => request('POST', `/admin/plans/${encodeURIComponent(id)}/duration`, { duration_days }),
         updateAdminPlanStock:(id, sales_limit) => request('POST', `/admin/plans/${encodeURIComponent(id)}/stock`, { sales_limit }),
         createReadyPlan:(payload)     => request('POST', '/admin/ready-configs/plans', payload),

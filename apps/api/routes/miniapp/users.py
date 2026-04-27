@@ -70,6 +70,7 @@ from schemas.api.miniapp import (
 )
 from schemas.internal.nowpayments import NowPaymentsPaymentCreateRequest
 from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
+from services.admin_gifts import grant_bulk_subscription_gift
 from services.payment import review_gateway_payment
 from services.plan_inventory import (
     PlanStockError,
@@ -229,6 +230,7 @@ async def get_admin_overview(
         AdminModuleView(title="کاربران", description="لیست، جستجو، موجودی، بن و نقش‌ها", callback="admin:users"),
         AdminModuleView(title="مشتریان", description="کاربران خریدار و کانفیگ‌هایشان", callback="admin:customers"),
         AdminModuleView(title="سرویس‌ها", description="اشتراک‌ها، کانفیگ‌ها و وضعیت‌ها", callback="admin:subs"),
+        AdminModuleView(title="هدیه گروهی", description="افزایش زمان یا حجم برای گروهی از کانفیگ‌ها", callback="admin:gifts"),
         AdminModuleView(title="پلن‌ها", description="ساخت، مشاهده و فعال/غیرفعال کردن پلن‌ها", callback="admin:plans"),
         AdminModuleView(title="فروش کانفیگ آماده", description="موجودی فایل‌های آماده و تحویل خودکار", callback="admin:ready_configs"),
         AdminModuleView(title="سرورها", description="مدیریت سرورهای X-UI و اینباندها", callback="admin:servers"),
@@ -270,6 +272,8 @@ async def get_admin_section(
         return {"title": "کاربران" if section == "users" else "مشتریان", "items": users}
     if section == "subs":
         return {"title": "سرویس‌ها", "items": await _admin_subscriptions(session)}
+    if section == "gifts":
+        return {"title": "هدیه گروهی", "items": await _admin_gift_options(session)}
     if section == "plans":
         return {"title": "پلن‌ها", "items": await _admin_plans(session)}
     if section == "ready_configs":
@@ -474,6 +478,61 @@ async def update_admin_plan_stock(
             "stock_remaining": stock.stock_remaining,
             "is_unlimited": stock.is_unlimited,
         },
+    }
+
+
+@router.post("/admin/gifts")
+async def grant_admin_bulk_gift(
+    body: dict[str, Any],
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    _require_admin(user)
+    gift_type = str(body.get("gift_type") or "")
+    status_scope = str(body.get("status_scope") or "")
+    server_id_raw = body.get("server_id")
+    try:
+        amount = float(body.get("amount") or 0)
+        server_id = UUID(str(server_id_raw)) if server_id_raw else None
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="اطلاعات هدیه معتبر نیست.") from exc
+    if gift_type == "time" and int(amount) != amount:
+        raise HTTPException(status_code=400, detail="هدیه زمان باید عدد صحیح روز باشد.")
+
+    try:
+        result = await grant_bulk_subscription_gift(
+            session=session,
+            gift_type=gift_type,
+            amount=amount,
+            status_scope=status_scope,
+            server_id=server_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="اطلاعات هدیه معتبر نیست.") from exc
+
+    _record_admin_action(
+        session,
+        user,
+        "bulk_subscription_gift",
+        "subscription",
+        user.id,
+        {
+            "gift_type": gift_type,
+            "amount": amount,
+            "status_scope": status_scope,
+            "server_id": str(server_id) if server_id else None,
+            "matched": result.matched_count,
+            "updated": result.updated_count,
+            "failed": result.failed_count,
+        },
+    )
+    await session.flush()
+    return {
+        "ok": True,
+        "message": f"هدیه اعمال شد. موفق: {result.updated_count} از {result.matched_count}",
+        "matched_count": result.matched_count,
+        "updated_count": result.updated_count,
+        "failed_count": result.failed_count,
     }
 
 
@@ -932,6 +991,49 @@ async def _admin_subscriptions(session: AsyncSession) -> list[dict[str, Any]]:
         }
         for s in result.scalars().unique().all()
     ]
+
+
+async def _admin_gift_options(session: AsyncSession) -> list[dict[str, Any]]:
+    active_count = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(Subscription)
+            .where(Subscription.status.in_(["active", "pending_activation"]))
+        )
+        or 0
+    )
+    all_count = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(Subscription)
+            .where(Subscription.status.in_(["active", "pending_activation", "expired"]))
+        )
+        or 0
+    )
+    result = await session.execute(
+        select(XUIServerRecord)
+        .where(XUIServerRecord.health_status != "deleted")
+        .order_by(XUIServerRecord.created_at.asc())
+        .limit(50)
+    )
+    items = [
+        {
+            "id": "summary",
+            "title": "آماده برای اعمال هدیه",
+            "subtitle": f"فعال‌ها: {active_count} | همه قابل هدیه: {all_count}",
+            "actions": [],
+        }
+    ]
+    for server in result.scalars().all():
+        items.append(
+            {
+                "id": str(server.id),
+                "title": server.name,
+                "subtitle": f"{server.health_status} | {'فعال' if server.is_active else 'غیرفعال'}",
+                "actions": [],
+            }
+        )
+    return items
 
 
 def _format_admin_stock(stock: Any) -> str:

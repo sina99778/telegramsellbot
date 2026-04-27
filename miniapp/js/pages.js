@@ -676,7 +676,9 @@ const Pages = (() => {
             renderAdminUsers(section, items);
             return;
         }
-        const extra = section === 'ready_configs' ? renderReadyConfigTools(items) : '';
+        const extra = section === 'ready_configs'
+            ? renderReadyConfigTools(items)
+            : (section === 'gifts' ? renderGiftTools(items) : '');
         modules.innerHTML = `
             <button class="btn btn-secondary btn-block" onclick="Pages.load_admin()">بازگشت به مدیریت</button>
             <h3 class="section-title" style="margin-top:16px">${escapeHtml(data.title || 'مدیریت')}</h3>
@@ -826,6 +828,29 @@ const Pages = (() => {
                     <button class="btn btn-primary btn-block" onclick="Pages.addReadyConfigItems()">افزودن به موجودی</button>
                 </div>
             ` : ''}
+        `;
+    }
+
+    function renderGiftTools(items) {
+        const servers = items.filter(item => item.id && item.id !== 'summary');
+        return `
+            <div class="admin-form">
+                <strong>اعمال هدیه گروهی</strong>
+                <select id="gift-status-scope" class="form-input">
+                    <option value="active">فقط کانفیگ‌های فعال</option>
+                    <option value="all">همه کانفیگ‌ها</option>
+                </select>
+                <select id="gift-server-id" class="form-input">
+                    <option value="">همه سرورها</option>
+                    ${servers.map(server => `<option value="${escapeHtml(server.id)}">${escapeHtml(server.title)}</option>`).join('')}
+                </select>
+                <select id="gift-type" class="form-input">
+                    <option value="time">هدیه زمان</option>
+                    <option value="volume">هدیه حجم</option>
+                </select>
+                <input id="gift-amount" class="form-input" inputmode="decimal" placeholder="مثلاً 7 روز یا 10 گیگ">
+                <button class="btn btn-primary btn-block" onclick="Pages.submitAdminGift()">اعمال هدیه</button>
+            </div>
         `;
     }
 
@@ -1040,6 +1065,30 @@ const Pages = (() => {
         }
     }
 
+    async function submitAdminGift() {
+        const payload = {
+            status_scope: document.getElementById('gift-status-scope')?.value || 'active',
+            server_id: document.getElementById('gift-server-id')?.value || null,
+            gift_type: document.getElementById('gift-type')?.value || 'time',
+            amount: Number(document.getElementById('gift-amount')?.value || 0),
+        };
+        if (!payload.amount || payload.amount <= 0) {
+            UI.toast('مقدار هدیه معتبر نیست', 'error');
+            return;
+        }
+        if (payload.gift_type === 'time' && !Number.isInteger(payload.amount)) {
+            UI.toast('هدیه زمان باید عدد صحیح روز باشد', 'error');
+            return;
+        }
+        try {
+            const result = await API.grantAdminGift(payload);
+            UI.toast(result.message || 'هدیه اعمال شد');
+            await openAdminModule('gifts');
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
+    }
+
     function openBotAdmin() {
         const botUsername = getBotUsername();
         if (botUsername) {
@@ -1099,7 +1148,7 @@ const Pages = (() => {
         showTicketHistory, closeTicket, openAdminModule, openAdminTicket, submitAdminTicketReply, runAdminAction,
         showPlanDurationEditor, submitPlanDuration, showPlanStockEditor, submitPlanStock,
         searchAdminUsers, openAdminUser, runAdminUserAction, adjustAdminUserBalance, sendAdminUserMessage,
-        createReadyConfigPlan, addReadyConfigItems, openBotAdmin,
+        createReadyConfigPlan, addReadyConfigItems, submitAdminGift, openBotAdmin,
     };
 })();
 

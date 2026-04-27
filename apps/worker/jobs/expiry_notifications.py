@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from apps.bot.handlers.user.renewal import RenewTypeCallback
 from core.database import utcnow
 from core.formatting import format_volume_bytes
 from models.app_setting import AppSetting
@@ -66,7 +67,10 @@ async def send_expiry_notifications(session: AsyncSession, bot: Bot) -> None:
         volume_remaining = format_volume_bytes(max(sub.volume_bytes - sub.used_bytes, 0))
 
         builder = InlineKeyboardBuilder()
-        builder.button(text="🔄 تمدید سرویس", callback_data="user:my_configs")
+        builder.button(
+            text="🔄 تمدید زمان",
+            callback_data=RenewTypeCallback(type="time", sub_id=sub.id).pack(),
+        )
         builder.adjust(1)
 
         text = (
@@ -141,7 +145,10 @@ async def _send_volume_warnings(session: AsyncSession, bot: Bot) -> None:
         pct_used = round(usage_ratio * 100)
 
         builder = InlineKeyboardBuilder()
-        builder.button(text="💾 افزایش حجم", callback_data="user:my_configs")
+        builder.button(
+            text="💾 افزایش حجم",
+            callback_data=RenewTypeCallback(type="volume", sub_id=sub.id).pack(),
+        )
         builder.adjust(1)
 
         text = (

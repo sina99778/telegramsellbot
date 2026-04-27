@@ -97,6 +97,7 @@ async def my_configs_handler(message: Message, session: AsyncSession) -> None:
     )
 
 
+@router.callback_query(F.data == "user:my_configs")
 @router.callback_query(F.data == "myconfig:back_to_list")
 async def my_configs_back_to_list(callback: CallbackQuery, session: AsyncSession) -> None:
     """Re-render the config list when user presses back."""

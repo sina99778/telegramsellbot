@@ -41,6 +41,10 @@ class BroadcastStates(StatesGroup):
     waiting_for_confirmation = State()
 
 
+class BulkGiftStates(StatesGroup):
+    waiting_for_amount = State()
+
+
 class RetargetingStates(StatesGroup):
     waiting_for_message = State()
     waiting_for_days = State()
