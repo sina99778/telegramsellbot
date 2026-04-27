@@ -115,7 +115,10 @@ async def list_plans(
     await callback.answer()
     page = max(callback_data.page, 1)
     
-    query = select(Plan).where(~Plan.name.startswith("[حذف شده]"))
+    query = select(Plan).where(
+        ~Plan.name.startswith("[حذف شده]"),
+        ~Plan.code.startswith("custom_"),
+    )
     total_plans = int(await session.scalar(select(func.count()).select_from(query.subquery())) or 0)
     
     result = await session.execute(

@@ -16,11 +16,19 @@ _SENTINEL = object()
 
 
 RENEWAL_SETTINGS_KEY = "service.renewal"
+CUSTOM_PURCHASE_SETTINGS_KEY = "service.custom_purchase"
 
 @dataclass(slots=True)
 class RenewalSettings:
     price_per_gb: float
     price_per_10_days: float
+
+
+@dataclass(slots=True)
+class CustomPurchaseSettings:
+    enabled: bool
+    price_per_gb: float
+    price_per_day: float
 
 
 @dataclass(slots=True)
@@ -100,6 +108,51 @@ class AppSettingsRepository:
         record = AppSetting(
             key=RENEWAL_SETTINGS_KEY,
             value_json={"price_per_gb": 0.1, "price_per_10_days": 0.1},
+        )
+        self.session.add(record)
+        await self.session.flush()
+        return record
+
+    async def get_custom_purchase_settings(self) -> CustomPurchaseSettings:
+        record = await self._get_or_create_custom_purchase_record()
+        payload = dict(record.value_json or {})
+        return CustomPurchaseSettings(
+            enabled=bool(payload.get("enabled", False)),
+            price_per_gb=float(payload.get("price_per_gb", 0.1)),
+            price_per_day=float(payload.get("price_per_day", 0.1)),
+        )
+
+    async def update_custom_purchase_settings(
+        self,
+        *,
+        enabled: bool | None = None,
+        price_per_gb: float | None = None,
+        price_per_day: float | None = None,
+    ) -> CustomPurchaseSettings:
+        record = await self._get_or_create_custom_purchase_record()
+        payload = dict(record.value_json or {})
+
+        if enabled is not None:
+            payload["enabled"] = enabled
+        if price_per_gb is not None:
+            payload["price_per_gb"] = price_per_gb
+        if price_per_day is not None:
+            payload["price_per_day"] = price_per_day
+
+        record.value_json = payload
+        self.session.add(record)
+        await self.session.flush()
+        await self.session.refresh(record)
+        return await self.get_custom_purchase_settings()
+
+    async def _get_or_create_custom_purchase_record(self) -> AppSetting:
+        record = await self.session.get(AppSetting, CUSTOM_PURCHASE_SETTINGS_KEY)
+        if record is not None:
+            return record
+
+        record = AppSetting(
+            key=CUSTOM_PURCHASE_SETTINGS_KEY,
+            value_json={"enabled": False, "price_per_gb": 0.1, "price_per_day": 0.1},
         )
         self.session.add(record)
         await self.session.flush()

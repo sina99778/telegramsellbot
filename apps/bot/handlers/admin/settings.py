@@ -28,6 +28,7 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     
     settings_repo = AppSettingsRepository(session)
     renewal_settings = await settings_repo.get_renewal_settings()
+    custom_settings = await settings_repo.get_custom_purchase_settings()
     toman_rate = await settings_repo.get_toman_rate()
     
     text = AdminMessages.SETTINGS_MENU.format(
@@ -35,10 +36,20 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
         price_per_10_days=renewal_settings.price_per_10_days,
         toman_rate=f"{toman_rate:,}",
     )
+    custom_status = "فعال" if custom_settings.enabled else "غیرفعال"
+    text += (
+        "\n"
+        f"🧩 خرید دلخواه: {custom_status}\n"
+        f"قیمت خرید دلخواه هر ۱ گیگ: {custom_settings.price_per_gb} دلار\n"
+        f"قیمت خرید دلخواه هر ۱ روز: {custom_settings.price_per_day} دلار\n"
+    )
 
     builder = InlineKeyboardBuilder()
     builder.button(text="تغییر قیمت تمدید هر ۱ گیگ", callback_data="admin:settings:edit_gb")
     builder.button(text="تغییر قیمت تمدید هر ۱۰ روز", callback_data="admin:settings:edit_days")
+    builder.button(text="🧩 فعال/غیرفعال خرید دلخواه", callback_data="admin:settings:custom_toggle")
+    builder.button(text="🧩 قیمت خرید دلخواه هر ۱ گیگ", callback_data="admin:settings:custom_gb")
+    builder.button(text="🧩 قیمت خرید دلخواه هر ۱ روز", callback_data="admin:settings:custom_day")
     builder.button(text="💱 تغییر نرخ دلار به تومان", callback_data="admin:settings:edit_toman")
     builder.button(text="💳 مدیریت درگاه‌های پرداخت", callback_data="admin:settings:gateways")
     builder.button(text="🧪 فعال/غیرفعال کانفیگ تست", callback_data="admin:settings:trial_toggle")
@@ -114,6 +125,73 @@ async def edit_price_days_submit(message: Message, state: FSMContext, session: A
     settings_repo = AppSettingsRepository(session)
     await settings_repo.update_renewal_settings(price_per_10_days=new_price)
 
+    await state.clear()
+    await message.answer(AdminMessages.SETTINGS_UPDATED)
+
+
+@router.callback_query(F.data == "admin:settings:custom_toggle")
+async def toggle_custom_purchase(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    settings_repo = AppSettingsRepository(session)
+    custom = await settings_repo.get_custom_purchase_settings()
+    await settings_repo.update_custom_purchase_settings(enabled=not custom.enabled)
+    await bot_settings_menu(callback, session)
+
+
+@router.callback_query(F.data == "admin:settings:custom_gb")
+async def edit_custom_price_gb_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(SettingsStates.waiting_for_custom_price_gb)
+    builder = InlineKeyboardBuilder()
+    builder.button(text=AdminButtons.BACK, callback_data="admin:bot_settings")
+    await safe_edit_or_send(
+        callback,
+        "قیمت خرید دلخواه برای هر ۱ گیگابایت (به دلار) را وارد کنید:",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.message(SettingsStates.waiting_for_custom_price_gb)
+async def edit_custom_price_gb_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text:
+        return
+    try:
+        new_price = float(message.text.strip().replace(",", "."))
+        if new_price <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer(AdminMessages.INVALID_PRICE)
+        return
+    await AppSettingsRepository(session).update_custom_purchase_settings(price_per_gb=new_price)
+    await state.clear()
+    await message.answer(AdminMessages.SETTINGS_UPDATED)
+
+
+@router.callback_query(F.data == "admin:settings:custom_day")
+async def edit_custom_price_day_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(SettingsStates.waiting_for_custom_price_day)
+    builder = InlineKeyboardBuilder()
+    builder.button(text=AdminButtons.BACK, callback_data="admin:bot_settings")
+    await safe_edit_or_send(
+        callback,
+        "قیمت خرید دلخواه برای هر ۱ روز (به دلار) را وارد کنید:",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.message(SettingsStates.waiting_for_custom_price_day)
+async def edit_custom_price_day_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text:
+        return
+    try:
+        new_price = float(message.text.strip().replace(",", "."))
+        if new_price <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer(AdminMessages.INVALID_PRICE)
+        return
+    await AppSettingsRepository(session).update_custom_purchase_settings(price_per_day=new_price)
     await state.clear()
     await message.answer(AdminMessages.SETTINGS_UPDATED)
 

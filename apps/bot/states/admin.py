@@ -59,6 +59,8 @@ class SettingsStates(StatesGroup):
     waiting_for_price_gb = State()
     waiting_for_price_days = State()
     waiting_for_toman_rate = State()
+    waiting_for_custom_price_gb = State()
+    waiting_for_custom_price_day = State()
 
 
 class DiscountStates(StatesGroup):

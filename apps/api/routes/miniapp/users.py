@@ -50,6 +50,7 @@ from schemas.api.miniapp import (
     PaymentView,
     PlanListResponse,
     PlanView,
+    CustomPurchaseView,
     PurchaseRequest,
     PurchaseResponse,
     ReferralView,
@@ -71,6 +72,12 @@ from schemas.api.miniapp import (
 from schemas.internal.nowpayments import NowPaymentsPaymentCreateRequest
 from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
 from services.admin_gifts import grant_bulk_subscription_gift
+from services.custom_purchase import (
+    CustomPurchaseError,
+    calculate_custom_purchase_price,
+    create_custom_purchase_plan,
+    get_custom_purchase_template_plan,
+)
 from services.payment import review_gateway_payment
 from services.plan_inventory import (
     PlanStockError,
@@ -221,7 +228,9 @@ async def get_admin_overview(
         select(func.count()).select_from(XUIServerRecord).where(XUIServerRecord.is_active.is_(True))
     ) or 0
     active_plans_count = await session.scalar(
-        select(func.count()).select_from(Plan).where(Plan.is_active.is_(True))
+        select(func.count())
+        .select_from(Plan)
+        .where(Plan.is_active.is_(True), ~Plan.code.startswith("custom_"))
     ) or 0
 
     modules = [
@@ -515,6 +524,61 @@ async def update_admin_plan_stock(
             "sold_count": stock.sold_count,
             "stock_remaining": stock.stock_remaining,
             "is_unlimited": stock.is_unlimited,
+        },
+    }
+
+
+@router.post("/admin/custom-purchase")
+async def update_admin_custom_purchase(
+    body: dict[str, Any],
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    _require_admin(user)
+    payload: dict[str, Any] = {}
+    if "enabled" in body:
+        payload["enabled"] = bool(body.get("enabled"))
+    if "price_per_gb" in body:
+        try:
+            price_per_gb = float(str(body.get("price_per_gb")).replace(",", "."))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="قیمت هر گیگ معتبر نیست.") from exc
+        if price_per_gb <= 0:
+            raise HTTPException(status_code=400, detail="قیمت هر گیگ باید بیشتر از صفر باشد.")
+        payload["price_per_gb"] = price_per_gb
+    if "price_per_day" in body:
+        try:
+            price_per_day = float(str(body.get("price_per_day")).replace(",", "."))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="قیمت هر روز معتبر نیست.") from exc
+        if price_per_day <= 0:
+            raise HTTPException(status_code=400, detail="قیمت هر روز باید بیشتر از صفر باشد.")
+        payload["price_per_day"] = price_per_day
+
+    if not payload:
+        raise HTTPException(status_code=400, detail="مقداری برای بروزرسانی ارسال نشده است.")
+
+    settings = await AppSettingsRepository(session).update_custom_purchase_settings(**payload)
+    _record_admin_action(
+        session,
+        user,
+        "edit_custom_purchase_settings",
+        "app_setting",
+        None,
+        {
+            "enabled": settings.enabled,
+            "price_per_gb": settings.price_per_gb,
+            "price_per_day": settings.price_per_day,
+        },
+    )
+    await session.flush()
+    return {
+        "ok": True,
+        "message": "تنظیمات خرید دلخواه بروزرسانی شد.",
+        "settings": {
+            "enabled": settings.enabled,
+            "price_per_gb": settings.price_per_gb,
+            "price_per_day": settings.price_per_day,
         },
     }
 
@@ -926,7 +990,7 @@ async def _admin_stats(session: AsyncSession) -> list[dict[str, Any]]:
     return [
         {"title": "کل کاربران", "value": int(await session.scalar(select(func.count()).select_from(User)) or 0)},
         {"title": "سرویس‌های فعال", "value": int(await session.scalar(select(func.count()).select_from(Subscription).where(Subscription.status.in_(["active", "pending_activation"]))) or 0)},
-        {"title": "پلن‌های فعال", "value": int(await session.scalar(select(func.count()).select_from(Plan).where(Plan.is_active.is_(True))) or 0)},
+        {"title": "پلن‌های فعال", "value": int(await session.scalar(select(func.count()).select_from(Plan).where(Plan.is_active.is_(True), ~Plan.code.startswith("custom_"))) or 0)},
         {"title": "پرداخت‌های منتظر", "value": int(await session.scalar(select(func.count()).select_from(Payment).where(Payment.payment_status.in_(["waiting", "pending"]))) or 0)},
     ]
 
@@ -1081,7 +1145,12 @@ def _format_admin_stock(stock: Any) -> str:
 
 
 async def _admin_plans(session: AsyncSession) -> list[dict[str, Any]]:
-    result = await session.execute(select(Plan).order_by(Plan.created_at.desc()).limit(50))
+    result = await session.execute(
+        select(Plan)
+        .where(~Plan.code.startswith("custom_"))
+        .order_by(Plan.created_at.desc())
+        .limit(50)
+    )
     plans = list(result.scalars().all())
     stock_by_plan_id = await get_plan_stock_map(session, [p.id for p in plans])
     return [
@@ -1203,8 +1272,22 @@ async def _admin_settings(session: AsyncSession) -> list[dict[str, Any]]:
     trial = await repo.get_trial_settings()
     gw = await repo.get_gateway_settings()
     toman = await repo.get_toman_rate()
+    custom = await repo.get_custom_purchase_settings()
     return [
         {"id": "trial", "title": "کانفیگ تست", "subtitle": "فعال" if trial.enabled else "غیرفعال", "actions": []},
+        {
+            "id": "custom_purchase",
+            "title": "خرید حجم و زمان دلخواه",
+            "subtitle": (
+                f"{'فعال' if custom.enabled else 'غیرفعال'} | "
+                f"هر GB: {custom.price_per_gb}$ | هر روز: {custom.price_per_day}$"
+            ),
+            "actions": [
+                {"label": "فعال/غیرفعال", "action": "toggle_custom_purchase"},
+                {"label": "قیمت هر GB", "action": "edit_custom_gb"},
+                {"label": "قیمت هر روز", "action": "edit_custom_day"},
+            ],
+        },
         {"id": "tetrapay", "title": "درگاه تتراپی", "subtitle": "فعال" if gw.tetrapay_enabled else "غیرفعال", "actions": []},
         {"id": "nowpayments", "title": "NOWPayments", "subtitle": "فعال" if gw.nowpayments_enabled else "غیرفعال", "actions": []},
         {"id": "manual", "title": "پرداخت دستی", "subtitle": "فعال" if gw.manual_crypto_enabled else "غیرفعال", "actions": []},
@@ -1241,11 +1324,16 @@ async def get_plans(
     session: AsyncSession = Depends(get_db_session),
 ) -> PlanListResponse:
     result = await session.execute(
-        select(Plan).where(Plan.is_active.is_(True)).order_by(Plan.price.asc())
+        select(Plan)
+        .where(Plan.is_active.is_(True), ~Plan.code.startswith("custom_"))
+        .order_by(Plan.price.asc())
     )
     plans = list(result.scalars().all())
     stock_by_plan_id = await get_effective_plan_stock_map(session, [p.id for p in plans])
     plans = [p for p in plans if is_stock_available(stock_by_plan_id[p.id])]
+    settings_repo = AppSettingsRepository(session)
+    custom_settings = await settings_repo.get_custom_purchase_settings()
+    custom_template = await get_custom_purchase_template_plan(session)
     return PlanListResponse(
         plans=[
             PlanView(
@@ -1262,7 +1350,18 @@ async def get_plans(
                 is_unlimited=stock_by_plan_id[p.id].is_unlimited,
             )
             for p in plans
-        ]
+        ],
+        custom_purchase=CustomPurchaseView(
+            enabled=custom_settings.enabled,
+            price_per_gb=Decimal(str(custom_settings.price_per_gb)),
+            price_per_day=Decimal(str(custom_settings.price_per_day)),
+            can_purchase=bool(
+                custom_settings.enabled
+                and custom_settings.price_per_gb > 0
+                and custom_settings.price_per_day > 0
+                and custom_template is not None
+            ),
+        ),
     )
 
 
@@ -1292,13 +1391,16 @@ async def create_purchase(
             detail="این نام کانفیگ قبلاً استفاده شده است.",
         )
 
-    plan = await session.get(Plan, body.plan_id)
-    if plan is None or not plan.is_active:
-        raise HTTPException(status_code=404, detail="این پلن در دسترس نیست.")
-    try:
-        await ensure_plan_available(session, plan.id)
-    except PlanStockError as exc:
-        raise HTTPException(status_code=409, detail="موجودی این پلن تمام شده است.") from exc
+    if body.plan_id is None:
+        plan = await _create_custom_purchase_plan_for_request(session, body)
+    else:
+        plan = await session.get(Plan, body.plan_id)
+        if plan is None or not plan.is_active:
+            raise HTTPException(status_code=404, detail="این پلن در دسترس نیست.")
+        try:
+            await ensure_plan_available(session, plan.id)
+        except PlanStockError as exc:
+            raise HTTPException(status_code=409, detail="موجودی این پلن تمام شده است.") from exc
 
     if user.wallet is None:
         raise HTTPException(status_code=404, detail="کیف پول کاربر پیدا نشد.")
@@ -1311,6 +1413,37 @@ async def create_purchase(
         return await _create_tetrapay_purchase(session, user, plan, config_name)
 
     raise HTTPException(status_code=400, detail="روش پرداخت نامعتبر است.")
+
+
+async def _create_custom_purchase_plan_for_request(
+    session: AsyncSession,
+    body: PurchaseRequest,
+) -> Plan:
+    try:
+        volume_gb = float(body.custom_volume_gb or 0)
+        duration_days = int(body.custom_duration_days or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="حجم یا مدت خرید دلخواه معتبر نیست.") from exc
+    settings_repo = AppSettingsRepository(session)
+    custom_settings = await settings_repo.get_custom_purchase_settings()
+    template_plan = await get_custom_purchase_template_plan(session)
+    if template_plan is None:
+        raise HTTPException(status_code=400, detail="برای خرید دلخواه حداقل یک پلن فعال متصل به سرور لازم است.")
+    try:
+        price = calculate_custom_purchase_price(
+            custom_settings,
+            volume_gb=volume_gb,
+            duration_days=duration_days,
+        )
+        return await create_custom_purchase_plan(
+            session,
+            volume_gb=volume_gb,
+            duration_days=duration_days,
+            price=price,
+            template_plan=template_plan,
+        )
+    except CustomPurchaseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 async def _purchase_with_wallet(

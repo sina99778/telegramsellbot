@@ -22,7 +22,14 @@ from models.order import Order
 from models.plan import Plan
 from models.xui import XUIClientRecord
 from repositories.discount import DiscountRepository
+from repositories.settings import AppSettingsRepository
 from repositories.user import UserRepository
+from services.custom_purchase import (
+    CustomPurchaseError,
+    calculate_custom_purchase_price,
+    create_custom_purchase_plan,
+    get_custom_purchase_template_plan,
+)
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
 from services.plan_inventory import ensure_plan_available, get_effective_plan_stock_map, is_stock_available, PlanStockError
 from services.wallet.manager import InsufficientBalanceError, WalletManager
@@ -46,19 +53,126 @@ async def ignore_pagination_noop(callback: CallbackQuery) -> None:
 async def show_available_plans(message: Message, session: AsyncSession) -> None:
     result = await session.execute(
         select(Plan)
-        .where(Plan.is_active.is_(True))
+        .where(Plan.is_active.is_(True), ~Plan.code.startswith("custom_"))
         .order_by(Plan.price.asc(), Plan.duration_days.asc())
     )
     plans = list(result.scalars().all())
     stock_by_plan_id = await get_effective_plan_stock_map(session, [plan.id for plan in plans])
     plans = [plan for plan in plans if is_stock_available(stock_by_plan_id[plan.id])]
-    if not plans:
+    custom_settings = await AppSettingsRepository(session).get_custom_purchase_settings()
+    custom_available = bool(
+        custom_settings.enabled
+        and custom_settings.price_per_gb > 0
+        and custom_settings.price_per_day > 0
+        and await get_custom_purchase_template_plan(session)
+    )
+    if not plans and not custom_available:
         await message.answer(Messages.NO_PLANS_AVAILABLE)
         return
 
     await message.answer(
         Messages.CHOOSE_PLAN,
-        reply_markup=build_plan_selection_keyboard(plans, stock_by_plan_id),
+        reply_markup=build_plan_selection_keyboard(
+            plans,
+            stock_by_plan_id,
+            include_custom_purchase=custom_available,
+        ),
+    )
+
+
+@router.callback_query(F.data == "purchase:custom")
+async def custom_purchase_volume_start(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    await callback.answer()
+    settings = await AppSettingsRepository(session).get_custom_purchase_settings()
+    template = await get_custom_purchase_template_plan(session)
+    if not settings.enabled or settings.price_per_gb <= 0 or settings.price_per_day <= 0 or template is None:
+        await safe_edit_or_send(callback, "خرید دلخواه فعلاً در دسترس نیست.")
+        return
+
+    await state.clear()
+    await state.update_data(custom_purchase=True)
+    await state.set_state(PurchaseStates.waiting_for_custom_volume)
+    await safe_edit_or_send(
+        callback,
+        "🧩 خرید دلخواه\n\n"
+        f"قیمت هر ۱ گیگ: {settings.price_per_gb} دلار\n"
+        f"قیمت هر ۱ روز: {settings.price_per_day} دلار\n\n"
+        "حجم موردنظر را به گیگابایت وارد کنید. مثال: 25",
+    )
+
+
+@router.message(PurchaseStates.waiting_for_custom_volume)
+async def custom_purchase_volume_entered(message: Message, state: FSMContext) -> None:
+    if not message.text:
+        return
+    try:
+        volume_gb = float(message.text.strip().replace(",", "."))
+    except ValueError:
+        await message.answer("حجم معتبر نیست. مثال: 25")
+        return
+    if volume_gb <= 0:
+        await message.answer("حجم باید بیشتر از صفر باشد.")
+        return
+    await state.update_data(custom_volume_gb=volume_gb)
+    await state.set_state(PurchaseStates.waiting_for_custom_days)
+    await message.answer("مدت موردنظر را به روز وارد کنید. مثال: 30")
+
+
+@router.message(PurchaseStates.waiting_for_custom_days)
+async def custom_purchase_days_entered(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    if not message.text:
+        return
+    try:
+        duration_days = int(message.text.strip().replace(",", ""))
+    except ValueError:
+        await message.answer("مدت معتبر نیست. مثال: 30")
+        return
+    if duration_days <= 0:
+        await message.answer("مدت باید بیشتر از صفر باشد.")
+        return
+
+    data = await state.get_data()
+    volume_gb = float(data.get("custom_volume_gb") or 0)
+    settings = await AppSettingsRepository(session).get_custom_purchase_settings()
+    template = await get_custom_purchase_template_plan(session)
+    if template is None:
+        await state.clear()
+        await message.answer("برای خرید دلخواه حداقل یک پلن فعال متصل به سرور لازم است.")
+        return
+
+    try:
+        price = calculate_custom_purchase_price(
+            settings,
+            volume_gb=volume_gb,
+            duration_days=duration_days,
+        )
+        custom_plan = await create_custom_purchase_plan(
+            session,
+            volume_gb=volume_gb,
+            duration_days=duration_days,
+            price=price,
+            template_plan=template,
+        )
+    except CustomPurchaseError as exc:
+        await state.clear()
+        await message.answer(str(exc))
+        return
+
+    await state.update_data(
+        plan_id=str(custom_plan.id),
+        custom_duration_days=duration_days,
+    )
+    await state.set_state(PurchaseStates.waiting_for_config_name)
+    await message.answer(
+        f"خرید دلخواه آماده شد:\n"
+        f"حجم: {volume_gb:g} GB\n"
+        f"مدت: {duration_days} روز\n"
+        f"قیمت: {price} USD\n\n"
+        "حالا یک نام برای کانفیگ وارد کنید. فقط حروف انگلیسی، عدد، خط تیره و آندرلاین.",
     )
 
 

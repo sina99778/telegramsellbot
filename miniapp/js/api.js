@@ -85,6 +85,7 @@ const API = (() => {
         updateAdminPlanDuration:(id, duration_days) => request('POST', `/admin/plans/${encodeURIComponent(id)}/duration`, { duration_days }),
         updateAdminPlanPrice:(id, price) => request('POST', `/admin/plans/${encodeURIComponent(id)}/price`, { price }),
         updateAdminPlanStock:(id, sales_limit) => request('POST', `/admin/plans/${encodeURIComponent(id)}/stock`, { sales_limit }),
+        updateCustomPurchaseSettings:(payload) => request('POST', '/admin/custom-purchase', payload),
         createReadyPlan:(payload)     => request('POST', '/admin/ready-configs/plans', payload),
         addReadyConfigs:(id, content) => request('POST', `/admin/ready-configs/${encodeURIComponent(id)}/items`, { content }),
         createTopup:    (payload)     => request('POST', '/wallet/topup', payload),

@@ -47,6 +47,13 @@ class PlanView(BaseModel):
     is_unlimited: bool = True
 
 
+class CustomPurchaseView(BaseModel):
+    enabled: bool
+    price_per_gb: Decimal
+    price_per_day: Decimal
+    can_purchase: bool = False
+
+
 class TransactionView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
@@ -96,6 +103,7 @@ class MiniAppDashboardResponse(BaseModel):
 
 class PlanListResponse(BaseModel):
     plans: list[PlanView]
+    custom_purchase: CustomPurchaseView | None = None
 
 
 class TransactionListResponse(BaseModel):
@@ -137,9 +145,11 @@ class MiniAppConfigResponse(BaseModel):
 
 
 class PurchaseRequest(BaseModel):
-    plan_id: UUID
+    plan_id: UUID | None = None
     config_name: str
     payment_method: str
+    custom_volume_gb: float | None = None
+    custom_duration_days: int | None = None
 
 
 class PurchaseResponse(BaseModel):

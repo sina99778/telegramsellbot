@@ -15,8 +15,16 @@ from models.plan import Plan
 def build_plan_selection_keyboard(
     plans: Iterable[Plan],
     stock_by_plan_id: Mapping[UUID, object] | None = None,
+    *,
+    include_custom_purchase: bool = False,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
+
+    if include_custom_purchase:
+        builder.button(
+            text="🧩 خرید حجم و زمان دلخواه",
+            callback_data="purchase:custom",
+        )
 
     for plan in plans:
         stock = stock_by_plan_id.get(plan.id) if stock_by_plan_id else None

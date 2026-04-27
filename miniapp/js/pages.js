@@ -284,20 +284,34 @@ const Pages = (() => {
         try {
             const data = await API.getPlans();
             plansCache = data.plans || [];
-            renderPlans(data.plans);
+            renderPlans(data.plans || [], data.custom_purchase || null);
         } catch (e) {
             UI.toast('خطا: ' + e.message, 'error');
         }
     }
 
-    function renderPlans(plans) {
+    function renderPlans(plans, customPurchase = null) {
         const container = document.getElementById('plans-list');
-        if (!plans.length) {
+        if (!plans.length && !customPurchase?.can_purchase) {
             container.innerHTML = `<div class="empty-state"><div class="empty-icon">${UI.icon('store')}</div><p>هیچ پلنی موجود نیست</p></div>`;
             return;
         }
 
-        container.innerHTML = plans.map((plan, i) => `
+        const customCard = customPurchase?.can_purchase ? `
+            <div class="plan-card popular">
+                <div class="plan-name">حجم و زمان دلخواه</div>
+                <div class="plan-specs">
+                    <span class="plan-spec">${UI.icon('database')} هر GB: $${UI.formatMoney(customPurchase.price_per_gb)}</span>
+                    <span class="plan-spec">${UI.icon('clock')} هر روز: $${UI.formatMoney(customPurchase.price_per_day)}</span>
+                </div>
+                <div class="plan-price">دلخواه <small>/ USD</small></div>
+                <button class="btn btn-primary btn-block plan-buy-btn" onclick="Pages.buyCustomPlan()">
+                    ${UI.icon('sliders')} ساخت پلن دلخواه
+                </button>
+            </div>
+        ` : '';
+
+        container.innerHTML = customCard + plans.map((plan, i) => `
             <div class="plan-card ${i === 1 ? 'popular' : ''}">
                 <div class="plan-name">${plan.name}</div>
                 <div class="plan-specs">
@@ -312,6 +326,72 @@ const Pages = (() => {
                 </button>
             </div>
         `).join('');
+    }
+
+    function buyCustomPlan() {
+        UI.showModal(`
+            <div class="modal-title">خرید دلخواه</div>
+            <label class="form-label" for="custom-volume-gb">حجم به گیگابایت</label>
+            <input id="custom-volume-gb" class="form-input" inputmode="decimal" dir="ltr" placeholder="25">
+            <label class="form-label" for="custom-duration-days">مدت به روز</label>
+            <input id="custom-duration-days" class="form-input" inputmode="numeric" dir="ltr" placeholder="30">
+            <label class="form-label" for="custom-config-name">نام کانفیگ</label>
+            <input id="custom-config-name" class="form-input" dir="ltr" maxlength="32" placeholder="MyVPN" autocomplete="off">
+            <p class="form-hint">بعد از پرداخت، کانفیگ با همین حجم و مدت ساخته می‌شود.</p>
+            <div class="checkout-methods">
+                <button class="btn btn-primary btn-block" onclick="Pages.submitCustomPurchase('wallet')">پرداخت با کیف پول</button>
+                <button class="btn btn-secondary btn-block" onclick="Pages.submitCustomPurchase('tetrapay')">درگاه ریالی تتراپی</button>
+                <button class="btn btn-secondary btn-block" onclick="Pages.submitCustomPurchase('nowpayments')">درگاه ارزی NOWPayments</button>
+            </div>
+            <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
+        `);
+        setTimeout(() => document.getElementById('custom-volume-gb')?.focus(), 100);
+    }
+
+    async function submitCustomPurchase(paymentMethod) {
+        const volume = Number((document.getElementById('custom-volume-gb')?.value || '').replace(',', '.'));
+        const duration = Number(document.getElementById('custom-duration-days')?.value || 0);
+        const configName = (document.getElementById('custom-config-name')?.value || '').trim();
+        if (!Number.isFinite(volume) || volume <= 0) {
+            UI.toast('حجم معتبر نیست', 'error');
+            return;
+        }
+        if (!Number.isInteger(duration) || duration <= 0) {
+            UI.toast('مدت باید عدد صحیح بیشتر از صفر باشد', 'error');
+            return;
+        }
+        if (!/^[a-zA-Z0-9_-]{3,32}$/.test(configName)) {
+            UI.toast('نام کانفیگ نامعتبر است', 'error');
+            return;
+        }
+        try {
+            UI.toast('در حال ساخت سفارش دلخواه...');
+            const result = await API.createPurchase({
+                plan_id: null,
+                custom_volume_gb: volume,
+                custom_duration_days: duration,
+                config_name: configName,
+                payment_method: paymentMethod,
+            });
+            if (result.invoice_url) {
+                UI.showModal(`
+                    <div class="modal-title">فاکتور آماده است</div>
+                    <p class="form-hint" style="text-align:center;margin-bottom:14px">${escapeHtml(result.message)}</p>
+                    <button class="btn btn-primary btn-block" onclick="Pages.openInvoice(decodeURIComponent('${encodeURIComponent(result.invoice_url)}'))">پرداخت فاکتور</button>
+                    <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">بستن</button>
+                `);
+                return;
+            }
+            UI.showModal(`
+                <div class="modal-title">کانفیگ ساخته شد</div>
+                <p class="form-hint" style="text-align:center;margin-bottom:12px">${escapeHtml(result.message)}</p>
+                ${result.sub_link ? `<div class="copy-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(result.sub_link)}'))">${escapeHtml(result.sub_link)}</div>` : ''}
+                ${result.vless_uri ? `<div class="copy-box" style="margin-top:10px" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(result.vless_uri)}'))">${escapeHtml(result.vless_uri)}</div>` : ''}
+                <button class="btn btn-primary btn-block" style="margin-top:12px" onclick="UI.closeModal(); Pages.load_dashboard(); UI.navigate('configs')">مشاهده سرویس‌ها</button>
+            `);
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
     }
 
     function buyPlan(planId) {
@@ -877,6 +957,9 @@ const Pages = (() => {
         if (action === 'edit_plan_duration') return `Pages.showPlanDurationEditor('${id}')`;
         if (action === 'edit_plan_price') return `Pages.showPlanPriceEditor('${id}')`;
         if (action === 'edit_plan_stock') return `Pages.showPlanStockEditor('${id}')`;
+        if (action === 'toggle_custom_purchase') return `Pages.toggleCustomPurchase('${escapeHtml(item.subtitle || '')}')`;
+        if (action === 'edit_custom_gb') return `Pages.showCustomPurchasePriceEditor('gb')`;
+        if (action === 'edit_custom_day') return `Pages.showCustomPurchasePriceEditor('day')`;
         return `Pages.runAdminAction('${section}', '${escapeHtml(action)}', '${id}')`;
     }
 
@@ -961,6 +1044,49 @@ const Pages = (() => {
             UI.toast(result.message || 'موجودی پلن تغییر کرد');
             UI.closeModal();
             await openAdminModule('plans');
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
+    }
+
+    async function toggleCustomPurchase(subtitle = '') {
+        const enabled = String(subtitle).trim().startsWith('فعال');
+        try {
+            const result = await API.updateCustomPurchaseSettings({ enabled: !enabled });
+            UI.toast(result.message || 'تنظیمات خرید دلخواه تغییر کرد');
+            await openAdminModule('settings');
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
+    }
+
+    function showCustomPurchasePriceEditor(type) {
+        const isGb = type === 'gb';
+        UI.showModal(`
+            <div class="modal-title">${isGb ? 'قیمت هر GB' : 'قیمت هر روز'} خرید دلخواه</div>
+            <label class="form-label" for="custom-purchase-price">قیمت به دلار</label>
+            <input id="custom-purchase-price" class="form-input" inputmode="decimal" dir="ltr" placeholder="${isGb ? '0.10' : '0.05'}">
+            <p class="form-hint">این قیمت برای ساخت پلن‌های دلخواه جدید استفاده می‌شود.</p>
+            <button class="btn btn-primary btn-block" onclick="Pages.submitCustomPurchasePrice('${type}')">ثبت قیمت</button>
+            <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
+        `);
+        setTimeout(() => document.getElementById('custom-purchase-price')?.focus(), 100);
+    }
+
+    async function submitCustomPurchasePrice(type) {
+        const raw = document.getElementById('custom-purchase-price')?.value || '';
+        const normalized = raw.replace(',', '.');
+        const price = Number(normalized);
+        if (!Number.isFinite(price) || price <= 0) {
+            UI.toast('قیمت باید عدد بیشتر از صفر باشد', 'error');
+            return;
+        }
+        try {
+            const payload = type === 'gb' ? { price_per_gb: normalized } : { price_per_day: normalized };
+            const result = await API.updateCustomPurchaseSettings(payload);
+            UI.toast(result.message || 'قیمت خرید دلخواه تغییر کرد');
+            UI.closeModal();
+            await openAdminModule('settings');
         } catch (e) {
             UI.toast(e.message, 'error');
         }
@@ -1175,9 +1301,10 @@ const Pages = (() => {
         load_dashboard, load_store, load_configs,
         load_wallet, load_support, load_referral, load_admin,
         showConfigDetail, showRenewal, setRenewalType, submitRenewal,
-        buyPlan, submitPurchase, openInvoice, topupWallet, submitTopup, refreshPayment,
+        buyPlan, buyCustomPlan, submitPurchase, submitCustomPurchase, openInvoice, topupWallet, submitTopup, refreshPayment,
         showTicketHistory, closeTicket, openAdminModule, openAdminTicket, submitAdminTicketReply, runAdminAction,
         showPlanDurationEditor, submitPlanDuration, showPlanPriceEditor, submitPlanPrice, showPlanStockEditor, submitPlanStock,
+        toggleCustomPurchase, showCustomPurchasePriceEditor, submitCustomPurchasePrice,
         searchAdminUsers, openAdminUser, runAdminUserAction, adjustAdminUserBalance, sendAdminUserMessage,
         createReadyConfigPlan, addReadyConfigItems, submitAdminGift, openBotAdmin,
     };
