@@ -42,6 +42,9 @@ class PlanView(BaseModel):
     volume_gb: float
     price: Decimal
     currency: str
+    sales_limit: int = 0
+    stock_remaining: int | None = None
+    is_unlimited: bool = True
 
 
 class TransactionView(BaseModel):

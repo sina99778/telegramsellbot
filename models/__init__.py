@@ -5,6 +5,7 @@ from models.broadcast import BroadcastJob
 from models.order import Order
 from models.payment import Payment
 from models.plan import Plan
+from models.plan_inventory import PlanInventory
 from models.ready_config import ReadyConfigItem, ReadyConfigPool
 from models.subscription import Subscription
 from models.ticket import Ticket, TicketMessage
@@ -19,6 +20,7 @@ __all__ = [
     "BroadcastJob",
     "Payment",
     "Plan",
+    "PlanInventory",
     "ReadyConfigItem",
     "ReadyConfigPool",
     "Order",

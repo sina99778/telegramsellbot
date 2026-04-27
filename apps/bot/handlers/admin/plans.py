@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from apps.bot.keyboards.inline import add_pagination_controls
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
-from apps.bot.states.admin import CreatePlanStates
+from apps.bot.states.admin import CreatePlanStates, PlanEditStates
 from core.formatting import format_volume_bytes
 from core.texts import AdminButtons, AdminMessages, Buttons, Common
 from models.plan import Plan
@@ -27,6 +27,7 @@ from models.user import User
 from models.xui import XUIInboundRecord
 from repositories.audit import AuditLogRepository
 from apps.bot.utils.messaging import safe_edit_or_send
+from services.plan_inventory import get_plan_stock_map, set_plan_sales_limit
 
 
 router = Router(name="admin-plans")
@@ -73,6 +74,8 @@ DECIMAL_SEPARATORS = {".", ",", "\u066b", "\u066c", "\u060c"}
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_duration_days)
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_volume_gb)
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_price)
+@router.message(Command("cancel"), PlanEditStates.waiting_for_duration_days)
+@router.message(Command("cancel"), PlanEditStates.waiting_for_stock_limit)
 async def cancel_plan_creation(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(AdminMessages.PLAN_CREATION_CANCELLED)
@@ -83,6 +86,8 @@ async def cancel_plan_creation(message: Message, state: FSMContext) -> None:
 @router.message(CreatePlanStates.waiting_for_duration_days, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(CreatePlanStates.waiting_for_volume_gb, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(CreatePlanStates.waiting_for_price, F.text.in_(MENU_INTERRUPT_TEXTS))
+@router.message(PlanEditStates.waiting_for_duration_days, F.text.in_(MENU_INTERRUPT_TEXTS))
+@router.message(PlanEditStates.waiting_for_stock_limit, F.text.in_(MENU_INTERRUPT_TEXTS))
 async def interrupt_plan_creation_with_main_menu(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(AdminMessages.PLAN_CREATION_INTERRUPTED)
@@ -148,6 +153,8 @@ async def view_plan(
         await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
         return
 
+    stock_state = (await get_plan_stock_map(session, [plan.id]))[plan.id]
+    stock_label = "نامحدود" if stock_state.is_unlimited else f"{stock_state.stock_remaining} از {stock_state.sales_limit}"
     text = (
         f"📦 **جزئیات پلن:**\n\n"
         f"🏷 **نام:** {plan.name}\n"
@@ -156,6 +163,7 @@ async def view_plan(
         f"(ID: {plan.inbound.xui_inbound_remote_id if plan.inbound else '-'})\n"
         f"⏳ **مدت:** {plan.duration_days} روز\n"
         f"💾 **حجم:** {format_volume_bytes(plan.volume_bytes)}\n"
+        f"📦 **موجودی فروش:** {stock_label}\n"
         f"💲 **قیمت:** {plan.price} {plan.currency}\n"
         f"وضعیت: {Common.ACTIVE if plan.is_active else Common.INACTIVE}\n"
     )
@@ -169,6 +177,14 @@ async def view_plan(
     builder.button(
         text="🔗 تغییر سرور",
         callback_data=PlanActionCallback(action="change_inbound", plan_id=plan.id, page=callback_data.page).pack(),
+    )
+    builder.button(
+        text="⏳ تغییر مدت",
+        callback_data=PlanActionCallback(action="edit_duration", plan_id=plan.id, page=callback_data.page).pack(),
+    )
+    builder.button(
+        text="📦 تنظیم موجودی فروش",
+        callback_data=PlanActionCallback(action="edit_stock", plan_id=plan.id, page=callback_data.page).pack(),
     )
     builder.button(
         text="✖ حذف پلن",
@@ -412,6 +428,127 @@ async def toggle_plan(
     )
     await session.flush()
     await view_plan(callback, ViewPlanCallback(plan_id=plan.id, page=callback_data.page), session)
+
+
+@router.callback_query(PlanActionCallback.filter(F.action == "edit_duration"))
+async def edit_plan_duration_start(
+    callback: CallbackQuery,
+    callback_data: PlanActionCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    await callback.answer()
+    plan = await session.get(Plan, callback_data.plan_id)
+    if plan is None:
+        await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
+        return
+    await state.update_data(plan_id=str(plan.id), page=callback_data.page)
+    await state.set_state(PlanEditStates.waiting_for_duration_days)
+    await safe_edit_or_send(
+        callback,
+        f"مدت فعلی پلن «{plan.name}»: {plan.duration_days} روز\n"
+        "مدت جدید را به روز ارسال کنید. برای لغو /cancel را بزنید.",
+    )
+
+
+@router.message(PlanEditStates.waiting_for_duration_days)
+async def edit_plan_duration_submit(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    if not message.text:
+        return
+    try:
+        duration_days = int(_normalize_integer_input(message.text))
+    except ValueError:
+        await message.answer(AdminMessages.INVALID_INTEGER)
+        return
+    if duration_days <= 0:
+        await message.answer(AdminMessages.DURATION_GT_ZERO)
+        return
+    data = await state.get_data()
+    await state.clear()
+    plan = await session.get(Plan, UUID(str(data["plan_id"])))
+    if plan is None:
+        await message.answer(AdminMessages.PLAN_NOT_FOUND)
+        return
+    old_duration = plan.duration_days
+    plan.duration_days = duration_days
+    await AuditLogRepository(session).log_action(
+        actor_user_id=admin_user.id,
+        action="edit_plan_duration",
+        entity_type="plan",
+        entity_id=plan.id,
+        payload={"from": old_duration, "to": duration_days},
+    )
+    await session.flush()
+    await message.answer(f"✅ مدت پلن «{plan.name}» به {duration_days} روز تغییر کرد.")
+
+
+@router.callback_query(PlanActionCallback.filter(F.action == "edit_stock"))
+async def edit_plan_stock_start(
+    callback: CallbackQuery,
+    callback_data: PlanActionCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    await callback.answer()
+    plan = await session.get(Plan, callback_data.plan_id)
+    if plan is None:
+        await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
+        return
+    stock_state = (await get_plan_stock_map(session, [plan.id]))[plan.id]
+    current = "نامحدود" if stock_state.is_unlimited else f"{stock_state.stock_remaining} از {stock_state.sales_limit}"
+    await state.update_data(plan_id=str(plan.id), page=callback_data.page)
+    await state.set_state(PlanEditStates.waiting_for_stock_limit)
+    await safe_edit_or_send(
+        callback,
+        f"موجودی فعلی پلن «{plan.name}»: {current}\n"
+        "حداکثر تعداد فروش را ارسال کنید. عدد 0 یعنی نامحدود و به کاربر نمایش داده نمی‌شود.\n"
+        "برای لغو /cancel را بزنید.",
+    )
+
+
+@router.message(PlanEditStates.waiting_for_stock_limit)
+async def edit_plan_stock_submit(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    if not message.text:
+        return
+    try:
+        sales_limit = int(_normalize_integer_input(message.text))
+    except ValueError:
+        await message.answer(AdminMessages.INVALID_INTEGER)
+        return
+    if sales_limit < 0:
+        await message.answer("موجودی باید صفر یا بیشتر باشد.")
+        return
+    data = await state.get_data()
+    await state.clear()
+    plan = await session.get(Plan, UUID(str(data["plan_id"])))
+    if plan is None:
+        await message.answer(AdminMessages.PLAN_NOT_FOUND)
+        return
+    stock = await set_plan_sales_limit(session, plan.id, sales_limit)
+    await AuditLogRepository(session).log_action(
+        actor_user_id=admin_user.id,
+        action="edit_plan_stock",
+        entity_type="plan",
+        entity_id=plan.id,
+        payload={
+            "sales_limit": stock.sales_limit,
+            "sold_count": stock.sold_count,
+            "stock_remaining": stock.stock_remaining,
+        },
+    )
+    await session.flush()
+    label = "نامحدود" if stock.is_unlimited else f"{stock.stock_remaining} باقی‌مانده از {stock.sales_limit}"
+    await message.answer(f"✅ موجودی فروش پلن «{plan.name}» تنظیم شد: {label}")
 
 
 @router.callback_query(PlanActionCallback.filter(F.action == "delete"))

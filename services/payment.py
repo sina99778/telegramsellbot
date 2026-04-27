@@ -76,7 +76,10 @@ async def process_successful_payment(
 
         logger.info("[PAYMENT] Step 2: Direct purchase — provisioning config")
         try:
-            await _handle_direct_purchase(session, payment)
+            provisioned = await _handle_direct_purchase(session, payment)
+            if provisioned is False:
+                logger.info("[PAYMENT] Direct purchase was not provisioned; leaving retry flag open")
+                return
             # Mark as provisioned so retries don't duplicate
             payload = dict(payment.callback_payload or {})
             payload["provisioned"] = True
@@ -93,7 +96,7 @@ async def process_successful_payment(
 async def _handle_direct_purchase(
     session: AsyncSession,
     payment: Payment,
-) -> None:
+) -> bool:
     """Provision a subscription after a successful direct purchase payment."""
     purchase_meta = payment.callback_payload
     logger.info("[PROVISION] callback_payload keys: %s", list(purchase_meta.keys()) if purchase_meta else "EMPTY")
@@ -101,7 +104,7 @@ async def _handle_direct_purchase(
     plan_id_str = purchase_meta.get("plan_id") if purchase_meta else None
     if not plan_id_str:
         logger.error("[PROVISION] Missing plan_id in purchase metadata for payment %s", payment.id)
-        return
+        return False
 
     plan_id = UUID(plan_id_str)
     config_name = purchase_meta.get("config_name", "VPN")
@@ -119,13 +122,13 @@ async def _handle_direct_purchase(
 
     if not user:
         logger.error("[PROVISION] User %s not found", payment.user_id)
-        return
+        return False
     if not plan:
         logger.error("[PROVISION] Plan %s not found", plan_id)
-        return
+        return False
     if not user.wallet:
         logger.error("[PROVISION] User %s has no wallet", payment.user_id)
-        return
+        return False
 
     logger.info("[PROVISION] User: %s (tg=%s), Plan: %s", user.id, user.telegram_id, plan.name)
 
@@ -213,6 +216,10 @@ async def _handle_direct_purchase(
         logger.info("[PROVISION] Provisioning SUCCESS — sub_link=%s", provisioned.sub_link[:50] if provisioned.sub_link else "NONE")
 
         order.status = "provisioned"
+        payload = dict(payment.callback_payload or {})
+        payload["provisioned"] = True
+        payload["subscription_id"] = str(provisioned.subscription.id)
+        payment.callback_payload = payload
 
         volume_label = format_volume_bytes(plan.volume_bytes)
         sub_link = provisioned.sub_link
@@ -227,7 +234,7 @@ async def _handle_direct_purchase(
             f"📅 مدت: {plan.duration_days} روز\n"
             f"💰 پرداخت شده: {final_price:.2f} {plan.currency}\n"
             f"💳 روش: درگاه پرداخت\n"
-            f"🕐 فعال‌سازی: از اولین اتصال\n\n"
+            f"🕐 فعال‌سازی: از زمان تحویل\n\n"
             "━━━━━━━━━━━━━━━━\n"
             f"🔗 ساب لینک:\n{sub_link}\n\n"
             f"📋 کانفیگ مستقیم:\n{vless_uri}"
@@ -288,8 +295,10 @@ async def _handle_direct_purchase(
             )
         except Exception as bot_exc:
             logger.error("[PROVISION] Failed to send refund message: %s", bot_exc)
+        return False
     except Exception as exc:
         logger.error("[PROVISION] Failed to send config to user: %s", exc, exc_info=True)
+        return order is not None and order.status == "provisioned"
     finally:
         await bot.session.close()
 
@@ -298,6 +307,7 @@ async def _handle_direct_purchase(
         await _process_gateway_referral_bonus(session, user)
     except Exception as exc:
         logger.warning("[PROVISION] Referral bonus failed: %s", exc)
+    return True
 
 
 async def review_gateway_payment(session: AsyncSession, payment: Payment) -> str:

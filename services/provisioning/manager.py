@@ -16,6 +16,7 @@ from models.ready_config import ReadyConfigItem, ReadyConfigPool
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from schemas.internal.xui import XUIClient
+from services.plan_inventory import PlanStockError, release_plan_sale, reserve_plan_sale
 from services.wallet.manager import WalletManager
 from services.xui.client import SanaeiXUIClient
 from services.xui.runtime import build_sub_link, build_vless_uri, create_xui_client_for_server, ensure_inbound_server_loaded
@@ -75,6 +76,8 @@ class ProvisioningManager:
         if order is None or order.user_id != user_id:
             raise ProvisioningError("Order not found for user.")
 
+        stock_reserved = False
+
         ready_pool = await self.session.scalar(
             select(ReadyConfigPool).where(
                 ReadyConfigPool.plan_id == plan.id,
@@ -82,12 +85,20 @@ class ProvisioningManager:
             )
         )
         if ready_pool is not None:
-            return await self._provision_ready_config(
-                user_id=user_id,
-                plan=plan,
-                order=order,
-                pool=ready_pool,
-            )
+            try:
+                stock_reserved = await reserve_plan_sale(self.session, plan.id)
+                return await self._provision_ready_config(
+                    user_id=user_id,
+                    plan=plan,
+                    order=order,
+                    pool=ready_pool,
+                )
+            except PlanStockError as exc:
+                raise ProvisioningError("Plan stock is sold out.") from exc
+            except Exception:
+                if stock_reserved:
+                    await release_plan_sale(self.session, plan.id)
+                raise
 
         # Use the plan's specific inbound instead of random selection
         inbound: XUIInboundRecord | None = plan.inbound
@@ -131,6 +142,9 @@ class ProvisioningManager:
         client_uuid, _username, _email, sub_id = await self._generate_unique_client_identity()
         # Use config_name as the display name in X-UI panel
         email = f"{config_name}_{sub_id[:6]}"
+        now = datetime.now(timezone.utc)
+        ends_at = now + timedelta(days=plan.duration_days)
+        expiry_ms = int(ends_at.timestamp() * 1000)
         sub_link = build_sub_link(server, sub_id)
         vless_uri = build_vless_uri(
             client_uuid=client_uuid,
@@ -146,7 +160,7 @@ class ProvisioningManager:
             email=email,
             limitIp=1,
             totalGB=plan.volume_bytes,
-            expiryTime=0,
+            expiryTime=expiry_ms,
             enable=True,
             subId=sub_id,
             comment=f"user:{user_id};order:{order_id}",
@@ -160,18 +174,26 @@ class ProvisioningManager:
             config_name,
         )
 
-        async with self._get_xui_client_for_server(server) as xui_client:
-            await xui_client.add_client_to_inbound(inbound.xui_inbound_remote_id, xui_payload)
+        try:
+            stock_reserved = await reserve_plan_sale(self.session, plan.id)
+            async with self._get_xui_client_for_server(server) as xui_client:
+                await xui_client.add_client_to_inbound(inbound.xui_inbound_remote_id, xui_payload)
+        except PlanStockError as exc:
+            raise ProvisioningError("Plan stock is sold out.") from exc
+        except Exception:
+            if stock_reserved:
+                await release_plan_sale(self.session, plan.id)
+            raise
 
         subscription = Subscription(
             user_id=user_id,
             order_id=order_id,
             plan_id=plan_id,
-            status="pending_activation",
-            activation_mode="first_use",
-            starts_at=None,
-            ends_at=None,
-            activated_at=None,
+            status="active",
+            activation_mode="immediate",
+            starts_at=now,
+            ends_at=ends_at,
+            activated_at=now,
             expired_at=None,
             volume_bytes=plan.volume_bytes,
             used_bytes=0,

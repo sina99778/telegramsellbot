@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from math import ceil
-from typing import Iterable
+from typing import Iterable, Mapping
 from uuid import UUID
 
 from aiogram.types import InlineKeyboardMarkup
@@ -12,12 +12,17 @@ from core.texts import Buttons
 from models.plan import Plan
 
 
-def build_plan_selection_keyboard(plans: Iterable[Plan]) -> InlineKeyboardMarkup:
+def build_plan_selection_keyboard(
+    plans: Iterable[Plan],
+    stock_by_plan_id: Mapping[UUID, object] | None = None,
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
 
     for plan in plans:
+        stock = stock_by_plan_id.get(plan.id) if stock_by_plan_id else None
+        stock_label = _format_stock_label(stock)
         builder.button(
-            text=_format_plan_button_text(plan.name, plan.price, plan.currency),
+            text=_format_plan_button_text(plan.name, plan.price, plan.currency, stock_label),
             callback_data=f"plan:select:{plan.id}",
         )
     builder.button(text="❌ انصراف", callback_data="purchase:cancel")
@@ -112,8 +117,18 @@ def build_renewal_keyboard(sub_id: UUID) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def _format_plan_button_text(name: str, price: Decimal, currency: str) -> str:
-    return f"{name} - {price:.2f} {currency}"
+def _format_plan_button_text(name: str, price: Decimal, currency: str, stock_label: str = "") -> str:
+    suffix = f" | {stock_label}" if stock_label else ""
+    return f"{name} - {price:.2f} {currency}{suffix}"
+
+
+def _format_stock_label(stock: object | None) -> str:
+    if stock is None or getattr(stock, "is_unlimited", True):
+        return ""
+    remaining = getattr(stock, "stock_remaining", None)
+    if remaining is None:
+        return ""
+    return f"موجودی: {remaining}"
 
 
 def add_pagination_controls(

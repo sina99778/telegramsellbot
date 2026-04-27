@@ -83,6 +83,27 @@ The interactive installer then helps you:
 
 ## Feature Overview
 
+## Ready-Config Sales Guide
+
+Use ready-config sales when you cannot connect an X-UI panel, or when you want to sell a fixed inventory of already-created configs.
+
+1. Open the admin panel in the bot or Mini App.
+2. Go to `Ready Config Sales`.
+3. Create a ready-config plan with name, duration, volume, and price.
+4. Upload a `.txt` file or paste text where each non-empty line is one full config link.
+5. Keep the ready-config pool active.
+6. Users buy the plan like any normal plan.
+7. After wallet or gateway payment is confirmed, the bot takes the oldest available line, marks it sold, creates the subscription, and sends that config to the user.
+
+Operational notes:
+
+- One line is delivered to one customer only.
+- Empty lines and duplicate uploaded configs are ignored.
+- If the ready-config inventory is empty, the plan is hidden from user purchase lists.
+- Plan stock can also be limited from plan management. A stock limit of `0` means unlimited plan sales. For ready-config plans, the effective visible stock is still capped by the number of available uploaded configs.
+- Plan duration is applied from delivery time. Updating a plan duration affects future purchases, not already-delivered subscriptions.
+- Admins can resend delivered configs from recovery/support tools if a user misses the message.
+
 ### User Flows
 
 - start and onboarding

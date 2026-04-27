@@ -71,6 +71,14 @@ from schemas.api.miniapp import (
 from schemas.internal.nowpayments import NowPaymentsPaymentCreateRequest
 from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
 from services.payment import review_gateway_payment
+from services.plan_inventory import (
+    PlanStockError,
+    ensure_plan_available,
+    get_effective_plan_stock_map,
+    get_plan_stock_map,
+    is_stock_available,
+    set_plan_sales_limit,
+)
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
 from services.renewal import apply_renewal, calculate_renewal_price
 from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
@@ -394,6 +402,79 @@ async def post_admin_action(
         return {"ok": True, "message": "تیکت بسته شد."}
 
     raise HTTPException(status_code=400, detail="اکشن نامعتبر است.")
+
+
+@router.post("/admin/plans/{plan_id}/duration")
+async def update_admin_plan_duration(
+    plan_id: UUID,
+    body: dict[str, Any],
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    _require_admin(user)
+    plan = await session.get(Plan, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="پلن پیدا نشد.")
+    try:
+        duration_days = int(body.get("duration_days") or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="مدت پلن معتبر نیست.") from exc
+    if duration_days <= 0:
+        raise HTTPException(status_code=400, detail="مدت پلن باید بیشتر از صفر باشد.")
+    old_duration = plan.duration_days
+    plan.duration_days = duration_days
+    _record_admin_action(
+        session,
+        user,
+        "edit_plan_duration",
+        "plan",
+        plan.id,
+        {"from": old_duration, "to": duration_days},
+    )
+    await session.flush()
+    return {"ok": True, "message": "مدت پلن تغییر کرد.", "duration_days": duration_days}
+
+
+@router.post("/admin/plans/{plan_id}/stock")
+async def update_admin_plan_stock(
+    plan_id: UUID,
+    body: dict[str, Any],
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    _require_admin(user)
+    plan = await session.get(Plan, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="پلن پیدا نشد.")
+    try:
+        sales_limit = int(body.get("sales_limit") or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="موجودی پلن معتبر نیست.") from exc
+    stock = await set_plan_sales_limit(session, plan.id, sales_limit)
+    _record_admin_action(
+        session,
+        user,
+        "edit_plan_stock",
+        "plan",
+        plan.id,
+        {
+            "sales_limit": stock.sales_limit,
+            "sold_count": stock.sold_count,
+            "stock_remaining": stock.stock_remaining,
+        },
+    )
+    await session.flush()
+    label = "نامحدود" if stock.is_unlimited else f"{stock.stock_remaining} باقی‌مانده"
+    return {
+        "ok": True,
+        "message": f"موجودی پلن تنظیم شد: {label}",
+        "stock": {
+            "sales_limit": stock.sales_limit,
+            "sold_count": stock.sold_count,
+            "stock_remaining": stock.stock_remaining,
+            "is_unlimited": stock.is_unlimited,
+        },
+    }
 
 
 @router.post("/admin/ready-configs/plans")
@@ -853,16 +934,32 @@ async def _admin_subscriptions(session: AsyncSession) -> list[dict[str, Any]]:
     ]
 
 
+def _format_admin_stock(stock: Any) -> str:
+    if stock.is_unlimited:
+        return "موجودی نامحدود"
+    return f"موجودی: {stock.stock_remaining} از {stock.sales_limit}"
+
+
 async def _admin_plans(session: AsyncSession) -> list[dict[str, Any]]:
     result = await session.execute(select(Plan).order_by(Plan.created_at.desc()).limit(50))
+    plans = list(result.scalars().all())
+    stock_by_plan_id = await get_plan_stock_map(session, [p.id for p in plans])
     return [
         {
             "id": str(p.id),
             "title": p.name,
-            "subtitle": f"{p.price} {p.currency} | {p.duration_days} روز | {'فعال' if p.is_active else 'غیرفعال'}",
-            "actions": [{"label": "فعال/غیرفعال", "action": "toggle_plan"}],
+            "subtitle": (
+                f"{p.price} {p.currency} | {p.duration_days} روز | "
+                f"{_format_admin_stock(stock_by_plan_id[p.id])} | "
+                f"{'فعال' if p.is_active else 'غیرفعال'}"
+            ),
+            "actions": [
+                {"label": "فعال/غیرفعال", "action": "toggle_plan"},
+                {"label": "تغییر مدت", "action": "edit_plan_duration"},
+                {"label": "تنظیم موجودی", "action": "edit_plan_stock"},
+            ],
         }
-        for p in result.scalars().all()
+        for p in plans
     ]
 
 
@@ -1006,6 +1103,8 @@ async def get_plans(
         select(Plan).where(Plan.is_active.is_(True)).order_by(Plan.price.asc())
     )
     plans = list(result.scalars().all())
+    stock_by_plan_id = await get_effective_plan_stock_map(session, [p.id for p in plans])
+    plans = [p for p in plans if is_stock_available(stock_by_plan_id[p.id])]
     return PlanListResponse(
         plans=[
             PlanView(
@@ -1017,6 +1116,9 @@ async def get_plans(
                 volume_gb=round(p.volume_bytes / (1024**3), 2),
                 price=p.price,
                 currency=p.currency,
+                sales_limit=stock_by_plan_id[p.id].sales_limit,
+                stock_remaining=stock_by_plan_id[p.id].stock_remaining,
+                is_unlimited=stock_by_plan_id[p.id].is_unlimited,
             )
             for p in plans
         ]
@@ -1052,6 +1154,10 @@ async def create_purchase(
     plan = await session.get(Plan, body.plan_id)
     if plan is None or not plan.is_active:
         raise HTTPException(status_code=404, detail="این پلن در دسترس نیست.")
+    try:
+        await ensure_plan_available(session, plan.id)
+    except PlanStockError as exc:
+        raise HTTPException(status_code=409, detail="موجودی این پلن تمام شده است.") from exc
 
     if user.wallet is None:
         raise HTTPException(status_code=404, detail="کیف پول کاربر پیدا نشد.")

@@ -25,6 +25,11 @@ class CreatePlanStates(StatesGroup):
     waiting_for_price = State()
 
 
+class PlanEditStates(StatesGroup):
+    waiting_for_duration_days = State()
+    waiting_for_stock_limit = State()
+
+
 class ManageUserStates(StatesGroup):
     waiting_for_telegram_id = State()
     waiting_for_balance_adjustment = State()

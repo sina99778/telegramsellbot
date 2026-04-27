@@ -304,6 +304,7 @@ const Pages = (() => {
                     <span class="plan-spec">${UI.icon('database')} ${plan.volume_gb} GB</span>
                     <span class="plan-spec">${UI.icon('clock')} ${plan.duration_days} روز</span>
                     <span class="plan-spec">${UI.icon('lock')} ${plan.protocol}</span>
+                    ${plan.is_unlimited ? '' : `<span class="plan-spec">${UI.icon('package')} موجودی ${plan.stock_remaining}</span>`}
                 </div>
                 <div class="plan-price">$${UI.formatMoney(plan.price)} <small>/ ${plan.currency}</small></div>
                 <button class="btn btn-primary btn-block plan-buy-btn" onclick="Pages.buyPlan('${plan.id}')">
@@ -326,6 +327,7 @@ const Pages = (() => {
                 <div><span>حجم</span><strong>${escapeHtml(plan.volume_gb)} GB</strong></div>
                 <div><span>مدت</span><strong>${escapeHtml(plan.duration_days)} روز</strong></div>
                 <div><span>قیمت</span><strong>$${UI.formatMoney(plan.price)}</strong></div>
+                ${plan.is_unlimited ? '' : `<div><span>موجودی</span><strong>${escapeHtml(plan.stock_remaining)}</strong></div>`}
             </div>
             <label class="form-label" for="checkout-config-name">نام کانفیگ</label>
             <input id="checkout-config-name" class="form-input" dir="ltr" maxlength="32" placeholder="MyVPN" autocomplete="off">
@@ -837,11 +839,75 @@ const Pages = (() => {
                 </div>
                 ${actions.length ? `<div class="admin-actions">
                     ${actions.map(action => `
-                        <button class="btn btn-secondary btn-sm" onclick="${action.action === 'view_ticket' ? `Pages.openAdminTicket('${escapeHtml(item.id)}')` : `Pages.runAdminAction('${section}', '${escapeHtml(action.action)}', '${escapeHtml(item.id)}')`}">${escapeHtml(action.label)}</button>
+                        <button class="btn btn-secondary btn-sm" onclick="${getAdminActionHandler(section, action.action, item)}">${escapeHtml(action.label)}</button>
                     `).join('')}
                 </div>` : ''}
             </div>
         `;
+    }
+
+    function getAdminActionHandler(section, action, item) {
+        const id = escapeHtml(item.id);
+        if (action === 'view_ticket') return `Pages.openAdminTicket('${id}')`;
+        if (action === 'edit_plan_duration') return `Pages.showPlanDurationEditor('${id}')`;
+        if (action === 'edit_plan_stock') return `Pages.showPlanStockEditor('${id}')`;
+        return `Pages.runAdminAction('${section}', '${escapeHtml(action)}', '${id}')`;
+    }
+
+    function showPlanDurationEditor(planId) {
+        UI.showModal(`
+            <div class="modal-title">تغییر مدت پلن</div>
+            <label class="form-label" for="admin-plan-duration">مدت جدید به روز</label>
+            <input id="admin-plan-duration" class="form-input" inputmode="numeric" placeholder="30">
+            <p class="form-hint">این مقدار برای خریدهای جدید اعمال می‌شود.</p>
+            <button class="btn btn-primary btn-block" onclick="Pages.submitPlanDuration('${planId}')">ثبت مدت</button>
+            <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
+        `);
+        setTimeout(() => document.getElementById('admin-plan-duration')?.focus(), 100);
+    }
+
+    async function submitPlanDuration(planId) {
+        const duration = Number(document.getElementById('admin-plan-duration')?.value || 0);
+        if (!Number.isInteger(duration) || duration <= 0) {
+            UI.toast('مدت پلن باید عدد صحیح بیشتر از صفر باشد', 'error');
+            return;
+        }
+        try {
+            const result = await API.updateAdminPlanDuration(planId, duration);
+            UI.toast(result.message || 'مدت پلن تغییر کرد');
+            UI.closeModal();
+            await openAdminModule('plans');
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
+    }
+
+    function showPlanStockEditor(planId) {
+        UI.showModal(`
+            <div class="modal-title">تنظیم موجودی فروش</div>
+            <label class="form-label" for="admin-plan-stock">حداکثر تعداد فروش</label>
+            <input id="admin-plan-stock" class="form-input" inputmode="numeric" placeholder="0">
+            <p class="form-hint">عدد 0 یعنی موجودی نامحدود و در ربات به کاربر نمایش داده نمی‌شود.</p>
+            <button class="btn btn-primary btn-block" onclick="Pages.submitPlanStock('${planId}')">ثبت موجودی</button>
+            <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
+        `);
+        setTimeout(() => document.getElementById('admin-plan-stock')?.focus(), 100);
+    }
+
+    async function submitPlanStock(planId) {
+        const stock = Number(document.getElementById('admin-plan-stock')?.value || 0);
+        if (!Number.isInteger(stock) || stock < 0) {
+            UI.toast('موجودی باید عدد صحیح صفر یا بیشتر باشد', 'error');
+            return;
+        }
+        try {
+            const result = await API.updateAdminPlanStock(planId, stock);
+            UI.toast(result.message || 'موجودی پلن تغییر کرد');
+            UI.closeModal();
+            await openAdminModule('plans');
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
     }
 
     async function openAdminTicket(ticketId) {
@@ -1031,6 +1097,7 @@ const Pages = (() => {
         showConfigDetail, showRenewal, setRenewalType, submitRenewal,
         buyPlan, submitPurchase, openInvoice, topupWallet, submitTopup, refreshPayment,
         showTicketHistory, closeTicket, openAdminModule, openAdminTicket, submitAdminTicketReply, runAdminAction,
+        showPlanDurationEditor, submitPlanDuration, showPlanStockEditor, submitPlanStock,
         searchAdminUsers, openAdminUser, runAdminUserAction, adjustAdminUserBalance, sendAdminUserMessage,
         createReadyConfigPlan, addReadyConfigItems, openBotAdmin,
     };

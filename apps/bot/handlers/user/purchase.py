@@ -24,6 +24,7 @@ from models.xui import XUIClientRecord
 from repositories.discount import DiscountRepository
 from repositories.user import UserRepository
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
+from services.plan_inventory import ensure_plan_available, get_effective_plan_stock_map, is_stock_available, PlanStockError
 from services.wallet.manager import InsufficientBalanceError, WalletManager
 from apps.bot.utils.messaging import safe_edit_or_send
 
@@ -49,13 +50,15 @@ async def show_available_plans(message: Message, session: AsyncSession) -> None:
         .order_by(Plan.price.asc(), Plan.duration_days.asc())
     )
     plans = list(result.scalars().all())
+    stock_by_plan_id = await get_effective_plan_stock_map(session, [plan.id for plan in plans])
+    plans = [plan for plan in plans if is_stock_available(stock_by_plan_id[plan.id])]
     if not plans:
         await message.answer(Messages.NO_PLANS_AVAILABLE)
         return
 
     await message.answer(
         Messages.CHOOSE_PLAN,
-        reply_markup=build_plan_selection_keyboard(plans),
+        reply_markup=build_plan_selection_keyboard(plans, stock_by_plan_id),
     )
 
 
@@ -80,6 +83,11 @@ async def plan_selected_ask_name(
     plan = await session.get(Plan, plan_id)
     if plan is None or not plan.is_active:
         await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
+        return
+    try:
+        await ensure_plan_available(session, plan.id)
+    except PlanStockError:
+        await safe_edit_or_send(callback, "موجودی این پلن تمام شده است.")
         return
 
     await state.update_data(plan_id=str(plan_id))
@@ -385,6 +393,11 @@ async def pay_with_manual_crypto(
     if plan is None or not plan.is_active:
         await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
         return
+    try:
+        await ensure_plan_available(session, plan.id)
+    except PlanStockError:
+        await safe_edit_or_send(callback, "موجودی این پلن تمام شده است.")
+        return
 
     discount_percent = data.get("discount_percent", 0)
     original_price = plan.price
@@ -423,6 +436,11 @@ async def _process_wallet_purchase(
     plan = await session.get(Plan, plan_id)
     if user is None or user.wallet is None or plan is None or not plan.is_active:
         await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
+        return
+    try:
+        await ensure_plan_available(session, plan.id)
+    except PlanStockError:
+        await safe_edit_or_send(callback, "موجودی این پلن تمام شده است.")
         return
 
     # Calculate discounted price
@@ -487,6 +505,12 @@ async def _process_gateway_purchase(
     if user is None or plan is None or not plan.is_active:
         await state.clear()
         await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
+        return
+    try:
+        await ensure_plan_available(session, plan.id)
+    except PlanStockError:
+        await state.clear()
+        await safe_edit_or_send(callback, "موجودی این پلن تمام شده است.")
         return
 
     original_price = plan.price
@@ -591,6 +615,12 @@ async def _process_tetrapay_purchase(
     if user is None or plan is None or not plan.is_active:
         await state.clear()
         await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
+        return
+    try:
+        await ensure_plan_available(session, plan.id)
+    except PlanStockError:
+        await state.clear()
+        await safe_edit_or_send(callback, "موجودی این پلن تمام شده است.")
         return
 
     original_price = plan.price
@@ -813,7 +843,7 @@ async def _finalize_purchase(
         f"💰 پرداخت شده: *{_escape(str(final_price))} {_escape(plan.currency)}*\n"
         f"💳 روش پرداخت: *{_escape(payment_label)}*\n"
         f"{discount_line}"
-        f"🕐 فعال‌سازی: *از اولین اتصال*\n\n"
+        f"🕐 فعال‌سازی: *از زمان تحویل*\n\n"
         "━━━━━━━━━━━━━━━━\n"
         "🔗 *ساب لینک \\(برای وارد کردن در اپ\\):*\n"
         f"`{_escape(sub_link)}`\n\n"
@@ -837,7 +867,7 @@ async def _finalize_purchase(
     banner_bytes = create_traffic_banner(
         config_name=config_name,
         user_id=user.id,
-        status="pending_activation",
+        status="active",
         used_gb=0.0,
         total_gb=plan.volume_bytes / (1024**3),
         days_left=plan.duration_days,
