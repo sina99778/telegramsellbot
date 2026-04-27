@@ -4,6 +4,15 @@ Persian README: [README-FA.md](README-FA.md)
 
 TelegramSellBot is a self-hosted Telegram sales bot for operators who sell and manage VPN or proxy subscriptions through an X-UI panel. It bundles a Telegram bot, HTTP API, payment webhooks, background jobs, and deployment scripts into a single repository.
 
+## Latest Additions
+
+- Ready-config sales mode for operators who cannot connect an X-UI panel: admins can create ready-config plans, upload a text list of configs, and the bot automatically delivers the next available config after payment.
+- Telegram Mini App user panel for store, wallet top-ups, renewals, active services, support tickets, referrals, and payment refresh without sending the user back to chat flows.
+- Telegram Mini App admin panel for stats, finance, users, customers, services, plans, ready-config inventory, servers, tickets, discounts, settings, audit logs, and operational actions.
+- Mini App ticketing for users and admins, including threaded views, replies, and close actions inside the web app.
+- Gateway payment review and refresh actions for payments that need automatic re-checking after callback delays.
+- Cleaner Mini App interface using inline SVG icons instead of emoji-based navigation and cards.
+
 ## Install On A Server
 
 ### One-Line Installer
@@ -46,7 +55,9 @@ The interactive installer then helps you:
 
 - sells plans through Telegram
 - provisions configs on X-UI after successful payment
+- sells preloaded ready configs from uploaded text inventory when X-UI is not connected
 - supports renewals, top-ups, discounts, support tickets, and admin workflows
+- provides a Telegram Mini App for user and admin workflows
 - exposes webhook endpoints for payment providers
 - runs scheduled jobs for expiry reminders, reconciliation, broadcasts, backups, and health checks
 
@@ -66,7 +77,7 @@ The interactive installer then helps you:
 - `apps/api/` FastAPI app, admin endpoints, mini-app routes, and payment webhooks
 - `apps/worker/` background jobs for operational automation
 - `services/` payment, wallet, provisioning, notification, and X-UI integrations
-- `models/` and `repositories/` persistence layer
+- `models/` and `repositories/` persistence layer, including ready-config inventory
 - `core/` settings, database bootstrap, security, and shared utilities
 - `tests/` regression coverage for critical flows
 
@@ -76,14 +87,17 @@ The interactive installer then helps you:
 
 - start and onboarding
 - purchase and automatic provisioning
+- ready-config purchase and automatic delivery from uploaded inventory
 - renewal and top-up flows
 - wallet charging and spending
 - support tickets
 - config delivery and resend flows
+- Mini App flows for store, wallet, services, tickets, and referral
 
 ### Admin Flows
 
 - plan management
+- ready-config plan and inventory management
 - discount code management
 - user lookup and search
 - subscription management
@@ -91,6 +105,7 @@ The interactive installer then helps you:
 - broadcast and retargeting tools
 - server and X-UI credential management
 - stats and financial overview
+- Mini App admin panel for common management actions
 
 ### Background Jobs
 
@@ -107,6 +122,7 @@ The interactive installer then helps you:
 - domain pointed to the server for webhook and SSL setup
 - Telegram bot token
 - X-UI panel URL and credentials
+- optional ready-config text inventory when X-UI is unavailable
 - NOWPayments credentials
 - optional TetraPay credentials
 
