@@ -439,6 +439,44 @@ async def update_admin_plan_duration(
     return {"ok": True, "message": "مدت پلن تغییر کرد.", "duration_days": duration_days}
 
 
+@router.post("/admin/plans/{plan_id}/price")
+async def update_admin_plan_price(
+    plan_id: UUID,
+    body: dict[str, Any],
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    _require_admin(user)
+    plan = await session.get(Plan, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="پلن پیدا نشد.")
+    try:
+        price = Decimal(str(body.get("price") or "0"))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="قیمت پلن معتبر نیست.") from exc
+    if price <= Decimal("0"):
+        raise HTTPException(status_code=400, detail="قیمت پلن باید بیشتر از صفر باشد.")
+    old_price = plan.price
+    old_renewal_price = plan.renewal_price
+    plan.price = price
+    plan.renewal_price = price
+    _record_admin_action(
+        session,
+        user,
+        "edit_plan_price",
+        "plan",
+        plan.id,
+        {
+            "from": str(old_price),
+            "to": str(price),
+            "renewal_price_from": str(old_renewal_price),
+            "renewal_price_to": str(price),
+        },
+    )
+    await session.flush()
+    return {"ok": True, "message": "قیمت پلن تغییر کرد.", "price": str(price)}
+
+
 @router.post("/admin/plans/{plan_id}/stock")
 async def update_admin_plan_stock(
     plan_id: UUID,
@@ -1058,6 +1096,7 @@ async def _admin_plans(session: AsyncSession) -> list[dict[str, Any]]:
             "actions": [
                 {"label": "فعال/غیرفعال", "action": "toggle_plan"},
                 {"label": "تغییر مدت", "action": "edit_plan_duration"},
+                {"label": "تغییر قیمت", "action": "edit_plan_price"},
                 {"label": "تنظیم موجودی", "action": "edit_plan_stock"},
             ],
         }

@@ -875,6 +875,7 @@ const Pages = (() => {
         const id = escapeHtml(item.id);
         if (action === 'view_ticket') return `Pages.openAdminTicket('${id}')`;
         if (action === 'edit_plan_duration') return `Pages.showPlanDurationEditor('${id}')`;
+        if (action === 'edit_plan_price') return `Pages.showPlanPriceEditor('${id}')`;
         if (action === 'edit_plan_stock') return `Pages.showPlanStockEditor('${id}')`;
         return `Pages.runAdminAction('${section}', '${escapeHtml(action)}', '${id}')`;
     }
@@ -900,6 +901,36 @@ const Pages = (() => {
         try {
             const result = await API.updateAdminPlanDuration(planId, duration);
             UI.toast(result.message || 'مدت پلن تغییر کرد');
+            UI.closeModal();
+            await openAdminModule('plans');
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
+    }
+
+    function showPlanPriceEditor(planId) {
+        UI.showModal(`
+            <div class="modal-title">تغییر قیمت پلن</div>
+            <label class="form-label" for="admin-plan-price">قیمت جدید به دلار</label>
+            <input id="admin-plan-price" class="form-input" inputmode="decimal" placeholder="3.50">
+            <p class="form-hint">این قیمت برای خریدهای جدید اعمال می‌شود.</p>
+            <button class="btn btn-primary btn-block" onclick="Pages.submitPlanPrice('${planId}')">ثبت قیمت</button>
+            <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
+        `);
+        setTimeout(() => document.getElementById('admin-plan-price')?.focus(), 100);
+    }
+
+    async function submitPlanPrice(planId) {
+        const rawPrice = document.getElementById('admin-plan-price')?.value || '';
+        const normalizedPrice = rawPrice.replace(',', '.');
+        const price = Number(normalizedPrice);
+        if (!Number.isFinite(price) || price <= 0) {
+            UI.toast('قیمت پلن باید عدد بیشتر از صفر باشد', 'error');
+            return;
+        }
+        try {
+            const result = await API.updateAdminPlanPrice(planId, normalizedPrice);
+            UI.toast(result.message || 'قیمت پلن تغییر کرد');
             UI.closeModal();
             await openAdminModule('plans');
         } catch (e) {
@@ -1146,7 +1177,7 @@ const Pages = (() => {
         showConfigDetail, showRenewal, setRenewalType, submitRenewal,
         buyPlan, submitPurchase, openInvoice, topupWallet, submitTopup, refreshPayment,
         showTicketHistory, closeTicket, openAdminModule, openAdminTicket, submitAdminTicketReply, runAdminAction,
-        showPlanDurationEditor, submitPlanDuration, showPlanStockEditor, submitPlanStock,
+        showPlanDurationEditor, submitPlanDuration, showPlanPriceEditor, submitPlanPrice, showPlanStockEditor, submitPlanStock,
         searchAdminUsers, openAdminUser, runAdminUserAction, adjustAdminUserBalance, sendAdminUserMessage,
         createReadyConfigPlan, addReadyConfigItems, submitAdminGift, openBotAdmin,
     };

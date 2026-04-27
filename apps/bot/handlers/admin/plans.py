@@ -75,6 +75,7 @@ DECIMAL_SEPARATORS = {".", ",", "\u066b", "\u066c", "\u060c"}
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_volume_gb)
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_price)
 @router.message(Command("cancel"), PlanEditStates.waiting_for_duration_days)
+@router.message(Command("cancel"), PlanEditStates.waiting_for_price)
 @router.message(Command("cancel"), PlanEditStates.waiting_for_stock_limit)
 async def cancel_plan_creation(message: Message, state: FSMContext) -> None:
     await state.clear()
@@ -87,6 +88,7 @@ async def cancel_plan_creation(message: Message, state: FSMContext) -> None:
 @router.message(CreatePlanStates.waiting_for_volume_gb, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(CreatePlanStates.waiting_for_price, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(PlanEditStates.waiting_for_duration_days, F.text.in_(MENU_INTERRUPT_TEXTS))
+@router.message(PlanEditStates.waiting_for_price, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(PlanEditStates.waiting_for_stock_limit, F.text.in_(MENU_INTERRUPT_TEXTS))
 async def interrupt_plan_creation_with_main_menu(message: Message, state: FSMContext) -> None:
     await state.clear()
@@ -181,6 +183,10 @@ async def view_plan(
     builder.button(
         text="⏳ تغییر مدت",
         callback_data=PlanActionCallback(action="edit_duration", plan_id=plan.id, page=callback_data.page).pack(),
+    )
+    builder.button(
+        text="💲 تغییر قیمت",
+        callback_data=PlanActionCallback(action="edit_price", plan_id=plan.id, page=callback_data.page).pack(),
     )
     builder.button(
         text="📦 تنظیم موجودی فروش",
@@ -485,6 +491,70 @@ async def edit_plan_duration_submit(
     )
     await session.flush()
     await message.answer(f"✅ مدت پلن «{plan.name}» به {duration_days} روز تغییر کرد.")
+
+
+@router.callback_query(PlanActionCallback.filter(F.action == "edit_price"))
+async def edit_plan_price_start(
+    callback: CallbackQuery,
+    callback_data: PlanActionCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    await callback.answer()
+    plan = await session.get(Plan, callback_data.plan_id)
+    if plan is None:
+        await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
+        return
+    await state.update_data(plan_id=str(plan.id), page=callback_data.page)
+    await state.set_state(PlanEditStates.waiting_for_price)
+    await safe_edit_or_send(
+        callback,
+        f"قیمت فعلی پلن «{plan.name}»: {plan.price} {plan.currency}\n"
+        "قیمت جدید را به دلار ارسال کنید. برای لغو /cancel را بزنید.",
+    )
+
+
+@router.message(PlanEditStates.waiting_for_price)
+async def edit_plan_price_submit(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    if not message.text:
+        return
+    try:
+        price = Decimal(_normalize_decimal_input(message.text))
+    except InvalidOperation:
+        await message.answer(AdminMessages.INVALID_PRICE)
+        return
+    if price <= Decimal("0"):
+        await message.answer(AdminMessages.PRICE_GT_ZERO)
+        return
+    data = await state.get_data()
+    await state.clear()
+    plan = await session.get(Plan, UUID(str(data["plan_id"])))
+    if plan is None:
+        await message.answer(AdminMessages.PLAN_NOT_FOUND)
+        return
+    old_price = plan.price
+    old_renewal_price = plan.renewal_price
+    plan.price = price
+    plan.renewal_price = price
+    await AuditLogRepository(session).log_action(
+        actor_user_id=admin_user.id,
+        action="edit_plan_price",
+        entity_type="plan",
+        entity_id=plan.id,
+        payload={
+            "from": str(old_price),
+            "to": str(price),
+            "renewal_price_from": str(old_renewal_price),
+            "renewal_price_to": str(price),
+        },
+    )
+    await session.flush()
+    await message.answer(f"✅ قیمت پلن «{plan.name}» به {price} {plan.currency} تغییر کرد.")
 
 
 @router.callback_query(PlanActionCallback.filter(F.action == "edit_stock"))

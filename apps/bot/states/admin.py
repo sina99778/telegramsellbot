@@ -27,6 +27,7 @@ class CreatePlanStates(StatesGroup):
 
 class PlanEditStates(StatesGroup):
     waiting_for_duration_days = State()
+    waiting_for_price = State()
     waiting_for_stock_limit = State()
 
 
