@@ -5,6 +5,7 @@ const Pages = (() => {
     let dashboardData = null;
     let plansCache = [];
     let supportTicketsCache = [];
+    let adminUserSearchState = { q: '', page: 1 };
 
     function getBotUsername() {
         return (
@@ -669,6 +670,10 @@ const Pages = (() => {
         const modules = document.getElementById('admin-modules');
         if (!modules) return;
         const items = data.items || [];
+        if (section === 'users' || section === 'customers') {
+            renderAdminUsers(section, items);
+            return;
+        }
         const extra = section === 'ready_configs' ? renderReadyConfigTools(items) : '';
         modules.innerHTML = `
             <button class="btn btn-secondary btn-block" onclick="Pages.load_admin()">بازگشت به مدیریت</button>
@@ -676,6 +681,122 @@ const Pages = (() => {
             ${extra}
             <div class="admin-list">
                 ${items.length ? items.map(item => renderAdminItem(section, item)).join('') : '<div class="empty-state"><p>موردی برای نمایش نیست</p></div>'}
+            </div>
+        `;
+    }
+
+    function renderAdminUsers(section, items) {
+        const modules = document.getElementById('admin-modules');
+        if (!modules) return;
+        modules.innerHTML = `
+            <button class="btn btn-secondary btn-block" onclick="Pages.load_admin()">بازگشت به مدیریت</button>
+            <h3 class="section-title" style="margin-top:16px">${section === 'customers' ? 'مشتریان' : 'مدیریت کاربران'}</h3>
+            <div class="admin-form">
+                <strong>جستجوی کاربر</strong>
+                <div class="admin-search-row">
+                    <input id="admin-user-search" class="form-input" placeholder="آیدی تلگرام، یوزرنیم یا نام" value="${escapeHtml(adminUserSearchState.q)}">
+                    <button class="btn btn-primary" onclick="Pages.searchAdminUsers(1)">جستجو</button>
+                </div>
+            </div>
+            <div id="admin-users-results" class="admin-list">
+                ${items.length ? items.map(item => renderAdminUserSummary(item)).join('') : '<div class="empty-state"><p>کاربری برای نمایش نیست</p></div>'}
+            </div>
+        `;
+        document.getElementById('admin-user-search')?.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') searchAdminUsers(1);
+        });
+    }
+
+    function renderAdminUserSummary(item) {
+        return `
+            <div class="admin-item">
+                <div>
+                    <strong>${escapeHtml(item.title ?? item.name ?? '-')}</strong>
+                    <span>${escapeHtml(item.subtitle ?? `${item.telegram_id || '-'} | ${item.role || '-'} | ${item.status || '-'}`)}</span>
+                </div>
+                <div class="admin-actions">
+                    <button class="btn btn-primary btn-sm" onclick="Pages.openAdminUser('${escapeHtml(item.id)}')">پروفایل</button>
+                    <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminAction('users', 'toggle_user_ban', '${escapeHtml(item.id)}')">بن/رفع بن</button>
+                    <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminAction('users', 'reset_trial', '${escapeHtml(item.id)}')">ریست تست</button>
+                </div>
+            </div>
+        `;
+    }
+
+    async function searchAdminUsers(page = 1) {
+        const input = document.getElementById('admin-user-search');
+        const q = (input?.value || '').trim();
+        adminUserSearchState = { q, page };
+        try {
+            const data = await API.searchAdminUsers(q, page);
+            const container = document.getElementById('admin-users-results');
+            if (!container) return;
+            container.innerHTML = `
+                ${data.items.length ? data.items.map(item => renderAdminUserSummary(item)).join('') : '<div class="empty-state"><p>نتیجه‌ای پیدا نشد</p></div>'}
+                <div class="admin-pager">
+                    <button class="btn btn-secondary btn-sm" ${data.page <= 1 ? 'disabled' : ''} onclick="Pages.searchAdminUsers(${data.page - 1})">قبلی</button>
+                    <span>${data.page} / ${Math.max(1, Math.ceil(data.total / data.page_size))}</span>
+                    <button class="btn btn-secondary btn-sm" ${!data.has_next ? 'disabled' : ''} onclick="Pages.searchAdminUsers(${data.page + 1})">بعدی</button>
+                </div>
+            `;
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
+    }
+
+    async function openAdminUser(userId) {
+        try {
+            const user = await API.getAdminUser(userId);
+            renderAdminUserProfile(user);
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
+    }
+
+    function renderAdminUserProfile(user) {
+        const modules = document.getElementById('admin-modules');
+        if (!modules) return;
+        const subs = user.subscriptions || [];
+        modules.innerHTML = `
+            <button class="btn btn-secondary btn-block" onclick="Pages.openAdminModule('users')">بازگشت به کاربران</button>
+            <div class="admin-profile">
+                <div>
+                    <strong>${escapeHtml(user.name || '-')}</strong>
+                    <span>${escapeHtml(user.telegram_id)} | @${escapeHtml(user.username || '-')}</span>
+                </div>
+                <div class="admin-profile-grid">
+                    <div><span>نقش</span><strong>${escapeHtml(user.role)}</strong></div>
+                    <div><span>وضعیت</span><strong>${escapeHtml(user.status)}</strong></div>
+                    <div><span>موجودی</span><strong>$${UI.formatMoney(user.wallet_balance)}</strong></div>
+                    <div><span>تست گرفته</span><strong>${user.has_received_free_trial ? 'بله' : 'خیر'}</strong></div>
+                </div>
+                <div class="admin-actions wide">
+                    <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminUserAction('${user.id}', 'toggle_user_ban')">بن/رفع بن</button>
+                    <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminUserAction('${user.id}', 'toggle_user_role')">تغییر نقش</button>
+                    <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminUserAction('${user.id}', 'reset_trial')">ریست تست</button>
+                </div>
+            </div>
+            <div class="admin-form">
+                <strong>تغییر موجودی</strong>
+                <input id="admin-balance-amount" class="form-input" inputmode="decimal" placeholder="مثلا 5 یا -2.5">
+                <button class="btn btn-primary btn-block" onclick="Pages.adjustAdminUserBalance('${user.id}')">ثبت تغییر موجودی</button>
+            </div>
+            <div class="admin-form">
+                <strong>ارسال پیام به کاربر</strong>
+                <textarea id="admin-user-message" class="admin-ticket-reply" rows="4" placeholder="متن پیام..."></textarea>
+                <button class="btn btn-primary btn-block" onclick="Pages.sendAdminUserMessage('${user.id}')">ارسال پیام</button>
+            </div>
+            <h3 class="section-title compact-title">سرویس‌های کاربر</h3>
+            <div class="admin-list">
+                ${subs.length ? subs.map(sub => `
+                    <div class="admin-item">
+                        <div>
+                            <strong>${escapeHtml(sub.config_name || sub.plan_name || 'سرویس')}</strong>
+                            <span>${escapeHtml(sub.status)} | ${UI.formatBytes(sub.used_bytes)} / ${UI.formatBytes(sub.volume_bytes)} | ${UI.daysLeft(sub.ends_at)}</span>
+                        </div>
+                        ${sub.sub_link ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(sub.sub_link)}'))">کپی</button>` : ''}
+                    </div>
+                `).join('') : '<div class="empty-state compact"><p>سرویسی برای این کاربر ثبت نشده</p></div>'}
             </div>
         `;
     }
@@ -784,6 +905,43 @@ const Pages = (() => {
         }
     }
 
+    async function runAdminUserAction(userId, action) {
+        try {
+            const result = await API.runAdminAction({ action, id: userId });
+            UI.toast(result.message || 'انجام شد');
+            await openAdminUser(userId);
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
+    }
+
+    async function adjustAdminUserBalance(userId) {
+        const amount = document.getElementById('admin-balance-amount')?.value || '0';
+        try {
+            const result = await API.adjustAdminUserBalance(userId, amount);
+            UI.toast(result.message || 'موجودی تغییر کرد');
+            if (result.user) renderAdminUserProfile(result.user);
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
+    }
+
+    async function sendAdminUserMessage(userId) {
+        const input = document.getElementById('admin-user-message');
+        const text = (input?.value || '').trim();
+        if (!text) {
+            UI.toast('متن پیام خالی است', 'error');
+            return;
+        }
+        try {
+            const result = await API.sendAdminUserMessage(userId, text);
+            UI.toast(result.message || 'پیام ارسال شد');
+            if (input) input.value = '';
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
+    }
+
     async function createReadyConfigPlan() {
         const payload = {
             name: document.getElementById('ready-plan-name')?.value.trim(),
@@ -873,6 +1031,7 @@ const Pages = (() => {
         showConfigDetail, showRenewal, setRenewalType, submitRenewal,
         buyPlan, submitPurchase, openInvoice, topupWallet, submitTopup, refreshPayment,
         showTicketHistory, closeTicket, openAdminModule, openAdminTicket, submitAdminTicketReply, runAdminAction,
+        searchAdminUsers, openAdminUser, runAdminUserAction, adjustAdminUserBalance, sendAdminUserMessage,
         createReadyConfigPlan, addReadyConfigItems, openBotAdmin,
     };
 })();

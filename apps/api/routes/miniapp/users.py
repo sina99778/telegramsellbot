@@ -17,10 +17,11 @@ from urllib.parse import parse_qsl
 from uuid import UUID, uuid4
 
 from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import SecretStr
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -350,9 +351,21 @@ async def post_admin_action(
         if target is None:
             raise HTTPException(status_code=404, detail="کاربر پیدا نشد.")
         target.status = "active" if target.status == "banned" else "banned"
+        target.is_bot_blocked = target.status == "banned"
         _record_admin_action(session, user, action, "user", target.id, {"status": target.status})
         await session.flush()
         return {"ok": True, "message": "وضعیت کاربر تغییر کرد."}
+
+    if action == "toggle_user_role":
+        target = await session.get(User, target_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="کاربر پیدا نشد.")
+        if target.telegram_id == settings.owner_telegram_id or target.role == "owner":
+            raise HTTPException(status_code=400, detail="نقش مالک اصلی قابل تغییر نیست.")
+        target.role = "admin" if target.role == "user" else "user"
+        _record_admin_action(session, user, action, "user", target.id, {"role": target.role})
+        await session.flush()
+        return {"ok": True, "message": "نقش کاربر تغییر کرد."}
 
     if action == "reset_trial":
         target = await session.get(User, target_id)
@@ -473,6 +486,151 @@ async def add_ready_config_items(
     )
     await session.flush()
     return {"ok": True, "message": f"{created} کانفیگ جدید اضافه شد.", "created": created}
+
+
+@router.get("/admin/users/search")
+async def search_admin_users(
+    q: str = "",
+    page: int = 1,
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    _require_admin(user)
+    query_text = q.strip().lstrip("@")
+    page = max(page, 1)
+    page_size = 20
+
+    stmt = select(User).options(selectinload(User.wallet))
+    count_stmt = select(func.count()).select_from(User)
+    if query_text:
+        filters = [
+            User.username.ilike(f"%{query_text}%"),
+            User.first_name.ilike(f"%{query_text}%"),
+            User.last_name.ilike(f"%{query_text}%"),
+        ]
+        if query_text.isdigit():
+            filters.append(User.telegram_id == int(query_text))
+        stmt = stmt.where(or_(*filters))
+        count_stmt = count_stmt.where(or_(*filters))
+
+    total = int(await session.scalar(count_stmt) or 0)
+    result = await session.execute(
+        stmt.order_by(User.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    users = list(result.scalars().unique().all())
+    return {
+        "items": [_serialize_admin_user_summary(u) for u in users],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "has_next": page * page_size < total,
+    }
+
+
+@router.get("/admin/users/{target_user_id}")
+async def get_admin_user_detail(
+    target_user_id: UUID,
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    admin, session = auth
+    _require_admin(admin)
+    target = await session.scalar(
+        select(User)
+        .options(
+            selectinload(User.wallet),
+            selectinload(User.subscriptions).selectinload(Subscription.plan),
+            selectinload(User.subscriptions).selectinload(Subscription.xui_client),
+            selectinload(User.orders),
+        )
+        .where(User.id == target_user_id)
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="کاربر پیدا نشد.")
+    return _serialize_admin_user_detail(target)
+
+
+@router.post("/admin/users/{target_user_id}/balance")
+async def adjust_admin_user_balance(
+    target_user_id: UUID,
+    body: dict[str, Any],
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    admin, session = auth
+    _require_admin(admin)
+    try:
+        amount = Decimal(str(body.get("amount") or "0"))
+    except InvalidOperation as exc:
+        raise HTTPException(status_code=400, detail="مبلغ معتبر نیست.") from exc
+    if amount == Decimal("0"):
+        raise HTTPException(status_code=400, detail="مبلغ نمی‌تواند صفر باشد.")
+
+    target = await session.scalar(select(User).options(selectinload(User.wallet)).where(User.id == target_user_id))
+    if target is None or target.wallet is None:
+        raise HTTPException(status_code=404, detail="کاربر یا کیف پول پیدا نشد.")
+
+    direction = "credit" if amount > 0 else "debit"
+    try:
+        await WalletManager(session).process_transaction(
+            user_id=target.id,
+            amount=abs(amount),
+            transaction_type="admin_adjust",
+            direction=direction,
+            currency="USD",
+            reference_type="admin_user",
+            reference_id=admin.id,
+            description="Mini App admin wallet adjustment",
+            metadata={"admin_id": str(admin.id)},
+        )
+    except InsufficientBalanceError as exc:
+        raise HTTPException(status_code=400, detail="موجودی کاربر برای کسر کافی نیست.") from exc
+
+    _record_admin_action(
+        session,
+        admin,
+        "adjust_balance",
+        "user",
+        target.id,
+        {"amount": str(amount), "telegram_id": target.telegram_id},
+    )
+    await session.flush()
+    await session.refresh(target.wallet)
+    return {"ok": True, "message": "موجودی کاربر تغییر کرد.", "user": _serialize_admin_user_detail(target)}
+
+
+@router.post("/admin/users/{target_user_id}/message")
+async def send_admin_user_message(
+    target_user_id: UUID,
+    body: dict[str, Any],
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    admin, session = auth
+    _require_admin(admin)
+    text = str(body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="متن پیام خالی است.")
+    target = await session.get(User, target_user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="کاربر پیدا نشد.")
+
+    bot = Bot(
+        token=settings.bot_token.get_secret_value(),
+        default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
+    )
+    try:
+        await bot.send_message(target.telegram_id, f"پیام از طرف مدیریت:\n\n{text}", parse_mode=None)
+    except TelegramForbiddenError as exc:
+        target.is_bot_blocked = True
+        raise HTTPException(status_code=400, detail="کاربر ربات را بلاک کرده است.") from exc
+    except TelegramBadRequest as exc:
+        raise HTTPException(status_code=400, detail=f"خطا در ارسال پیام: {exc}") from exc
+    finally:
+        await bot.session.close()
+
+    _record_admin_action(session, admin, "send_message", "user", target.id, {"telegram_id": target.telegram_id})
+    await session.flush()
+    return {"ok": True, "message": "پیام برای کاربر ارسال شد."}
 
 
 @router.get("/admin/tickets/{ticket_id}")
@@ -630,12 +788,51 @@ async def _admin_users(session: AsyncSession, *, customers_only: bool = False) -
             "title": u.first_name or u.username or str(u.telegram_id),
             "subtitle": f"{u.telegram_id} | {u.role} | {u.status} | ${u.wallet.balance if u.wallet else 0}",
             "actions": [
+                {"label": "پروفایل", "action": "view_user"},
                 {"label": "بن/رفع بن", "action": "toggle_user_ban"},
                 {"label": "ریست تست", "action": "reset_trial"},
             ],
         }
         for u in users
     ]
+
+
+def _serialize_admin_user_summary(user: User) -> dict[str, Any]:
+    return {
+        "id": str(user.id),
+        "telegram_id": user.telegram_id,
+        "username": user.username,
+        "name": " ".join(part for part in [user.first_name, user.last_name] if part) or user.username or str(user.telegram_id),
+        "role": user.role,
+        "status": user.status,
+        "is_bot_blocked": user.is_bot_blocked,
+        "has_received_free_trial": user.has_received_free_trial,
+        "wallet_balance": str(user.wallet.balance if user.wallet else Decimal("0")),
+        "credit_limit": str(user.wallet.credit_limit if user.wallet else Decimal("0")),
+        "created_at": user.created_at.isoformat() if user.created_at else None,
+    }
+
+
+def _serialize_admin_user_detail(user: User) -> dict[str, Any]:
+    summary = _serialize_admin_user_summary(user)
+    subscriptions = []
+    for sub in sorted(user.subscriptions or [], key=lambda item: item.created_at, reverse=True):
+        subscriptions.append(
+            {
+                "id": str(sub.id),
+                "status": sub.status,
+                "plan_name": sub.plan.name if sub.plan else None,
+                "config_name": sub.xui_client.username if sub.xui_client else None,
+                "used_bytes": sub.used_bytes,
+                "volume_bytes": sub.volume_bytes,
+                "starts_at": sub.starts_at.isoformat() if sub.starts_at else None,
+                "ends_at": sub.ends_at.isoformat() if sub.ends_at else None,
+                "sub_link": sub.sub_link,
+            }
+        )
+    summary["subscriptions"] = subscriptions
+    summary["orders_count"] = len(user.orders or [])
+    return summary
 
 
 async def _admin_subscriptions(session: AsyncSession) -> list[dict[str, Any]]:
