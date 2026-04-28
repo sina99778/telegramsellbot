@@ -74,6 +74,7 @@ def build_gateway_selection_keyboard(
     tetrapay_enabled: bool = True,
     manual_crypto_enabled: bool = False,
     manual_wallets: list[dict[str, str]] | None = None,
+    card_to_card_enabled: bool = False,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     if tetrapay_enabled:
@@ -86,7 +87,9 @@ def build_gateway_selection_keyboard(
             builder.button(text=f"ðŸ’° {currency}", callback_data=f"wallet:topup:pay:manual:{index}")
     if manual_crypto_enabled and not (manual_wallets or []):
         builder.button(text="💰 پرداخت به ولت (دستی)", callback_data="wallet:topup:pay:manual")
-    if not tetrapay_enabled and not nowpayments_enabled and not manual_crypto_enabled:
+    if card_to_card_enabled:
+        builder.button(text="کارت به کارت", callback_data="wallet:topup:pay:card")
+    if not tetrapay_enabled and not nowpayments_enabled and not manual_crypto_enabled and not card_to_card_enabled:
         # No gateways available — show a disabled placeholder
         builder.button(text="❌ درگاه پرداختی فعال نیست", callback_data="pagination:noop")
     builder.button(text=Buttons.BACK, callback_data="wallet:topup")

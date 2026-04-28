@@ -52,6 +52,7 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     builder.button(text="🧩 قیمت خرید دلخواه هر ۱ روز", callback_data="admin:settings:custom_day")
     builder.button(text="💱 تغییر نرخ دلار به تومان", callback_data="admin:settings:edit_toman")
     builder.button(text="💳 مدیریت درگاه‌های پرداخت", callback_data="admin:settings:gateways")
+    builder.button(text="تایید شماره موبایل", callback_data="admin:settings:phone_verification")
     builder.button(text="🧪 فعال/غیرفعال کانفیگ تست", callback_data="admin:settings:trial_toggle")
     builder.button(text="🔗 تنظیمات رفرال", callback_data="admin:settings:referral")
     builder.button(text="📢 جوین اجباری کانال", callback_data="admin:settings:force_join")
@@ -243,6 +244,7 @@ async def gateway_settings_menu(callback: CallbackQuery, session: AsyncSession) 
     nowpay_status = "🟢 فعال" if gw.nowpayments_enabled else "🔴 غیرفعال"
     tetra_status = "🟢 فعال" if gw.tetrapay_enabled else "🔴 غیرفعال"
     manual_status = "🟢 فعال" if gw.manual_crypto_enabled else "🔴 غیرفعال"
+    card_status = "🟢 فعال" if gw.card_to_card_enabled else "🔴 غیرفعال"
 
     # Mask API keys for display
     nowpay_key_display = _mask_api_key(gw.nowpayments_api_key) if gw.nowpayments_api_key else "پیش‌فرض (env)"
@@ -265,9 +267,16 @@ async def gateway_settings_menu(callback: CallbackQuery, session: AsyncSession) 
         f"   💱 ارز: {gw.manual_crypto_currency or 'تنظیم نشده'}\n"
         f"   📍 آدرس: {_mask_api_key(gw.manual_crypto_address) if gw.manual_crypto_address else 'تنظیم نشده'}\n"
         f"   👛 ولت‌ها:\n{wallets_display}\n"
+        f"\n💳 کارت به کارت: {card_status}\n"
+        f"   شماره کارت: {_mask_api_key(gw.card_number) if gw.card_number else 'تنظیم نشده'}\n"
+        f"   صاحب کارت: {gw.card_holder or 'تنظیم نشده'}\n"
     )
 
     builder = InlineKeyboardBuilder()
+    builder.button(text="NOWPayments", callback_data="admin:gw:nowpayments")
+    builder.button(text="TetraPay", callback_data="admin:gw:tetrapay")
+    builder.button(text="پرداخت دستی کریپتو", callback_data="admin:gw:manual_menu")
+    builder.button(text="کارت به کارت", callback_data="admin:gw:card")
     toggle_nowpay_text = "🔴 غیرفعال کردن NOWPayments" if gw.nowpayments_enabled else "🟢 فعال کردن NOWPayments"
     toggle_tetra_text = "🔴 غیرفعال کردن تتراپی" if gw.tetrapay_enabled else "🟢 فعال کردن تتراپی"
     toggle_manual_text = "🔴 غیرفعال کردن پرداخت دستی" if gw.manual_crypto_enabled else "🟢 فعال کردن پرداخت دستی"
@@ -582,6 +591,217 @@ async def clear_manual_wallets(callback: CallbackQuery, session: AsyncSession) -
     await gateway_settings_menu(callback, session)
 
 
+@router.callback_query(F.data == "admin:gw:nowpayments")
+async def nowpayments_gateway_menu(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    status = "فعال" if gw.nowpayments_enabled else "غیرفعال"
+    text = (
+        "NOWPayments\n\n"
+        f"وضعیت: {status}\n"
+        f"API Key: {_mask_api_key(gw.nowpayments_api_key) if gw.nowpayments_api_key else 'env'}\n"
+        f"IPN Secret: {_mask_api_key(gw.nowpayments_ipn_secret) if gw.nowpayments_ipn_secret else 'env'}"
+    )
+    builder = InlineKeyboardBuilder()
+    builder.button(text="تغییر وضعیت", callback_data="admin:gw:toggle_nowpay")
+    builder.button(text="API Key", callback_data="admin:gw:edit_nowpay_key")
+    builder.button(text="IPN Secret", callback_data="admin:gw:edit_ipn")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
+    builder.adjust(1)
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data == "admin:gw:tetrapay")
+async def tetrapay_gateway_menu(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    status = "فعال" if gw.tetrapay_enabled else "غیرفعال"
+    text = (
+        "TetraPay\n\n"
+        f"وضعیت: {status}\n"
+        f"API Key: {_mask_api_key(gw.tetrapay_api_key) if gw.tetrapay_api_key else 'env'}"
+    )
+    builder = InlineKeyboardBuilder()
+    builder.button(text="تغییر وضعیت", callback_data="admin:gw:toggle_tetra")
+    builder.button(text="API Key", callback_data="admin:gw:edit_tetra_key")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
+    builder.adjust(1)
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data == "admin:gw:manual_menu")
+async def manual_crypto_gateway_menu(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    status = "فعال" if gw.manual_crypto_enabled else "غیرفعال"
+    wallets = "\n".join(
+        f"{i}. {w.get('currency', 'Crypto')}: {_mask_api_key(w.get('address', ''))}"
+        for i, w in enumerate(gw.manual_crypto_wallets or [], start=1)
+    ) or "تنظیم نشده"
+    text = (
+        "پرداخت دستی کریپتو\n\n"
+        f"وضعیت: {status}\n"
+        f"ارز پیش‌فرض: {gw.manual_crypto_currency or 'تنظیم نشده'}\n"
+        f"ولت‌ها:\n{wallets}"
+    )
+    builder = InlineKeyboardBuilder()
+    builder.button(text="تغییر وضعیت", callback_data="admin:gw:toggle_manual")
+    builder.button(text="ارز", callback_data="admin:gw:edit_manual_cur")
+    builder.button(text="افزودن/تغییر آدرس ولت", callback_data="admin:gw:edit_manual_addr")
+    builder.button(text="حذف ولت‌ها", callback_data="admin:gw:clear_manual_wallets")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
+    builder.adjust(1)
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data == "admin:gw:card")
+async def card_to_card_menu(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    status = "فعال" if gw.card_to_card_enabled else "غیرفعال"
+    text = (
+        "مدیریت کارت به کارت\n\n"
+        f"وضعیت: {status}\n"
+        f"شماره کارت: <code>{gw.card_number or 'تنظیم نشده'}</code>\n"
+        f"صاحب کارت: {gw.card_holder or 'تنظیم نشده'}\n"
+        f"بانک: {gw.card_bank or 'تنظیم نشده'}\n"
+        f"توضیح: {gw.card_note or 'تنظیم نشده'}"
+    )
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="غیرفعال کردن" if gw.card_to_card_enabled else "فعال کردن",
+        callback_data="admin:gw:card_toggle",
+    )
+    builder.button(text="شماره کارت", callback_data="admin:gw:card_number")
+    builder.button(text="نام صاحب کارت", callback_data="admin:gw:card_holder")
+    builder.button(text="نام بانک", callback_data="admin:gw:card_bank")
+    builder.button(text="توضیح پرداخت", callback_data="admin:gw:card_note")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
+    builder.adjust(1)
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data == "admin:gw:card_toggle")
+async def card_to_card_toggle(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    repo = AppSettingsRepository(session)
+    gw = await repo.get_gateway_settings()
+    await repo.update_gateway_settings(card_to_card_enabled=not gw.card_to_card_enabled)
+    await card_to_card_menu(callback, session)
+
+
+@router.callback_query(F.data == "admin:gw:card_number")
+async def card_number_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(GatewaySettingsStates.waiting_for_card_number)
+    await safe_edit_or_send(callback, "شماره کارت را وارد کنید:", reply_markup=_gateway_back_keyboard("admin:gw:card"))
+
+
+@router.message(GatewaySettingsStates.waiting_for_card_number)
+async def card_number_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text:
+        return
+    card_number = message.text.strip().replace(" ", "").replace("-", "")
+    if not card_number.isdigit() or len(card_number) < 12:
+        await message.answer("شماره کارت معتبر نیست.")
+        return
+    await AppSettingsRepository(session).update_gateway_settings(card_number=card_number)
+    await state.clear()
+    await message.answer("شماره کارت ذخیره شد.")
+
+
+@router.callback_query(F.data == "admin:gw:card_holder")
+async def card_holder_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(GatewaySettingsStates.waiting_for_card_holder)
+    await safe_edit_or_send(callback, "نام صاحب کارت را وارد کنید:", reply_markup=_gateway_back_keyboard("admin:gw:card"))
+
+
+@router.message(GatewaySettingsStates.waiting_for_card_holder)
+async def card_holder_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text:
+        return
+    await AppSettingsRepository(session).update_gateway_settings(card_holder=message.text.strip())
+    await state.clear()
+    await message.answer("نام صاحب کارت ذخیره شد.")
+
+
+@router.callback_query(F.data == "admin:gw:card_bank")
+async def card_bank_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(GatewaySettingsStates.waiting_for_card_bank)
+    await safe_edit_or_send(callback, "نام بانک را وارد کنید:", reply_markup=_gateway_back_keyboard("admin:gw:card"))
+
+
+@router.message(GatewaySettingsStates.waiting_for_card_bank)
+async def card_bank_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text:
+        return
+    await AppSettingsRepository(session).update_gateway_settings(card_bank=message.text.strip())
+    await state.clear()
+    await message.answer("نام بانک ذخیره شد.")
+
+
+@router.callback_query(F.data == "admin:gw:card_note")
+async def card_note_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(GatewaySettingsStates.waiting_for_card_note)
+    await safe_edit_or_send(callback, "توضیح پرداخت را وارد کنید. برای حذف، کلمه حذف را بفرستید:", reply_markup=_gateway_back_keyboard("admin:gw:card"))
+
+
+@router.message(GatewaySettingsStates.waiting_for_card_note)
+async def card_note_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text:
+        return
+    note = message.text.strip()
+    await AppSettingsRepository(session).update_gateway_settings(
+        card_note=None if note == "حذف" else note
+    )
+    await state.clear()
+    await message.answer("توضیح پرداخت ذخیره شد.")
+
+
+@router.callback_query(F.data == "admin:settings:phone_verification")
+async def phone_verification_menu(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    settings = await AppSettingsRepository(session).get_phone_verification_settings()
+    status = "فعال" if settings.enabled else "غیرفعال"
+    mode = "فقط ایران" if settings.mode == "iran" else "هر شماره‌ای"
+    text = (
+        "تایید شماره موبایل\n\n"
+        f"وضعیت: {status}\n"
+        f"حالت پذیرش شماره: {mode}\n\n"
+        "در صورت فعال بودن، کاربر قبل از خرید باید شماره موبایل خود را ارسال کند."
+    )
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="غیرفعال کردن" if settings.enabled else "فعال کردن",
+        callback_data="admin:phone:toggle",
+    )
+    builder.button(text="فقط شماره ایران", callback_data="admin:phone:mode:iran")
+    builder.button(text="هر شماره‌ای", callback_data="admin:phone:mode:any")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:bot_settings")
+    builder.adjust(1)
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data == "admin:phone:toggle")
+async def phone_verification_toggle(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    repo = AppSettingsRepository(session)
+    settings = await repo.get_phone_verification_settings()
+    await repo.update_phone_verification_settings(enabled=not settings.enabled)
+    await phone_verification_menu(callback, session)
+
+
+@router.callback_query(F.data.startswith("admin:phone:mode:"))
+async def phone_verification_mode(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    mode = callback.data.rsplit(":", 1)[-1]
+    await AppSettingsRepository(session).update_phone_verification_settings(mode=mode)
+    await phone_verification_menu(callback, session)
+
+
 @router.callback_query(F.data == "admin:settings:referral")
 async def referral_settings_menu(callback: CallbackQuery, session: AsyncSession) -> None:
     await callback.answer()
@@ -715,6 +935,13 @@ async def manual_backup_request(callback: CallbackQuery, session: AsyncSession) 
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def _gateway_back_keyboard(callback_data: str):
+    builder = InlineKeyboardBuilder()
+    builder.button(text=AdminButtons.BACK, callback_data=callback_data)
+    builder.adjust(1)
+    return builder.as_markup()
 
 
 def _mask_api_key(key: str) -> str:

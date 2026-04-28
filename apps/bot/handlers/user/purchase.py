@@ -3,11 +3,11 @@ from __future__ import annotations
 import logging
 import re
 from decimal import Decimal
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from aiogram import Bot, F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import BufferedInputFile, CallbackQuery, KeyboardButton, Message, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import not_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +19,7 @@ from services.banner import create_traffic_banner
 import urllib.parse
 from core.texts import Buttons, Messages
 from models.order import Order
+from models.payment import Payment
 from models.plan import Plan
 from models.xui import XUIClientRecord
 from repositories.discount import DiscountRepository
@@ -32,6 +33,7 @@ from services.custom_purchase import (
 )
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
 from services.plan_inventory import ensure_plan_available, get_effective_plan_stock_map, is_stock_available, PlanStockError
+from services.phone_verification import get_verified_phone, is_valid_phone_number, normalize_phone_number, set_verified_phone
 from services.wallet.manager import InsufficientBalanceError, WalletManager
 from apps.bot.utils.messaging import safe_edit_or_send
 
@@ -44,13 +46,50 @@ router = Router(name="user-purchase")
 CONFIG_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]{3,32}$")
 
 
+def _phone_request_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="ارسال شماره موبایل", request_contact=True)]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+    )
+
+
+async def _ensure_phone_verified_for_purchase(
+    message: Message,
+    session: AsyncSession,
+    state: FSMContext,
+) -> bool:
+    if message.from_user is None:
+        return False
+
+    repo = AppSettingsRepository(session)
+    settings = await repo.get_phone_verification_settings()
+    if not settings.enabled:
+        return True
+
+    user = await UserRepository(session).get_by_telegram_id(message.from_user.id)
+    if user is not None and get_verified_phone(user):
+        return True
+
+    await state.set_state(PurchaseStates.waiting_for_phone_verification)
+    hint = "شماره موبایل ایران" if settings.mode == "iran" else "شماره موبایل"
+    await message.answer(
+        f"برای ادامه خرید، لطفا {hint} خود را ارسال کنید.",
+        reply_markup=_phone_request_keyboard(),
+    )
+    return False
+
+
 @router.callback_query(F.data == "pagination:noop")
 async def ignore_pagination_noop(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
 @router.message(F.text == Buttons.BUY_CONFIG)
-async def show_available_plans(message: Message, session: AsyncSession) -> None:
+async def show_available_plans(message: Message, session: AsyncSession, state: FSMContext) -> None:
+    if not await _ensure_phone_verified_for_purchase(message, session, state):
+        return
+
     result = await session.execute(
         select(Plan)
         .where(Plan.is_active.is_(True), not_(Plan.code.like("custom\\_%", escape="\\")))
@@ -77,6 +116,40 @@ async def show_available_plans(message: Message, session: AsyncSession) -> None:
             stock_by_plan_id,
             include_custom_purchase=custom_available,
         ),
+    )
+
+
+@router.message(PurchaseStates.waiting_for_phone_verification)
+async def phone_verification_submitted(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    if message.from_user is None:
+        return
+
+    if message.contact and message.contact.user_id and message.contact.user_id != message.from_user.id:
+        await message.answer("لطفا شماره موبایل خودتان را ارسال کنید.")
+        return
+    phone = message.contact.phone_number if message.contact else (message.text or "")
+    phone = normalize_phone_number(phone)
+    settings = await AppSettingsRepository(session).get_phone_verification_settings()
+    if not is_valid_phone_number(phone, settings.mode):
+        hint = "یک شماره ایران معتبر مثل 09123456789" if settings.mode == "iran" else "یک شماره معتبر"
+        await message.answer(f"شماره معتبر نیست. لطفا {hint} ارسال کنید.")
+        return
+
+    user = await UserRepository(session).get_by_telegram_id(message.from_user.id)
+    if user is None:
+        await message.answer(Messages.ACCOUNT_NOT_FOUND, reply_markup=ReplyKeyboardRemove())
+        await state.clear()
+        return
+
+    await set_verified_phone(session, user, phone)
+    await state.clear()
+    await message.answer(
+        "شماره موبایل تایید شد. حالا دوباره گزینه خرید سرویس جدید را بزنید.",
+        reply_markup=ReplyKeyboardRemove(),
     )
 
 
@@ -351,6 +424,8 @@ async def _show_payment_method_choice(
         builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
     if gw.manual_crypto_enabled and (gw.manual_crypto_wallets or gw.manual_crypto_address):
         builder.button(text="💰 پرداخت به ولت (دستی)", callback_data="purchase:pay:manual")
+    if gw.card_to_card_enabled and gw.card_number and gw.card_holder:
+        builder.button(text="کارت به کارت", callback_data="purchase:pay:card")
     builder.button(text=Buttons.BACK, callback_data="purchase:cancel")
     builder.adjust(1)
 
@@ -405,6 +480,8 @@ async def _show_payment_method_choice_msg(
         builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
     if gw.manual_crypto_enabled and (gw.manual_crypto_wallets or gw.manual_crypto_address):
         builder.button(text="💰 پرداخت به ولت (دستی)", callback_data="purchase:pay:manual")
+    if gw.card_to_card_enabled and gw.card_number and gw.card_holder:
+        builder.button(text="کارت به کارت", callback_data="purchase:pay:card")
     builder.button(text=Buttons.BACK, callback_data="purchase:cancel")
     builder.adjust(1)
 
@@ -526,6 +603,186 @@ async def pay_with_manual_crypto(
     # Import and call the manual crypto handler directly
     from apps.bot.handlers.user.topup import topup_pay_manual
     await topup_pay_manual(callback, state, session)
+
+
+@router.callback_query(F.data == "purchase:pay:card")
+async def pay_with_card_to_card(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    await callback.answer()
+    if callback.from_user is None:
+        return
+
+    data = await state.get_data()
+    plan_id_str = data.get("plan_id")
+    if not plan_id_str:
+        await safe_edit_or_send(callback, "اطلاعات خرید پیدا نشد. لطفا دوباره تلاش کنید.")
+        return
+
+    plan = await session.get(Plan, UUID(plan_id_str))
+    if plan is None or not plan.is_active:
+        await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
+        return
+    try:
+        await ensure_plan_available(session, plan.id)
+    except PlanStockError:
+        await safe_edit_or_send(callback, "موجودی این پلن تمام شده است.")
+        return
+
+    settings_repo = AppSettingsRepository(session)
+    gw = await settings_repo.get_gateway_settings()
+    if not gw.card_to_card_enabled or not gw.card_number or not gw.card_holder:
+        await safe_edit_or_send(callback, "پرداخت کارت به کارت در حال حاضر فعال نیست.")
+        return
+
+    discount_percent = int(data.get("discount_percent", 0) or 0)
+    original_price = plan.price
+    final_price = (
+        original_price * (Decimal(100 - discount_percent) / Decimal(100))
+    ).quantize(Decimal("0.01")) if discount_percent > 0 else original_price
+    toman_rate = await settings_repo.get_toman_rate()
+    toman_amount = int((final_price * toman_rate).quantize(Decimal("1")))
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        await safe_edit_or_send(callback, Messages.ACCOUNT_NOT_FOUND)
+        return
+
+    payment = Payment(
+        user_id=user.id,
+        provider="card_to_card",
+        kind="direct_purchase",
+        order_id=str(uuid4()),
+        payment_status="waiting_receipt",
+        pay_currency="IRT",
+        price_currency=plan.currency,
+        price_amount=final_price,
+        pay_amount=Decimal(toman_amount),
+        callback_payload={
+            "plan_id": str(plan.id),
+            "config_name": data.get("config_name", "VPN"),
+            "discount_percent": discount_percent,
+            "discount_id": data.get("discount_id"),
+            "purpose": "direct_purchase",
+            "card_number": gw.card_number,
+            "card_holder": gw.card_holder,
+            "card_bank": gw.card_bank,
+        },
+    )
+    session.add(payment)
+    await session.flush()
+
+    await state.update_data(card_payment_id=str(payment.id))
+    await state.set_state(PurchaseStates.waiting_for_card_receipt)
+
+    card_lines = [
+        "پرداخت کارت به کارت",
+        "",
+        f"پلن: {plan.name}",
+        f"مبلغ: {toman_amount:,} تومان",
+        f"شماره کارت: <code>{gw.card_number}</code>",
+        f"نام صاحب کارت: {gw.card_holder}",
+    ]
+    if gw.card_bank:
+        card_lines.append(f"بانک: {gw.card_bank}")
+    if gw.card_note:
+        card_lines.extend(["", gw.card_note])
+    card_lines.extend(["", "بعد از پرداخت، عکس رسید را همینجا ارسال کنید."])
+    await safe_edit_or_send(callback, "\n".join(card_lines))
+
+
+@router.message(PurchaseStates.waiting_for_card_receipt)
+async def purchase_card_receipt_submitted(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    if message.from_user is None:
+        return
+    if message.text and message.text.strip().lower() == "/cancel":
+        await state.clear()
+        await message.answer("عملیات لغو شد.")
+        return
+    if not message.photo:
+        await message.answer("لطفا عکس رسید پرداخت را ارسال کنید.")
+        return
+
+    data = await state.get_data()
+    payment_id = data.get("card_payment_id")
+    if not payment_id:
+        await state.clear()
+        await message.answer("اطلاعات پرداخت پیدا نشد. لطفا دوباره خرید را شروع کنید.")
+        return
+
+    payment = await session.get(Payment, UUID(payment_id))
+    if payment is None:
+        await state.clear()
+        await message.answer("پرداخت پیدا نشد. لطفا دوباره تلاش کنید.")
+        return
+
+    receipt_file_id = message.photo[-1].file_id
+    payload = dict(payment.callback_payload or {})
+    payload["receipt_file_id"] = receipt_file_id
+    payment.callback_payload = payload
+    payment.payment_status = "pending_approval"
+    payment.provider_payment_id = receipt_file_id
+    await session.flush()
+    await state.clear()
+
+    await message.answer(
+        "رسید شما ثبت شد و برای مدیر ارسال شد. بعد از تایید، کانفیگ به صورت خودکار ارسال می‌شود."
+    )
+    await _notify_admins_about_card_purchase(message, session, payment, receipt_file_id)
+
+
+async def _notify_admins_about_card_purchase(
+    message: Message,
+    session: AsyncSession,
+    payment: Payment,
+    receipt_file_id: str,
+) -> None:
+    from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+    from core.config import settings as app_settings
+    from models.user import User
+    from sqlalchemy import select as sel
+
+    user = await UserRepository(session).get_by_telegram_id(message.from_user.id)
+    payload = payment.callback_payload or {}
+    admin_ids: set[int] = set()
+    if app_settings.owner_telegram_id:
+        admin_ids.add(app_settings.owner_telegram_id)
+    result = await session.execute(sel(User.telegram_id).where(User.role.in_(["admin", "owner"])))
+    admin_ids.update(result.scalars().all())
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="تایید و تحویل کانفیگ", callback_data=f"mp:ok:{payment.id}")
+    builder.button(text="رد پرداخت", callback_data=f"mp:no:{payment.id}")
+    builder.adjust(1)
+
+    caption = (
+        "درخواست کارت به کارت\n\n"
+        f"کاربر: {user.first_name if user else '-'}\n"
+        f"Telegram ID: <code>{message.from_user.id}</code>\n"
+        f"مبلغ: <b>{payment.pay_amount:,.0f} تومان</b>\n"
+        f"پلن: {payload.get('plan_id')}\n"
+        f"نام کانفیگ: {payload.get('config_name', '-')}\n\n"
+        "بعد از بررسی رسید، تایید یا رد کنید."
+    )
+
+    for admin_id in admin_ids:
+        try:
+            await message.bot.send_photo(
+                admin_id,
+                photo=receipt_file_id,
+                caption=caption,
+                reply_markup=builder.as_markup(),
+            )
+        except (TelegramBadRequest, TelegramForbiddenError):
+            continue
+        except Exception as exc:
+            logger.warning("Could not notify admin %s about card payment: %s", admin_id, exc)
 
 
 async def _process_wallet_purchase(

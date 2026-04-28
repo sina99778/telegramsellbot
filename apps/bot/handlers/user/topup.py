@@ -158,6 +158,7 @@ async def topup_preset_handler(
             tetrapay_enabled=gw.tetrapay_enabled,
             manual_crypto_enabled=gw.manual_crypto_enabled and bool(gw.manual_crypto_wallets or gw.manual_crypto_address),
             manual_wallets=gw.manual_crypto_wallets,
+            card_to_card_enabled=gw.card_to_card_enabled and bool(gw.card_number and gw.card_holder),
         )
     )
 
@@ -201,6 +202,7 @@ async def topup_custom_amount_handler(
             tetrapay_enabled=gw.tetrapay_enabled,
             manual_crypto_enabled=gw.manual_crypto_enabled and bool(gw.manual_crypto_wallets or gw.manual_crypto_address),
             manual_wallets=gw.manual_crypto_wallets,
+            card_to_card_enabled=gw.card_to_card_enabled and bool(gw.card_number and gw.card_holder),
         )
     )
 
@@ -259,6 +261,161 @@ async def topup_pay_tetrapay(
         api_key_override=gw.tetrapay_api_key,
     )
 
+
+@router.callback_query(F.data == "wallet:topup:pay:card")
+async def topup_pay_card_to_card(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    await callback.answer()
+    if callback.from_user is None:
+        return
+
+    from repositories.settings import AppSettingsRepository
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    if not gw.card_to_card_enabled or not gw.card_number or not gw.card_holder:
+        await safe_edit_or_send(callback, "پرداخت کارت به کارت در حال حاضر فعال نیست.")
+        return
+
+    data = await state.get_data()
+    amount_str = data.get("topup_amount")
+    if not amount_str:
+        await safe_edit_or_send(callback, Messages.TOPUP_AMOUNT_GT_ZERO)
+        return
+
+    amount = Decimal(amount_str)
+    toman_rate = await AppSettingsRepository(session).get_toman_rate()
+    toman_amount = int((amount * toman_rate).quantize(Decimal("1")))
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        await safe_edit_or_send(callback, Messages.ACCOUNT_NOT_FOUND)
+        return
+
+    payment = Payment(
+        user_id=user.id,
+        provider="card_to_card",
+        kind="wallet_topup",
+        order_id=str(uuid4()),
+        payment_status="waiting_receipt",
+        pay_currency="IRT",
+        price_currency="USD",
+        price_amount=amount,
+        pay_amount=Decimal(toman_amount),
+        callback_payload={
+            "purpose": "wallet_topup",
+            "card_number": gw.card_number,
+            "card_holder": gw.card_holder,
+            "card_bank": gw.card_bank,
+        },
+    )
+    session.add(payment)
+    await session.flush()
+
+    await state.update_data(card_payment_id=str(payment.id))
+    await state.set_state(TopUpStates.waiting_for_card_receipt)
+
+    lines = [
+        "پرداخت کارت به کارت",
+        "",
+        f"مبلغ: {toman_amount:,} تومان",
+        f"شماره کارت: <code>{gw.card_number}</code>",
+        f"نام صاحب کارت: {gw.card_holder}",
+    ]
+    if gw.card_bank:
+        lines.append(f"بانک: {gw.card_bank}")
+    if gw.card_note:
+        lines.extend(["", gw.card_note])
+    lines.extend(["", "بعد از پرداخت، عکس رسید را همینجا ارسال کنید."])
+    await safe_edit_or_send(callback, "\n".join(lines))
+
+
+@router.message(TopUpStates.waiting_for_card_receipt)
+async def topup_card_receipt_submitted(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    if message.from_user is None:
+        return
+    if message.text and message.text.strip().lower() == "/cancel":
+        await state.clear()
+        await message.answer("عملیات لغو شد.")
+        return
+    if not message.photo:
+        await message.answer("لطفا عکس رسید پرداخت را ارسال کنید.")
+        return
+
+    data = await state.get_data()
+    payment_id = data.get("card_payment_id")
+    if not payment_id:
+        await state.clear()
+        await message.answer("اطلاعات پرداخت پیدا نشد. لطفا دوباره تلاش کنید.")
+        return
+
+    from uuid import UUID
+    payment = await session.get(Payment, UUID(payment_id))
+    if payment is None:
+        await state.clear()
+        await message.answer("پرداخت پیدا نشد. لطفا دوباره تلاش کنید.")
+        return
+
+    receipt_file_id = message.photo[-1].file_id
+    payload = dict(payment.callback_payload or {})
+    payload["receipt_file_id"] = receipt_file_id
+    payment.callback_payload = payload
+    payment.provider_payment_id = receipt_file_id
+    payment.payment_status = "pending_approval"
+    await session.flush()
+    await state.clear()
+
+    await message.answer("رسید شما ثبت شد و برای مدیر ارسال شد. بعد از تایید، کیف پول شارژ می‌شود.")
+    await _notify_admins_about_card_topup(message, session, payment, receipt_file_id)
+
+
+async def _notify_admins_about_card_topup(
+    message: Message,
+    session: AsyncSession,
+    payment: Payment,
+    receipt_file_id: str,
+) -> None:
+    from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from core.config import settings as app_settings
+    from models.user import User
+    from sqlalchemy import select as sel
+
+    admin_ids: set[int] = set()
+    if app_settings.owner_telegram_id:
+        admin_ids.add(app_settings.owner_telegram_id)
+    result = await session.execute(sel(User.telegram_id).where(User.role.in_(["admin", "owner"])))
+    admin_ids.update(result.scalars().all())
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="تایید و شارژ کیف پول", callback_data=f"mp:ok:{payment.id}")
+    builder.button(text="رد پرداخت", callback_data=f"mp:no:{payment.id}")
+    builder.adjust(1)
+
+    caption = (
+        "درخواست شارژ کارت به کارت\n\n"
+        f"Telegram ID: <code>{message.from_user.id}</code>\n"
+        f"مبلغ: <b>{payment.pay_amount:,.0f} تومان</b>\n"
+        f"شارژ دلاری: <b>{payment.price_amount:.2f} USD</b>\n\n"
+        "بعد از بررسی رسید، تایید یا رد کنید."
+    )
+
+    for admin_id in admin_ids:
+        try:
+            await message.bot.send_photo(
+                admin_id,
+                photo=receipt_file_id,
+                caption=caption,
+                reply_markup=builder.as_markup(),
+            )
+        except (TelegramBadRequest, TelegramForbiddenError):
+            continue
+        except Exception:
+            continue
 
 
 

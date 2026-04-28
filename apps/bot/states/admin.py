@@ -82,6 +82,10 @@ class GatewaySettingsStates(StatesGroup):
     waiting_for_nowpayments_ipn_secret = State()
     waiting_for_manual_currency = State()
     waiting_for_manual_address = State()
+    waiting_for_card_number = State()
+    waiting_for_card_holder = State()
+    waiting_for_card_bank = State()
+    waiting_for_card_note = State()
     waiting_for_force_join_channel = State()
 
 

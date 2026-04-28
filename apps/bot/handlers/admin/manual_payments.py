@@ -63,13 +63,18 @@ async def approve_manual_payment(
 
     # Update admin message
     payload = payment.callback_payload or {}
-    tx_hash = payload.get("tx_hash", "N/A")
+    tx_hash = payload.get("tx_hash") or ("رسید تصویری" if payment.provider == "card_to_card" else "N/A")
     crypto_amt = payload.get("crypto_amount")
     target_user = await session.get(User, payment.user_id)
     user_info = f"<b>{target_user.first_name or '-'}</b> (<code>{target_user.telegram_id}</code>)" if target_user else "?"
     admin_name = callback.from_user.first_name if callback.from_user else "Admin"
 
     crypto_line = f"🪙 معادل: {crypto_amt} {payment.pay_currency}\n" if crypto_amt else ""
+    result_line = (
+        "کانفیگ برای کاربر ارسال شد."
+        if payment.kind == "direct_purchase"
+        else "مبلغ به کیف پول کاربر واریز شد."
+    )
 
     await safe_edit_or_send(
         callback,
@@ -81,7 +86,7 @@ async def approve_manual_payment(
         f"💱 ارز: {payment.pay_currency}\n"
         f"{crypto_line}"
         f"🔗 Hash: <code>{tx_hash}</code>\n\n"
-        f"💰 مبلغ به کیف پول کاربر واریز شد.\n"
+        f"💰 {result_line}\n"
         f"👤 تأیید: {admin_name}",
     )
 
@@ -89,6 +94,12 @@ async def approve_manual_payment(
     if target_user:
         try:
             from aiogram.utils.keyboard import InlineKeyboardBuilder
+            if payment.kind == "direct_purchase":
+                await callback.bot.send_message(
+                    target_user.telegram_id,
+                    "✅ پرداخت شما تایید شد. اگر کانفیگ در پیام جداگانه ارسال نشده باشد، لطفا با پشتیبانی تماس بگیرید.",
+                )
+                return
             user_builder = InlineKeyboardBuilder()
             user_builder.button(text="🛒 خرید کانفیگ", callback_data="wallet:topup")
             user_builder.adjust(1)

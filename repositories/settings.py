@@ -17,6 +17,7 @@ _SENTINEL = object()
 
 RENEWAL_SETTINGS_KEY = "service.renewal"
 CUSTOM_PURCHASE_SETTINGS_KEY = "service.custom_purchase"
+PHONE_VERIFICATION_SETTINGS_KEY = "user.phone_verification"
 
 @dataclass(slots=True)
 class RenewalSettings:
@@ -41,6 +42,12 @@ class RetargetingSettings:
 @dataclass(slots=True)
 class TrialSettings:
     enabled: bool
+
+
+@dataclass(slots=True)
+class PhoneVerificationSettings:
+    enabled: bool
+    mode: str
 
 
 REVENUE_SETTINGS_KEY = "admin.revenue_reset"
@@ -266,6 +273,11 @@ class AppSettingsRepository:
         manual_crypto_currency: str | None  # e.g. "USDT TRC20"
         manual_crypto_address: str | None
         manual_crypto_wallets: list[dict[str, str]]
+        card_to_card_enabled: bool
+        card_number: str | None
+        card_holder: str | None
+        card_bank: str | None
+        card_note: str | None
         force_join_channel: str | None  # e.g. "@mychannel" or "-1001234567890"
         force_join_enabled: bool
 
@@ -282,6 +294,11 @@ class AppSettingsRepository:
                 manual_crypto_currency=None,
                 manual_crypto_address=None,
                 manual_crypto_wallets=[],
+                card_to_card_enabled=False,
+                card_number=None,
+                card_holder=None,
+                card_bank=None,
+                card_note=None,
                 force_join_channel=None,
                 force_join_enabled=False,
             )
@@ -304,6 +321,11 @@ class AppSettingsRepository:
             manual_crypto_currency=payload.get("manual_crypto_currency"),
             manual_crypto_address=payload.get("manual_crypto_address"),
             manual_crypto_wallets=manual_wallets if isinstance(manual_wallets, list) else [],
+            card_to_card_enabled=bool(payload.get("card_to_card_enabled", False)),
+            card_number=payload.get("card_number"),
+            card_holder=payload.get("card_holder"),
+            card_bank=payload.get("card_bank"),
+            card_note=payload.get("card_note"),
             force_join_channel=payload.get("force_join_channel"),
             force_join_enabled=bool(payload.get("force_join_enabled", False)),
         )
@@ -320,6 +342,11 @@ class AppSettingsRepository:
         manual_crypto_currency: str | None = _SENTINEL,
         manual_crypto_address: str | None = _SENTINEL,
         manual_crypto_wallets: list[dict[str, str]] | None = _SENTINEL,
+        card_to_card_enabled: bool | None = None,
+        card_number: str | None = _SENTINEL,
+        card_holder: str | None = _SENTINEL,
+        card_bank: str | None = _SENTINEL,
+        card_note: str | None = _SENTINEL,
         force_join_channel: str | None = _SENTINEL,
         force_join_enabled: bool | None = None,
     ) -> "AppSettingsRepository.GatewaySettings":
@@ -346,6 +373,16 @@ class AppSettingsRepository:
             payload["manual_crypto_address"] = manual_crypto_address
         if manual_crypto_wallets is not _SENTINEL:
             payload["manual_crypto_wallets"] = manual_crypto_wallets
+        if card_to_card_enabled is not None:
+            payload["card_to_card_enabled"] = card_to_card_enabled
+        if card_number is not _SENTINEL:
+            payload["card_number"] = card_number
+        if card_holder is not _SENTINEL:
+            payload["card_holder"] = card_holder
+        if card_bank is not _SENTINEL:
+            payload["card_bank"] = card_bank
+        if card_note is not _SENTINEL:
+            payload["card_note"] = card_note
         if force_join_channel is not _SENTINEL:
             payload["force_join_channel"] = force_join_channel
         if force_join_enabled is not None:
@@ -357,6 +394,44 @@ class AppSettingsRepository:
         return await self.get_gateway_settings()
 
     # ── Referral settings ────────────────────────────────────────────────────
+
+    async def get_phone_verification_settings(self) -> PhoneVerificationSettings:
+        record = await self.session.get(AppSetting, PHONE_VERIFICATION_SETTINGS_KEY)
+        if record is None or not record.value_json:
+            return PhoneVerificationSettings(enabled=False, mode="iran")
+        payload = dict(record.value_json)
+        mode = str(payload.get("mode") or "iran").lower()
+        if mode not in {"iran", "any"}:
+            mode = "iran"
+        return PhoneVerificationSettings(
+            enabled=bool(payload.get("enabled", False)),
+            mode=mode,
+        )
+
+    async def update_phone_verification_settings(
+        self,
+        *,
+        enabled: bool | None = None,
+        mode: str | None = None,
+    ) -> PhoneVerificationSettings:
+        record = await self.session.get(AppSetting, PHONE_VERIFICATION_SETTINGS_KEY)
+        if record is None:
+            record = AppSetting(
+                key=PHONE_VERIFICATION_SETTINGS_KEY,
+                value_json={"enabled": False, "mode": "iran"},
+            )
+        payload = dict(record.value_json or {})
+
+        if enabled is not None:
+            payload["enabled"] = enabled
+        if mode is not None:
+            normalized_mode = mode.strip().lower()
+            payload["mode"] = normalized_mode if normalized_mode in {"iran", "any"} else "iran"
+
+        record.value_json = payload
+        self.session.add(record)
+        await self.session.flush()
+        return await self.get_phone_verification_settings()
 
     REFERRAL_SETTINGS_KEY = "referral.settings"
 
