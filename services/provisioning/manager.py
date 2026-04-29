@@ -268,8 +268,18 @@ class ProvisioningManager:
         await self.session.flush()
 
         from core.config import settings
+        
+        # Check if the content has a custom sub link separated by '|'
+        parts = item.content.split("|", 1)
+        vless_uri = parts[0].strip()
+        custom_sub_link = parts[1].strip() if len(parts) > 1 else None
+        
         bot_sub_link = f"{settings.web_base_url.rstrip('/')}/api/sub/{subscription.id}"
-        subscription.sub_link = bot_sub_link
+        
+        # If the admin provided a custom sub link, use it. Otherwise fallback to bot sub link.
+        final_sub_link = custom_sub_link if custom_sub_link else bot_sub_link
+        
+        subscription.sub_link = final_sub_link
 
         item.status = "sold"
         item.assigned_user_id = user_id
@@ -283,8 +293,8 @@ class ProvisioningManager:
         return ProvisioningResult(
             subscription=subscription,
             xui_client=None,
-            vless_uri=item.content,
-            sub_link=bot_sub_link,
+            vless_uri=vless_uri,
+            sub_link=final_sub_link,
         )
 
     async def process_zero_usage_refund(

@@ -252,7 +252,7 @@ async def my_config_detail_handler(
         from models.ready_config import ReadyConfigItem
         ready_item = await session.scalar(select(ReadyConfigItem).where(ReadyConfigItem.subscription_id == sub.id))
         if ready_item:
-            vless_uri = ready_item.content
+            vless_uri = ready_item.content.split("|")[0].strip()
 
     # Build message with MarkdownV2
     esc = escape_markdown

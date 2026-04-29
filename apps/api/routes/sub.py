@@ -33,7 +33,9 @@ async def get_subscription_content(sub_id: UUID):
         
         if item:
             # It is a ready config. Encode the content in Base64
-            content_bytes = item.content.encode("utf-8")
+            # If the content has a '|', the first part is the vless_uri
+            vless_uri = item.content.split("|")[0].strip()
+            content_bytes = vless_uri.encode("utf-8")
             b64_content = base64.b64encode(content_bytes).decode("utf-8")
             return PlainTextResponse(b64_content)
         
