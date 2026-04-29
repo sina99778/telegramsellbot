@@ -1,9 +1,10 @@
 """
-Reconciliation job: finds stuck payments and alerts admins.
+Reconciliation job: finds stuck payments and AUTO-RETRIES provisioning/renewal.
 
-Runs periodically to detect:
+Runs periodically to detect and fix:
+- Payments that are paid but not provisioned (direct_purchase)
+- Payments that are paid but renewal not applied (direct_renewal)
 - Payments that are 'waiting' for more than 24 hours
-- Payments that are paid but not provisioned
 - Failed payments needing manual review
 """
 from __future__ import annotations
@@ -17,28 +18,92 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
 from models.payment import Payment
+from services.payment import process_successful_payment
 
 logger = logging.getLogger(__name__)
 
+MAX_AUTO_RETRY = 5  # Max payments to auto-retry per reconciliation run
+
 
 async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
-    """Find stuck payments and alert admin."""
+    """Find stuck payments, auto-retry provisioning/renewal, and alert admin."""
     now = datetime.now(timezone.utc)
     cutoff_24h = now - timedelta(hours=24)
 
-    # 1. Paid but not provisioned (direct_purchase)
-    stuck_count = await session.scalar(
-        select(func.count()).select_from(Payment).where(
+    # ─── AUTO-RETRY: paid but not provisioned (direct_purchase) ───
+    stuck_purchase_result = await session.execute(
+        select(Payment).where(
             Payment.actually_paid.isnot(None),
             Payment.kind == "direct_purchase",
+            Payment.payment_status == "finished",
             or_(
                 ~Payment.callback_payload.has_key("provisioned"),
                 Payment.callback_payload["provisioned"].as_boolean().is_(False),
             ),
+        ).order_by(Payment.created_at.asc()).limit(MAX_AUTO_RETRY)
+    )
+    stuck_purchases = list(stuck_purchase_result.scalars().all())
+
+    retried_purchase = 0
+    for payment in stuck_purchases:
+        logger.info("[RECONCILIATION] Auto-retrying provisioning for payment %s", payment.id)
+        try:
+            await process_successful_payment(
+                session=session,
+                payment=payment,
+                amount_to_credit=payment.price_amount,
+            )
+            retried_purchase += 1
+            logger.info("[RECONCILIATION] Provisioning retry SUCCESS for payment %s", payment.id)
+        except Exception as exc:
+            logger.error("[RECONCILIATION] Provisioning retry FAILED for payment %s: %s", payment.id, exc)
+
+    # ─── AUTO-RETRY: paid but renewal not applied (direct_renewal) ───
+    stuck_renewal_result = await session.execute(
+        select(Payment).where(
+            Payment.actually_paid.isnot(None),
+            Payment.kind == "direct_renewal",
+            Payment.payment_status == "finished",
+            or_(
+                ~Payment.callback_payload.has_key("renewal_applied"),
+                Payment.callback_payload["renewal_applied"].as_boolean().is_(False),
+            ),
+        ).order_by(Payment.created_at.asc()).limit(MAX_AUTO_RETRY)
+    )
+    stuck_renewals = list(stuck_renewal_result.scalars().all())
+
+    retried_renewal = 0
+    for payment in stuck_renewals:
+        logger.info("[RECONCILIATION] Auto-retrying renewal for payment %s", payment.id)
+        try:
+            await process_successful_payment(
+                session=session,
+                payment=payment,
+                amount_to_credit=payment.price_amount,
+            )
+            retried_renewal += 1
+            logger.info("[RECONCILIATION] Renewal retry SUCCESS for payment %s", payment.id)
+        except Exception as exc:
+            logger.error("[RECONCILIATION] Renewal retry FAILED for payment %s: %s", payment.id, exc)
+
+    # ─── COUNTS for alerting ───
+    # Remaining stuck after retries
+    stuck_count = await session.scalar(
+        select(func.count()).select_from(Payment).where(
+            Payment.actually_paid.isnot(None),
+            Payment.kind.in_(["direct_purchase", "direct_renewal"]),
+            or_(
+                ~Payment.callback_payload.has_key("provisioned"),
+                Payment.callback_payload["provisioned"].as_boolean().is_(False),
+            ),
+            or_(
+                ~Payment.callback_payload.has_key("renewal_applied"),
+                Payment.callback_payload["renewal_applied"].as_boolean().is_(False),
+            ),
         )
     ) or 0
 
-    # 2. Waiting payments older than 24h
+    # Waiting payments older than 24h
     stale_waiting = await session.scalar(
         select(func.count()).select_from(Payment).where(
             Payment.payment_status.in_(["waiting", "confirming"]),
@@ -47,7 +112,7 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
         )
     ) or 0
 
-    # 3. Failed payments in last 24h
+    # Failed payments in last 24h
     recent_failed = await session.scalar(
         select(func.count()).select_from(Payment).where(
             Payment.payment_status.in_(["failed", "expired"]),
@@ -55,7 +120,7 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
         )
     ) or 0
 
-    # 4. Manual crypto payments pending admin approval for >24h
+    # Manual crypto payments pending admin approval for >24h
     stale_manual = await session.scalar(
         select(func.count()).select_from(Payment).where(
             Payment.payment_status.in_(["pending_approval", "waiting_hash"]),
@@ -63,23 +128,30 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
         )
     ) or 0
 
-    # Only alert if there are issues
-    if stuck_count == 0 and stale_waiting == 0 and recent_failed == 0 and stale_manual == 0:
+    # Build alert
+    retried_total = retried_purchase + retried_renewal
+    if retried_total == 0 and stuck_count == 0 and stale_waiting == 0 and recent_failed == 0 and stale_manual == 0:
         logger.info("Reconciliation: no issues found")
         return
 
-    alert_text = (
-        "🔔 گزارش Reconciliation خودکار\n\n"
-        f"⚠️ پرداخت موفق بدون تحویل: {stuck_count}\n"
-        f"⏳ پرداخت در انتظار (+24 ساعت): {stale_waiting}\n"
-        f"❌ پرداخت ناموفق (24 ساعت اخیر): {recent_failed}\n"
-        f"🔐 پرداخت دستی منتظر تأیید (+24 ساعت): {stale_manual}\n\n"
-        "از منوی 🔧 Recovery اقدام کنید."
-    )
+    lines = ["🔔 گزارش Reconciliation خودکار\n"]
+    if retried_total > 0:
+        lines.append(f"🔄 Retry خودکار: {retried_purchase} provisioning + {retried_renewal} renewal")
+    if stuck_count > 0:
+        lines.append(f"⚠️ پرداخت موفق بدون تحویل (باقی‌مانده): {stuck_count}")
+    if stale_waiting > 0:
+        lines.append(f"⏳ پرداخت در انتظار (+24 ساعت): {stale_waiting}")
+    if recent_failed > 0:
+        lines.append(f"❌ پرداخت ناموفق (24 ساعت اخیر): {recent_failed}")
+    if stale_manual > 0:
+        lines.append(f"🔐 پرداخت دستی منتظر تأیید (+24 ساعت): {stale_manual}")
+    lines.append("\nاز منوی 🔧 Recovery اقدام کنید.")
+
+    alert_text = "\n".join(lines)
 
     logger.warning(
-        "Reconciliation alert: stuck=%d, stale_waiting=%d, recent_failed=%d",
-        stuck_count, stale_waiting, recent_failed,
+        "Reconciliation alert: retried=%d, stuck=%d, stale_waiting=%d, recent_failed=%d",
+        retried_total, stuck_count, stale_waiting, recent_failed,
     )
 
     # Send to owner

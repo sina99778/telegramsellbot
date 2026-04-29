@@ -198,7 +198,11 @@ const Pages = (() => {
             <input id="renewal-amount" class="form-input" inputmode="decimal" dir="ltr" placeholder="30" value="30">
             <p class="form-hint" id="renewal-hint">مدت موردنظر را به روز وارد کنید.</p>
             <div class="renewal-price-box" id="renewal-price-box">برای محاسبه قیمت، مقدار را وارد کنید.</div>
-            <button class="btn btn-primary btn-block" onclick="Pages.submitRenewal('${sub.id}')">تمدید با کیف پول</button>
+            <div class="checkout-methods">
+                <button class="btn btn-primary btn-block" id="renewal-wallet-btn" onclick="Pages.submitRenewal('${sub.id}', 'wallet')">تمدید با کیف پول</button>
+                <button class="btn btn-secondary btn-block" onclick="Pages.submitRenewal('${sub.id}', 'tetrapay')">درگاه ریالی تتراپی</button>
+                <button class="btn btn-secondary btn-block" onclick="Pages.submitRenewal('${sub.id}', 'nowpayments')">درگاه ارزی NOWPayments</button>
+            </div>
             <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
         `);
         setRenewalType('time');
@@ -252,28 +256,43 @@ const Pages = (() => {
         }
     }
 
-    async function submitRenewal(subId) {
+    let _renewalSubmitting = false;
+    async function submitRenewal(subId, paymentMethod) {
+        if (_renewalSubmitting) return;
         const amount = parseFloat(document.getElementById('renewal-amount')?.value || '0');
         const renewType = getSelectedRenewalType();
         if (!amount || amount <= 0) {
             UI.toast('مقدار تمدید معتبر نیست', 'error');
             return;
         }
+        _renewalSubmitting = true;
         try {
             UI.toast('در حال تمدید...');
             const result = await API.renewConfig({
                 subscription_id: subId,
                 renew_type: renewType,
                 amount,
-                payment_method: 'wallet',
+                payment_method: paymentMethod || 'wallet',
             });
-            UI.toast(result.message);
-            UI.closeModal();
-            dashboardData = await API.getDashboard();
-            renderDashboard(dashboardData);
-            renderAllConfigs(dashboardData.subscriptions);
+
+            if (result.invoice_url) {
+                UI.showModal(`
+                    <div class="modal-title">فاکتور تمدید آماده است</div>
+                    <p class="form-hint" style="text-align:center;margin-bottom:14px">${escapeHtml(result.message)}</p>
+                    <button class="btn btn-primary btn-block" onclick="Pages.openInvoice(decodeURIComponent('${encodeURIComponent(result.invoice_url)}'))">پرداخت فاکتور</button>
+                    <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">بستن</button>
+                `);
+            } else {
+                UI.toast(result.message);
+                UI.closeModal();
+                dashboardData = await API.getDashboard();
+                renderDashboard(dashboardData);
+                renderAllConfigs(dashboardData.subscriptions);
+            }
         } catch (e) {
             UI.toast(e.message, 'error');
+        } finally {
+            _renewalSubmitting = false;
         }
     }
 
@@ -348,7 +367,9 @@ const Pages = (() => {
         setTimeout(() => document.getElementById('custom-volume-gb')?.focus(), 100);
     }
 
+    let _customSubmitting = false;
     async function submitCustomPurchase(paymentMethod) {
+        if (_customSubmitting) return;
         const volume = Number((document.getElementById('custom-volume-gb')?.value || '').replace(',', '.'));
         const duration = Number(document.getElementById('custom-duration-days')?.value || 0);
         const configName = (document.getElementById('custom-config-name')?.value || '').trim();
@@ -364,6 +385,7 @@ const Pages = (() => {
             UI.toast('نام کانفیگ نامعتبر است', 'error');
             return;
         }
+        _customSubmitting = true;
         try {
             UI.toast('در حال ساخت سفارش دلخواه...');
             const result = await API.createPurchase({
@@ -391,6 +413,8 @@ const Pages = (() => {
             `);
         } catch (e) {
             UI.toast(e.message, 'error');
+        } finally {
+            _customSubmitting = false;
         }
     }
 
@@ -422,7 +446,9 @@ const Pages = (() => {
         setTimeout(() => document.getElementById('checkout-config-name')?.focus(), 100);
     }
 
+    let _purchaseSubmitting = false;
     async function submitPurchase(planId, paymentMethod) {
+        if (_purchaseSubmitting) return;
         const input = document.getElementById('checkout-config-name');
         const configName = (input?.value || '').trim();
         if (!/^[a-zA-Z0-9_-]{3,32}$/.test(configName)) {
@@ -431,6 +457,7 @@ const Pages = (() => {
             return;
         }
 
+        _purchaseSubmitting = true;
         try {
             UI.toast('در حال ساخت سفارش...');
             const result = await API.createPurchase({
@@ -458,6 +485,8 @@ const Pages = (() => {
             `);
         } catch (e) {
             UI.toast(e.message, 'error');
+        } finally {
+            _purchaseSubmitting = false;
         }
     }
 

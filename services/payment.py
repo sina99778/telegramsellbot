@@ -27,7 +27,15 @@ logger = logging.getLogger(__name__)
 
 
 def _get_shared_bot() -> Bot:
-    """Get or create a shared Bot instance to avoid creating multiple sessions."""
+    """Create a temporary Bot instance for sending messages.
+
+    IMPORTANT: Callers MUST close the bot session when done, e.g.:
+        bot = _get_shared_bot()
+        try:
+            await bot.send_message(...)
+        finally:
+            await bot.session.close()
+    """
     return Bot(token=settings.bot_token.get_secret_value())
 
 
@@ -89,8 +97,24 @@ async def process_successful_payment(
             logger.error("[PAYMENT] Direct purchase provisioning FAILED: %s", exc, exc_info=True)
             # Don't re-raise — wallet was already credited, user can buy manually
             # But do NOT mark as provisioned so next retry can attempt again
+
+    # 3. If it is direct renewal, apply renewal automatically
+    elif payment.kind == "direct_renewal":
+        if payment.callback_payload and payment.callback_payload.get("renewal_applied"):
+            logger.info("[PAYMENT] Renewal already applied — skipping")
+            return
+
+        logger.info("[PAYMENT] Step 3: Direct renewal — applying renewal")
+        try:
+            await _handle_direct_renewal(session, payment)
+            payload = dict(payment.callback_payload or {})
+            payload["renewal_applied"] = True
+            payment.callback_payload = payload
+            logger.info("[PAYMENT] Direct renewal COMPLETED")
+        except Exception as exc:
+            logger.error("[PAYMENT] Direct renewal FAILED: %s", exc, exc_info=True)
     else:
-        logger.info("[PAYMENT] Payment kind=%s — not a direct purchase, done", payment.kind)
+        logger.info("[PAYMENT] Payment kind=%s — not a direct purchase/renewal, done", payment.kind)
 
 
 async def _handle_direct_purchase(
@@ -234,7 +258,7 @@ async def _handle_direct_purchase(
             f"📅 مدت: {plan.duration_days} روز\n"
             f"💰 پرداخت شده: {final_price:.2f} {plan.currency}\n"
             f"💳 روش: درگاه پرداخت\n"
-            f"🕐 فعال‌سازی: از زمان تحویل\n\n"
+            f"🕐 فعال‌سازی: از اولین اتصال\n\n"
             "━━━━━━━━━━━━━━━━\n"
             f"🔗 ساب لینک:\n{sub_link}\n\n"
             f"📋 کانفیگ مستقیم:\n{vless_uri}"
@@ -308,6 +332,66 @@ async def _handle_direct_purchase(
     except Exception as exc:
         logger.warning("[PROVISION] Referral bonus failed: %s", exc)
     return True
+
+
+async def _handle_direct_renewal(
+    session: AsyncSession,
+    payment: Payment,
+) -> None:
+    """Apply renewal automatically after a successful gateway payment for renewal."""
+    renewal_meta = payment.callback_payload
+    if not renewal_meta:
+        logger.error("[RENEWAL] Missing callback_payload for renewal payment %s", payment.id)
+        return
+
+    sub_id_str = renewal_meta.get("sub_id")
+    renew_type = renewal_meta.get("renew_type")
+    renew_amount = renewal_meta.get("renew_amount")
+
+    if not sub_id_str or not renew_type or not renew_amount:
+        logger.error("[RENEWAL] Missing renewal metadata for payment %s: %s", payment.id, renewal_meta)
+        return
+
+    from services.renewal import apply_renewal
+
+    subscription = await session.scalar(
+        select(Subscription)
+        .options(selectinload(Subscription.xui_client))
+        .where(Subscription.id == UUID(sub_id_str))
+    )
+    if subscription is None:
+        logger.error("[RENEWAL] Subscription %s not found for renewal payment %s", sub_id_str, payment.id)
+        return
+
+    logger.info("[RENEWAL] Applying renewal: sub=%s, type=%s, amount=%s", sub_id_str, renew_type, renew_amount)
+
+    await apply_renewal(
+        session=session,
+        subscription=subscription,
+        renew_type=renew_type,
+        amount=float(renew_amount),
+    )
+    logger.info("[RENEWAL] Renewal applied successfully for subscription %s", sub_id_str)
+
+    # Notify user
+    bot = _get_shared_bot()
+    try:
+        user = await session.scalar(select(User).where(User.id == payment.user_id))
+        if user:
+            type_label = "حجم" if renew_type == "volume" else "زمان"
+            amount_label = f"{renew_amount} گیگابایت" if renew_type == "volume" else f"{int(renew_amount)} روز"
+            await bot.send_message(
+                user.telegram_id,
+                f"✅ تمدید خودکار اعمال شد!\n\n"
+                f"📦 نوع تمدید: {type_label}\n"
+                f"📊 مقدار: {amount_label}\n"
+                f"💳 روش: درگاه پرداخت\n\n"
+                "سرویس شما بروزرسانی شد."
+            )
+    except Exception as exc:
+        logger.warning("[RENEWAL] Failed to send renewal notification: %s", exc)
+    finally:
+        await bot.session.close()
 
 
 async def review_gateway_payment(session: AsyncSession, payment: Payment) -> str:

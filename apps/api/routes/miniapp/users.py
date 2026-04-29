@@ -134,6 +134,7 @@ async def _get_current_user(
         select(User)
         .options(
             selectinload(User.wallet),
+            selectinload(User.profile),
             selectinload(User.subscriptions).selectinload(Subscription.plan),
             selectinload(User.subscriptions).selectinload(Subscription.xui_client),
         )
@@ -401,7 +402,14 @@ async def post_admin_action(
         payment = await session.get(Payment, target_id)
         if payment is None:
             raise HTTPException(status_code=404, detail="پرداخت پیدا نشد.")
-        result = await review_gateway_payment(session, payment)
+        try:
+            result = await review_gateway_payment(session, payment)
+        except Exception as exc:
+            logger.error("Admin review_payment failed for %s: %s", target_id, exc, exc_info=True)
+            raise HTTPException(
+                status_code=502,
+                detail=f"خطا در بازبینی پرداخت: {type(exc).__name__}: {exc}",
+            ) from exc
         _record_admin_action(session, user, action, "payment", payment.id, {"result": result})
         return {"ok": True, "message": f"نتیجه بازبینی: {result}"}
 
@@ -1382,6 +1390,16 @@ async def create_purchase(
             detail="نام کانفیگ نامعتبر است. فقط حروف انگلیسی، عدد، خط تیره و آندرلاین مجاز است.",
         )
 
+    # Phone verification check
+    phone_settings = await AppSettingsRepository(session).get_phone_verification_settings()
+    if phone_settings.enabled:
+        from services.phone_verification import get_verified_phone
+        if not get_verified_phone(user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="برای خرید، ابتدا شماره موبایل خود را از طریق ربات تایید کنید.",
+            )
+
     duplicate_config = await session.scalar(
         select(XUIClientRecord).where(XUIClientRecord.username == config_name)
     )
@@ -1678,11 +1696,6 @@ async def renew_subscription(
     auth: tuple[User, AsyncSession] = Depends(_get_current_user),
 ) -> RenewalResponse:
     user, session = auth
-    if body.payment_method != "wallet":
-        raise HTTPException(status_code=400, detail="فعلاً تمدید داخل مینی‌اپ با کیف پول انجام می‌شود.")
-    if user.wallet is None:
-        raise HTTPException(status_code=404, detail="کیف پول پیدا نشد.")
-
     subscription = await _get_user_subscription(session, user, body.subscription_id)
     _validate_renewal_request(subscription, body.renew_type, body.amount)
 
@@ -1692,6 +1705,117 @@ async def renew_subscription(
         amount=body.amount,
         settings=renewal_settings,
     )
+
+    renewal_meta = {
+        "sub_id": str(subscription.id),
+        "renew_type": body.renew_type,
+        "renew_amount": body.amount,
+        "purpose": "renewal",
+        "source": "miniapp",
+    }
+
+    # ── Gateway renewals ──
+    if body.payment_method in ("nowpayments", "tetrapay"):
+        gw = await AppSettingsRepository(session).get_gateway_settings()
+        local_order_id = str(uuid4())
+
+        if body.payment_method == "nowpayments":
+            if not gw.nowpayments_enabled:
+                raise HTTPException(status_code=400, detail="درگاه ارزی فعال نیست.")
+            npc = NowPaymentsClient(
+                NowPaymentsClientConfig(
+                    api_key=gw.nowpayments_api_key.get_secret_value() if isinstance(gw.nowpayments_api_key, SecretStr) else str(gw.nowpayments_api_key),
+                )
+            )
+            try:
+                inv = await npc.create_payment(
+                    NowPaymentsPaymentCreateRequest(
+                        price_amount=float(price),
+                        price_currency="usd",
+                        order_id=local_order_id,
+                        order_description=f"Renewal sub {subscription.id}",
+                        ipn_callback_url=f"{settings.web_base_url.rstrip('/')}/api/webhooks/nowpayments/ipn",
+                    )
+                )
+            except NowPaymentsRequestError as exc:
+                raise HTTPException(status_code=502, detail=f"خطا در ساخت فاکتور: {exc}") from exc
+            finally:
+                await npc.close()
+
+            payment = Payment(
+                user_id=user.id,
+                provider="nowpayments",
+                kind="direct_renewal",
+                provider_invoice_id=str(inv.payment_id),
+                order_id=local_order_id,
+                payment_status="waiting",
+                price_currency="USD",
+                price_amount=price,
+                invoice_url=inv.invoice_url,
+                callback_payload=renewal_meta,
+            )
+            session.add(payment)
+            await session.flush()
+            return RenewalResponse(
+                status="invoice_created",
+                message="فاکتور تمدید ساخته شد. بعد از پرداخت، تمدید خودکار اعمال می‌شود.",
+                price=price,
+                invoice_url=inv.invoice_url,
+            )
+
+        elif body.payment_method == "tetrapay":
+            if not gw.tetrapay_enabled:
+                raise HTTPException(status_code=400, detail="درگاه ریالی فعال نیست.")
+            toman_rate = gw.toman_rate or 60000
+            toman_amount = int(float(price) * toman_rate)
+            rial_amount = toman_amount * 10
+
+            try:
+                async with TetraPayClient(
+                    TetraPayClientConfig(
+                        api_key=settings.tetrapay_api_key.get_secret_value(),
+                        base_url=settings.tetrapay_base_url,
+                    )
+                ) as client:
+                    tx = await client.create_order(
+                        hash_id=local_order_id,
+                        amount=rial_amount,
+                        description=f"تمدید سرویس - {user.telegram_id}",
+                        email=f"{user.telegram_id}@telegram.org",
+                        mobile="09111111111",
+                    )
+            except TetraPayRequestError as exc:
+                raise HTTPException(status_code=502, detail=f"خطا در ساخت فاکتور: {exc}") from exc
+
+            payment = Payment(
+                user_id=user.id,
+                provider="tetrapay",
+                kind="direct_renewal",
+                provider_payment_id=tx.Authority,
+                order_id=local_order_id,
+                payment_status="waiting",
+                pay_currency="IRT",
+                price_currency="USD",
+                price_amount=price,
+                pay_amount=toman_amount,
+                invoice_url=tx.payment_url_bot,
+                callback_payload=renewal_meta,
+            )
+            session.add(payment)
+            await session.flush()
+            return RenewalResponse(
+                status="invoice_created",
+                message=f"فاکتور تمدید ریالی: {toman_amount:,} تومان. بعد از پرداخت، تمدید خودکار اعمال می‌شود.",
+                price=price,
+                invoice_url=tx.payment_url_bot,
+            )
+
+    # ── Wallet renewal (default) ──
+    if body.payment_method != "wallet":
+        raise HTTPException(status_code=400, detail="روش پرداخت نامعتبر.")
+
+    if user.wallet is None:
+        raise HTTPException(status_code=404, detail="کیف پول پیدا نشد.")
     if user.wallet.balance < price:
         raise HTTPException(status_code=402, detail="موجودی کیف پول برای تمدید کافی نیست.")
 
@@ -2121,7 +2245,7 @@ def validate_telegram_init_data(init_data: str) -> int:
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid auth_date.") from exc
 
-    if (datetime.now(timezone.utc) - auth_date).total_seconds() > 24 * 60 * 60:
+    if (datetime.now(timezone.utc) - auth_date).total_seconds() > 4 * 60 * 60:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Init data expired.")
 
     secret_key = hmac.new(

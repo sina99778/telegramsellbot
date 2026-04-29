@@ -72,7 +72,7 @@ async def main() -> None:
     scheduler.add_job(
         run_reconciliation_job,
         "cron",
-        hour="*/6",
+        hour="*/3",
         minute=45,
         kwargs={"bot": bot},
         max_instances=1,

@@ -68,6 +68,12 @@ async def sync_xui_usage_and_status(
             subscription.activated_at = now
             subscription.starts_at = now
             subscription.ends_at = now + timedelta(days=plan_duration_days)
+            # Update X-UI panel with the real expiry time
+            await _update_xui_expiry_on_activation(xui_client, subscription)
+            logger.info(
+                "[SYNC] Subscription %s activated (first_use) — ends_at=%s",
+                subscription.id, subscription.ends_at,
+            )
 
         should_expire_for_volume = subscription.used_bytes >= subscription.volume_bytes > 0
         should_expire_for_time = subscription.ends_at is not None and now > subscription.ends_at
@@ -207,6 +213,42 @@ async def _disable_client_in_xui(
         return
 
 
+async def _update_xui_expiry_on_activation(
+    xui_client: SanaeiXUIClient,
+    subscription: Subscription,
+) -> None:
+    """Update X-UI client expiryTime when a first_use subscription is activated."""
+    xui_record = subscription.xui_client
+    if xui_record is None or xui_record.inbound is None:
+        return
+
+    expiry_ms = int(subscription.ends_at.timestamp() * 1000) if subscription.ends_at else 0
+    existing_sub_id = ""
+    current_sub_link = subscription.sub_link or (xui_record.sub_link if xui_record else "") or ""
+    if current_sub_link and "/" in current_sub_link:
+        existing_sub_id = current_sub_link.rsplit("/", 1)[-1]
+
+    activated_client = XUIClient(
+        id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+        uuid=xui_record.client_uuid,
+        email=xui_record.email,
+        limitIp=1,
+        totalGB=subscription.volume_bytes,
+        expiryTime=expiry_ms,
+        enable=True,
+        subId=existing_sub_id,
+        comment=f"activated:{subscription.id}",
+    )
+    try:
+        await xui_client.update_client(
+            inbound_id=xui_record.inbound.xui_inbound_remote_id,
+            client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+            client=activated_client,
+        )
+        logger.info("[SYNC] X-UI expiry updated for '%s' — expiry_ms=%s", xui_record.email, expiry_ms)
+    except XUIClientError as exc:
+        logger.warning("[SYNC] Failed to update X-UI expiry for '%s': %s", xui_record.email, exc)
+
 async def get_realtime_usage(session: AsyncSession, subscription: Subscription) -> dict | None:
     """Fetch real-time usage from X-UI panel for a single subscription."""
     xui_record = subscription.xui_client
@@ -255,6 +297,24 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
                 subscription.activated_at = now
                 subscription.starts_at = now
                 subscription.ends_at = now + timedelta(days=plan_duration)
+                # Update X-UI panel with the real expiry time
+                try:
+                    await xui_client.update_client(
+                        inbound_id=inbound.xui_inbound_remote_id,
+                        client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+                        client=XUIClient(
+                            id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+                            uuid=xui_record.client_uuid,
+                            email=xui_record.email,
+                            limitIp=1,
+                            totalGB=subscription.volume_bytes,
+                            expiryTime=int(subscription.ends_at.timestamp() * 1000),
+                            enable=True,
+                            comment=f"activated:{subscription.id}",
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning("[REALTIME] Failed to update X-UI expiry: %s", exc)
                 logger.info("[REALTIME] Auto-activated sub %s — ends_at=%s", subscription.id, subscription.ends_at)
 
             await session.flush()

@@ -200,6 +200,7 @@ class RenewalResponse(BaseModel):
     message: str
     price: Decimal
     balance: Decimal | None = None
+    invoice_url: str | None = None
 
 
 class AdminModuleView(BaseModel):

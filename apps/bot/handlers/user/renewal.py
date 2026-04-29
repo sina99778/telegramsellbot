@@ -322,7 +322,7 @@ async def renew_pay_nowpay(
     payment = Payment(
         user_id=user.id,
         provider="nowpayments",
-        kind="wallet_topup",
+        kind="direct_renewal",
         provider_invoice_id=str(invoice.id),
         order_id=local_order_id,
         payment_status="waiting",
@@ -339,8 +339,7 @@ async def renew_pay_nowpay(
         callback,
         f"🧾 فاکتور تمدید ساخته شد:\n\n"
         f"💰 مبلغ: {price} USD\n\n"
-        "بعد از پرداخت، مبلغ به کیف پول واریز می‌شود.\n"
-        "سپس مجدداً از طریق کیف پول تمدید کنید.",
+        "بعد از پرداخت و تایید، تمدید به صورت خودکار اعمال می‌شود.",
         reply_markup=build_topup_link_keyboard(str(invoice.invoice_url)),
     )
 
@@ -414,7 +413,7 @@ async def renew_pay_tetrapay(
     payment = Payment(
         user_id=user.id,
         provider="tetrapay",
-        kind="wallet_topup",
+        kind="direct_renewal",
         provider_payment_id=tx.Authority,
         order_id=local_order_id,
         payment_status="waiting",
@@ -433,8 +432,7 @@ async def renew_pay_tetrapay(
         callback,
         f"🔖 فاکتور تمدید (ریالی):\n\n"
         f"💵 مبلغ: {toman_amount:,} تومان\n\n"
-        "بعد از پرداخت، مبلغ به کیف پول واریز می‌شود.\n"
-        "سپس مجدداً از طریق کیف پول تمدید کنید.",
+        "بعد از پرداخت و تایید، تمدید به صورت خودکار اعمال می‌شود.",
         reply_markup=build_topup_link_keyboard(invoice_url=tx.payment_url_bot, bot_url=tx.payment_url_bot),
     )
 

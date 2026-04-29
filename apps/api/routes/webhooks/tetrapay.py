@@ -48,7 +48,11 @@ async def tetrapay_webhook_handler(
     # Idempotency guard
     if (
         payment.actually_paid is not None
-        and (payment.kind != "direct_purchase" or (payment.callback_payload or {}).get("provisioned"))
+        and (
+            (payment.kind == "direct_purchase" and (payment.callback_payload or {}).get("provisioned"))
+            or (payment.kind == "direct_renewal" and (payment.callback_payload or {}).get("renewal_applied"))
+            or payment.kind not in {"direct_purchase", "direct_renewal"}
+        )
     ):
         logger.info("TetraPay IPN: Payment %s already processed", payment.id)
         return {"status": "already_processed"}

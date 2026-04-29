@@ -143,8 +143,9 @@ class ProvisioningManager:
         # Use config_name as the display name in X-UI panel
         email = f"{config_name}_{sub_id[:6]}"
         now = datetime.now(timezone.utc)
-        ends_at = now + timedelta(days=plan.duration_days)
-        expiry_ms = int(ends_at.timestamp() * 1000)
+        # first_use mode: expiryTime=0 means unlimited until activation
+        # The sync job will set the real expiry when the user first connects
+        expiry_ms = 0
         sub_link = build_sub_link(server, sub_id)
         vless_uri = build_vless_uri(
             client_uuid=client_uuid,
@@ -189,11 +190,11 @@ class ProvisioningManager:
             user_id=user_id,
             order_id=order_id,
             plan_id=plan_id,
-            status="active",
-            activation_mode="immediate",
-            starts_at=now,
-            ends_at=ends_at,
-            activated_at=now,
+            status="pending_activation",
+            activation_mode="first_use",
+            starts_at=None,
+            ends_at=None,
+            activated_at=None,
             expired_at=None,
             volume_bytes=plan.volume_bytes,
             used_bytes=0,
@@ -253,11 +254,11 @@ class ProvisioningManager:
             user_id=user_id,
             order_id=order.id,
             plan_id=plan.id,
-            status="active",
-            activation_mode="ready_config",
-            starts_at=now,
-            ends_at=now + timedelta(days=plan.duration_days),
-            activated_at=now,
+            status="pending_activation",
+            activation_mode="first_use",
+            starts_at=None,
+            ends_at=None,
+            activated_at=None,
             expired_at=None,
             volume_bytes=plan.volume_bytes,
             used_bytes=0,

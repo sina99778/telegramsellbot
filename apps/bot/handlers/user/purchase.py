@@ -128,11 +128,19 @@ async def phone_verification_submitted(
     if message.from_user is None:
         return
 
-    if message.contact and message.contact.user_id and message.contact.user_id != message.from_user.id:
+    # Only accept contact button — reject plain text phone numbers
+    if not message.contact:
+        await message.answer(
+            "لطفا از دکمه «ارسال شماره موبایل» استفاده کنید.",
+            reply_markup=_phone_request_keyboard(),
+        )
+        return
+
+    if message.contact.user_id and message.contact.user_id != message.from_user.id:
         await message.answer("لطفا شماره موبایل خودتان را ارسال کنید.")
         return
-    phone = message.contact.phone_number if message.contact else (message.text or "")
-    phone = normalize_phone_number(phone)
+
+    phone = normalize_phone_number(message.contact.phone_number)
     settings = await AppSettingsRepository(session).get_phone_verification_settings()
     if not is_valid_phone_number(phone, settings.mode):
         hint = "یک شماره ایران معتبر مثل 09123456789" if settings.mode == "iran" else "یک شماره معتبر"
@@ -148,9 +156,11 @@ async def phone_verification_submitted(
     await set_verified_phone(session, user, phone)
     await state.clear()
     await message.answer(
-        "شماره موبایل تایید شد. حالا دوباره گزینه خرید سرویس جدید را بزنید.",
+        "✅ شماره موبایل تایید شد.",
         reply_markup=ReplyKeyboardRemove(),
     )
+    # Automatically continue to the purchase flow
+    await show_available_plans(message, session, state)
 
 
 @router.callback_query(F.data == "purchase:custom")
@@ -531,9 +541,17 @@ async def pay_with_gateway(
 ) -> None:
     """Pay with NowPayments gateway."""
     await callback.answer()
+
+    # Double-click prevention
+    current_state = await state.get_state()
+    if current_state == "purchase_processing":
+        return
+    await state.set_state("purchase_processing")
+
     from repositories.settings import AppSettingsRepository
     gw = await AppSettingsRepository(session).get_gateway_settings()
     if not gw.nowpayments_enabled:
+        await state.clear()
         await safe_edit_or_send(callback, "❌ درگاه ارزی غیرفعال است.")
         return
     try:
@@ -552,9 +570,17 @@ async def pay_with_tetrapay(
 ) -> None:
     """Pay with TetraPay gateway (Tomans)."""
     await callback.answer()
+
+    # Double-click prevention
+    current_state = await state.get_state()
+    if current_state == "purchase_processing":
+        return
+    await state.set_state("purchase_processing")
+
     from repositories.settings import AppSettingsRepository
     gw = await AppSettingsRepository(session).get_gateway_settings()
     if not gw.tetrapay_enabled:
+        await state.clear()
         await safe_edit_or_send(callback, "❌ درگاه ریالی غیرفعال است.")
         return
     try:
@@ -1214,7 +1240,7 @@ async def _finalize_purchase(
         f"💰 پرداخت شده: *{_escape(str(final_price))} {_escape(plan.currency)}*\n"
         f"💳 روش پرداخت: *{_escape(payment_label)}*\n"
         f"{discount_line}"
-        f"🕐 فعال‌سازی: *از زمان تحویل*\n\n"
+        f"🕐 فعال\u200cسازی: *از اولین اتصال*\n\n"
         "━━━━━━━━━━━━━━━━\n"
         "🔗 *ساب لینک \\(برای وارد کردن در اپ\\):*\n"
         f"`{_escape(sub_link)}`\n\n"
@@ -1238,7 +1264,7 @@ async def _finalize_purchase(
     banner_bytes = create_traffic_banner(
         config_name=config_name,
         user_id=user.id,
-        status="active",
+        status="pending_activation",
         used_gb=0.0,
         total_gb=plan.volume_bytes / (1024**3),
         days_left=plan.duration_days,
