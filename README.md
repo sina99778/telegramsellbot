@@ -339,6 +339,38 @@ If a gateway payment is not delivered:
 3. Press review/refresh.
 4. If the provider confirms payment, the bot automatically credits wallet or delivers the config.
 
+## Backup And Restore
+
+To ensure you don't lose user and configuration data, a backup and restore system is included.
+
+### Taking A Backup
+
+To back up the database and the `.env` file, run the following command on your server:
+
+```bash
+cd /opt/telegramsellbot
+./backup.sh
+```
+
+This script creates a compressed `.sql.gz` dump of the database and copies your `.env` file into the `backups/` folder. Download these files to a safe location (e.g., your personal computer).
+
+### Restoring A Backup (Server Migration)
+
+If you change servers and want to restore the bot with previous data:
+
+1. Install the bot on the new server (run the quick install command).
+2. Upload your backup files (`.env` and `.sql.gz`) to the new server in the `/opt/telegramsellbot` directory.
+3. Replace the current `.env` with your backed-up `.env` file (ensure security keys remain the same).
+4. Restart the containers: `docker compose -f docker-compose.prod.yml up -d`
+5. Restore the database backup:
+
+```bash
+cd /opt/telegramsellbot
+./restore.sh backups/telegramsellbot_backup_XXXXXX_XXXXXX.sql.gz
+```
+
+This will drop the new database and replace it with your backup data.
+
 ## Local Development
 
 ```bash
