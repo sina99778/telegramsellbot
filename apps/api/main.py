@@ -14,6 +14,7 @@ from apps.api.routes.miniapp.users import router as miniapp_users_router
 from apps.api.routes.webhooks.nowpayments import router as nowpayments_webhook_router
 from apps.api.routes.webhooks.tetrapay import router as tetrapay_webhook_router
 from apps.api.routes.dl import router as dl_router
+from apps.api.routes.sub import router as sub_router
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
 app.include_router(nowpayments_webhook_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(tetrapay_webhook_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(dl_router, prefix="/api", tags=["dl"])
+app.include_router(sub_router, prefix="/api", tags=["sub"])
 
 
 @app.get("/healthz", tags=["health"])

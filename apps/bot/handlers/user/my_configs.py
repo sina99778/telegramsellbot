@@ -248,6 +248,11 @@ async def my_config_detail_handler(
                 )
         except Exception as exc:
             logger.warning("Failed to build vless_uri for sub %s: %s", sub.id, exc)
+    else:
+        from models.ready_config import ReadyConfigItem
+        ready_item = await session.scalar(select(ReadyConfigItem).where(ReadyConfigItem.subscription_id == sub.id))
+        if ready_item:
+            vless_uri = ready_item.content
 
     # Build message with MarkdownV2
     esc = escape_markdown

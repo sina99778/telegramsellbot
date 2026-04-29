@@ -262,10 +262,14 @@ class ProvisioningManager:
             expired_at=None,
             volume_bytes=plan.volume_bytes,
             used_bytes=0,
-            sub_link=item.content,
+            sub_link="",  # We will update this after flush
         )
         self.session.add(subscription)
         await self.session.flush()
+
+        from core.config import settings
+        bot_sub_link = f"{settings.web_base_url.rstrip('/')}/api/sub/{subscription.id}"
+        subscription.sub_link = bot_sub_link
 
         item.status = "sold"
         item.assigned_user_id = user_id
@@ -280,7 +284,7 @@ class ProvisioningManager:
             subscription=subscription,
             xui_client=None,
             vless_uri=item.content,
-            sub_link=item.content,
+            sub_link=bot_sub_link,
         )
 
     async def process_zero_usage_refund(

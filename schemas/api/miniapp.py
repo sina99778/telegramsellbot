@@ -30,6 +30,7 @@ class SubscriptionView(BaseModel):
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     config_name: str | None = None  # xui_client username
+    vless_uri: str | None = None
 
 
 class PlanView(BaseModel):
