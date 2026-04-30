@@ -87,6 +87,7 @@ from services.plan_inventory import (
     is_stock_available,
     set_plan_sales_limit,
 )
+from services.phone_verification import get_verified_phone
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
 from services.renewal import apply_renewal, calculate_renewal_price
 from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
@@ -790,6 +791,7 @@ async def get_admin_user_detail(
         select(User)
         .options(
             selectinload(User.wallet),
+            selectinload(User.profile),
             selectinload(User.subscriptions).selectinload(Subscription.plan),
             selectinload(User.subscriptions).selectinload(Subscription.xui_client),
             selectinload(User.orders),
@@ -816,7 +818,17 @@ async def adjust_admin_user_balance(
     if amount == Decimal("0"):
         raise HTTPException(status_code=400, detail="مبلغ نمی‌تواند صفر باشد.")
 
-    target = await session.scalar(select(User).options(selectinload(User.wallet)).where(User.id == target_user_id))
+    target = await session.scalar(
+        select(User)
+        .options(
+            selectinload(User.wallet),
+            selectinload(User.profile),
+            selectinload(User.subscriptions).selectinload(Subscription.plan),
+            selectinload(User.subscriptions).selectinload(Subscription.xui_client),
+            selectinload(User.orders),
+        )
+        .where(User.id == target_user_id)
+    )
     if target is None or target.wallet is None:
         raise HTTPException(status_code=404, detail="کاربر یا کیف پول پیدا نشد.")
 
@@ -1065,6 +1077,7 @@ def _serialize_admin_user_summary(user: User) -> dict[str, Any]:
 
 def _serialize_admin_user_detail(user: User) -> dict[str, Any]:
     summary = _serialize_admin_user_summary(user)
+    summary["phone"] = get_verified_phone(user)
     subscriptions = []
     for sub in sorted(user.subscriptions or [], key=lambda item: item.created_at, reverse=True):
         subscriptions.append(
@@ -1393,7 +1406,6 @@ async def create_purchase(
     # Phone verification check
     phone_settings = await AppSettingsRepository(session).get_phone_verification_settings()
     if phone_settings.enabled:
-        from services.phone_verification import get_verified_phone
         if not get_verified_phone(user):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

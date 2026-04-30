@@ -870,6 +870,7 @@ const Pages = (() => {
         const modules = document.getElementById('admin-modules');
         if (!modules) return;
         const subs = user.subscriptions || [];
+        const phoneText = user.phone || user.verified_phone || 'ثبت نشده';
         modules.innerHTML = `
             <button class="btn btn-secondary btn-block" onclick="Pages.openAdminModule('users')">بازگشت به کاربران</button>
             <div class="admin-profile">
@@ -880,6 +881,7 @@ const Pages = (() => {
                 <div class="admin-profile-grid">
                     <div><span>نقش</span><strong>${escapeHtml(user.role)}</strong></div>
                     <div><span>وضعیت</span><strong>${escapeHtml(user.status)}</strong></div>
+                    <div><span>شماره موبایل</span><strong>${escapeHtml(phoneText)}</strong></div>
                     <div><span>موجودی</span><strong>$${UI.formatMoney(user.wallet_balance)}</strong></div>
                     <div><span>تست گرفته</span><strong>${user.has_received_free_trial ? 'بله' : 'خیر'}</strong></div>
                 </div>

@@ -24,7 +24,7 @@ from models.subscription import Subscription
 from models.user import User
 from models.xui import XUIClientRecord
 from repositories.audit import AuditLogRepository
-from repositories.user import UserRepository
+from services.phone_verification import get_verified_phone
 from services.wallet.manager import WalletManager
 from apps.bot.utils.messaging import safe_edit_or_send
 
@@ -171,14 +171,14 @@ async def admin_users_lookup(
         telegram_id = int(query_text)
         user = await session.scalar(
             select(User)
-            .options(selectinload(User.wallet), selectinload(User.subscriptions))
+            .options(selectinload(User.wallet), selectinload(User.profile), selectinload(User.subscriptions))
             .where(User.telegram_id == telegram_id)
         )
     except ValueError:
         # Search by username (case-insensitive)
         user = await session.scalar(
             select(User)
-            .options(selectinload(User.wallet), selectinload(User.subscriptions))
+            .options(selectinload(User.wallet), selectinload(User.profile), selectinload(User.subscriptions))
             .where(func.lower(User.username) == query_text.lower())
         )
 
@@ -213,7 +213,7 @@ async def admin_user_profile_from_list(
     await callback.answer()
     user = await session.scalar(
         select(User)
-        .options(selectinload(User.wallet), selectinload(User.subscriptions))
+        .options(selectinload(User.wallet), selectinload(User.profile), selectinload(User.subscriptions))
         .where(User.id == callback_data.user_id)
     )
     if user is None or user.wallet is None:
@@ -272,7 +272,11 @@ async def admin_edit_balance_submit(
         return
 
     target_user_id = UUID(str(raw_user_id))
-    user = await session.scalar(select(User).options(selectinload(User.wallet)).where(User.id == target_user_id))
+    user = await session.scalar(
+        select(User)
+        .options(selectinload(User.wallet), selectinload(User.profile))
+        .where(User.id == target_user_id)
+    )
     if user is None or user.wallet is None:
         await state.clear()
         await message.answer(AdminMessages.USER_NOT_FOUND)
@@ -323,7 +327,11 @@ async def admin_toggle_ban(
     admin_user: User,
 ) -> None:
     await callback.answer()
-    user = await UserRepository(session).get(callback_data.user_id)
+    user = await session.scalar(
+        select(User)
+        .options(selectinload(User.wallet), selectinload(User.profile))
+        .where(User.id == callback_data.user_id)
+    )
     if user is None:
         await safe_edit_or_send(callback, AdminMessages.USER_NOT_FOUND)
         return
@@ -422,7 +430,7 @@ async def admin_user_toggle_admin(
     
     user = await session.scalar(
         select(User)
-        .options(selectinload(User.wallet), selectinload(User.subscriptions))
+        .options(selectinload(User.wallet), selectinload(User.profile), selectinload(User.subscriptions))
         .where(User.id == callback_data.user_id)
     )
     if user is None:
@@ -468,7 +476,7 @@ async def admin_user_reset_trial(
     await callback.answer()
     user = await session.scalar(
         select(User)
-        .options(selectinload(User.wallet), selectinload(User.subscriptions))
+        .options(selectinload(User.wallet), selectinload(User.profile), selectinload(User.subscriptions))
         .where(User.id == callback_data.user_id)
     )
     if user is None:
@@ -516,13 +524,15 @@ async def view_user_configs(
 def _build_user_profile_text(*, user: User, total_orders: int) -> str:
     wallet_balance = user.wallet.balance if user.wallet is not None else Decimal("0")
     role_text = "ادمین 👑" if user.role == "admin" else ("مالک 💎" if user.role == "owner" else "کاربر عادی 👤")
+    verified_phone = get_verified_phone(user)
+    phone_text = f"<code>{verified_phone}</code>" if verified_phone else "ثبت نشده"
     return AdminMessages.USER_PROFILE.format(
         name=user.first_name or "-",
         telegram_id=user.telegram_id,
         status=user.status,
         wallet_balance=f"{wallet_balance:.2f}",
         total_orders=total_orders,
-    ) + f"\n🎖 نقش: {role_text}"
+    ) + f"\n🎖 نقش: {role_text}\n📱 شماره موبایل: {phone_text}"
 
 
 def _build_user_profile_keyboard(user_id: UUID, status: str):
