@@ -14,9 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from core.config import settings
-from models.payment import Payment
 from models.order import Order
+from models.payment import Payment
 from models.plan import Plan
+from models.subscription import Subscription
 from models.user import User
 from repositories.settings import AppSettingsRepository
 from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
@@ -106,7 +107,10 @@ async def process_successful_payment(
 
         logger.info("[PAYMENT] Step 3: Direct renewal — applying renewal")
         try:
-            await _handle_direct_renewal(session, payment)
+            renewed = await _handle_direct_renewal(session, payment)
+            if renewed is False:
+                logger.info("[PAYMENT] Direct renewal was not applied; leaving retry flag open")
+                return
             payload = dict(payment.callback_payload or {})
             payload["renewal_applied"] = True
             payment.callback_payload = payload
@@ -345,12 +349,12 @@ async def _handle_direct_purchase(
 async def _handle_direct_renewal(
     session: AsyncSession,
     payment: Payment,
-) -> None:
+) -> bool:
     """Apply renewal automatically after a successful gateway payment for renewal."""
     renewal_meta = payment.callback_payload
     if not renewal_meta:
         logger.error("[RENEWAL] Missing callback_payload for renewal payment %s", payment.id)
-        return
+        return False
 
     sub_id_str = renewal_meta.get("sub_id")
     renew_type = renewal_meta.get("renew_type")
@@ -358,7 +362,7 @@ async def _handle_direct_renewal(
 
     if not sub_id_str or not renew_type or not renew_amount:
         logger.error("[RENEWAL] Missing renewal metadata for payment %s: %s", payment.id, renewal_meta)
-        return
+        return False
 
     from services.renewal import apply_renewal
 
@@ -369,9 +373,31 @@ async def _handle_direct_renewal(
     )
     if subscription is None:
         logger.error("[RENEWAL] Subscription %s not found for renewal payment %s", sub_id_str, payment.id)
-        return
+        return False
 
     logger.info("[RENEWAL] Applying renewal: sub=%s, type=%s, amount=%s", sub_id_str, renew_type, renew_amount)
+
+    payload = dict(payment.callback_payload or {})
+    if not payload.get("wallet_debited"):
+        wallet_manager = WalletManager(session)
+        await wallet_manager.process_transaction(
+            user_id=payment.user_id,
+            amount=Decimal(str(payment.price_amount)),
+            transaction_type="renewal",
+            direction="debit",
+            currency=payment.price_currency,
+            reference_type="payment",
+            reference_id=payment.id,
+            description=f"Gateway renewal of subscription {subscription.id}",
+            metadata={
+                "sub_id": str(subscription.id),
+                "type": renew_type,
+                "amount": renew_amount,
+                "provider": payment.provider,
+            },
+        )
+        payload["wallet_debited"] = True
+        payment.callback_payload = payload
 
     await apply_renewal(
         session=session,
@@ -382,8 +408,9 @@ async def _handle_direct_renewal(
     logger.info("[RENEWAL] Renewal applied successfully for subscription %s", sub_id_str)
 
     # Notify user
-    bot = _get_shared_bot()
+    bot: Bot | None = None
     try:
+        bot = _get_shared_bot()
         user = await session.scalar(select(User).where(User.id == payment.user_id))
         if user:
             provider_fa = {
@@ -407,7 +434,9 @@ async def _handle_direct_renewal(
     except Exception as exc:
         logger.warning("[RENEWAL] Failed to send renewal notification: %s", exc)
     finally:
-        await bot.session.close()
+        if bot is not None:
+            await bot.session.close()
+    return True
 
 
 async def review_gateway_payment(session: AsyncSession, payment: Payment) -> str:

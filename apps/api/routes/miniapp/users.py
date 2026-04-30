@@ -58,6 +58,7 @@ from schemas.api.miniapp import (
     RenewalQuoteResponse,
     RenewalRequest,
     RenewalResponse,
+    SubscriptionListResponse,
     SendTicketRequest,
     SubscriptionView,
     TicketListResponse,
@@ -136,8 +137,6 @@ async def _get_current_user(
         .options(
             selectinload(User.wallet),
             selectinload(User.profile),
-            selectinload(User.subscriptions).selectinload(Subscription.plan),
-            selectinload(User.subscriptions).selectinload(Subscription.xui_client),
         )
         .where(User.telegram_id == telegram_user_id)
     )
@@ -158,34 +157,40 @@ async def get_dashboard(
     if user.wallet is None:
         raise HTTPException(status_code=404, detail="Wallet not found.")
 
-    subs = []
-    total_used = 0
-    total_vol = 0
-    active_count = 0
+    active_statuses = ("active", "pending_activation")
+    active_count = await session.scalar(
+        select(func.count()).select_from(Subscription).where(
+            Subscription.user_id == user.id,
+            Subscription.status.in_(active_statuses),
+        )
+    ) or 0
+    total_used = await session.scalar(
+        select(func.coalesce(func.sum(Subscription.used_bytes), 0)).where(
+            Subscription.user_id == user.id,
+            Subscription.status.in_(active_statuses),
+        )
+    ) or 0
+    total_vol = await session.scalar(
+        select(func.coalesce(func.sum(Subscription.volume_bytes), 0)).where(
+            Subscription.user_id == user.id,
+            Subscription.status.in_(active_statuses),
+        )
+    ) or 0
 
-    for sub in user.subscriptions:
-        plan_name = sub.plan.name if sub.plan else None
-        plan_price = sub.plan.price if sub.plan else None
-        plan_dur = sub.plan.duration_days if sub.plan else None
-        config_name = sub.xui_client.username if sub.xui_client else None
-
-        subs.append(SubscriptionView(
-            id=sub.id,
-            status=sub.status,
-            used_bytes=sub.used_bytes,
-            volume_bytes=sub.volume_bytes,
-            sub_link=sub.sub_link,
-            plan_name=plan_name,
-            plan_price=plan_price,
-            plan_duration_days=plan_dur,
-            starts_at=sub.starts_at,
-            ends_at=sub.ends_at,
-            config_name=config_name,
-        ))
-        if sub.status in ("active", "pending_activation"):
-            active_count += 1
-            total_used += sub.used_bytes
-            total_vol += sub.volume_bytes
+    result = await session.execute(
+        select(Subscription)
+        .options(
+            selectinload(Subscription.plan),
+            selectinload(Subscription.xui_client),
+        )
+        .where(
+            Subscription.user_id == user.id,
+            Subscription.status.in_(active_statuses),
+        )
+        .order_by(Subscription.created_at.desc())
+        .limit(5)
+    )
+    subs = [_subscription_to_view(sub) for sub in result.scalars().all()]
 
     return MiniAppDashboardResponse(
         user_id=user.id,
@@ -198,6 +203,53 @@ async def get_dashboard(
         active_config_count=active_count,
         total_volume_used=total_used,
         total_volume=total_vol,
+    )
+
+
+@router.get("/configs", response_model=SubscriptionListResponse)
+async def get_configs(
+    page: int = 1,
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> SubscriptionListResponse:
+    user, session = auth
+    page_size = 20
+    page = max(page, 1)
+
+    total = await session.scalar(
+        select(func.count()).select_from(Subscription).where(Subscription.user_id == user.id)
+    ) or 0
+    result = await session.execute(
+        select(Subscription)
+        .options(
+            selectinload(Subscription.plan),
+            selectinload(Subscription.xui_client),
+        )
+        .where(Subscription.user_id == user.id)
+        .order_by(Subscription.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+    return SubscriptionListResponse(
+        subscriptions=[_subscription_to_view(sub) for sub in result.scalars().all()],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+def _subscription_to_view(sub: Subscription) -> SubscriptionView:
+    return SubscriptionView(
+        id=sub.id,
+        status=sub.status,
+        used_bytes=sub.used_bytes,
+        volume_bytes=sub.volume_bytes,
+        sub_link=sub.sub_link,
+        plan_name=sub.plan.name if sub.plan else None,
+        plan_price=sub.plan.price if sub.plan else None,
+        plan_duration_days=sub.plan.duration_days if sub.plan else None,
+        starts_at=sub.starts_at,
+        ends_at=sub.ends_at,
+        config_name=sub.xui_client.username if sub.xui_client else None,
     )
 
 
@@ -1734,36 +1786,36 @@ async def renew_subscription(
         if body.payment_method == "nowpayments":
             if not gw.nowpayments_enabled:
                 raise HTTPException(status_code=400, detail="درگاه ارزی فعال نیست.")
-            npc = NowPaymentsClient(
-                NowPaymentsClientConfig(
-                    api_key=gw.nowpayments_api_key.get_secret_value() if isinstance(gw.nowpayments_api_key, SecretStr) else str(gw.nowpayments_api_key),
-                )
-            )
+            api_key = SecretStr(gw.nowpayments_api_key) if gw.nowpayments_api_key else settings.nowpayments_api_key
             try:
-                inv = await npc.create_payment(
-                    NowPaymentsPaymentCreateRequest(
-                        price_amount=float(price),
-                        price_currency="usd",
-                        order_id=local_order_id,
-                        order_description=f"Renewal sub {subscription.id}",
-                        ipn_callback_url=f"{settings.web_base_url.rstrip('/')}/api/webhooks/nowpayments/ipn",
+                async with NowPaymentsClient(
+                    NowPaymentsClientConfig(
+                        api_key=api_key,
+                        base_url=settings.nowpayments_base_url,
                     )
-                )
+                ) as client:
+                    inv = await client.create_payment_invoice(
+                        NowPaymentsPaymentCreateRequest(
+                            price_amount=float(price),
+                            price_currency="usd",
+                            order_id=local_order_id,
+                            order_description=f"Renewal sub {subscription.id}",
+                            ipn_callback_url=settings.nowpayments_ipn_callback_url,
+                        )
+                    )
             except NowPaymentsRequestError as exc:
                 raise HTTPException(status_code=502, detail=f"خطا در ساخت فاکتور: {exc}") from exc
-            finally:
-                await npc.close()
 
             payment = Payment(
                 user_id=user.id,
                 provider="nowpayments",
                 kind="direct_renewal",
-                provider_invoice_id=str(inv.payment_id),
+                provider_invoice_id=str(inv.id),
                 order_id=local_order_id,
                 payment_status="waiting",
                 price_currency="USD",
                 price_amount=price,
-                invoice_url=inv.invoice_url,
+                invoice_url=str(inv.invoice_url),
                 callback_payload=renewal_meta,
             )
             session.add(payment)
@@ -1772,7 +1824,7 @@ async def renew_subscription(
                 status="invoice_created",
                 message="فاکتور تمدید ساخته شد. بعد از پرداخت، تمدید خودکار اعمال می‌شود.",
                 price=price,
-                invoice_url=inv.invoice_url,
+                invoice_url=str(inv.invoice_url),
             )
 
         elif body.payment_method == "tetrapay":

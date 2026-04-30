@@ -158,3 +158,74 @@ class TestProcessSuccessfulPayment:
 
             # provisioned should NOT be True
             assert payment.callback_payload.get("provisioned") is not True
+
+    @pytest.mark.asyncio
+    async def test_direct_renewal_debits_wallet_once_and_sets_flag(self, mock_session, make_payment):
+        """Gateway renewal should not leave the user with a free wallet credit."""
+        sub_id = uuid4()
+        payment = make_payment(
+            kind="direct_renewal",
+            actually_paid=None,
+            price_amount=Decimal("7.00"),
+            callback_payload={
+                "sub_id": str(sub_id),
+                "renew_type": "time",
+                "renew_amount": 30,
+            },
+        )
+        subscription = MagicMock()
+        subscription.id = sub_id
+        mock_session.scalar.return_value = subscription
+
+        with patch("services.payment.WalletManager") as MockWM, \
+             patch("services.renewal.apply_renewal", new_callable=AsyncMock) as mock_apply:
+            mock_wm = AsyncMock()
+            mock_wm.process_transaction = AsyncMock(return_value=MagicMock())
+            MockWM.return_value = mock_wm
+
+            from services.payment import process_successful_payment
+            await process_successful_payment(
+                session=mock_session,
+                payment=payment,
+                amount_to_credit=Decimal("7.00"),
+            )
+
+            calls = mock_wm.process_transaction.call_args_list
+            assert [call.kwargs["direction"] for call in calls] == ["credit", "debit"]
+            assert calls[1].kwargs["transaction_type"] == "renewal"
+            assert payment.callback_payload["wallet_debited"] is True
+            assert payment.callback_payload["renewal_applied"] is True
+            mock_apply.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_direct_renewal_retry_skips_duplicate_debit(self, mock_session, make_payment):
+        sub_id = uuid4()
+        payment = make_payment(
+            kind="direct_renewal",
+            actually_paid=Decimal("7.00"),
+            price_amount=Decimal("7.00"),
+            callback_payload={
+                "sub_id": str(sub_id),
+                "renew_type": "volume",
+                "renew_amount": 10,
+                "wallet_debited": True,
+            },
+        )
+        subscription = MagicMock()
+        subscription.id = sub_id
+        mock_session.scalar.return_value = subscription
+
+        with patch("services.payment.WalletManager") as MockWM, \
+             patch("services.renewal.apply_renewal", new_callable=AsyncMock):
+            mock_wm = AsyncMock()
+            MockWM.return_value = mock_wm
+
+            from services.payment import process_successful_payment
+            await process_successful_payment(
+                session=mock_session,
+                payment=payment,
+                amount_to_credit=Decimal("7.00"),
+            )
+
+            mock_wm.process_transaction.assert_not_called()
+            assert payment.callback_payload["renewal_applied"] is True

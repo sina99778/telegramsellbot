@@ -70,6 +70,7 @@ const API = (() => {
         getInitData,
         getConfig:       ()           => request('GET', '/config'),
         getDashboard:    ()           => request('GET', '/me'),
+        getConfigs:      (page = 1)   => request('GET', `/configs?page=${page}`),
         getPlans:        ()           => request('GET', '/plans'),
         createPurchase:  (payload)    => request('POST', '/purchase', payload),
         getRenewalQuote:(payload)    => request('POST', '/renewal/quote', payload),

@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.config import settings
 from apps.api.dependencies.db import get_db_session
+from core.config import settings
 from models.payment import Payment
+from repositories.settings import AppSettingsRepository
 from schemas.internal.tetrapay import TetraPayCallbackPayload
 from services.payment import process_successful_payment
 from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
@@ -45,6 +45,19 @@ async def tetrapay_webhook_handler(
             detail="Payment not found",
         )
 
+    if payment.provider != "tetrapay":
+        logger.warning("TetraPay IPN: Payment %s is provider=%s", payment.id, payment.provider)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Payment not found")
+
+    if payment.provider_payment_id and payment.provider_payment_id != payload.authority:
+        logger.warning(
+            "TetraPay IPN: authority mismatch for payment %s (db=%s, payload=%s)",
+            payment.id,
+            payment.provider_payment_id,
+            payload.authority,
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid payment authority")
+
     # Idempotency guard
     if (
         payment.actually_paid is not None
@@ -57,17 +70,13 @@ async def tetrapay_webhook_handler(
         logger.info("TetraPay IPN: Payment %s already processed", payment.id)
         return {"status": "already_processed"}
 
-    if str(payload.status) != "100":
-        logger.info("TetraPay IPN: Status is '%s' (not success). Ignoring payment.", payload.status)
-        payment.payment_status = "failed"
-        await session.commit()
-        return {"status": "failed_recorded"}
-
-    # 2. Verify payment with TetraPay
+    # 2. Verify payment with TetraPay before mutating local payment state.
     try:
+        gw = await AppSettingsRepository(session).get_gateway_settings()
+        api_key = gw.tetrapay_api_key or settings.tetrapay_api_key.get_secret_value()
         async with TetraPayClient(
             TetraPayClientConfig(
-                api_key=settings.tetrapay_api_key.get_secret_value(),
+                api_key=api_key,
                 base_url=settings.tetrapay_base_url,
             )
         ) as client:
@@ -79,7 +88,13 @@ async def tetrapay_webhook_handler(
             detail="Failed to verify payment with provider",
         )
 
-    if str(verify_res.status) != "100":
+    _ensure_tetrapay_verification_matches_payment(
+        payment=payment,
+        payload=payload,
+        verify_res=verify_res,
+    )
+
+    if str(payload.status) != "100" or str(verify_res.status) != "100":
         logger.error("TetraPay IPN: Verification for %s returned status %s", payload.hash_id, verify_res.status)
         payment.payment_status = "failed"
         await session.commit()
@@ -109,3 +124,34 @@ async def tetrapay_webhook_handler(
         ) from exc
 
     return {"status": "processed"}
+
+
+def _ensure_tetrapay_verification_matches_payment(
+    *,
+    payment: Payment,
+    payload: TetraPayCallbackPayload,
+    verify_res,
+) -> None:
+    verified_hash_id = str(verify_res.Hash_id or "").strip()
+    if verified_hash_id and verified_hash_id != payment.order_id:
+        logger.warning(
+            "TetraPay IPN: verified Hash_id mismatch for payment %s (db=%s, verified=%s)",
+            payment.id,
+            payment.order_id,
+            verified_hash_id,
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment")
+
+    verified_authority = str(verify_res.authority or "").strip()
+    if verified_authority and verified_authority != payload.authority:
+        logger.warning(
+            "TetraPay IPN: verified authority mismatch for payment %s (payload=%s, verified=%s)",
+            payment.id,
+            payload.authority,
+            verified_authority,
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment")
+
+    if not verified_hash_id and not payment.provider_payment_id:
+        logger.warning("TetraPay IPN: verification result cannot be bound to payment %s", payment.id)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment")

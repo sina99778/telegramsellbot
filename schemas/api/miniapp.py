@@ -102,6 +102,13 @@ class MiniAppDashboardResponse(BaseModel):
     total_volume: int
 
 
+class SubscriptionListResponse(BaseModel):
+    subscriptions: list[SubscriptionView]
+    total: int
+    page: int
+    page_size: int
+
+
 class PlanListResponse(BaseModel):
     plans: list[PlanView]
     custom_purchase: CustomPurchaseView | None = None

@@ -3,9 +3,11 @@
  */
 const Pages = (() => {
     let dashboardData = null;
+    let configsCache = [];
     let plansCache = [];
     let supportTicketsCache = [];
     let adminUserSearchState = { q: '', page: 1 };
+    let configsState = { page: 1, total: 0, pageSize: 20 };
 
     function getBotUsername() {
         return (
@@ -120,8 +122,10 @@ const Pages = (() => {
     }
 
     function showConfigDetail(subId) {
-        if (!dashboardData) return;
-        const sub = dashboardData.subscriptions.find(s => s.id === subId);
+        const sub = [
+            ...(dashboardData?.subscriptions || []),
+            ...configsCache,
+        ].find(s => s.id === subId);
         if (!sub) return;
 
         const pct = UI.getUsagePercent(sub.used_bytes, sub.volume_bytes);
@@ -184,8 +188,10 @@ const Pages = (() => {
     }
 
     function showRenewal(subId) {
-        if (!dashboardData) return;
-        const sub = dashboardData.subscriptions.find(s => s.id === subId);
+        const sub = [
+            ...(dashboardData?.subscriptions || []),
+            ...configsCache,
+        ].find(s => s.id === subId);
         if (!sub) return;
         const name = sub.config_name || sub.plan_name || 'سرویس';
         UI.showModal(`
@@ -501,10 +507,16 @@ const Pages = (() => {
     // ═══════════════════════════════════════════════════════════════════════
     // CONFIGS
     // ═══════════════════════════════════════════════════════════════════════
-    async function load_configs() {
+    async function load_configs(page = 1) {
         try {
-            if (!dashboardData) dashboardData = await API.getDashboard();
-            renderAllConfigs(dashboardData.subscriptions);
+            const data = await API.getConfigs(page);
+            configsState = {
+                page: data.page || page,
+                total: data.total || 0,
+                pageSize: data.page_size || 20,
+            };
+            configsCache = data.subscriptions || [];
+            renderAllConfigs(data.subscriptions || []);
         } catch (e) {
             UI.toast('خطا: ' + e.message, 'error');
         }
@@ -516,7 +528,15 @@ const Pages = (() => {
             container.innerHTML = `<div class="empty-state"><div class="empty-icon">${UI.icon('package')}</div><p>هنوز سرویسی ندارید</p></div>`;
             return;
         }
-        container.innerHTML = subs.map(sub => renderConfigCard(sub, true)).join('');
+        const totalPages = Math.max(1, Math.ceil(configsState.total / configsState.pageSize));
+        const pager = totalPages > 1 ? `
+            <div class="pager-row">
+                <button class="btn btn-secondary btn-sm" ${configsState.page <= 1 ? 'disabled' : ''} onclick="Pages.load_configs(${configsState.page - 1})">قبلی</button>
+                <span>${configsState.page} / ${totalPages}</span>
+                <button class="btn btn-secondary btn-sm" ${configsState.page >= totalPages ? 'disabled' : ''} onclick="Pages.load_configs(${configsState.page + 1})">بعدی</button>
+            </div>
+        ` : '';
+        container.innerHTML = subs.map(sub => renderConfigCard(sub, true)).join('') + pager;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
