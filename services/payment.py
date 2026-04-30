@@ -249,6 +249,14 @@ async def _handle_direct_purchase(
         sub_link = provisioned.sub_link
         vless_uri = provisioned.vless_uri
 
+        provider_fa = {
+            "nowpayments": "درگاه NOWPayments",
+            "tetrapay": "درگاه تتراپی",
+            "manual_crypto": "پرداخت دستی",
+            "card_to_card": "کارت به کارت",
+            "wallet": "کیف پول"
+        }.get(payment.provider, payment.provider)
+
         # Send config to user
         text = (
             "✅ کانفیگ شما آماده است!\n\n"
@@ -257,7 +265,7 @@ async def _handle_direct_purchase(
             f"💾 حجم: {volume_label}\n"
             f"📅 مدت: {plan.duration_days} روز\n"
             f"💰 پرداخت شده: {final_price:.2f} {plan.currency}\n"
-            f"💳 روش: درگاه پرداخت\n"
+            f"💳 روش: {provider_fa}\n"
             f"🕐 فعال‌سازی: از اولین اتصال\n\n"
             "━━━━━━━━━━━━━━━━\n"
             f"🔗 ساب لینک:\n{sub_link}\n\n"
@@ -281,12 +289,12 @@ async def _handle_direct_purchase(
         from services.notifications import notify_admins
         user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
         admin_text = (
-            "🛒 خرید جدید (درگاه)!\n\n"
+            "🛒 خرید جدید!\n\n"
             f"👤 کاربر: {user.first_name or '-'} | {user_link} (ID: <code>{user.telegram_id}</code>)\n"
             f"📦 پلن: {plan.name}\n"
             f"💰 مبلغ: {final_price:.2f} {plan.currency}\n"
             f"📛 کانفیگ: {config_name}\n"
-            f"💳 روش: درگاه پرداخت"
+            f"💳 روش: {provider_fa}"
         )
         try:
             await notify_admins(session, bot, admin_text)
@@ -378,6 +386,14 @@ async def _handle_direct_renewal(
     try:
         user = await session.scalar(select(User).where(User.id == payment.user_id))
         if user:
+            provider_fa = {
+                "nowpayments": "درگاه NOWPayments",
+                "tetrapay": "درگاه تتراپی",
+                "manual_crypto": "پرداخت دستی",
+                "card_to_card": "کارت به کارت",
+                "wallet": "کیف پول"
+            }.get(payment.provider, payment.provider)
+            
             type_label = "حجم" if renew_type == "volume" else "زمان"
             amount_label = f"{renew_amount} گیگابایت" if renew_type == "volume" else f"{int(renew_amount)} روز"
             await bot.send_message(
@@ -385,7 +401,7 @@ async def _handle_direct_renewal(
                 f"✅ تمدید خودکار اعمال شد!\n\n"
                 f"📦 نوع تمدید: {type_label}\n"
                 f"📊 مقدار: {amount_label}\n"
-                f"💳 روش: درگاه پرداخت\n\n"
+                f"💳 روش: {provider_fa}\n\n"
                 "سرویس شما بروزرسانی شد."
             )
     except Exception as exc:
