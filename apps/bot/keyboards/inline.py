@@ -72,6 +72,7 @@ def build_wallet_history_keyboard() -> InlineKeyboardMarkup:
 def build_gateway_selection_keyboard(
     nowpayments_enabled: bool = True,
     tetrapay_enabled: bool = True,
+    tronado_enabled: bool = False,
     manual_crypto_enabled: bool = False,
     manual_wallets: list[dict[str, str]] | None = None,
     card_to_card_enabled: bool = False,
@@ -79,6 +80,8 @@ def build_gateway_selection_keyboard(
     builder = InlineKeyboardBuilder()
     if tetrapay_enabled:
         builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="wallet:topup:pay:tetrapay")
+    if tronado_enabled:
+        builder.button(text="درگاه ترونادو", callback_data="wallet:topup:pay:tronado")
     if nowpayments_enabled:
         builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="wallet:topup:pay:gateway")
     if manual_crypto_enabled and (manual_wallets or []):
@@ -89,7 +92,7 @@ def build_gateway_selection_keyboard(
         builder.button(text="💰 پرداخت به ولت (دستی)", callback_data="wallet:topup:pay:manual")
     if card_to_card_enabled:
         builder.button(text="کارت به کارت", callback_data="wallet:topup:pay:card")
-    if not tetrapay_enabled and not nowpayments_enabled and not manual_crypto_enabled and not card_to_card_enabled:
+    if not tetrapay_enabled and not tronado_enabled and not nowpayments_enabled and not manual_crypto_enabled and not card_to_card_enabled:
         # No gateways available — show a disabled placeholder
         builder.button(text="❌ درگاه پرداختی فعال نیست", callback_data="pagination:noop")
     builder.button(text=Buttons.BACK, callback_data="wallet:topup")

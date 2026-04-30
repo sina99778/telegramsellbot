@@ -259,7 +259,7 @@ async def recovery_payment_detail(
     builder = InlineKeyboardBuilder()
 
     # Show relevant actions based on state
-    if payment.provider in {"nowpayments", "tetrapay"} and payment.actually_paid is None:
+    if payment.provider in {"nowpayments", "tetrapay", "tronado"} and payment.actually_paid is None:
         builder.button(
             text="ðŸ” Ø¨Ø§Ø²Ø¨ÛŒÙ†ÛŒ Ø®ÙˆØ¯Ú©Ø§Ø± Ø¯Ø±Ú¯Ø§Ù‡",
             callback_data=RecoveryPaymentCallback(action="review", payment_id=payment.id).pack(),

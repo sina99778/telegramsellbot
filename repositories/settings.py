@@ -266,8 +266,12 @@ class AppSettingsRepository:
     class GatewaySettings:
         nowpayments_enabled: bool
         tetrapay_enabled: bool
+        tronado_enabled: bool
         nowpayments_api_key: str | None
         tetrapay_api_key: str | None
+        tronado_api_key: str | None
+        tronado_wallet_address: str | None
+        tronado_wage_from_business_percentage: int | None
         nowpayments_ipn_secret: str | None
         manual_crypto_enabled: bool
         manual_crypto_currency: str | None  # e.g. "USDT TRC20"
@@ -287,8 +291,12 @@ class AppSettingsRepository:
             return self.GatewaySettings(
                 nowpayments_enabled=True,
                 tetrapay_enabled=True,
+                tronado_enabled=False,
                 nowpayments_api_key=None,
                 tetrapay_api_key=None,
+                tronado_api_key=None,
+                tronado_wallet_address=None,
+                tronado_wage_from_business_percentage=None,
                 nowpayments_ipn_secret=None,
                 manual_crypto_enabled=False,
                 manual_crypto_currency=None,
@@ -314,8 +322,16 @@ class AppSettingsRepository:
         return self.GatewaySettings(
             nowpayments_enabled=bool(payload.get("nowpayments_enabled", True)),
             tetrapay_enabled=bool(payload.get("tetrapay_enabled", True)),
+            tronado_enabled=bool(payload.get("tronado_enabled", False)),
             nowpayments_api_key=payload.get("nowpayments_api_key"),
             tetrapay_api_key=payload.get("tetrapay_api_key"),
+            tronado_api_key=payload.get("tronado_api_key"),
+            tronado_wallet_address=payload.get("tronado_wallet_address"),
+            tronado_wage_from_business_percentage=(
+                int(payload["tronado_wage_from_business_percentage"])
+                if payload.get("tronado_wage_from_business_percentage") is not None
+                else None
+            ),
             nowpayments_ipn_secret=payload.get("nowpayments_ipn_secret"),
             manual_crypto_enabled=bool(payload.get("manual_crypto_enabled", False)),
             manual_crypto_currency=payload.get("manual_crypto_currency"),
@@ -335,8 +351,12 @@ class AppSettingsRepository:
         *,
         nowpayments_enabled: bool | None = None,
         tetrapay_enabled: bool | None = None,
+        tronado_enabled: bool | None = None,
         nowpayments_api_key: str | None = _SENTINEL,
         tetrapay_api_key: str | None = _SENTINEL,
+        tronado_api_key: str | None = _SENTINEL,
+        tronado_wallet_address: str | None = _SENTINEL,
+        tronado_wage_from_business_percentage: int | None = _SENTINEL,
         nowpayments_ipn_secret: str | None = _SENTINEL,
         manual_crypto_enabled: bool | None = None,
         manual_crypto_currency: str | None = _SENTINEL,
@@ -359,10 +379,18 @@ class AppSettingsRepository:
             payload["nowpayments_enabled"] = nowpayments_enabled
         if tetrapay_enabled is not None:
             payload["tetrapay_enabled"] = tetrapay_enabled
+        if tronado_enabled is not None:
+            payload["tronado_enabled"] = tronado_enabled
         if nowpayments_api_key is not _SENTINEL:
             payload["nowpayments_api_key"] = nowpayments_api_key
         if tetrapay_api_key is not _SENTINEL:
             payload["tetrapay_api_key"] = tetrapay_api_key
+        if tronado_api_key is not _SENTINEL:
+            payload["tronado_api_key"] = tronado_api_key
+        if tronado_wallet_address is not _SENTINEL:
+            payload["tronado_wallet_address"] = tronado_wallet_address
+        if tronado_wage_from_business_percentage is not _SENTINEL:
+            payload["tronado_wage_from_business_percentage"] = tronado_wage_from_business_percentage
         if nowpayments_ipn_secret is not _SENTINEL:
             payload["nowpayments_ipn_secret"] = nowpayments_ipn_secret
         if manual_crypto_enabled is not None:

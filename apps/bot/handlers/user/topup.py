@@ -156,6 +156,7 @@ async def topup_preset_handler(
         reply_markup=build_gateway_selection_keyboard(
             nowpayments_enabled=gw.nowpayments_enabled,
             tetrapay_enabled=gw.tetrapay_enabled,
+            tronado_enabled=gw.tronado_enabled,
             manual_crypto_enabled=gw.manual_crypto_enabled and bool(gw.manual_crypto_wallets or gw.manual_crypto_address),
             manual_wallets=gw.manual_crypto_wallets,
             card_to_card_enabled=gw.card_to_card_enabled and bool(gw.card_number and gw.card_holder),
@@ -259,6 +260,34 @@ async def topup_pay_tetrapay(
     await _create_tetrapay_topup_invoice(
         callback.from_user.id, Decimal(amount_str), callback.message, session,
         api_key_override=gw.tetrapay_api_key,
+    )
+
+
+@router.callback_query(F.data == "wallet:topup:pay:tronado")
+async def topup_pay_tronado(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    await callback.answer()
+
+    from repositories.settings import AppSettingsRepository
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    if not gw.tronado_enabled:
+        await safe_edit_or_send(callback, "درگاه ترونادو در حال حاضر غیرفعال است.")
+        return
+
+    data = await state.get_data()
+    amount_str = data.get("topup_amount")
+    if not amount_str:
+        await safe_edit_or_send(callback, Messages.TOPUP_AMOUNT_GT_ZERO)
+        return
+
+    await _create_tronado_topup_invoice(
+        callback.from_user.id,
+        Decimal(amount_str),
+        callback.message,
+        session,
     )
 
 
@@ -578,6 +607,43 @@ async def _create_tetrapay_topup_invoice(
     await message.answer(
         text,
         reply_markup=build_topup_link_keyboard(invoice_url=tx.payment_url_web, bot_url=tx.payment_url_bot),
+    )
+
+
+async def _create_tronado_topup_invoice(
+    telegram_id: int,
+    amount: Decimal,
+    message: Message,
+    session: AsyncSession,
+) -> None:
+    user = await UserRepository(session).get_by_telegram_id(telegram_id)
+    if user is None:
+        await message.answer(Messages.ACCOUNT_NOT_FOUND)
+        return
+
+    from services.tronado.payments import create_tronado_invoice
+
+    try:
+        invoice = await create_tronado_invoice(
+            session=session,
+            user=user,
+            amount_usd=amount,
+            kind="wallet_topup",
+            description=f"Wallet top-up for user {user.id}",
+            callback_payload={"source": "bot"},
+        )
+    except Exception as exc:
+        await message.answer(f"خطا در ساخت فاکتور ترونادو:\n{exc}")
+        return
+
+    await message.answer(
+        (
+            "فاکتور شارژ ترونادو\n\n"
+            f"مبلغ شارژ: {amount:.2f} USD\n"
+            f"مقدار پرداخت: {invoice.tron_amount} TRX\n\n"
+            "برای پرداخت روی دکمه زیر بزنید."
+        ),
+        reply_markup=build_topup_link_keyboard(invoice.invoice_url),
     )
 
 

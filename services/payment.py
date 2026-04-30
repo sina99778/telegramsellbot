@@ -22,6 +22,7 @@ from models.user import User
 from repositories.settings import AppSettingsRepository
 from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
 from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
+from services.tronado.client import TronadoClient, TronadoClientConfig, TronadoRequestError
 from services.wallet.manager import WalletManager
 
 logger = logging.getLogger(__name__)
@@ -256,6 +257,7 @@ async def _handle_direct_purchase(
         provider_fa = {
             "nowpayments": "درگاه NOWPayments",
             "tetrapay": "درگاه تتراپی",
+            "tronado": "درگاه ترونادو",
             "manual_crypto": "پرداخت دستی",
             "card_to_card": "کارت به کارت",
             "wallet": "کیف پول"
@@ -416,6 +418,7 @@ async def _handle_direct_renewal(
             provider_fa = {
                 "nowpayments": "درگاه NOWPayments",
                 "tetrapay": "درگاه تتراپی",
+                "tronado": "درگاه ترونادو",
                 "manual_crypto": "پرداخت دستی",
                 "card_to_card": "کارت به کارت",
                 "wallet": "کیف پول"
@@ -444,6 +447,8 @@ async def review_gateway_payment(session: AsyncSession, payment: Payment) -> str
         return await _review_nowpayments_payment(session, payment)
     if payment.provider == "tetrapay":
         return await _review_tetrapay_payment(session, payment)
+    if payment.provider == "tronado":
+        return await _review_tronado_payment(session, payment)
     return "unsupported_provider"
 
 
@@ -526,6 +531,55 @@ async def _review_tetrapay_payment(session: AsyncSession, payment: Payment) -> s
 
     payment.payment_status = "finished"
     if payment.actually_paid is not None and (payment.kind != "direct_purchase" or payload.get("provisioned")):
+        return "already_processed"
+
+    await process_successful_payment(
+        session=session,
+        payment=payment,
+        amount_to_credit=payment.price_amount,
+    )
+    return "processed"
+
+
+async def _review_tronado_payment(session: AsyncSession, payment: Payment) -> str:
+    if not payment.order_id:
+        return "missing_provider_reference"
+
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    api_key = gw.tronado_api_key or settings.tronado_api_key.get_secret_value()
+    async with TronadoClient(
+        TronadoClientConfig(api_key=api_key, base_url=settings.tronado_base_url)
+    ) as client:
+        try:
+            status_res = await client.get_status_by_payment_id(payment.order_id)
+        except TronadoRequestError as exc:
+            logger.warning("Tronado review failed for %s: %s", payment.id, exc)
+            return "provider_error"
+
+    if str(status_res.PaymentID or "").strip() != payment.order_id:
+        return "provider_reference_mismatch"
+    if payment.pay_address and status_res.Wallet and status_res.Wallet != payment.pay_address:
+        return "provider_reference_mismatch"
+
+    payload = dict(payment.callback_payload or {})
+    payload["manual_review"] = status_res.model_dump(mode="json")
+    payment.callback_payload = payload
+
+    if not status_res.IsPaid:
+        payment.payment_status = str(status_res.OrderStatusTitle or "not_paid").lower()
+        return "not_paid"
+
+    if status_res.Hash:
+        payment.provider_payment_id = status_res.Hash
+    payment.payment_status = "finished"
+    if (
+        payment.actually_paid is not None
+        and (
+            (payment.kind == "direct_purchase" and payload.get("provisioned"))
+            or (payment.kind == "direct_renewal" and payload.get("renewal_applied"))
+            or payment.kind not in {"direct_purchase", "direct_renewal"}
+        )
+    ):
         return "already_processed"
 
     await process_successful_payment(

@@ -92,6 +92,7 @@ from services.phone_verification import get_verified_phone
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
 from services.renewal import apply_renewal, calculate_renewal_price
 from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
+from services.tronado.payments import create_tronado_invoice
 from services.wallet.manager import InsufficientBalanceError, WalletManager
 
 logger = logging.getLogger(__name__)
@@ -1076,7 +1077,7 @@ async def _admin_payments(session: AsyncSession) -> list[dict[str, Any]]:
             "id": str(p.id),
             "title": f"{p.provider} | {p.kind}",
             "subtitle": f"{p.payment_status} | {p.price_amount} {p.price_currency}",
-            "actions": [{"label": "بازبینی", "action": "review_payment"}] if p.provider in {"nowpayments", "tetrapay"} else [],
+            "actions": [{"label": "بازبینی", "action": "review_payment"}] if p.provider in {"nowpayments", "tetrapay", "tronado"} else [],
         }
         for p in result.scalars().all()
     ]
@@ -1362,6 +1363,7 @@ async def _admin_settings(session: AsyncSession) -> list[dict[str, Any]]:
             ],
         },
         {"id": "tetrapay", "title": "درگاه تتراپی", "subtitle": "فعال" if gw.tetrapay_enabled else "غیرفعال", "actions": []},
+        {"id": "tronado", "title": "درگاه ترونادو", "subtitle": "فعال" if gw.tronado_enabled else "غیرفعال", "actions": []},
         {"id": "nowpayments", "title": "NOWPayments", "subtitle": "فعال" if gw.nowpayments_enabled else "غیرفعال", "actions": []},
         {"id": "manual", "title": "پرداخت دستی", "subtitle": "فعال" if gw.manual_crypto_enabled else "غیرفعال", "actions": []},
         {"id": "rate", "title": "نرخ دلار/تومان", "subtitle": str(toman), "actions": []},
@@ -1493,6 +1495,8 @@ async def create_purchase(
         return await _create_nowpayments_purchase(session, user, plan, config_name)
     if payment_method == "tetrapay":
         return await _create_tetrapay_purchase(session, user, plan, config_name)
+    if payment_method == "tronado":
+        return await _create_tronado_purchase(session, user, plan, config_name)
 
     raise HTTPException(status_code=400, detail="روش پرداخت نامعتبر است.")
 
@@ -1730,6 +1734,36 @@ async def _create_tetrapay_purchase(
     )
 
 
+async def _create_tronado_purchase(
+    session: AsyncSession,
+    user: User,
+    plan: Plan,
+    config_name: str,
+) -> PurchaseResponse:
+    invoice = await create_tronado_invoice(
+        session=session,
+        user=user,
+        amount_usd=plan.price,
+        kind="direct_purchase",
+        description=f"Purchase plan {plan.name} for user {user.id}",
+        callback_payload={
+            "plan_id": str(plan.id),
+            "config_name": config_name,
+            "discount_percent": 0,
+            "discount_id": None,
+            "purpose": "direct_purchase",
+            "source": "miniapp",
+        },
+    )
+    return PurchaseResponse(
+        status="invoice_created",
+        message="فاکتور پرداخت ترونادو ساخته شد. بعد از پرداخت، کانفیگ خودکار ساخته می‌شود.",
+        payment_method="tronado",
+        invoice_url=invoice.invoice_url,
+        payment_id=invoice.payment.id,
+    )
+
+
 # ─── Renewal ─────────────────────────────────────────────────────────────────
 
 @router.post("/renewal/quote", response_model=RenewalQuoteResponse)
@@ -1779,7 +1813,7 @@ async def renew_subscription(
     }
 
     # ── Gateway renewals ──
-    if body.payment_method in ("nowpayments", "tetrapay"):
+    if body.payment_method in ("nowpayments", "tetrapay", "tronado"):
         gw = await AppSettingsRepository(session).get_gateway_settings()
         local_order_id = str(uuid4())
 
@@ -1830,7 +1864,7 @@ async def renew_subscription(
         elif body.payment_method == "tetrapay":
             if not gw.tetrapay_enabled:
                 raise HTTPException(status_code=400, detail="درگاه ریالی فعال نیست.")
-            toman_rate = gw.toman_rate or 60000
+            toman_rate = await AppSettingsRepository(session).get_toman_rate()
             toman_amount = int(float(price) * toman_rate)
             rial_amount = toman_amount * 10
 
@@ -1872,6 +1906,22 @@ async def renew_subscription(
                 message=f"فاکتور تمدید ریالی: {toman_amount:,} تومان. بعد از پرداخت، تمدید خودکار اعمال می‌شود.",
                 price=price,
                 invoice_url=tx.payment_url_bot,
+            )
+
+        elif body.payment_method == "tronado":
+            invoice = await create_tronado_invoice(
+                session=session,
+                user=user,
+                amount_usd=price,
+                kind="direct_renewal",
+                description=f"Renewal sub {subscription.id}",
+                callback_payload=renewal_meta,
+            )
+            return RenewalResponse(
+                status="invoice_created",
+                message="فاکتور تمدید ترونادو ساخته شد. بعد از پرداخت، تمدید خودکار اعمال می‌شود.",
+                price=price,
+                invoice_url=invoice.invoice_url,
             )
 
     # ── Wallet renewal (default) ──
@@ -2038,6 +2088,8 @@ async def create_wallet_topup(
         return await _create_nowpayments_topup(session, user, amount)
     if body.payment_method == "tetrapay":
         return await _create_tetrapay_topup(session, user, amount)
+    if body.payment_method == "tronado":
+        return await _create_tronado_topup(session, user, amount)
     raise HTTPException(status_code=400, detail="روش شارژ نامعتبر است.")
 
 
@@ -2052,7 +2104,7 @@ async def refresh_payment(
     )
     if payment is None:
         raise HTTPException(status_code=404, detail="پرداخت پیدا نشد.")
-    if payment.provider not in {"nowpayments", "tetrapay"}:
+    if payment.provider not in {"nowpayments", "tetrapay", "tronado"}:
         raise HTTPException(status_code=400, detail="این پرداخت قابل بازبینی خودکار نیست.")
     result = await review_gateway_payment(session, payment)
     await session.refresh(payment)
@@ -2176,6 +2228,30 @@ async def _create_tetrapay_topup(
         payment_id=payment.id,
         pay_amount=Decimal(toman_amount),
         pay_currency="IRT",
+    )
+
+
+async def _create_tronado_topup(
+    session: AsyncSession,
+    user: User,
+    amount: Decimal,
+) -> TopUpResponse:
+    invoice = await create_tronado_invoice(
+        session=session,
+        user=user,
+        amount_usd=amount,
+        kind="wallet_topup",
+        description=f"Wallet top-up for user {user.id}",
+        callback_payload={"source": "miniapp"},
+    )
+    return TopUpResponse(
+        status="invoice_created",
+        message="فاکتور شارژ ترونادو ساخته شد. بعد از پرداخت، موجودی کیف پول خودکار بروزرسانی می‌شود.",
+        payment_method="tronado",
+        invoice_url=invoice.invoice_url,
+        payment_id=invoice.payment.id,
+        pay_amount=invoice.tron_amount,
+        pay_currency="TRX",
     )
 
 

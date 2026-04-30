@@ -243,12 +243,15 @@ async def gateway_settings_menu(callback: CallbackQuery, session: AsyncSession) 
 
     nowpay_status = "🟢 فعال" if gw.nowpayments_enabled else "🔴 غیرفعال"
     tetra_status = "🟢 فعال" if gw.tetrapay_enabled else "🔴 غیرفعال"
+    tronado_status = "🟢 فعال" if gw.tronado_enabled else "🔴 غیرفعال"
     manual_status = "🟢 فعال" if gw.manual_crypto_enabled else "🔴 غیرفعال"
     card_status = "🟢 فعال" if gw.card_to_card_enabled else "🔴 غیرفعال"
 
     # Mask API keys for display
     nowpay_key_display = _mask_api_key(gw.nowpayments_api_key) if gw.nowpayments_api_key else "پیش‌فرض (env)"
     tetra_key_display = _mask_api_key(gw.tetrapay_api_key) if gw.tetrapay_api_key else "پیش‌فرض (env)"
+    tronado_key_display = _mask_api_key(gw.tronado_api_key) if gw.tronado_api_key else "پیش‌فرض (env)"
+    tronado_wallet_display = _mask_api_key(gw.tronado_wallet_address) if gw.tronado_wallet_address else "پیش‌فرض (env)"
     ipn_secret_display = _mask_api_key(gw.nowpayments_ipn_secret) if gw.nowpayments_ipn_secret else "پیش‌فرض (env)"
     manual_wallets = gw.manual_crypto_wallets or []
     wallets_display = "\n".join(
@@ -263,6 +266,9 @@ async def gateway_settings_menu(callback: CallbackQuery, session: AsyncSession) 
         f"   🔐 IPN Secret: {ipn_secret_display}\n\n"
         f"💳 تتراپی (ریالی): {tetra_status}\n"
         f"   🔑 API Key: {tetra_key_display}\n\n"
+        f"ترونادو: {tronado_status}\n"
+        f"   🔑 API Key: {tronado_key_display}\n"
+        f"   ولت: {tronado_wallet_display}\n\n"
         f"💰 پرداخت دستی کریپتو: {manual_status}\n"
         f"   💱 ارز: {gw.manual_crypto_currency or 'تنظیم نشده'}\n"
         f"   📍 آدرس: {_mask_api_key(gw.manual_crypto_address) if gw.manual_crypto_address else 'تنظیم نشده'}\n"
@@ -275,17 +281,22 @@ async def gateway_settings_menu(callback: CallbackQuery, session: AsyncSession) 
     builder = InlineKeyboardBuilder()
     builder.button(text="NOWPayments", callback_data="admin:gw:nowpayments")
     builder.button(text="TetraPay", callback_data="admin:gw:tetrapay")
+    builder.button(text="Tronado", callback_data="admin:gw:tronado")
     builder.button(text="پرداخت دستی کریپتو", callback_data="admin:gw:manual_menu")
     builder.button(text="کارت به کارت", callback_data="admin:gw:card")
     toggle_nowpay_text = "🔴 غیرفعال کردن NOWPayments" if gw.nowpayments_enabled else "🟢 فعال کردن NOWPayments"
     toggle_tetra_text = "🔴 غیرفعال کردن تتراپی" if gw.tetrapay_enabled else "🟢 فعال کردن تتراپی"
+    toggle_tronado_text = "🔴 غیرفعال کردن ترونادو" if gw.tronado_enabled else "🟢 فعال کردن ترونادو"
     toggle_manual_text = "🔴 غیرفعال کردن پرداخت دستی" if gw.manual_crypto_enabled else "🟢 فعال کردن پرداخت دستی"
 
     builder.button(text=toggle_nowpay_text, callback_data="admin:gw:toggle_nowpay")
     builder.button(text=toggle_tetra_text, callback_data="admin:gw:toggle_tetra")
+    builder.button(text=toggle_tronado_text, callback_data="admin:gw:toggle_tronado")
     builder.button(text="🔑 تغییر API Key نوپیمنتز", callback_data="admin:gw:edit_nowpay_key")
     builder.button(text="🔐 تغییر IPN Secret نوپیمنتز", callback_data="admin:gw:edit_ipn")
     builder.button(text="🔑 تغییر API Key تتراپی", callback_data="admin:gw:edit_tetra_key")
+    builder.button(text="🔑 تغییر API Key ترونادو", callback_data="admin:gw:edit_tronado_key")
+    builder.button(text="تغییر ولت ترونادو", callback_data="admin:gw:edit_tronado_wallet")
     builder.button(text=toggle_manual_text, callback_data="admin:gw:toggle_manual")
     builder.button(text="💱 تغییر ارز پرداخت دستی", callback_data="admin:gw:edit_manual_cur")
     builder.button(text="📍 تغییر آدرس ولت", callback_data="admin:gw:edit_manual_addr")
@@ -321,6 +332,15 @@ async def toggle_tetrapay(callback: CallbackQuery, session: AsyncSession) -> Non
     settings_repo = AppSettingsRepository(session)
     gw = await settings_repo.get_gateway_settings()
     await settings_repo.update_gateway_settings(tetrapay_enabled=not gw.tetrapay_enabled)
+    await gateway_settings_menu(callback, session)
+
+
+@router.callback_query(F.data == "admin:gw:toggle_tronado")
+async def toggle_tronado(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    settings_repo = AppSettingsRepository(session)
+    gw = await settings_repo.get_gateway_settings()
+    await settings_repo.update_gateway_settings(tronado_enabled=not gw.tronado_enabled)
     await gateway_settings_menu(callback, session)
 
 
@@ -418,6 +438,81 @@ async def edit_tetra_key_submit(message: Message, state: FSMContext, session: As
     except Exception:
         pass
     await message.answer(f"✅ API Key تتراپی به‌روزرسانی شد.\n🔑 {_mask_api_key(api_key)}")
+
+
+@router.callback_query(F.data == "admin:gw:edit_tronado_key")
+async def edit_tronado_key_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(GatewaySettingsStates.waiting_for_tronado_api_key)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🗑 حذف (استفاده از env)", callback_data="admin:gw:clear_tronado_key")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
+    builder.adjust(1)
+
+    await safe_edit_or_send(
+        callback,
+        "API Key جدید ترونادو را وارد کنید:",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "admin:gw:clear_tronado_key")
+async def clear_tronado_key(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    await callback.answer()
+    await state.clear()
+    await AppSettingsRepository(session).update_gateway_settings(tronado_api_key=None)
+    await gateway_settings_menu(callback, session)
+
+
+@router.message(GatewaySettingsStates.waiting_for_tronado_api_key)
+async def edit_tronado_key_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text:
+        return
+    api_key = message.text.strip()
+    if len(api_key) < 5:
+        await message.answer("API Key خیلی کوتاه است.")
+        return
+    await AppSettingsRepository(session).update_gateway_settings(tronado_api_key=api_key)
+    await state.clear()
+    try:
+        await message.delete()
+    except Exception:
+        pass
+    await message.answer(f"API Key ترونادو به‌روزرسانی شد: {_mask_api_key(api_key)}")
+
+
+@router.callback_query(F.data == "admin:gw:edit_tronado_wallet")
+async def edit_tronado_wallet_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(GatewaySettingsStates.waiting_for_tronado_wallet_address)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🗑 حذف (استفاده از env)", callback_data="admin:gw:clear_tronado_wallet")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
+    builder.adjust(1)
+    await safe_edit_or_send(callback, "آدرس ولت TRON مقصد ترونادو را وارد کنید:", reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data == "admin:gw:clear_tronado_wallet")
+async def clear_tronado_wallet(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    await callback.answer()
+    await state.clear()
+    await AppSettingsRepository(session).update_gateway_settings(tronado_wallet_address=None)
+    await gateway_settings_menu(callback, session)
+
+
+@router.message(GatewaySettingsStates.waiting_for_tronado_wallet_address)
+async def edit_tronado_wallet_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text:
+        return
+    wallet = message.text.strip()
+    if len(wallet) < 20:
+        await message.answer("آدرس ولت معتبر نیست.")
+        return
+    await AppSettingsRepository(session).update_gateway_settings(tronado_wallet_address=wallet)
+    await state.clear()
+    await message.answer(f"ولت ترونادو به‌روزرسانی شد: {_mask_api_key(wallet)}")
 
 
 # ─── NOWPayments IPN Secret ───────────────────────────────────────────────────
@@ -624,6 +719,26 @@ async def tetrapay_gateway_menu(callback: CallbackQuery, session: AsyncSession) 
     builder = InlineKeyboardBuilder()
     builder.button(text="تغییر وضعیت", callback_data="admin:gw:toggle_tetra")
     builder.button(text="API Key", callback_data="admin:gw:edit_tetra_key")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
+    builder.adjust(1)
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data == "admin:gw:tronado")
+async def tronado_gateway_menu(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    status = "فعال" if gw.tronado_enabled else "غیرفعال"
+    text = (
+        "Tronado\n\n"
+        f"وضعیت: {status}\n"
+        f"API Key: {_mask_api_key(gw.tronado_api_key) if gw.tronado_api_key else 'env'}\n"
+        f"Wallet: {_mask_api_key(gw.tronado_wallet_address) if gw.tronado_wallet_address else 'env'}"
+    )
+    builder = InlineKeyboardBuilder()
+    builder.button(text="تغییر وضعیت", callback_data="admin:gw:toggle_tronado")
+    builder.button(text="API Key", callback_data="admin:gw:edit_tronado_key")
+    builder.button(text="Wallet", callback_data="admin:gw:edit_tronado_wallet")
     builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
     builder.adjust(1)
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())

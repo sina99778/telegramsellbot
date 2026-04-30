@@ -207,6 +207,7 @@ const Pages = (() => {
             <div class="checkout-methods">
                 <button class="btn btn-primary btn-block" id="renewal-wallet-btn" onclick="Pages.submitRenewal('${sub.id}', 'wallet')">تمدید با کیف پول</button>
                 <button class="btn btn-secondary btn-block" onclick="Pages.submitRenewal('${sub.id}', 'tetrapay')">درگاه ریالی تتراپی</button>
+                <button class="btn btn-secondary btn-block" onclick="Pages.submitRenewal('${sub.id}', 'tronado')">درگاه ترونادو</button>
                 <button class="btn btn-secondary btn-block" onclick="Pages.submitRenewal('${sub.id}', 'nowpayments')">درگاه ارزی NOWPayments</button>
             </div>
             <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
@@ -366,6 +367,7 @@ const Pages = (() => {
             <div class="checkout-methods">
                 <button class="btn btn-primary btn-block" onclick="Pages.submitCustomPurchase('wallet')">پرداخت با کیف پول</button>
                 <button class="btn btn-secondary btn-block" onclick="Pages.submitCustomPurchase('tetrapay')">درگاه ریالی تتراپی</button>
+                <button class="btn btn-secondary btn-block" onclick="Pages.submitCustomPurchase('tronado')">درگاه ترونادو</button>
                 <button class="btn btn-secondary btn-block" onclick="Pages.submitCustomPurchase('nowpayments')">درگاه ارزی NOWPayments</button>
             </div>
             <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
@@ -445,6 +447,7 @@ const Pages = (() => {
             <div class="checkout-methods">
                 <button class="btn btn-primary btn-block" onclick="Pages.submitPurchase('${plan.id}', 'wallet')">پرداخت با کیف پول</button>
                 <button class="btn btn-secondary btn-block" onclick="Pages.submitPurchase('${plan.id}', 'tetrapay')">درگاه ریالی تتراپی</button>
+                <button class="btn btn-secondary btn-block" onclick="Pages.submitPurchase('${plan.id}', 'tronado')">درگاه ترونادو</button>
                 <button class="btn btn-secondary btn-block" onclick="Pages.submitPurchase('${plan.id}', 'nowpayments')">درگاه ارزی NOWPayments</button>
             </div>
             <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
@@ -574,7 +577,7 @@ const Pages = (() => {
         }
 
         container.innerHTML = payments.map(payment => {
-            const canRefresh = ['nowpayments', 'tetrapay'].includes(payment.provider)
+            const canRefresh = ['nowpayments', 'tetrapay', 'tronado'].includes(payment.provider)
                 && ['waiting', 'pending', 'confirming'].includes(payment.payment_status);
             const amount = payment.pay_amount
                 ? `${UI.formatMoney(payment.pay_amount)} ${payment.pay_currency || ''}`
@@ -640,6 +643,7 @@ const Pages = (() => {
             <p class="form-hint">بعد از پرداخت موفق، موجودی کیف پول به صورت خودکار بروزرسانی می‌شود.</p>
             <div class="checkout-methods">
                 <button class="btn btn-secondary btn-block" onclick="Pages.submitTopup('tetrapay')">درگاه ریالی تتراپی</button>
+                <button class="btn btn-secondary btn-block" onclick="Pages.submitTopup('tronado')">درگاه ترونادو</button>
                 <button class="btn btn-secondary btn-block" onclick="Pages.submitTopup('nowpayments')">درگاه ارزی NOWPayments</button>
             </div>
             <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>

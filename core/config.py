@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     tetrapay_base_url: str = "https://tetra98.com/api"
     tetrapay_callback_url: str = "http://localhost:8000/api/webhooks/tetrapay"
     tetrapay_max_amount_toman: int = 5_000_000  # Max per-transaction limit in Tomans
+
+    tronado_api_key: SecretStr = SecretStr("CHANGE_ME")
+    tronado_base_url: str = "https://bot.tronado.cloud"
+    tronado_callback_url: str = "http://localhost:8000/api/webhooks/tronado"
+    tronado_wallet_address: str | None = None
+    tronado_wage_from_business_percentage: int = 0
     
     support_url: str | None = None
     owner_telegram_id: int | None = None

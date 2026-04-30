@@ -430,6 +430,8 @@ async def _show_payment_method_choice(
     builder.button(text="👛 کیف پول", callback_data="purchase:pay:wallet")
     if gw.tetrapay_enabled:
         builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="purchase:pay:tetrapay")
+    if gw.tronado_enabled:
+        builder.button(text="درگاه ترونادو", callback_data="purchase:pay:tronado")
     if gw.nowpayments_enabled:
         builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
     if gw.manual_crypto_enabled and (gw.manual_crypto_wallets or gw.manual_crypto_address):
@@ -486,6 +488,8 @@ async def _show_payment_method_choice_msg(
     builder.button(text="👛 کیف پول", callback_data="purchase:pay:wallet")
     if gw.tetrapay_enabled:
         builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="purchase:pay:tetrapay")
+    if gw.tronado_enabled:
+        builder.button(text="درگاه ترونادو", callback_data="purchase:pay:tronado")
     if gw.nowpayments_enabled:
         builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
     if gw.manual_crypto_enabled and (gw.manual_crypto_wallets or gw.manual_crypto_address):
@@ -589,6 +593,33 @@ async def pay_with_tetrapay(
         logger.error("TetraPay purchase failed: %s", exc, exc_info=True)
         await state.clear()
         await safe_edit_or_send(callback, f"❌ خطا در ایجاد فاکتور ریالی:\n<code>{exc}</code>", parse_mode="HTML")
+
+
+@router.callback_query(F.data == "purchase:pay:tronado")
+async def pay_with_tronado(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    await callback.answer()
+
+    current_state = await state.get_state()
+    if current_state is None:
+        await safe_edit_or_send(callback, "درخواست قبلا پردازش شده یا منقضی شده است.")
+        return
+
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    if not gw.tronado_enabled:
+        await state.clear()
+        await safe_edit_or_send(callback, "درگاه ترونادو غیرفعال است.")
+        return
+
+    try:
+        await _process_tronado_purchase(callback, state, session)
+    except Exception as exc:
+        logger.error("Tronado purchase failed: %s", exc, exc_info=True)
+        await state.clear()
+        await safe_edit_or_send(callback, f"خطا در ایجاد فاکتور ترونادو:\n<code>{exc}</code>", parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("purchase:pay:manual"))
@@ -988,6 +1019,67 @@ async def _process_gateway_purchase(
         "بعد از پرداخت و تایید NOWPayments، کانفیگ شما "
         "به صورت خودکار ساخته و ارسال می‌شود.",
         reply_markup=build_topup_link_keyboard(str(invoice.invoice_url)),
+    )
+
+
+async def _process_tronado_purchase(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    if callback.from_user is None:
+        return
+
+    data = await state.get_data()
+    plan_id = UUID(data["plan_id"])
+    config_name = data["config_name"]
+    discount_percent = int(data.get("discount_percent", 0))
+    discount_id = data.get("discount_id")
+
+    plan = await session.get(Plan, plan_id)
+    if plan is None or not plan.is_active:
+        await state.clear()
+        await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
+        return
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        await state.clear()
+        await safe_edit_or_send(callback, Messages.ACCOUNT_NOT_FOUND)
+        return
+
+    final_price = plan.price
+    if discount_percent > 0:
+        final_price = (final_price * (Decimal(100 - discount_percent) / Decimal(100))).quantize(Decimal("0.01"))
+
+    from apps.bot.keyboards.inline import build_topup_link_keyboard
+    from services.tronado.payments import create_tronado_invoice
+
+    invoice = await create_tronado_invoice(
+        session=session,
+        user=user,
+        amount_usd=final_price,
+        kind="direct_purchase",
+        description=f"Purchase plan {plan.name} for user {user.id}",
+        callback_payload={
+            "plan_id": str(plan.id),
+            "config_name": config_name,
+            "discount_percent": discount_percent,
+            "discount_id": discount_id,
+            "purpose": "direct_purchase",
+            "source": "bot",
+        },
+    )
+    await state.clear()
+    await safe_edit_or_send(
+        callback,
+        (
+            "فاکتور پرداخت ترونادو ساخته شد.\n\n"
+            f"مبلغ: {final_price} USD\n"
+            f"مقدار پرداخت: {invoice.tron_amount} TRX\n\n"
+            "بعد از پرداخت و تایید، کانفیگ شما به صورت خودکار ساخته و ارسال می‌شود."
+        ),
+        reply_markup=build_topup_link_keyboard(invoice.invoice_url),
     )
 
 

@@ -121,6 +121,11 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
             text="💳 درگاه ریالی (تتراپی)",
             callback_data=RenewPayCallback(method="tetrapay").pack()
         )
+    if gw.tronado_enabled:
+        builder.button(
+            text="درگاه ترونادو",
+            callback_data=RenewPayCallback(method="tronado").pack()
+        )
     if gw.nowpayments_enabled:
         builder.button(
             text="💎 درگاه ارزی (NOWPayments)",
@@ -434,6 +439,62 @@ async def renew_pay_tetrapay(
         f"💵 مبلغ: {toman_amount:,} تومان\n\n"
         "بعد از پرداخت و تایید، تمدید به صورت خودکار اعمال می‌شود.",
         reply_markup=build_topup_link_keyboard(invoice_url=tx.payment_url_bot, bot_url=tx.payment_url_bot),
+    )
+
+
+@router.callback_query(RenewPayCallback.filter(F.method == "tronado"))
+async def renew_pay_tronado(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    if callback.from_user is None:
+        return
+    await callback.answer()
+
+    data = await state.get_data()
+    sub_id = UUID(data["sub_id"])
+    renew_type = data["renew_type"]
+    amount = float(data["renew_amount"])
+    price = Decimal(str(data["renew_price"]))
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        await safe_edit_or_send(callback, Messages.ACCOUNT_NOT_FOUND)
+        return
+
+    from apps.bot.keyboards.inline import build_topup_link_keyboard
+    from services.tronado.payments import create_tronado_invoice
+
+    try:
+        invoice = await create_tronado_invoice(
+            session=session,
+            user=user,
+            amount_usd=price,
+            kind="direct_renewal",
+            description=f"Renewal sub {sub_id}",
+            callback_payload={
+                "sub_id": str(sub_id),
+                "renew_type": renew_type,
+                "renew_amount": amount,
+                "purpose": "renewal",
+                "source": "bot",
+            },
+        )
+    except Exception as exc:
+        await safe_edit_or_send(callback, f"خطا در ساخت فاکتور ترونادو: {exc}")
+        return
+
+    await state.clear()
+    await safe_edit_or_send(
+        callback,
+        (
+            "فاکتور تمدید ترونادو ساخته شد.\n\n"
+            f"مبلغ: {price} USD\n"
+            f"مقدار پرداخت: {invoice.tron_amount} TRX\n\n"
+            "بعد از پرداخت و تایید، تمدید به صورت خودکار اعمال می‌شود."
+        ),
+        reply_markup=build_topup_link_keyboard(invoice.invoice_url),
     )
 
 
