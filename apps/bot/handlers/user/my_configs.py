@@ -1,26 +1,32 @@
 from __future__ import annotations
 
 import logging
+import urllib.parse
 from datetime import datetime, timezone
 from uuid import UUID
 
 from aiogram import Bot, F, Router
 from aiogram.filters.callback_data import CallbackData
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from apps.bot.utils.messaging import safe_edit_or_send
 from core.formatting import escape_markdown, format_usage_bar, format_volume_bytes
-from services.banner import create_traffic_banner
-import urllib.parse
 from core.texts import Buttons
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.user import UserRepository
+from services.banner import create_traffic_banner
 from services.xui.runtime import build_vless_uri
-from apps.bot.utils.messaging import safe_edit_or_send
 
 
 logger = logging.getLogger(__name__)
@@ -28,11 +34,17 @@ logger = logging.getLogger(__name__)
 router = Router(name="user-my-configs")
 
 _ACTIVE_STATUSES = {"pending_activation", "active", "expired"}
+_CONFIGS_PAGE_SIZE = 8
 
 
 class MyConfigCallback(CallbackData, prefix="myconfig"):
     action: str
     subscription_id: UUID
+
+
+class MyConfigListCallback(CallbackData, prefix="myconfigs"):
+    action: str
+    page: int = 0
 
 
 @router.message(F.text == Buttons.MY_CONFIGS)
@@ -46,19 +58,11 @@ async def my_configs_handler(message: Message, session: AsyncSession) -> None:
         await message.answer("حساب شما پیدا نشد. لطفاً /start را بزنید.")
         return
 
-    result = await session.execute(
-        select(Subscription)
-        .options(
-            selectinload(Subscription.plan),
-            selectinload(Subscription.xui_client),
-        )
-        .where(
-            Subscription.user_id == user.id,
-            Subscription.status.in_(list(_ACTIVE_STATUSES)),
-        )
-        .order_by(Subscription.created_at.desc())
+    subscriptions, total_count, page, total_pages = await _load_user_config_page(
+        session=session,
+        user_id=user.id,
+        page=0,
     )
-    subscriptions = list(result.scalars().all())
 
     if not subscriptions:
         await message.answer(
@@ -67,33 +71,9 @@ async def my_configs_handler(message: Message, session: AsyncSession) -> None:
         )
         return
 
-    builder = InlineKeyboardBuilder()
-    for idx, sub in enumerate(subscriptions, start=1):
-        config_name = sub.xui_client.username if sub.xui_client else (sub.plan.name if sub.plan else "نامشخص")
-        status_emoji = {"active": "✅", "pending_activation": "⏳", "expired": "❌"}.get(sub.status, "❓")
-        label = f"{status_emoji} {config_name}"
-
-        # Add remaining time/volume hint
-        if sub.ends_at is not None:
-            now = datetime.now(timezone.utc)
-            remaining_days = max((sub.ends_at - now).days, 0)
-            label += f" — {remaining_days} روز"
-        elif sub.status == "pending_activation":
-            label += " — هنوز فعال نشده"
-
-        builder.button(
-            text=label,
-            callback_data=MyConfigCallback(
-                action="view",
-                subscription_id=sub.id,
-            ).pack(),
-        )
-    builder.adjust(1)
-
     await message.answer(
-        f"📋 کانفیگ‌های فعال شما ({len(subscriptions)} عدد):\n"
-        "برای مشاهده جزئیات روی هر کدام بزنید:",
-        reply_markup=builder.as_markup(),
+        _build_config_list_text(total_count, page, total_pages),
+        reply_markup=_build_config_list_keyboard(subscriptions, page, total_pages),
     )
 
 
@@ -102,12 +82,78 @@ async def my_configs_handler(message: Message, session: AsyncSession) -> None:
 async def my_configs_back_to_list(callback: CallbackQuery, session: AsyncSession) -> None:
     """Re-render the config list when user presses back."""
     await callback.answer()
+    await _render_config_list_callback(callback=callback, session=session, page=0)
+
+
+@router.callback_query(MyConfigListCallback.filter(F.action == "page"))
+async def my_configs_page_handler(
+    callback: CallbackQuery,
+    callback_data: MyConfigListCallback,
+    session: AsyncSession,
+) -> None:
+    """Switch between pages in the user's config list."""
+    await callback.answer()
+    await _render_config_list_callback(
+        callback=callback,
+        session=session,
+        page=callback_data.page,
+    )
+
+
+@router.callback_query(MyConfigListCallback.filter(F.action == "noop"))
+async def my_configs_noop_handler(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+async def _render_config_list_callback(
+    *,
+    callback: CallbackQuery,
+    session: AsyncSession,
+    page: int,
+) -> None:
     if callback.from_user is None:
         return
 
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     if user is None:
         return
+
+    subscriptions, total_count, page, total_pages = await _load_user_config_page(
+        session=session,
+        user_id=user.id,
+        page=page,
+    )
+
+    if not subscriptions:
+        await safe_edit_or_send(callback, "📭 شما هیچ کانفیگ فعالی ندارید.")
+        return
+
+    text = _build_config_list_text(total_count, page, total_pages)
+    reply_markup = _build_config_list_keyboard(subscriptions, page, total_pages)
+
+    if callback.message is not None:
+        try:
+            await callback.message.edit_text(text, reply_markup=reply_markup)
+        except Exception:
+            await safe_edit_or_send(callback, text, reply_markup=reply_markup)
+
+
+async def _load_user_config_page(
+    *,
+    session: AsyncSession,
+    user_id: UUID,
+    page: int,
+) -> tuple[list[Subscription], int, int, int]:
+    status_filter = Subscription.status.in_(list(_ACTIVE_STATUSES))
+    total_count = await session.scalar(
+        select(func.count(Subscription.id)).where(
+            Subscription.user_id == user_id,
+            status_filter,
+        )
+    )
+    total_count = total_count or 0
+    total_pages = max((total_count + _CONFIGS_PAGE_SIZE - 1) // _CONFIGS_PAGE_SIZE, 1)
+    page = max(0, min(page, total_pages - 1))
 
     result = await session.execute(
         select(Subscription)
@@ -116,46 +162,92 @@ async def my_configs_back_to_list(callback: CallbackQuery, session: AsyncSession
             selectinload(Subscription.xui_client),
         )
         .where(
-            Subscription.user_id == user.id,
-            Subscription.status.in_(list(_ACTIVE_STATUSES)),
+            Subscription.user_id == user_id,
+            status_filter,
         )
         .order_by(Subscription.created_at.desc())
+        .limit(_CONFIGS_PAGE_SIZE)
+        .offset(page * _CONFIGS_PAGE_SIZE)
     )
-    subscriptions = list(result.scalars().all())
+    return list(result.scalars().all()), total_count, page, total_pages
 
-    if not subscriptions:
-        await safe_edit_or_send(callback, "📭 شما هیچ کانفیگ فعالی ندارید.")
-        return
 
+def _build_config_list_keyboard(
+    subscriptions: list[Subscription],
+    page: int,
+    total_pages: int,
+) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for sub in subscriptions:
-        config_name = sub.xui_client.username if sub.xui_client else (sub.plan.name if sub.plan else "نامشخص")
-        status_emoji = "✅" if sub.status == "active" else "⏳"
-        label = f"{status_emoji} {config_name}"
-        if sub.ends_at is not None:
-            now = datetime.now(timezone.utc)
-            remaining_days = max((sub.ends_at - now).days, 0)
-            label += f" — {remaining_days} روز"
-        elif sub.status == "pending_activation":
-            label += " — هنوز فعال نشده"
         builder.button(
-            text=label,
-            callback_data=MyConfigCallback(action="view", subscription_id=sub.id).pack(),
+            text=_build_config_button_label(sub),
+            callback_data=MyConfigCallback(
+                action=f"viewp{page}",
+                subscription_id=sub.id,
+            ).pack(),
         )
     builder.adjust(1)
 
-    if callback.message is not None:
-        text = (
-            f"📋 کانفیگ‌های فعال شما ({len(subscriptions)} عدد):\n"
-            "برای مشاهده جزئیات روی هر کدام بزنید:"
+    if total_pages > 1:
+        nav_buttons: list[InlineKeyboardButton] = []
+        if page > 0:
+            nav_buttons.append(
+                InlineKeyboardButton(
+                    text="⬅️ قبلی",
+                    callback_data=MyConfigListCallback(action="page", page=page - 1).pack(),
+                )
+            )
+        nav_buttons.append(
+            InlineKeyboardButton(
+                text=f"{page + 1}/{total_pages}",
+                callback_data=MyConfigListCallback(action="noop", page=page).pack(),
+            )
         )
-        try:
-            await callback.message.edit_text(text, reply_markup=builder.as_markup())
-        except Exception:
-            await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+        if page < total_pages - 1:
+            nav_buttons.append(
+                InlineKeyboardButton(
+                    text="بعدی ➡️",
+                    callback_data=MyConfigListCallback(action="page", page=page + 1).pack(),
+                )
+            )
+        builder.row(*nav_buttons)
+
+    return builder.as_markup()
 
 
-@router.callback_query(MyConfigCallback.filter(F.action == "view"))
+def _build_config_button_label(sub: Subscription) -> str:
+    config_name = (
+        sub.xui_client.username if sub.xui_client else (sub.plan.name if sub.plan else "نامشخص")
+    )
+    status_emoji = {"active": "✅", "pending_activation": "⏳", "expired": "❌"}.get(sub.status, "❓")
+    label = f"{status_emoji} {config_name}"
+    if sub.ends_at is not None:
+        now = datetime.now(timezone.utc)
+        remaining_days = max((sub.ends_at - now).days, 0)
+        label += f" — {remaining_days} روز"
+    elif sub.status == "pending_activation":
+        label += " — هنوز فعال نشده"
+    return label
+
+
+def _build_config_list_text(total_count: int, page: int, total_pages: int) -> str:
+    page_hint = f"\nصفحه {page + 1} از {total_pages}" if total_pages > 1 else ""
+    return (
+        f"📋 کانفیگ‌های فعال شما ({total_count} عدد):{page_hint}\n"
+        "برای مشاهده جزئیات روی هر کدام بزنید:"
+    )
+
+
+def _config_list_page_from_action(action: str) -> int:
+    if not action.startswith("viewp"):
+        return 0
+    try:
+        return max(int(action.removeprefix("viewp")), 0)
+    except ValueError:
+        return 0
+
+
+@router.callback_query(MyConfigCallback.filter(F.action.startswith("view")))
 async def my_config_detail_handler(
     callback: CallbackQuery,
     callback_data: MyConfigCallback,
@@ -327,7 +419,11 @@ async def my_config_detail_handler(
         builder.button(text="🍎 اتصال Shadowrocket", url=f"{base}/api/dl/shadowrocket?url={encoded_uri}")
         builder.button(text="🍎 اتصال V2Box", url=f"{base}/api/dl/v2box?url={encoded_uri}")
 
-    builder.button(text=Buttons.BACK, callback_data="myconfig:back_to_list")
+    back_page = _config_list_page_from_action(callback_data.action)
+    builder.button(
+        text=Buttons.BACK,
+        callback_data=MyConfigListCallback(action="page", page=back_page).pack(),
+    )
     builder.adjust(2)
 
     # If vless_uri is available, send photo with text as caption
