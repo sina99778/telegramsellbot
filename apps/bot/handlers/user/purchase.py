@@ -604,9 +604,12 @@ async def pay_with_tronado(
     await callback.answer()
 
     current_state = await state.get_state()
+    if current_state == "purchase_processing":
+        return
     if current_state is None:
         await safe_edit_or_send(callback, "درخواست قبلا پردازش شده یا منقضی شده است.")
         return
+    await state.set_state("purchase_processing")
 
     gw = await AppSettingsRepository(session).get_gateway_settings()
     if not gw.tronado_enabled:

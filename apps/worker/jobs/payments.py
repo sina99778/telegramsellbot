@@ -23,7 +23,7 @@ async def sync_pending_payments() -> None:
         payments = list(result.scalars().all())
 
         for payment in payments:
-            if payment.provider not in {"nowpayments", "tetrapay"}:
+            if payment.provider not in {"nowpayments", "tetrapay", "tronado"}:
                 continue
             try:
                 result_text = await review_gateway_payment(session, payment)

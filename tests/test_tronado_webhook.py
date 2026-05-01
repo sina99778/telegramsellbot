@@ -32,9 +32,11 @@ class TestTronadoBindingValidation:
         payment.id = "payment-id"
         payment.order_id = "order-123"
         payment.pay_address = "TXYZ123"
+        payment.pay_amount = Decimal("12.000000")
         status_response = TronadoStatusResponse(
             PaymentID="order-123",
             Wallet="TXYZ123",
+            ActualTronAmount=Decimal("12.000000"),
             IsPaid=True,
         )
 
@@ -48,6 +50,7 @@ class TestTronadoBindingValidation:
         payment.id = "payment-id"
         payment.order_id = "order-123"
         payment.pay_address = "TXYZ123"
+        payment.pay_amount = Decimal("12.000000")
         status_response = TronadoStatusResponse(
             PaymentID="other-order",
             Wallet="TXYZ123",
@@ -67,6 +70,7 @@ class TestTronadoBindingValidation:
         payment.id = "payment-id"
         payment.order_id = "order-123"
         payment.pay_address = "TXYZ123"
+        payment.pay_amount = Decimal("12.000000")
         status_response = TronadoStatusResponse(
             PaymentID="order-123",
             Wallet="TDifferent",
@@ -80,3 +84,42 @@ class TestTronadoBindingValidation:
             )
 
         assert exc.value.status_code == 403
+
+    def test_rejects_underpaid_amount(self):
+        payment = MagicMock()
+        payment.id = "payment-id"
+        payment.order_id = "order-123"
+        payment.pay_address = "TXYZ123"
+        payment.pay_amount = Decimal("12.000000")
+        status_response = TronadoStatusResponse(
+            PaymentID="order-123",
+            Wallet="TXYZ123",
+            ActualTronAmount=Decimal("11.999998"),
+            IsPaid=True,
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _ensure_tronado_status_matches_payment(
+                payment=payment,
+                status_response=status_response,
+            )
+
+        assert exc.value.status_code == 403
+
+    def test_accepts_amount_within_tolerance(self):
+        payment = MagicMock()
+        payment.id = "payment-id"
+        payment.order_id = "order-123"
+        payment.pay_address = "TXYZ123"
+        payment.pay_amount = Decimal("12.000000")
+        status_response = TronadoStatusResponse(
+            PaymentID="order-123",
+            Wallet="TXYZ123",
+            ActualTronAmount=Decimal("11.999999"),
+            IsPaid=True,
+        )
+
+        _ensure_tronado_status_matches_payment(
+            payment=payment,
+            status_response=status_response,
+        )

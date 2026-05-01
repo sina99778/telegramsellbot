@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -17,6 +18,7 @@ from services.tronado.client import TronadoClient, TronadoClientConfig, TronadoR
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tronado", tags=["webhooks", "tronado"])
+_TRON_AMOUNT_TOLERANCE = Decimal("0.000001")
 
 
 @router.post("")
@@ -120,3 +122,18 @@ def _ensure_tronado_status_matches_payment(
             verified_wallet,
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment")
+
+    expected_tron_amount = Decimal(str(payment.pay_amount or "0"))
+    paid_tron_amount = status_response.ActualTronAmount or status_response.TronAmount
+    if expected_tron_amount > 0 and paid_tron_amount is None:
+        logger.warning("Tronado status amount missing for payment %s (expected=%s)", payment.id, expected_tron_amount)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment amount")
+    if expected_tron_amount > 0 and paid_tron_amount is not None:
+        if paid_tron_amount + _TRON_AMOUNT_TOLERANCE < expected_tron_amount:
+            logger.warning(
+                "Tronado status amount mismatch for payment %s (expected=%s, paid=%s)",
+                payment.id,
+                expected_tron_amount,
+                paid_tron_amount,
+            )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment amount")

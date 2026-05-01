@@ -1475,19 +1475,29 @@ async def create_purchase(
             detail="این نام کانفیگ قبلاً استفاده شده است.",
         )
 
-    if body.plan_id is None:
-        plan = await _create_custom_purchase_plan_for_request(session, body)
-    else:
-        plan = await session.get(Plan, body.plan_id)
-        if plan is None or not plan.is_active:
-            raise HTTPException(status_code=404, detail="این پلن در دسترس نیست.")
-        try:
-            await ensure_plan_available(session, plan.id)
-        except PlanStockError as exc:
-            raise HTTPException(status_code=409, detail="موجودی این پلن تمام شده است.") from exc
-
     if user.wallet is None:
         raise HTTPException(status_code=404, detail="کیف پول کاربر پیدا نشد.")
+
+    if body.plan_id is None:
+        if payment_method == "wallet":
+            plan = await _create_custom_purchase_plan_for_request(session, body)
+            return await _purchase_with_wallet(session, user, plan, config_name)
+        draft = await _build_custom_purchase_gateway_draft(session, body, config_name)
+        if payment_method == "nowpayments":
+            return await _create_nowpayments_custom_purchase(session, user, draft)
+        if payment_method == "tetrapay":
+            return await _create_tetrapay_custom_purchase(session, user, draft)
+        if payment_method == "tronado":
+            return await _create_tronado_custom_purchase(session, user, draft)
+        raise HTTPException(status_code=400, detail="روش پرداخت نامعتبر است.")
+
+    plan = await session.get(Plan, body.plan_id)
+    if plan is None or not plan.is_active:
+        raise HTTPException(status_code=404, detail="این پلن در دسترس نیست.")
+    try:
+        await ensure_plan_available(session, plan.id)
+    except PlanStockError as exc:
+        raise HTTPException(status_code=409, detail="موجودی این پلن تمام شده است.") from exc
 
     if payment_method == "wallet":
         return await _purchase_with_wallet(session, user, plan, config_name)
@@ -1530,6 +1540,47 @@ async def _create_custom_purchase_plan_for_request(
         )
     except CustomPurchaseError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def _build_custom_purchase_gateway_draft(
+    session: AsyncSession,
+    body: PurchaseRequest,
+    config_name: str,
+) -> dict[str, Any]:
+    try:
+        volume_gb = float(body.custom_volume_gb or 0)
+        duration_days = int(body.custom_duration_days or 0)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="حجم یا مدت خرید دلخواه معتبر نیست.") from exc
+
+    settings_repo = AppSettingsRepository(session)
+    custom_settings = await settings_repo.get_custom_purchase_settings()
+    template_plan = await get_custom_purchase_template_plan(session)
+    if template_plan is None:
+        raise HTTPException(status_code=400, detail="برای خرید دلخواه حداقل یک پلن فعال متصل به سرور لازم است.")
+    try:
+        price = calculate_custom_purchase_price(
+            custom_settings,
+            volume_gb=volume_gb,
+            duration_days=duration_days,
+        )
+    except CustomPurchaseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "price": price,
+        "name": f"Custom {volume_gb:g}GB / {duration_days} days",
+        "callback_payload": {
+            "custom_purchase": True,
+            "custom_volume_gb": volume_gb,
+            "custom_duration_days": duration_days,
+            "config_name": config_name,
+            "discount_percent": 0,
+            "discount_id": None,
+            "purpose": "direct_purchase",
+            "source": "miniapp",
+        },
+    }
 
 
 async def _purchase_with_wallet(
@@ -1665,6 +1716,62 @@ async def _create_nowpayments_purchase(
     )
 
 
+async def _create_nowpayments_custom_purchase(
+    session: AsyncSession,
+    user: User,
+    draft: dict[str, Any],
+) -> PurchaseResponse:
+    from repositories.settings import AppSettingsRepository
+
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    if not gw.nowpayments_enabled:
+        raise HTTPException(status_code=400, detail="درگاه NOWPayments غیرفعال است.")
+
+    price = Decimal(str(draft["price"]))
+    api_key = SecretStr(gw.nowpayments_api_key) if gw.nowpayments_api_key else settings.nowpayments_api_key
+    local_order_id = str(uuid4())
+    payload = NowPaymentsPaymentCreateRequest(
+        price_amount=price,
+        price_currency="usd",
+        order_id=local_order_id,
+        order_description=f"Custom purchase for user {user.id}",
+        ipn_callback_url=settings.nowpayments_ipn_callback_url,
+    )
+
+    try:
+        async with NowPaymentsClient(
+            NowPaymentsClientConfig(api_key=api_key, base_url=settings.nowpayments_base_url)
+        ) as client:
+            invoice = await client.create_payment_invoice(payload)
+    except NowPaymentsRequestError as exc:
+        raise HTTPException(status_code=502, detail="خطا در ساخت فاکتور درگاه ارزی.") from exc
+
+    payment = Payment(
+        user_id=user.id,
+        provider="nowpayments",
+        kind="direct_purchase",
+        provider_payment_id=None,
+        provider_invoice_id=str(invoice.id),
+        order_id=local_order_id,
+        payment_status="waiting",
+        pay_currency=None,
+        price_currency="USD",
+        price_amount=price,
+        invoice_url=str(invoice.invoice_url),
+        callback_payload=dict(draft["callback_payload"]),
+    )
+    session.add(payment)
+    await session.flush()
+
+    return PurchaseResponse(
+        status="invoice_created",
+        message="فاکتور پرداخت خرید دلخواه ساخته شد. بعد از پرداخت، کانفیگ خودکار ساخته می‌شود.",
+        payment_method="nowpayments",
+        invoice_url=str(invoice.invoice_url),
+        payment_id=payment.id,
+    )
+
+
 async def _create_tetrapay_purchase(
     session: AsyncSession,
     user: User,
@@ -1734,6 +1841,68 @@ async def _create_tetrapay_purchase(
     )
 
 
+async def _create_tetrapay_custom_purchase(
+    session: AsyncSession,
+    user: User,
+    draft: dict[str, Any],
+) -> PurchaseResponse:
+    from repositories.settings import AppSettingsRepository
+
+    settings_repo = AppSettingsRepository(session)
+    gw = await settings_repo.get_gateway_settings()
+    if not gw.tetrapay_enabled:
+        raise HTTPException(status_code=400, detail="درگاه تتراپی غیرفعال است.")
+
+    price = Decimal(str(draft["price"]))
+    toman_rate = await settings_repo.get_toman_rate()
+    toman_amount = int((price * toman_rate).quantize(Decimal("1")))
+    rial_amount = toman_amount * 10
+    if rial_amount < 10000:
+        raise HTTPException(status_code=400, detail="مبلغ این خرید کمتر از حداقل مجاز درگاه تتراپی است.")
+
+    local_order_id = str(uuid4())
+    api_key = gw.tetrapay_api_key or settings.tetrapay_api_key.get_secret_value()
+
+    try:
+        async with TetraPayClient(
+            TetraPayClientConfig(api_key=api_key, base_url=settings.tetrapay_base_url)
+        ) as client:
+            tx = await client.create_order(
+                hash_id=local_order_id,
+                amount=rial_amount,
+                description=f"خرید دلخواه - کاربر {user.telegram_id}",
+                email=f"{user.telegram_id}@telegram.org",
+                mobile="09111111111",
+            )
+    except TetraPayRequestError as exc:
+        raise HTTPException(status_code=502, detail="خطا در ساخت فاکتور تتراپی.") from exc
+
+    payment = Payment(
+        user_id=user.id,
+        provider="tetrapay",
+        kind="direct_purchase",
+        provider_payment_id=tx.Authority,
+        order_id=local_order_id,
+        payment_status="waiting",
+        pay_currency="IRT",
+        price_currency="USD",
+        price_amount=price,
+        pay_amount=toman_amount,
+        invoice_url=tx.payment_url_bot,
+        callback_payload=dict(draft["callback_payload"]),
+    )
+    session.add(payment)
+    await session.flush()
+
+    return PurchaseResponse(
+        status="invoice_created",
+        message="فاکتور پرداخت خرید دلخواه ساخته شد. بعد از پرداخت، کانفیگ خودکار ساخته می‌شود.",
+        payment_method="tetrapay",
+        invoice_url=tx.payment_url_bot,
+        payment_id=payment.id,
+    )
+
+
 async def _create_tronado_purchase(
     session: AsyncSession,
     user: User,
@@ -1765,6 +1934,28 @@ async def _create_tronado_purchase(
 
 
 # ─── Renewal ─────────────────────────────────────────────────────────────────
+
+async def _create_tronado_custom_purchase(
+    session: AsyncSession,
+    user: User,
+    draft: dict[str, Any],
+) -> PurchaseResponse:
+    invoice = await create_tronado_invoice(
+        session=session,
+        user=user,
+        amount_usd=Decimal(str(draft["price"])),
+        kind="direct_purchase",
+        description=f"Custom purchase for user {user.id}",
+        callback_payload=dict(draft["callback_payload"]),
+    )
+    return PurchaseResponse(
+        status="invoice_created",
+        message="فاکتور پرداخت خرید دلخواه ترونادو ساخته شد. بعد از پرداخت، کانفیگ خودکار ساخته می‌شود.",
+        payment_method="tronado",
+        invoice_url=invoice.invoice_url,
+        payment_id=invoice.payment.id,
+    )
+
 
 @router.post("/renewal/quote", response_model=RenewalQuoteResponse)
 async def get_renewal_quote(

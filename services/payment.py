@@ -20,6 +20,12 @@ from models.plan import Plan
 from models.subscription import Subscription
 from models.user import User
 from repositories.settings import AppSettingsRepository
+from services.custom_purchase import (
+    CustomPurchaseError,
+    calculate_custom_purchase_price,
+    create_custom_purchase_plan,
+    get_custom_purchase_template_plan,
+)
 from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
 from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
 from services.tronado.client import TronadoClient, TronadoClientConfig, TronadoRequestError
@@ -127,10 +133,54 @@ async def _handle_direct_purchase(
     payment: Payment,
 ) -> bool:
     """Provision a subscription after a successful direct purchase payment."""
-    purchase_meta = payment.callback_payload
+    purchase_meta = dict(payment.callback_payload or {})
     logger.info("[PROVISION] callback_payload keys: %s", list(purchase_meta.keys()) if purchase_meta else "EMPTY")
 
-    plan_id_str = purchase_meta.get("plan_id") if purchase_meta else None
+    # Load user with wallet
+    user = await session.scalar(
+        select(User)
+        .options(selectinload(User.wallet))
+        .where(User.id == payment.user_id)
+    )
+    if not user:
+        logger.error("[PROVISION] User %s not found", payment.user_id)
+        return False
+    if not user.wallet:
+        logger.error("[PROVISION] User %s has no wallet", payment.user_id)
+        return False
+
+    plan_id_str = purchase_meta.get("plan_id")
+    plan = None
+    if not plan_id_str and purchase_meta.get("custom_purchase"):
+        try:
+            volume_gb = float(purchase_meta.get("custom_volume_gb") or 0)
+            duration_days = int(purchase_meta.get("custom_duration_days") or 0)
+            custom_settings = await AppSettingsRepository(session).get_custom_purchase_settings()
+            template_plan = await get_custom_purchase_template_plan(session)
+            if template_plan is None:
+                logger.error("[PROVISION] Missing custom purchase template plan for payment %s", payment.id)
+                return False
+            calculate_custom_purchase_price(
+                custom_settings,
+                volume_gb=volume_gb,
+                duration_days=duration_days,
+            )
+            plan = await create_custom_purchase_plan(
+                session,
+                volume_gb=volume_gb,
+                duration_days=duration_days,
+                price=Decimal(str(payment.price_amount)),
+                template_plan=template_plan,
+            )
+        except (TypeError, ValueError, CustomPurchaseError) as exc:
+            logger.error("[PROVISION] Invalid custom purchase metadata for payment %s: %s", payment.id, exc)
+            return False
+        purchase_meta["plan_id"] = str(plan.id)
+        purchase_meta["custom_plan_created"] = True
+        payment.callback_payload = dict(purchase_meta)
+        logger.info("[PROVISION] Custom plan created after payment confirmation: %s", plan.id)
+
+    plan_id_str = purchase_meta.get("plan_id")
     if not plan_id_str:
         logger.error("[PROVISION] Missing plan_id in purchase metadata for payment %s", payment.id)
         return False
@@ -141,22 +191,10 @@ async def _handle_direct_purchase(
 
     logger.info("[PROVISION] plan_id=%s, config_name=%s, discount=%s", plan_id, config_name, discount_percent)
 
-    # Load user with wallet
-    user = await session.scalar(
-        select(User)
-        .options(selectinload(User.wallet))
-        .where(User.id == payment.user_id)
-    )
-    plan = await session.get(Plan, plan_id)
-
-    if not user:
-        logger.error("[PROVISION] User %s not found", payment.user_id)
-        return False
+    if plan is None:
+        plan = await session.get(Plan, plan_id)
     if not plan:
         logger.error("[PROVISION] Plan %s not found", plan_id)
-        return False
-    if not user.wallet:
-        logger.error("[PROVISION] User %s has no wallet", payment.user_id)
         return False
 
     logger.info("[PROVISION] User: %s (tg=%s), Plan: %s", user.id, user.telegram_id, plan.name)
