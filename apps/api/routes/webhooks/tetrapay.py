@@ -133,11 +133,12 @@ def _ensure_tetrapay_verification_matches_payment(
     verify_res,
 ) -> None:
     verified_hash_id = str(verify_res.Hash_id or "").strip()
-    if verified_hash_id and verified_hash_id != payment.order_id:
+    if verified_hash_id != payment.order_id or verified_hash_id != payload.hash_id:
         logger.warning(
-            "TetraPay IPN: verified Hash_id mismatch for payment %s (db=%s, verified=%s)",
+            "TetraPay IPN: verified Hash_id mismatch for payment %s (db=%s, payload=%s, verified=%s)",
             payment.id,
             payment.order_id,
+            payload.hash_id,
             verified_hash_id,
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment")
@@ -152,6 +153,6 @@ def _ensure_tetrapay_verification_matches_payment(
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment")
 
-    if not verified_hash_id and not payment.provider_payment_id:
-        logger.warning("TetraPay IPN: verification result cannot be bound to payment %s", payment.id)
+    if not verified_authority:
+        logger.warning("TetraPay IPN: verification authority missing for payment %s", payment.id)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment")

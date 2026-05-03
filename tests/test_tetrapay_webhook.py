@@ -96,6 +96,38 @@ class TestTetraPayBindingValidation:
             )
         assert exc.value.status_code == 403
 
+    def test_rejects_missing_verified_hash(self):
+        payment = MagicMock()
+        payment.id = "payment-id"
+        payment.order_id = "order-123"
+        payment.provider_payment_id = "auth-123"
+        payload = TetraPayCallbackPayload(status=100, hashid="order-123", authority="auth-123")
+        verify_res = MagicMock(Hash_id=None, authority="auth-123")
+
+        with pytest.raises(HTTPException) as exc:
+            _ensure_tetrapay_verification_matches_payment(
+                payment=payment,
+                payload=payload,
+                verify_res=verify_res,
+            )
+        assert exc.value.status_code == 403
+
+    def test_rejects_payload_hash_mismatch_even_if_db_matches(self):
+        payment = MagicMock()
+        payment.id = "payment-id"
+        payment.order_id = "order-123"
+        payment.provider_payment_id = "auth-123"
+        payload = TetraPayCallbackPayload(status=100, hashid="other-order", authority="auth-123")
+        verify_res = MagicMock(Hash_id="order-123", authority="auth-123")
+
+        with pytest.raises(HTTPException) as exc:
+            _ensure_tetrapay_verification_matches_payment(
+                payment=payment,
+                payload=payload,
+                verify_res=verify_res,
+            )
+        assert exc.value.status_code == 403
+
     def test_rejects_verified_authority_mismatch(self):
         payment = MagicMock()
         payment.id = "payment-id"

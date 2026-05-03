@@ -277,6 +277,7 @@ async def my_config_detail_handler(
             Subscription.id == callback_data.subscription_id,
             Subscription.user_id == user.id,
         )
+        .with_for_update()
     )
     if sub is None:
         await safe_edit_or_send(callback, "کانفیگ پیدا نشد یا متعلق به شما نیست.")
@@ -503,6 +504,7 @@ async def refresh_usage_handler(
             Subscription.id == callback_data.subscription_id,
             Subscription.user_id == user.id,
         )
+        .with_for_update()
     )
     if sub is None:
         await safe_edit_or_send(callback, "کانفیگ پیدا نشد.")
@@ -587,6 +589,7 @@ async def reset_uuid_handler(
             Subscription.id == callback_data.subscription_id,
             Subscription.user_id == user.id,
         )
+        .with_for_update()
     )
     if sub is None or sub.status not in ("active", "pending_activation"):
         await safe_edit_or_send(callback, "کانفیگ پیدا نشد یا منقضی شده است.")
@@ -699,6 +702,7 @@ async def toggle_enable_handler(
             Subscription.id == callback_data.subscription_id,
             Subscription.user_id == user.id,
         )
+        .with_for_update()
     )
     if sub is None or sub.status not in ("active", "pending_activation"):
         await safe_edit_or_send(callback, "کانفیگ پیدا نشد یا منقضی شده است.")
@@ -787,6 +791,7 @@ async def cancel_and_refund_config(
             Subscription.id == callback_data.subscription_id,
             Subscription.user_id == user.id,
         )
+        .with_for_update()
     )
     if sub is None:
         await safe_edit_or_send(callback, "کانفیگ پیدا نشد.")

@@ -811,7 +811,7 @@ const Pages = (() => {
         }
         const extra = section === 'ready_configs'
             ? renderReadyConfigTools(items)
-            : (section === 'gifts' ? renderGiftTools(items) : '');
+            : (section === 'gifts' ? renderGiftTools(items) : (section === 'stats' ? renderCustomerReportTools() : ''));
         modules.innerHTML = `
             <button class="btn btn-secondary btn-block" onclick="Pages.load_admin()">بازگشت به مدیریت</button>
             <h3 class="section-title" style="margin-top:16px">${escapeHtml(data.title || 'مدیریت')}</h3>
@@ -1009,13 +1009,97 @@ const Pages = (() => {
     function getAdminActionHandler(section, action, item) {
         const id = escapeHtml(item.id);
         if (action === 'view_ticket') return `Pages.openAdminTicket('${id}')`;
+        if (action === 'edit_plan_name') return `Pages.showPlanNameEditor('${id}', '${encodeURIComponent(item.title || '')}')`;
         if (action === 'edit_plan_duration') return `Pages.showPlanDurationEditor('${id}')`;
         if (action === 'edit_plan_price') return `Pages.showPlanPriceEditor('${id}')`;
         if (action === 'edit_plan_stock') return `Pages.showPlanStockEditor('${id}')`;
+        if (action === 'set_sub_http') return `Pages.setServerSubScheme('${id}', 'http')`;
+        if (action === 'set_sub_https') return `Pages.setServerSubScheme('${id}', 'https')`;
+        if (action === 'set_sub_panel') return `Pages.setServerSubScheme('${id}', 'panel')`;
         if (action === 'toggle_custom_purchase') return `Pages.toggleCustomPurchase('${escapeHtml(item.subtitle || '')}')`;
         if (action === 'edit_custom_gb') return `Pages.showCustomPurchasePriceEditor('gb')`;
         if (action === 'edit_custom_day') return `Pages.showCustomPurchasePriceEditor('day')`;
         return `Pages.runAdminAction('${section}', '${escapeHtml(action)}', '${id}')`;
+    }
+
+    function renderCustomerReportTools() {
+        return `
+            <div class="admin-form">
+                <strong>گزارش خرید مشتری‌ها</strong>
+                <div class="admin-search-row">
+                    <select id="customer-report-period" class="form-input">
+                        <option value="daily">روزانه</option>
+                        <option value="weekly">هفتگی</option>
+                    </select>
+                    <button class="btn btn-primary" onclick="Pages.loadCustomerReport()">دریافت گزارش</button>
+                </div>
+                <div id="customer-report-results" class="admin-list"></div>
+            </div>
+        `;
+    }
+
+    async function loadCustomerReport(userId = '') {
+        const period = document.getElementById('customer-report-period')?.value || 'daily';
+        try {
+            const report = await API.getAdminCustomerReport(period, userId);
+            const container = document.getElementById('customer-report-results');
+            if (!container) return;
+            container.innerHTML = `
+                <div class="admin-item">
+                    <strong>${report.period === 'weekly' ? 'گزارش هفتگی' : 'گزارش روزانه'}</strong>
+                    <span>${report.total_customers} مشتری | ${report.total_configs} کانفیگ | ${report.total_volume_gb}GB | $${report.total_amount_usd}</span>
+                </div>
+                ${report.items.length ? report.items.map(item => `
+                    <div class="admin-item">
+                        <div>
+                            <strong>${escapeHtml(item.name || '-')}</strong>
+                            <span>${escapeHtml(item.telegram_id || '-')} | ${item.configs_count} کانفیگ | ${item.volume_gb}GB | $${item.amount_usd}</span>
+                        </div>
+                        <button class="btn btn-secondary btn-sm" onclick="Pages.openAdminUser('${escapeHtml(item.user_id)}')">پروفایل</button>
+                    </div>
+                `).join('') : '<div class="empty-state compact"><p>خریدی در این بازه ثبت نشده</p></div>'}
+            `;
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
+    }
+
+    function showPlanNameEditor(planId, encodedName = '') {
+        const currentName = decodeURIComponent(encodedName || '');
+        UI.showModal(`
+            <div class="modal-title">تغییر نام پلن</div>
+            <label class="form-label" for="admin-plan-name">نام جدید</label>
+            <input id="admin-plan-name" class="form-input" value="${escapeHtml(currentName)}" maxlength="80">
+            <button class="btn btn-primary btn-block" onclick="Pages.submitPlanName('${planId}')">ثبت نام</button>
+            <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
+        `);
+        setTimeout(() => document.getElementById('admin-plan-name')?.focus(), 100);
+    }
+
+    async function submitPlanName(planId) {
+        const name = (document.getElementById('admin-plan-name')?.value || '').trim();
+        if (name.length < 2) {
+            UI.toast('نام پلن خیلی کوتاه است', 'error');
+            return;
+        }
+        try {
+            const result = await API.updateAdminPlanName(planId, name);
+            UI.toast(result.message || 'نام پلن تغییر کرد');
+            UI.closeModal();
+            await openAdminModule('plans');
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
+    }
+
+    async function setServerSubScheme(serverId, scheme) {
+        try {
+            const result = await API.updateAdminServerSubScheme(serverId, scheme);
+            UI.toast(result.message || 'نوع لینک ساب تغییر کرد');
+            await openAdminModule('servers');
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
     }
 
     function showPlanDurationEditor(planId) {
@@ -1358,6 +1442,7 @@ const Pages = (() => {
         showConfigDetail, showRenewal, setRenewalType, submitRenewal,
         buyPlan, buyCustomPlan, submitPurchase, submitCustomPurchase, openInvoice, topupWallet, submitTopup, refreshPayment,
         showTicketHistory, closeTicket, openAdminModule, openAdminTicket, submitAdminTicketReply, runAdminAction,
+        loadCustomerReport, showPlanNameEditor, submitPlanName, setServerSubScheme,
         showPlanDurationEditor, submitPlanDuration, showPlanPriceEditor, submitPlanPrice, showPlanStockEditor, submitPlanStock,
         toggleCustomPurchase, showCustomPurchasePriceEditor, submitCustomPurchasePrice,
         searchAdminUsers, openAdminUser, runAdminUserAction, adjustAdminUserBalance, sendAdminUserMessage,

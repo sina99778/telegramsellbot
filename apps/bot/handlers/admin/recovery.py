@@ -231,7 +231,10 @@ async def recovery_payment_detail(
     await callback.answer()
 
     payment = await session.scalar(
-        select(Payment).options(selectinload(Payment.user)).where(Payment.id == callback_data.payment_id)
+        select(Payment)
+        .options(selectinload(Payment.user))
+        .where(Payment.id == callback_data.payment_id)
+        .with_for_update()
     )
     if payment is None:
         await safe_edit_or_send(callback, "پرداخت یافت نشد.")
@@ -403,7 +406,10 @@ async def recovery_resend_config(
     await callback.answer("⏳ در حال ارسال مجدد...")
 
     payment = await session.scalar(
-        select(Payment).options(selectinload(Payment.user)).where(Payment.id == callback_data.payment_id)
+        select(Payment)
+        .options(selectinload(Payment.user))
+        .where(Payment.id == callback_data.payment_id)
+        .with_for_update()
     )
     if payment is None or payment.user is None:
         await safe_edit_or_send(callback, "پرداخت یا کاربر یافت نشد.")
@@ -475,7 +481,10 @@ async def recovery_manual_refund(
     await callback.answer()
 
     payment = await session.scalar(
-        select(Payment).options(selectinload(Payment.user)).where(Payment.id == callback_data.payment_id)
+        select(Payment)
+        .options(selectinload(Payment.user))
+        .where(Payment.id == callback_data.payment_id)
+        .with_for_update()
     )
     if payment is None:
         await safe_edit_or_send(callback, "پرداخت یافت نشد.")
@@ -483,6 +492,9 @@ async def recovery_manual_refund(
 
     if payment.actually_paid is None or payment.actually_paid <= 0:
         await safe_edit_or_send(callback, "این پرداخت مبلغی نداشته.")
+        return
+    if payment.payment_status == "refunded":
+        await safe_edit_or_send(callback, "این پرداخت قبلاً بازپرداخت شده است.")
         return
 
     from services.wallet.manager import WalletManager

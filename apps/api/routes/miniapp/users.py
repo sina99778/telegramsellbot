@@ -11,7 +11,7 @@ import logging
 import re
 from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import parse_qsl
 from uuid import UUID, uuid4
@@ -38,7 +38,7 @@ from models.subscription import Subscription
 from models.ticket import Ticket, TicketMessage
 from models.user import User
 from models.wallet import WalletTransaction
-from models.xui import XUIClientRecord, XUIServerRecord
+from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.settings import AppSettingsRepository
 from repositories.ticket import TicketRepository
 from schemas.api.miniapp import (
@@ -371,6 +371,61 @@ async def get_admin_section(
     raise HTTPException(status_code=404, detail="بخش مدیریت پیدا نشد.")
 
 
+@router.get("/admin/reports/customers")
+async def get_admin_customer_report(
+    period: str = "daily",
+    user_id: UUID | None = None,
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    _require_admin(user)
+    period = period.strip().lower()
+    if period not in {"daily", "weekly"}:
+        raise HTTPException(status_code=400, detail="دوره گزارش باید daily یا weekly باشد.")
+    now = datetime.now(timezone.utc)
+    start = now - (timedelta(days=7) if period == "weekly" else timedelta(days=1))
+    stmt = (
+        select(Subscription)
+        .options(selectinload(Subscription.user), selectinload(Subscription.plan))
+        .where(Subscription.created_at >= start)
+        .order_by(Subscription.created_at.desc())
+    )
+    if user_id is not None:
+        stmt = stmt.where(Subscription.user_id == user_id)
+    result = await session.execute(stmt)
+    rows: dict[UUID, dict[str, Any]] = {}
+    total_bytes = 0
+    total_amount = Decimal("0")
+    for sub in result.scalars().all():
+        total_bytes += int(sub.volume_bytes or 0)
+        price = Decimal(str(sub.plan.price if sub.plan else 0))
+        total_amount += price
+        item = rows.setdefault(
+            sub.user_id,
+            {
+                "user_id": str(sub.user_id),
+                "telegram_id": sub.user.telegram_id if sub.user else None,
+                "name": (sub.user.first_name or sub.user.username or str(sub.user.telegram_id)) if sub.user else "-",
+                "configs_count": 0,
+                "volume_gb": 0.0,
+                "amount_usd": "0.00",
+            },
+        )
+        item["configs_count"] += 1
+        item["volume_gb"] = round(float(item["volume_gb"]) + _bytes_to_gb(sub.volume_bytes), 2)
+        item["amount_usd"] = str((Decimal(str(item["amount_usd"])) + price).quantize(Decimal("0.01")))
+    return {
+        "period": period,
+        "from": start.isoformat(),
+        "to": now.isoformat(),
+        "total_customers": len(rows),
+        "total_configs": sum(item["configs_count"] for item in rows.values()),
+        "total_volume_gb": round(_bytes_to_gb(total_bytes), 2),
+        "total_amount_usd": str(total_amount.quantize(Decimal("0.01"))),
+        "items": sorted(rows.values(), key=lambda item: item["volume_gb"], reverse=True),
+    }
+
+
 @router.post("/admin/action")
 async def post_admin_action(
     body: dict[str, Any],
@@ -428,9 +483,12 @@ async def post_admin_action(
             raise HTTPException(status_code=404, detail="کاربر پیدا نشد.")
         target.status = "active" if target.status == "banned" else "banned"
         target.is_bot_blocked = target.status == "banned"
-        _record_admin_action(session, user, action, "user", target.id, {"status": target.status})
+        disabled_count = 0
+        if target.status == "banned":
+            disabled_count = await _disable_user_configs_for_ban(session, target.id)
+        _record_admin_action(session, user, action, "user", target.id, {"status": target.status, "disabled_configs": disabled_count})
         await session.flush()
-        return {"ok": True, "message": "وضعیت کاربر تغییر کرد."}
+        return {"ok": True, "message": f"وضعیت کاربر تغییر کرد. {disabled_count} کانفیگ غیرفعال شد."}
 
     if action == "toggle_user_role":
         target = await session.get(User, target_id)
@@ -508,6 +566,27 @@ async def update_admin_plan_duration(
     )
     await session.flush()
     return {"ok": True, "message": "مدت پلن تغییر کرد.", "duration_days": duration_days}
+
+
+@router.post("/admin/plans/{plan_id}/name")
+async def update_admin_plan_name(
+    plan_id: UUID,
+    body: dict[str, Any],
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    _require_admin(user)
+    plan = await session.get(Plan, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="پلن پیدا نشد.")
+    name = str(body.get("name") or "").strip()
+    if len(name) < 2 or len(name) > 80:
+        raise HTTPException(status_code=400, detail="نام پلن باید بین ۲ تا ۸۰ کاراکتر باشد.")
+    old_name = plan.name
+    plan.name = name
+    _record_admin_action(session, user, "edit_plan_name", "plan", plan.id, {"from": old_name, "to": name})
+    await session.flush()
+    return {"ok": True, "message": "نام پلن تغییر کرد.", "name": name}
 
 
 @router.post("/admin/plans/{plan_id}/price")
@@ -588,6 +667,38 @@ async def update_admin_plan_stock(
             "is_unlimited": stock.is_unlimited,
         },
     }
+
+
+@router.post("/admin/servers/{server_id}/sub-scheme")
+async def update_admin_server_sub_scheme(
+    server_id: UUID,
+    body: dict[str, Any],
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    user, session = auth
+    _require_admin(user)
+    server = await session.get(XUIServerRecord, server_id)
+    if server is None:
+        raise HTTPException(status_code=404, detail="سرور پیدا نشد.")
+    scheme = str(body.get("scheme") or "").strip().lower()
+    if scheme not in {"http", "https", "panel"}:
+        raise HTTPException(status_code=400, detail="نوع لینک باید http، https یا panel باشد.")
+    if scheme == "panel":
+        scheme = "https" if server.base_url.strip().lower().startswith("https://") else "http"
+    metadata = dict(server.metadata_ or {})
+    old_scheme = metadata.get("subscription_scheme")
+    metadata["subscription_scheme"] = scheme
+    server.metadata_ = metadata
+    _record_admin_action(
+        session,
+        user,
+        "edit_server_sub_scheme",
+        "server",
+        server.id,
+        {"from": old_scheme, "to": scheme},
+    )
+    await session.flush()
+    return {"ok": True, "message": f"نوع لینک ساب روی {scheme} تنظیم شد.", "scheme": scheme}
 
 
 @router.post("/admin/custom-purchase")
@@ -1002,6 +1113,10 @@ def _require_admin(user: User) -> None:
         raise HTTPException(status_code=403, detail="دسترسی مدیریت ندارید.")
 
 
+def _bytes_to_gb(value: int | None) -> float:
+    return float(value or 0) / float(1024**3)
+
+
 def _record_admin_action(
     session: AsyncSession,
     actor: User,
@@ -1019,6 +1134,38 @@ def _record_admin_action(
             payload=payload or {},
         )
     )
+
+
+async def _disable_user_configs_for_ban(session: AsyncSession, user_id: UUID) -> int:
+    result = await session.execute(
+        select(Subscription)
+        .options(
+            selectinload(Subscription.xui_client)
+            .selectinload(XUIClientRecord.inbound)
+            .selectinload(XUIInboundRecord.server)
+        )
+        .where(
+            Subscription.user_id == user_id,
+            Subscription.status.in_(["active", "pending_activation"]),
+        )
+    )
+    disabled_count = 0
+    manager = ProvisioningManager(session)
+    for subscription in result.scalars().all():
+        subscription.status = "disabled"
+        xui_record = subscription.xui_client
+        if xui_record is not None:
+            xui_record.is_active = False
+            try:
+                await manager._disable_xui_client(
+                    xui_record=xui_record,
+                    volume_bytes=subscription.volume_bytes,
+                    ends_at=subscription.ends_at,
+                )
+            except Exception as exc:
+                logger.warning("Could not disable remote config %s for banned user %s: %s", xui_record.id, user_id, exc)
+        disabled_count += 1
+    return disabled_count
 
 
 def _serialize_ticket_for_admin(ticket: Ticket) -> dict[str, Any]:
@@ -1238,6 +1385,7 @@ async def _admin_plans(session: AsyncSession) -> list[dict[str, Any]]:
             ),
             "actions": [
                 {"label": "فعال/غیرفعال", "action": "toggle_plan"},
+                {"label": "تغییر نام", "action": "edit_plan_name"},
                 {"label": "تغییر مدت", "action": "edit_plan_duration"},
                 {"label": "تغییر قیمت", "action": "edit_plan_price"},
                 {"label": "تنظیم موجودی", "action": "edit_plan_stock"},
@@ -1305,8 +1453,17 @@ async def _admin_servers(session: AsyncSession) -> list[dict[str, Any]]:
         {
             "id": str(s.id),
             "title": s.name,
-            "subtitle": f"{s.health_status} | {'فعال' if s.is_active else 'غیرفعال'} | priority {s.priority}",
-            "actions": [{"label": "فعال/غیرفعال", "action": "toggle_server"}],
+            "subtitle": (
+                f"{s.health_status} | {'فعال' if s.is_active else 'غیرفعال'} | "
+                f"sub: {str((s.metadata_ or {}).get('subscription_scheme') or ('https' if s.base_url.lower().startswith('https://') else 'http'))} | "
+                f"priority {s.priority}"
+            ),
+            "actions": [
+                {"label": "فعال/غیرفعال", "action": "toggle_server"},
+                {"label": "ساب HTTP", "action": "set_sub_http"},
+                {"label": "ساب HTTPS", "action": "set_sub_https"},
+                {"label": "از پنل", "action": "set_sub_panel"},
+            ],
         }
         for s in result.scalars().all()
     ]

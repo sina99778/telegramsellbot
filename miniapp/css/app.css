@@ -857,11 +857,32 @@ button {
     text-align: right;
     color: var(--text);
     font-family: var(--font);
+    display: grid;
+    gap: 6px;
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(135deg, rgba(51, 199, 214, 0.10), rgba(18, 29, 40, 0.92));
+}
+
+.admin-module::before {
+    content: '';
+    position: absolute;
+    inset-inline-start: 0;
+    top: 10px;
+    bottom: 10px;
+    width: 3px;
+    border-radius: 8px;
+    background: var(--cyan);
 }
 
 .admin-item {
     display: grid;
     gap: 10px;
+    border-inline-start: 3px solid transparent;
+}
+
+.admin-item:hover {
+    border-inline-start-color: var(--cyan);
 }
 
 .admin-actions {

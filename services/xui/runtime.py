@@ -20,14 +20,17 @@ def build_sub_link(server: XUIServerRecord, sub_id: str) -> str:
     Subscription service uses server.subscription_port (default 2096).
 
     If server.sub_domain is set, use it instead of extracting from base_url.
-    Result: http://<host>:<port>/sub/<sub_id>
+    Result: <scheme>://<host>:<port>/sub/<sub_id>
     """
     if server.sub_domain:
         host = server.sub_domain
     else:
         host = _extract_host(server.base_url)
+    scheme = str((server.metadata_ or {}).get("subscription_scheme") or "").lower()
+    if scheme not in {"http", "https"}:
+        scheme = "https" if server.base_url.strip().lower().startswith("https://") else "http"
     sub_port = server.subscription_port
-    return f"http://{host}:{sub_port}/sub/{sub_id}"
+    return f"{scheme}://{host}:{sub_port}/sub/{sub_id}"
 
 
 def build_vless_uri(
