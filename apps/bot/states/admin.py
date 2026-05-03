@@ -63,6 +63,7 @@ class SettingsStates(StatesGroup):
     waiting_for_custom_price_day = State()
     waiting_for_xui_limit_ip = State()
     waiting_for_max_distinct_ips = State()
+    waiting_for_premium_emoji_map = State()
 
 
 class DiscountStates(StatesGroup):

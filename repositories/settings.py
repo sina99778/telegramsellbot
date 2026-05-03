@@ -2,11 +2,24 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.texts import MarketingTexts
 from models.app_setting import AppSetting
+
+
+def _normalize_emoji_map(raw_map: Any) -> dict[str, str]:
+    if not isinstance(raw_map, dict):
+        return {}
+    normalized: dict[str, str] = {}
+    for key, value in raw_map.items():
+        clean_key = str(key or "").strip()
+        clean_value = str(value or "").strip()
+        if clean_key and clean_value:
+            normalized[clean_key] = clean_value
+    return normalized
 
 
 RETARGETING_SETTINGS_KEY = "marketing.retargeting"
@@ -19,6 +32,7 @@ RENEWAL_SETTINGS_KEY = "service.renewal"
 CUSTOM_PURCHASE_SETTINGS_KEY = "service.custom_purchase"
 PHONE_VERIFICATION_SETTINGS_KEY = "user.phone_verification"
 SERVICE_SECURITY_SETTINGS_KEY = "service.security"
+PREMIUM_EMOJI_SETTINGS_KEY = "bot.premium_emoji"
 
 @dataclass(slots=True)
 class RenewalSettings:
@@ -56,6 +70,12 @@ class ServiceSecuritySettings:
     xui_limit_ip: int
     max_distinct_ips: int
     auto_disable_ip_abuse: bool
+
+
+@dataclass(slots=True)
+class PremiumEmojiSettings:
+    enabled: bool
+    emoji_map: dict[str, str]
 
 
 REVENUE_SETTINGS_KEY = "admin.revenue_reset"
@@ -200,6 +220,38 @@ class AppSettingsRepository:
         self.session.add(record)
         await self.session.flush()
         return await self.get_service_security_settings()
+
+    async def get_premium_emoji_settings(self) -> PremiumEmojiSettings:
+        record = await self.session.get(AppSetting, PREMIUM_EMOJI_SETTINGS_KEY)
+        if record is None or not record.value_json:
+            return PremiumEmojiSettings(enabled=False, emoji_map={})
+        payload = dict(record.value_json or {})
+        raw_map = payload.get("emoji_map") or {}
+        return PremiumEmojiSettings(
+            enabled=bool(payload.get("enabled", False)),
+            emoji_map=_normalize_emoji_map(raw_map),
+        )
+
+    async def update_premium_emoji_settings(
+        self,
+        *,
+        enabled: bool | None = None,
+        emoji_map: dict[str, str] | None = None,
+    ) -> PremiumEmojiSettings:
+        record = await self.session.get(AppSetting, PREMIUM_EMOJI_SETTINGS_KEY)
+        if record is None:
+            record = AppSetting(key=PREMIUM_EMOJI_SETTINGS_KEY, value_json={})
+        payload = dict(record.value_json or {})
+
+        if enabled is not None:
+            payload["enabled"] = enabled
+        if emoji_map is not None:
+            payload["emoji_map"] = _normalize_emoji_map(emoji_map)
+
+        record.value_json = payload
+        self.session.add(record)
+        await self.session.flush()
+        return await self.get_premium_emoji_settings()
 
     async def _get_or_create_custom_purchase_record(self) -> AppSetting:
         record = await self.session.get(AppSetting, CUSTOM_PURCHASE_SETTINGS_KEY)

@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     bot_username: str | None = None
     bot_parse_mode: str = "HTML"
     bot_drop_pending_updates: bool = False
+    premium_emoji_enabled: bool = False
+    premium_emoji_map: dict[str, str] = {}
 
     xui_base_url: str = "http://127.0.0.1:2053/"
     xui_username: str = "admin"

@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
+from apps.bot.premium_bot import PremiumEmojiBot
 from apps.worker.jobs.broadcast import process_broadcast_queue
 from apps.worker.jobs.payments import sync_pending_payments
 from apps.worker.jobs.retargeting import process_retargeting_campaigns
@@ -20,7 +21,10 @@ from core.database import AsyncSessionFactory
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    bot = Bot(token=settings.bot_token.get_secret_value())
+    bot = PremiumEmojiBot(
+        token=settings.bot_token.get_secret_value(),
+        default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
+    )
 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(sync_pending_payments, "interval", minutes=3)
@@ -86,37 +90,37 @@ async def main() -> None:
         await bot.session.close()
 
 
-async def run_broadcast_queue(bot: Bot) -> None:
+async def run_broadcast_queue(bot: PremiumEmojiBot) -> None:
     async with AsyncSessionFactory() as session:
         await process_broadcast_queue(session, bot)
         await session.commit()
 
 
-async def run_retargeting_campaigns(bot: Bot) -> None:
+async def run_retargeting_campaigns(bot: PremiumEmojiBot) -> None:
     async with AsyncSessionFactory() as session:
         await process_retargeting_campaigns(session, bot)
         await session.commit()
 
 
-async def run_expiry_notifications(bot: Bot) -> None:
+async def run_expiry_notifications(bot: PremiumEmojiBot) -> None:
     async with AsyncSessionFactory() as session:
         await send_expiry_notifications(session, bot)
         await session.commit()
 
 
-async def run_server_health_check(bot: Bot) -> None:
+async def run_server_health_check(bot: PremiumEmojiBot) -> None:
     async with AsyncSessionFactory() as session:
         await check_server_health(session, bot)
         await session.commit()
 
 
-async def run_backup_job(bot: Bot) -> None:
+async def run_backup_job(bot: PremiumEmojiBot) -> None:
     async with AsyncSessionFactory() as session:
         await run_backup(session, bot)
         await session.commit()
 
 
-async def run_reconciliation_job(bot: Bot) -> None:
+async def run_reconciliation_job(bot: PremiumEmojiBot) -> None:
     async with AsyncSessionFactory() as session:
         await run_reconciliation(session, bot)
         await session.commit()

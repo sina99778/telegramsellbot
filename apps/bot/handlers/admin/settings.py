@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 
 from aiogram import F, Router
 from aiogram.filters.callback_data import CallbackData
@@ -14,6 +15,7 @@ from apps.bot.states.admin import GatewaySettingsStates, ReferralSettingsStates,
 from core.texts import AdminButtons, AdminMessages
 from repositories.settings import AppSettingsRepository
 from apps.bot.utils.messaging import safe_edit_or_send
+from services.telegram.premium_emoji import clear_premium_emoji_cache, parse_emoji_map_text
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,7 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     renewal_settings = await settings_repo.get_renewal_settings()
     custom_settings = await settings_repo.get_custom_purchase_settings()
     security_settings = await settings_repo.get_service_security_settings()
+    premium_emoji_settings = await settings_repo.get_premium_emoji_settings()
     toman_rate = await settings_repo.get_toman_rate()
     
     text = AdminMessages.SETTINGS_MENU.format(
@@ -51,6 +54,11 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
         f"🛡 سقف IPهای مجاز: {security_settings.max_distinct_ips}\n"
         f"🛡 ضد اشتراک‌گذاری: {ip_guard_status}\n"
     )
+    premium_status = "فعال" if premium_emoji_settings.enabled else "غیرفعال"
+    text += (
+        f"✨ اموجی پریمیم: {premium_status}\n"
+        f"✨ تعداد اموجی‌های تنظیم‌شده: {len(premium_emoji_settings.emoji_map)}\n"
+    )
 
     builder = InlineKeyboardBuilder()
     builder.button(text="تغییر قیمت تمدید هر ۱ گیگ", callback_data="admin:settings:edit_gb")
@@ -61,6 +69,8 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     builder.button(text="🛡 تغییر limitIp پنل", callback_data="admin:settings:xui_limit_ip")
     builder.button(text="🛡 تغییر سقف IPهای مجاز", callback_data="admin:settings:max_ips")
     builder.button(text="🛡 فعال/غیرفعال ضد اشتراک‌گذاری", callback_data="admin:settings:ip_guard_toggle")
+    builder.button(text="✨ فعال/غیرفعال اموجی پریمیم", callback_data="admin:settings:premium_emoji_toggle")
+    builder.button(text="✨ تنظیم اموجی‌های پریمیم", callback_data="admin:settings:premium_emoji_map")
     builder.button(text="💱 تغییر نرخ دلار به تومان", callback_data="admin:settings:edit_toman")
     builder.button(text="💳 مدیریت درگاه‌های پرداخت", callback_data="admin:settings:gateways")
     builder.button(text="تایید شماره موبایل", callback_data="admin:settings:phone_verification")
@@ -264,6 +274,69 @@ async def toggle_ip_guard(callback: CallbackQuery, session: AsyncSession) -> Non
         auto_disable_ip_abuse=not current.auto_disable_ip_abuse,
     )
     await bot_settings_menu(callback, session)
+
+
+@router.callback_query(F.data == "admin:settings:premium_emoji_toggle")
+async def toggle_premium_emoji(callback: CallbackQuery, session: AsyncSession) -> None:
+    settings_repo = AppSettingsRepository(session)
+    current = await settings_repo.get_premium_emoji_settings()
+    await settings_repo.update_premium_emoji_settings(enabled=not current.enabled)
+    clear_premium_emoji_cache()
+    await bot_settings_menu(callback, session)
+
+
+@router.callback_query(F.data == "admin:settings:premium_emoji_map")
+async def edit_premium_emoji_map_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(SettingsStates.waiting_for_premium_emoji_map)
+    await safe_edit_or_send(
+        callback,
+        (
+            "مپ اموجی‌های پریمیم را بفرستید.\n\n"
+            "فرمت خطی:\n"
+            "success=5368324170671202286\n"
+            "wallet=5368324170671202287\n"
+            "🚀=5368324170671202288\n\n"
+            "کلیدهای آماده: success, error, warning, info, rocket, sparkles, fire, gift, "
+            "wallet, money, support, server, config, chart, settings, back, lock, ban, refresh, link\n\n"
+            "اگر فقط یک پیام شامل اموجی پریمیم بفرستید، custom_emoji_id آن را استخراج می‌کنم."
+        ),
+    )
+
+
+@router.message(SettingsStates.waiting_for_premium_emoji_map)
+async def edit_premium_emoji_map_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    text = (message.text or "").strip()
+    custom_entities = [
+        entity
+        for entity in (message.entities or [])
+        if str(getattr(entity, "type", "")) == "custom_emoji" and getattr(entity, "custom_emoji_id", None)
+    ]
+    if custom_entities and ("=" not in text and ":" not in text and not text.startswith("{")):
+        lines = []
+        for entity in custom_entities:
+            fallback = entity.extract_from(text) if hasattr(entity, "extract_from") else "emoji"
+            lines.append(f"{fallback}={entity.custom_emoji_id}")
+        await message.answer("ID اموجی‌های پریمیم:\n<code>" + "\n".join(lines) + "</code>", parse_mode="HTML")
+        return
+
+    try:
+        emoji_map = parse_emoji_map_text(text)
+    except (ValueError, json.JSONDecodeError) as exc:
+        await message.answer(f"فرمت مپ معتبر نیست: {exc}")
+        return
+
+    if not emoji_map:
+        await message.answer("حداقل یک اموجی وارد کنید.")
+        return
+
+    await AppSettingsRepository(session).update_premium_emoji_settings(
+        enabled=True,
+        emoji_map=emoji_map,
+    )
+    clear_premium_emoji_cache()
+    await state.clear()
+    await message.answer(f"اموجی‌های پریمیم ذخیره و فعال شد. تعداد: {len(emoji_map)}")
 
 
 @router.callback_query(F.data == "admin:settings:edit_toman")

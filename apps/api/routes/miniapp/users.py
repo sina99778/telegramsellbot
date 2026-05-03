@@ -16,7 +16,6 @@ from typing import Any
 from urllib.parse import parse_qsl, urlparse
 from uuid import UUID, uuid4
 
-from aiogram import Bot
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -26,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from apps.api.dependencies.db import get_db_session
+from apps.bot.premium_bot import PremiumEmojiBot
 from core.config import settings
 from core.miniapp_auth import verify_miniapp_session_token
 from models.plan import Plan
@@ -1041,7 +1041,7 @@ async def send_admin_user_message(
     if target is None:
         raise HTTPException(status_code=404, detail="کاربر پیدا نشد.")
 
-    bot = Bot(
+    bot = PremiumEmojiBot(
         token=settings.bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
     )
@@ -1194,7 +1194,10 @@ def _serialize_ticket_for_admin(ticket: Ticket) -> dict[str, Any]:
 
 
 async def _notify_ticket_user(telegram_id: int, ticket_id: UUID, text: str) -> bool:
-    bot = Bot(token=settings.bot_token.get_secret_value())
+    bot = PremiumEmojiBot(
+        token=settings.bot_token.get_secret_value(),
+        default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
+    )
     try:
         await bot.send_message(
             chat_id=telegram_id,

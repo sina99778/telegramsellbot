@@ -8,12 +8,13 @@ import logging
 from decimal import Decimal
 from uuid import UUID
 
-from aiogram import Bot
+from aiogram.client.default import DefaultBotProperties
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from core.config import settings
+from apps.bot.premium_bot import PremiumEmojiBot
 from models.order import Order
 from models.payment import Payment
 from models.plan import Plan
@@ -34,7 +35,7 @@ from services.wallet.manager import WalletManager
 logger = logging.getLogger(__name__)
 
 
-def _get_shared_bot() -> Bot:
+def _get_shared_bot() -> PremiumEmojiBot:
     """Create a temporary Bot instance for sending messages.
 
     IMPORTANT: Callers MUST close the bot session when done, e.g.:
@@ -44,7 +45,10 @@ def _get_shared_bot() -> Bot:
         finally:
             await bot.session.close()
     """
-    return Bot(token=settings.bot_token.get_secret_value())
+    return PremiumEmojiBot(
+        token=settings.bot_token.get_secret_value(),
+        default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
+    )
 
 
 async def process_successful_payment(

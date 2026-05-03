@@ -4,13 +4,14 @@ import asyncio
 import logging
 from contextlib import suppress
 
-from aiogram import Bot, Dispatcher
+from aiogram import Dispatcher
 from aiogram.client.default import DefaultBotProperties
 
 from apps.bot.handlers.admin import router as admin_router
 from apps.bot.handlers.user import router as user_router
 from apps.bot.middlewares.database import DatabaseSessionMiddleware
 from apps.bot.middlewares.error_handler import GlobalErrorMiddleware
+from apps.bot.premium_bot import PremiumEmojiBot
 from core.config import settings
 from core.database import dispose_database
 
@@ -22,12 +23,12 @@ def configure_logging() -> None:
     )
 
 
-async def on_startup(bot: Bot) -> None:
+async def on_startup(bot: PremiumEmojiBot) -> None:
     me = await bot.get_me()
     logging.getLogger(__name__).info("Bot started: id=%s username=@%s", me.id, me.username)
 
 
-async def on_shutdown(bot: Bot) -> None:
+async def on_shutdown(bot: PremiumEmojiBot) -> None:
     await bot.session.close()
     await dispose_database()
 
@@ -35,7 +36,7 @@ async def on_shutdown(bot: Bot) -> None:
 async def main() -> None:
     configure_logging()
 
-    bot = Bot(
+    bot = PremiumEmojiBot(
         token=settings.bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
     )
