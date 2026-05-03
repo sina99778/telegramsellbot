@@ -26,6 +26,7 @@ from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerCredential, X
 from repositories.audit import AuditLogRepository
 from services.xui.client import SanaeiXUIClient, XUIAuthenticationError, XUIClientConfig, XUIRequestError
 from apps.bot.utils.messaging import safe_edit_or_send
+from apps.bot.utils.panels import admin_panel, status_label
 
 
 logger = logging.getLogger(__name__)
@@ -47,72 +48,89 @@ class ServerListPageCallback(CallbackData, prefix="server_list"):
     page: int
 
 
-@router.message(Command("admin"))
-@router.message(F.text == "پنل مدیریت ⚙️")
-async def admin_main_menu(message: Message) -> None:
+def _build_admin_main_markup() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text=AdminButtons.MANAGE_SERVERS, callback_data="admin:servers")
     builder.button(text=AdminButtons.MANAGE_PLANS, callback_data="admin:plans")
-    builder.button(text="فروش کانفیگ آماده", callback_data="admin:ready_configs")
+    builder.button(text="فروش آماده", callback_data="admin:ready_configs")
     builder.button(text=AdminButtons.MANAGE_USERS, callback_data="admin:users")
-    builder.button(text="🛍️ مشتریان", callback_data="admin:customers")
+    builder.button(text="مشتریان", callback_data="admin:customers")
     builder.button(text=AdminButtons.BROADCAST, callback_data="admin:broadcast")
     builder.button(text=AdminButtons.MANAGE_TICKETS, callback_data="admin:tickets")
     builder.button(text=AdminButtons.MANAGE_RETARGETING, callback_data="admin:retargeting")
     builder.button(text=AdminButtons.STATISTICS, callback_data="admin:stats")
-    builder.button(text="💰 مالی", callback_data="admin:finance")
-    builder.button(text="🎁 هدیه گروهی", callback_data="admin:gifts")
+    builder.button(text="مالی", callback_data="admin:finance")
+    builder.button(text="هدیه گروهی", callback_data="admin:gifts")
     builder.button(text=AdminButtons.BOT_SETTINGS, callback_data="admin:bot_settings")
     builder.button(text=AdminButtons.MANAGE_DISCOUNTS, callback_data="admin:discounts")
     builder.button(text=AdminButtons.RECOVERY, callback_data="admin:recovery")
     builder.button(text=AdminButtons.BACKUP, callback_data="admin:backup")
-    builder.adjust(2)
-    await message.answer(AdminMessages.PANEL_TITLE, reply_markup=builder.as_markup())
+    builder.adjust(2, 2, 2, 2, 2, 2, 2, 1)
+    return builder.as_markup()
+
+
+def _admin_main_text() -> str:
+    return admin_panel(
+        "پنل مدیریت",
+        [
+            (
+                "بخش‌های اصلی",
+                [
+                    ("فروش", "سرورها، پلن‌ها، کانفیگ آماده"),
+                    ("کاربران", "مشتریان، تیکت‌ها، پیام همگانی"),
+                    ("گزارش", "آمار، مالی، بازیابی و بکاپ"),
+                ],
+            ),
+        ],
+    )
+
+
+@router.message(Command("admin"))
+@router.message(F.text == "پنل مدیریت ⚙️")
+async def admin_main_menu(message: Message) -> None:
+    await message.answer(_admin_main_text(), reply_markup=_build_admin_main_markup(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "admin:main")
 async def admin_main_menu_callback(callback: CallbackQuery) -> None:
     """Back button target: re-render admin main menu."""
     await callback.answer()
-    builder = InlineKeyboardBuilder()
-    builder.button(text=AdminButtons.MANAGE_SERVERS, callback_data="admin:servers")
-    builder.button(text=AdminButtons.MANAGE_PLANS, callback_data="admin:plans")
-    builder.button(text="فروش کانفیگ آماده", callback_data="admin:ready_configs")
-    builder.button(text=AdminButtons.MANAGE_USERS, callback_data="admin:users")
-    builder.button(text="🛍️ مشتریان", callback_data="admin:customers")
-    builder.button(text=AdminButtons.BROADCAST, callback_data="admin:broadcast")
-    builder.button(text=AdminButtons.MANAGE_TICKETS, callback_data="admin:tickets")
-    builder.button(text=AdminButtons.MANAGE_RETARGETING, callback_data="admin:retargeting")
-    builder.button(text=AdminButtons.STATISTICS, callback_data="admin:stats")
-    builder.button(text="💰 مالی", callback_data="admin:finance")
-    builder.button(text="🎁 هدیه گروهی", callback_data="admin:gifts")
-    builder.button(text=AdminButtons.BOT_SETTINGS, callback_data="admin:bot_settings")
-    builder.button(text=AdminButtons.MANAGE_DISCOUNTS, callback_data="admin:discounts")
-    builder.button(text=AdminButtons.RECOVERY, callback_data="admin:recovery")
-    builder.button(text=AdminButtons.BACKUP, callback_data="admin:backup")
-    builder.adjust(2)
+    text = _admin_main_text()
+    markup = _build_admin_main_markup()
     
     if callback.message:
         try:
-            await callback.message.edit_text(AdminMessages.PANEL_TITLE, reply_markup=builder.as_markup())
+            await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
         except Exception:
-            await safe_edit_or_send(callback, AdminMessages.PANEL_TITLE, reply_markup=builder.as_markup())
+            await safe_edit_or_send(callback, text, reply_markup=markup, parse_mode="HTML")
 
 
 @router.callback_query(F.data == "admin:servers")
 async def admin_servers_menu(callback: CallbackQuery) -> None:
     await callback.answer()
+    text = admin_panel(
+        "مدیریت سرورها",
+        [
+            (
+                "عملیات",
+                [
+                    ("افزودن", "ثبت پنل سنایی جدید"),
+                    ("لیست", "مشاهده، سینک و ویرایش سرورها"),
+                ],
+            ),
+        ],
+    )
     builder = InlineKeyboardBuilder()
     builder.button(text=AdminButtons.ADD_SERVER, callback_data="admin:servers:add")
     builder.button(text=AdminButtons.LIST_SERVERS, callback_data=ServerListPageCallback(page=1).pack())
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
-    builder.adjust(1)
+    builder.adjust(2, 1)
     
     if callback.message:
         try:
-            await callback.message.edit_text(AdminMessages.SERVER_MANAGEMENT, reply_markup=builder.as_markup())
+            await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
         except Exception:
-            await safe_edit_or_send(callback, AdminMessages.SERVER_MANAGEMENT, reply_markup=builder.as_markup())
+            await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
 @router.callback_query(ServerListPageCallback.filter())
@@ -138,9 +156,20 @@ async def list_servers(
         await _edit_or_send(callback, text=AdminMessages.NO_SERVERS, reply_markup=None)
         return
 
-    text = "📋 لیست سرورهای ثبت‌شده:\nلطفاً برای مدیریت، روی سرور مورد نظر کلیک کنید."
+    text = admin_panel(
+        "لیست سرورها",
+        [
+            (
+                "راهنما",
+                [
+                    ("مدیریت", "برای جزئیات و عملیات روی سرور کلیک کنید"),
+                    ("صفحه", page),
+                ],
+            ),
+        ],
+    )
     markup = _build_server_list_keyboard(servers, page=page, total_items=total_servers)
-    await _edit_or_send(callback, text=text, reply_markup=markup)
+    await _edit_or_send(callback, text=text, reply_markup=markup, parse_mode="HTML")
 
 
 @router.callback_query(F.data == "admin:servers:add")
@@ -501,16 +530,27 @@ async def server_manage_menu(
     )
 
     limit_text = str(server.max_clients) if server.max_clients else "نامحدود"
-    status_text = "حذف شده" if server.health_status == "deleted" else (Common.ACTIVE if server.is_active else Common.INACTIVE)
-
-    text = (
-        f"🖥 **مدیریت سرور: {server.name}**\n\n"
-        f"وضعیت: {status_text}\n"
-        f"آدرس: {server.base_url}\n"
-        f"دامنه کانفیگ: {server.config_domain or 'تنظیم نشده (پیش‌فرض آدرس پنل)'}\n"
-        f"ساب دامین: {server.sub_domain or 'تنظیم نشده (پیش‌فرض آدرس پنل)'}\n\n"
-        f"اینباندهای فعال: {active_inbounds}\n"
-        f"کاربران فعال روی سرور: {active_client_count} / {limit_text}\n"
+    status_text = "حذف شده" if server.health_status == "deleted" else status_label(server.is_active)
+    text = admin_panel(
+        f"مدیریت سرور: {server.name}",
+        [
+            (
+                "وضعیت",
+                [
+                    ("سرور", status_text),
+                    ("آدرس", server.base_url),
+                    ("دامنه کانفیگ", server.config_domain or "پیش‌فرض آدرس پنل"),
+                    ("ساب دامین", server.sub_domain or "پیش‌فرض آدرس پنل"),
+                ],
+            ),
+            (
+                "ظرفیت",
+                [
+                    ("اینباند فعال", active_inbounds),
+                    ("کاربران فعال", f"{active_client_count} / {limit_text}"),
+                ],
+            ),
+        ],
     )
 
     builder = InlineKeyboardBuilder()
@@ -555,7 +595,7 @@ async def server_manage_menu(
     )
     
     builder.adjust(2, 2, 2, 1, 1)
-    await _edit_or_send(callback, text=text, reply_markup=builder.as_markup())
+    await _edit_or_send(callback, text=text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
 @router.callback_query(ServerActionCallback.filter(F.action == "edit_domain"))
@@ -921,11 +961,12 @@ async def _edit_or_send(
     *,
     text: str,
     reply_markup,
+    parse_mode: str | None = None,
 ) -> None:
     try:
-        await callback.message.edit_text(text, reply_markup=reply_markup)
+        await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
     except TelegramBadRequest:
-        await safe_edit_or_send(callback, text, reply_markup=reply_markup)
+        await safe_edit_or_send(callback, text, reply_markup=reply_markup, parse_mode=parse_mode)
 
 
 def _sync_remote_inbounds(

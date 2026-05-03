@@ -15,6 +15,7 @@ from apps.bot.states.admin import GatewaySettingsStates, ReferralSettingsStates,
 from core.texts import AdminButtons, AdminMessages
 from repositories.settings import AppSettingsRepository
 from apps.bot.utils.messaging import safe_edit_or_send
+from apps.bot.utils.panels import admin_panel, status_label
 from services.telegram.premium_emoji import clear_premium_emoji_cache, parse_emoji_map_text
 
 logger = logging.getLogger(__name__)
@@ -35,52 +36,64 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     premium_emoji_settings = await settings_repo.get_premium_emoji_settings()
     toman_rate = await settings_repo.get_toman_rate()
     
-    text = AdminMessages.SETTINGS_MENU.format(
-        price_per_gb=renewal_settings.price_per_gb,
-        price_per_10_days=renewal_settings.price_per_10_days,
-        toman_rate=f"{toman_rate:,}",
-    )
-    custom_status = "فعال" if custom_settings.enabled else "غیرفعال"
-    text += (
-        "\n"
-        f"🧩 خرید دلخواه: {custom_status}\n"
-        f"قیمت خرید دلخواه هر ۱ گیگ: {custom_settings.price_per_gb} دلار\n"
-        f"قیمت خرید دلخواه هر ۱ روز: {custom_settings.price_per_day} دلار\n"
-    )
-
-    ip_guard_status = "فعال" if security_settings.auto_disable_ip_abuse else "غیرفعال"
-    text += (
-        f"🛡 محدودیت IP پنل: {security_settings.xui_limit_ip}\n"
-        f"🛡 سقف IPهای مجاز: {security_settings.max_distinct_ips}\n"
-        f"🛡 ضد اشتراک‌گذاری: {ip_guard_status}\n"
-    )
-    premium_status = "فعال" if premium_emoji_settings.enabled else "غیرفعال"
-    text += (
-        f"✨ اموجی پریمیم: {premium_status}\n"
-        f"✨ تعداد اموجی‌های تنظیم‌شده: {len(premium_emoji_settings.emoji_map)}\n"
+    text = admin_panel(
+        "⚙️ تنظیمات عمومی ربات",
+        [
+            (
+                "قیمت‌ها",
+                [
+                    ("تمدید هر ۱ گیگ", f"{renewal_settings.price_per_gb} دلار"),
+                    ("تمدید هر ۱۰ روز", f"{renewal_settings.price_per_10_days} دلار"),
+                    ("نرخ دلار", f"{toman_rate:,} تومان"),
+                ],
+            ),
+            (
+                "خرید دلخواه",
+                [
+                    ("وضعیت", status_label(custom_settings.enabled)),
+                    ("هر ۱ گیگ", f"{custom_settings.price_per_gb} دلار"),
+                    ("هر ۱ روز", f"{custom_settings.price_per_day} دلار"),
+                ],
+            ),
+            (
+                "امنیت سرویس",
+                [
+                    ("limitIp پنل", security_settings.xui_limit_ip),
+                    ("سقف IP مجاز", security_settings.max_distinct_ips),
+                    ("ضد اشتراک‌گذاری", status_label(security_settings.auto_disable_ip_abuse)),
+                ],
+            ),
+            (
+                "نمایش",
+                [
+                    ("اموجی پریمیم", status_label(premium_emoji_settings.enabled)),
+                    ("اموجی‌های تنظیم‌شده", len(premium_emoji_settings.emoji_map)),
+                ],
+            ),
+        ],
     )
 
     builder = InlineKeyboardBuilder()
-    builder.button(text="تغییر قیمت تمدید هر ۱ گیگ", callback_data="admin:settings:edit_gb")
-    builder.button(text="تغییر قیمت تمدید هر ۱۰ روز", callback_data="admin:settings:edit_days")
-    builder.button(text="🧩 فعال/غیرفعال خرید دلخواه", callback_data="admin:settings:custom_toggle")
-    builder.button(text="🧩 قیمت خرید دلخواه هر ۱ گیگ", callback_data="admin:settings:custom_gb")
-    builder.button(text="🧩 قیمت خرید دلخواه هر ۱ روز", callback_data="admin:settings:custom_day")
-    builder.button(text="🛡 تغییر limitIp پنل", callback_data="admin:settings:xui_limit_ip")
-    builder.button(text="🛡 تغییر سقف IPهای مجاز", callback_data="admin:settings:max_ips")
-    builder.button(text="🛡 فعال/غیرفعال ضد اشتراک‌گذاری", callback_data="admin:settings:ip_guard_toggle")
-    builder.button(text="✨ فعال/غیرفعال اموجی پریمیم", callback_data="admin:settings:premium_emoji_toggle")
-    builder.button(text="✨ تنظیم اموجی‌های پریمیم", callback_data="admin:settings:premium_emoji_map")
-    builder.button(text="💱 تغییر نرخ دلار به تومان", callback_data="admin:settings:edit_toman")
-    builder.button(text="💳 مدیریت درگاه‌های پرداخت", callback_data="admin:settings:gateways")
-    builder.button(text="تایید شماره موبایل", callback_data="admin:settings:phone_verification")
-    builder.button(text="🧪 فعال/غیرفعال کانفیگ تست", callback_data="admin:settings:trial_toggle")
-    builder.button(text="🔗 تنظیمات رفرال", callback_data="admin:settings:referral")
-    builder.button(text="📢 جوین اجباری کانال", callback_data="admin:settings:force_join")
+    builder.button(text="قیمت گیگ", callback_data="admin:settings:edit_gb")
+    builder.button(text="قیمت روز", callback_data="admin:settings:edit_days")
+    builder.button(text="خرید دلخواه", callback_data="admin:settings:custom_toggle")
+    builder.button(text="قیمت گیگ دلخواه", callback_data="admin:settings:custom_gb")
+    builder.button(text="قیمت روز دلخواه", callback_data="admin:settings:custom_day")
+    builder.button(text="limitIp", callback_data="admin:settings:xui_limit_ip")
+    builder.button(text="سقف IP", callback_data="admin:settings:max_ips")
+    builder.button(text="ضد اشتراک‌گذاری", callback_data="admin:settings:ip_guard_toggle")
+    builder.button(text="اموجی پریمیم", callback_data="admin:settings:premium_emoji_toggle")
+    builder.button(text="مپ اموجی", callback_data="admin:settings:premium_emoji_map")
+    builder.button(text="نرخ دلار", callback_data="admin:settings:edit_toman")
+    builder.button(text="درگاه‌ها", callback_data="admin:settings:gateways")
+    builder.button(text="تایید موبایل", callback_data="admin:settings:phone_verification")
+    builder.button(text="کانفیگ تست", callback_data="admin:settings:trial_toggle")
+    builder.button(text="رفرال", callback_data="admin:settings:referral")
+    builder.button(text="جوین اجباری", callback_data="admin:settings:force_join")
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
-    builder.adjust(1)
+    builder.adjust(2, 1, 2, 3, 2, 3, 1)
 
-    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "admin:settings:edit_gb")

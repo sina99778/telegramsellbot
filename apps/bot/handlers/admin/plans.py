@@ -21,12 +21,13 @@ from apps.bot.keyboards.inline import add_pagination_controls
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.states.admin import CreatePlanStates, PlanEditStates
 from core.formatting import format_volume_bytes
-from core.texts import AdminButtons, AdminMessages, Buttons, Common
+from core.texts import AdminButtons, AdminMessages, Buttons
 from models.plan import Plan
 from models.user import User
 from models.xui import XUIInboundRecord
 from repositories.audit import AuditLogRepository
 from apps.bot.utils.messaging import safe_edit_or_send
+from apps.bot.utils.panels import admin_panel, status_label
 from services.plan_inventory import get_plan_stock_map, set_plan_sales_limit
 
 
@@ -75,6 +76,7 @@ DECIMAL_SEPARATORS = {".", ",", "\u066b", "\u066c", "\u060c"}
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_volume_gb)
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_price)
 @router.message(Command("cancel"), PlanEditStates.waiting_for_duration_days)
+@router.message(Command("cancel"), PlanEditStates.waiting_for_name)
 @router.message(Command("cancel"), PlanEditStates.waiting_for_price)
 @router.message(Command("cancel"), PlanEditStates.waiting_for_stock_limit)
 async def cancel_plan_creation(message: Message, state: FSMContext) -> None:
@@ -88,6 +90,7 @@ async def cancel_plan_creation(message: Message, state: FSMContext) -> None:
 @router.message(CreatePlanStates.waiting_for_volume_gb, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(CreatePlanStates.waiting_for_price, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(PlanEditStates.waiting_for_duration_days, F.text.in_(MENU_INTERRUPT_TEXTS))
+@router.message(PlanEditStates.waiting_for_name, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(PlanEditStates.waiting_for_price, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(PlanEditStates.waiting_for_stock_limit, F.text.in_(MENU_INTERRUPT_TEXTS))
 async def interrupt_plan_creation_with_main_menu(message: Message, state: FSMContext) -> None:
@@ -98,12 +101,24 @@ async def interrupt_plan_creation_with_main_menu(message: Message, state: FSMCon
 @router.callback_query(F.data == "admin:plans")
 async def admin_plans_menu(callback: CallbackQuery) -> None:
     await callback.answer()
+    text = admin_panel(
+        "مدیریت پلن‌ها",
+        [
+            (
+                "عملیات",
+                [
+                    ("ساخت", "ایجاد پلن فروش جدید"),
+                    ("لیست", "ویرایش نام، قیمت، مدت و موجودی"),
+                ],
+            ),
+        ],
+    )
     builder = InlineKeyboardBuilder()
     builder.button(text=AdminButtons.CREATE_PLAN, callback_data="admin:plans:create")
     builder.button(text=AdminButtons.LIST_PLANS, callback_data=PlanListPageCallback(page=1).pack())
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
-    builder.adjust(1)
-    await safe_edit_or_send(callback, AdminMessages.PLAN_MANAGEMENT, reply_markup=builder.as_markup())
+    builder.adjust(2, 1)
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
 @router.callback_query(PlanListPageCallback.filter())
@@ -133,13 +148,24 @@ async def list_plans(
         text = AdminMessages.NO_PLANS
         markup = None
     else:
-        text = "📦 **لیست پلن‌های تعریف شده:**\nبرای مشاهده جزئیات یا ویرایش، روی پلن مورد نظر کلیک کنید."
+        text = admin_panel(
+            "لیست پلن‌ها",
+            [
+                (
+                    "راهنما",
+                    [
+                        ("ویرایش", "روی پلن بزنید"),
+                        ("صفحه", page),
+                    ],
+                ),
+            ],
+        )
         markup = _build_plan_list_keyboard(plans, page=page, total_items=total_plans)
 
     try:
-        await callback.message.edit_text(text, reply_markup=markup)
+        await callback.message.edit_text(text, reply_markup=markup, parse_mode="HTML")
     except TelegramBadRequest:
-        await safe_edit_or_send(callback, text, reply_markup=markup)
+        await safe_edit_or_send(callback, text, reply_markup=markup, parse_mode="HTML")
 
 
 @router.callback_query(ViewPlanCallback.filter())
@@ -160,17 +186,33 @@ async def view_plan(
 
     stock_state = (await get_plan_stock_map(session, [plan.id]))[plan.id]
     stock_label = "نامحدود" if stock_state.is_unlimited else f"{stock_state.stock_remaining} از {stock_state.sales_limit}"
-    text = (
-        f"📦 **جزئیات پلن:**\n\n"
-        f"🏷 **نام:** {plan.name}\n"
-        f"🛡 **پروتکل:** {plan.protocol}\n"
-        f"📡 **اینباند:** {plan.inbound.remark if plan.inbound else 'نامشخص'} "
-        f"(ID: {plan.inbound.xui_inbound_remote_id if plan.inbound else '-'})\n"
-        f"⏳ **مدت:** {plan.duration_days} روز\n"
-        f"💾 **حجم:** {format_volume_bytes(plan.volume_bytes)}\n"
-        f"📦 **موجودی فروش:** {stock_label}\n"
-        f"💲 **قیمت:** {plan.price} {plan.currency}\n"
-        f"وضعیت: {Common.ACTIVE if plan.is_active else Common.INACTIVE}\n"
+    inbound_label = (
+        f"{plan.inbound.remark} (ID: {plan.inbound.xui_inbound_remote_id})"
+        if plan.inbound
+        else "نامشخص"
+    )
+    text = admin_panel(
+        "جزئیات پلن",
+        [
+            (
+                "مشخصات",
+                [
+                    ("نام", plan.name),
+                    ("پروتکل", plan.protocol),
+                    ("اینباند", inbound_label),
+                    ("وضعیت", status_label(plan.is_active)),
+                ],
+            ),
+            (
+                "فروش",
+                [
+                    ("مدت", f"{plan.duration_days} روز"),
+                    ("حجم", format_volume_bytes(plan.volume_bytes)),
+                    ("موجودی", stock_label),
+                    ("قیمت", f"{plan.price} {plan.currency}"),
+                ],
+            ),
+        ],
     )
 
     builder = InlineKeyboardBuilder()
@@ -178,6 +220,10 @@ async def view_plan(
     builder.button(
         text=status_toggle_text,
         callback_data=PlanActionCallback(action="toggle", plan_id=plan.id, page=callback_data.page).pack(),
+    )
+    builder.button(
+        text="✏️ تغییر نام",
+        callback_data=PlanActionCallback(action="edit_name", plan_id=plan.id, page=callback_data.page).pack(),
     )
     builder.button(
         text="🔗 تغییر سرور",
@@ -203,9 +249,9 @@ async def view_plan(
         text="🔙 بازگشت به لیست",
         callback_data=PlanListPageCallback(page=callback_data.page).pack(),
     )
-    builder.adjust(1)
+    builder.adjust(2, 2, 2, 1, 1)
     
-    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "admin:plans:create")
@@ -437,6 +483,58 @@ async def toggle_plan(
     )
     await session.flush()
     await view_plan(callback, ViewPlanCallback(plan_id=plan.id, page=callback_data.page), session)
+
+
+@router.callback_query(PlanActionCallback.filter(F.action == "edit_name"))
+async def edit_plan_name_start(
+    callback: CallbackQuery,
+    callback_data: PlanActionCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    await callback.answer()
+    plan = await session.get(Plan, callback_data.plan_id)
+    if plan is None:
+        await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
+        return
+    await state.update_data(plan_id=str(plan.id), page=callback_data.page)
+    await state.set_state(PlanEditStates.waiting_for_name)
+    await safe_edit_or_send(
+        callback,
+        f"نام فعلی پلن «{plan.name}» است.\nنام جدید را ارسال کنید. برای لغو /cancel را بزنید.",
+    )
+
+
+@router.message(PlanEditStates.waiting_for_name)
+async def edit_plan_name_submit(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    if not message.text:
+        return
+    name = message.text.strip()
+    if not name or len(name) > 128:
+        await message.answer("نام پلن باید بین ۱ تا ۱۲۸ کاراکتر باشد.")
+        return
+    data = await state.get_data()
+    await state.clear()
+    plan = await session.get(Plan, UUID(str(data["plan_id"])))
+    if plan is None:
+        await message.answer(AdminMessages.PLAN_NOT_FOUND)
+        return
+    old_name = plan.name
+    plan.name = name
+    await AuditLogRepository(session).log_action(
+        actor_user_id=admin_user.id,
+        action="edit_plan_name",
+        entity_type="plan",
+        entity_id=plan.id,
+        payload={"from": old_name, "to": name},
+    )
+    await session.flush()
+    await message.answer(f"✅ نام پلن از «{old_name}» به «{name}» تغییر کرد.")
 
 
 @router.callback_query(PlanActionCallback.filter(F.action == "edit_duration"))
