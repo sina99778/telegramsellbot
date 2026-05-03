@@ -407,9 +407,14 @@ async def my_config_detail_handler(
         # Transfer config to another user
         builder.button(text="🔀 انتقال کانفیگ", callback_data=MyConfigCallback(action="transfer", subscription_id=sub.id).pack())
 
-    # Cancel & refund for unused configs OR configs with deleted server
+    # Cancel & refund for unused configs — but NOT for ready configs (they can't be returned)
     if sub.status == "pending_activation" and sub.used_bytes == 0:
-        builder.button(text="🔄 لغو و بازپرداخت", callback_data=MyConfigCallback(action="cancel_refund", subscription_id=sub.id).pack())
+        from models.ready_config import ReadyConfigItem
+        is_ready_config = await session.scalar(
+            select(ReadyConfigItem.id).where(ReadyConfigItem.subscription_id == sub.id)
+        )
+        if not is_ready_config:
+            builder.button(text="🔄 لغو و بازپرداخت", callback_data=MyConfigCallback(action="cancel_refund", subscription_id=sub.id).pack())
     # Delete: expired configs OR configs with deleted/missing server
     if sub.status == "expired" or server_deleted:
         builder.button(text="🗑 حذف کانفیگ", callback_data=MyConfigCallback(action="delete", subscription_id=sub.id).pack())
@@ -803,6 +808,15 @@ async def cancel_and_refund_config(
 
     if sub.status != "pending_activation" or sub.used_bytes > 0:
         await safe_edit_or_send(callback, "این کانفیگ قابل بازپرداخت نیست (قبلاً استفاده شده).")
+        return
+
+    # Block refund for ready configs — they are pre-made and cannot be returned
+    from models.ready_config import ReadyConfigItem
+    is_ready_config = await session.scalar(
+        select(ReadyConfigItem.id).where(ReadyConfigItem.subscription_id == sub.id)
+    )
+    if is_ready_config:
+        await safe_edit_or_send(callback, "❌ کانفیگ‌های آماده قابل لغو و بازپرداخت نیستند.")
         return
 
     # Delete from X-UI first — only refund if successful

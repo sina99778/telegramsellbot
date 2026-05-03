@@ -330,6 +330,14 @@ class ProvisioningManager:
         if subscription.order is None or subscription.plan is None:
             raise ZeroUsageRefundError("Subscription is missing order or plan references.")
 
+        # Block refund for ready configs — they are pre-made and cannot be returned
+        from models.ready_config import ReadyConfigItem
+        is_ready_config = await self.session.scalar(
+            select(ReadyConfigItem.id).where(ReadyConfigItem.subscription_id == subscription.id)
+        )
+        if is_ready_config:
+            raise ZeroUsageRefundError("Ready configs are not eligible for refund.")
+
         xui_record = subscription.xui_client
         if xui_record is not None:
             await self._disable_xui_client(
