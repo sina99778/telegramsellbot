@@ -197,6 +197,24 @@ class SanaeiXUIClient:
             return XUIClientTraffic(email=email, up=0, down=0)
         return XUIClientTraffic.model_validate(payload)
 
+    async def get_client_ips(self, email: str) -> list[str]:
+        response = await self._request("POST", f"panel/api/inbounds/clientIps/{email}")
+        if isinstance(response, dict) and "obj" in response:
+            wrapper = XUIAPIResponse[Any].model_validate(response)
+            if wrapper.success is False:
+                raise XUIRequestError(wrapper.msg or "Failed to fetch client IPs.")
+            payload = wrapper.obj
+        else:
+            payload = response
+        return self._normalize_client_ips(payload)
+
+    async def clear_client_ips(self, email: str) -> XUIAPIResponse[Any]:
+        response = await self._request("POST", f"panel/api/inbounds/clearClientIps/{email}")
+        api_response = XUIAPIResponse[Any].model_validate(response or {"success": True, "obj": None})
+        if api_response.success is False:
+            raise XUIRequestError(api_response.msg or "Failed to clear client IPs.")
+        return api_response
+
     async def get_db_backup(self) -> bytes:
         """Download X-UI panel database backup, trying known endpoints."""
         if not self._authenticated:
@@ -281,3 +299,32 @@ class SanaeiXUIClient:
     @staticmethod
     def _safe_response_text(response: httpx.Response) -> str:
         return response.text[:500].strip() or "<empty response>"
+
+    @staticmethod
+    def _normalize_client_ips(payload: Any) -> list[str]:
+        if payload is None:
+            return []
+        if isinstance(payload, str):
+            stripped = payload.strip()
+            if not stripped:
+                return []
+            parts = stripped.replace(",", "\n").splitlines()
+            return list(dict.fromkeys(part.strip() for part in parts if part.strip()))
+        if isinstance(payload, dict):
+            for key in ("ips", "clientIps", "client_ips"):
+                value = payload.get(key)
+                if isinstance(value, list):
+                    return SanaeiXUIClient._normalize_client_ips(value)
+            value = payload.get("ip") or payload.get("address")
+            return SanaeiXUIClient._normalize_client_ips(value)
+        if isinstance(payload, list):
+            ips: list[str] = []
+            for item in payload:
+                if isinstance(item, dict):
+                    value = item.get("ip") or item.get("address")
+                    if value:
+                        ips.extend(SanaeiXUIClient._normalize_client_ips(value))
+                elif isinstance(item, str):
+                    ips.extend(SanaeiXUIClient._normalize_client_ips(item))
+            return list(dict.fromkeys(ips))
+        return []

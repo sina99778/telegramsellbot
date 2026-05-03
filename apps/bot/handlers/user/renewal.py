@@ -581,6 +581,7 @@ async def _apply_renewal(sub, renew_type: str, amount: float, session: AsyncSess
                     current_sub_link = sub.sub_link or (xui_full.sub_link if xui_full else "") or ""
                     if current_sub_link and "/" in current_sub_link:
                         existing_sub_id = current_sub_link.rsplit("/", 1)[-1]
+                    security_settings = await AppSettingsRepository(session).get_service_security_settings()
 
                     # Reset X-UI state and make active
                     xui_c = XUIClient(
@@ -588,7 +589,7 @@ async def _apply_renewal(sub, renew_type: str, amount: float, session: AsyncSess
                         uuid=xui_full.client_uuid,
                         email=xui_full.email,
                         enable=True,
-                        limitIp=1,
+                        limitIp=security_settings.xui_limit_ip,
                         totalGB=sub.volume_bytes,
                         expiryTime=expiry_time,
                         subId=existing_sub_id,

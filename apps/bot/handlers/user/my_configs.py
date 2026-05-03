@@ -24,6 +24,7 @@ from core.formatting import escape_markdown, format_usage_bar, format_volume_byt
 from core.texts import Buttons
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
+from repositories.settings import AppSettingsRepository
 from repositories.user import UserRepository
 from services.banner import create_traffic_banner
 from services.xui.runtime import build_vless_uri
@@ -612,6 +613,7 @@ async def reset_uuid_handler(
     new_uuid = str(uuid_mod.uuid4())
     new_sub_id = uuid_mod.uuid4().hex[:16]  # Generate a proper new subId
     expiry_ms = int(sub.ends_at.timestamp() * 1000) if sub.ends_at else 0
+    security_settings = await AppSettingsRepository(session).get_service_security_settings()
 
     # The URL path uses the OLD UUID to find the client
     old_client_id = xui_record.xui_client_remote_id or xui_record.client_uuid
@@ -620,7 +622,7 @@ async def reset_uuid_handler(
         id=new_uuid,
         uuid=new_uuid,
         email=xui_record.email,
-        limitIp=1,
+        limitIp=security_settings.xui_limit_ip,
         totalGB=sub.volume_bytes,
         expiryTime=expiry_ms,
         enable=xui_record.is_active,
@@ -723,6 +725,7 @@ async def toggle_enable_handler(
     
     new_enable_status = not xui_record.is_active
     expiry_ms = int(sub.ends_at.timestamp() * 1000) if sub.ends_at else 0
+    security_settings = await AppSettingsRepository(session).get_service_security_settings()
 
     # Extract existing subId from sub_link to preserve it during update
     existing_sub_id = ""
@@ -734,7 +737,7 @@ async def toggle_enable_handler(
         id=xui_record.xui_client_remote_id or xui_record.client_uuid,
         uuid=xui_record.client_uuid,
         email=xui_record.email,
-        limitIp=1,
+        limitIp=security_settings.xui_limit_ip,
         totalGB=sub.volume_bytes,
         expiryTime=expiry_ms,
         enable=new_enable_status,

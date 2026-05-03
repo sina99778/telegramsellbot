@@ -15,6 +15,7 @@ from models.plan import Plan
 from models.ready_config import ReadyConfigItem, ReadyConfigPool
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
+from repositories.settings import AppSettingsRepository
 from schemas.internal.xui import XUIClient
 from services.plan_inventory import PlanStockError, release_plan_sale, reserve_plan_sale
 from services.wallet.manager import WalletManager
@@ -147,6 +148,7 @@ class ProvisioningManager:
         # The sync job will set the real expiry when the user first connects
         expiry_ms = 0
         sub_link = build_sub_link(server, sub_id)
+        security_settings = await AppSettingsRepository(self.session).get_service_security_settings()
         vless_uri = build_vless_uri(
             client_uuid=client_uuid,
             server=server,
@@ -159,7 +161,7 @@ class ProvisioningManager:
             id=client_uuid,
             uuid=client_uuid,
             email=email,
-            limitIp=1,
+            limitIp=security_settings.xui_limit_ip,
             totalGB=plan.volume_bytes,
             expiryTime=expiry_ms,
             enable=True,
@@ -392,7 +394,7 @@ class ProvisioningManager:
             id=xui_record.xui_client_remote_id or xui_record.client_uuid,
             uuid=xui_record.client_uuid,
             email=xui_record.email,
-            limitIp=1,
+            limitIp=(await AppSettingsRepository(self.session).get_service_security_settings()).xui_limit_ip,
             totalGB=volume_bytes,
             expiryTime=expiry_ms,
             enable=False,

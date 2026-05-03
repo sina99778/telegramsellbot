@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
-from repositories.settings import RenewalSettings
+from repositories.settings import AppSettingsRepository, RenewalSettings
 from services.xui.client import SanaeiXUIClient, XUIClient
 from services.xui.runtime import build_xui_client_config, ensure_inbound_server_loaded
 
@@ -88,6 +88,7 @@ async def _sync_xui_limits(
         server = ensure_inbound_server_loaded(xui_full.inbound)
         config = build_xui_client_config(server)
         expiry_time = int(subscription.ends_at.timestamp() * 1000) if subscription.ends_at else 0
+        security_settings = await AppSettingsRepository(session).get_service_security_settings()
         sub_id = ""
         current_sub_link = subscription.sub_link or xui_full.sub_link or ""
         if "/" in current_sub_link:
@@ -98,7 +99,7 @@ async def _sync_xui_limits(
             uuid=xui_full.client_uuid,
             email=xui_full.email,
             enable=True,
-            limitIp=1,
+            limitIp=security_settings.xui_limit_ip,
             totalGB=subscription.volume_bytes,
             expiryTime=expiry_time,
             subId=sub_id,

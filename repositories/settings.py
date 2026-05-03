@@ -18,6 +18,7 @@ _SENTINEL = object()
 RENEWAL_SETTINGS_KEY = "service.renewal"
 CUSTOM_PURCHASE_SETTINGS_KEY = "service.custom_purchase"
 PHONE_VERIFICATION_SETTINGS_KEY = "user.phone_verification"
+SERVICE_SECURITY_SETTINGS_KEY = "service.security"
 
 @dataclass(slots=True)
 class RenewalSettings:
@@ -48,6 +49,13 @@ class TrialSettings:
 class PhoneVerificationSettings:
     enabled: bool
     mode: str
+
+
+@dataclass(slots=True)
+class ServiceSecuritySettings:
+    xui_limit_ip: int
+    max_distinct_ips: int
+    auto_disable_ip_abuse: bool
 
 
 REVENUE_SETTINGS_KEY = "admin.revenue_reset"
@@ -153,6 +161,45 @@ class AppSettingsRepository:
         await self.session.flush()
         await self.session.refresh(record)
         return await self.get_custom_purchase_settings()
+
+    async def get_service_security_settings(self) -> ServiceSecuritySettings:
+        record = await self.session.get(AppSetting, SERVICE_SECURITY_SETTINGS_KEY)
+        if record is None or not record.value_json:
+            return ServiceSecuritySettings(
+                xui_limit_ip=1,
+                max_distinct_ips=3,
+                auto_disable_ip_abuse=True,
+            )
+        payload = dict(record.value_json or {})
+        return ServiceSecuritySettings(
+            xui_limit_ip=max(int(payload.get("xui_limit_ip", 1)), 0),
+            max_distinct_ips=max(int(payload.get("max_distinct_ips", 3)), 0),
+            auto_disable_ip_abuse=bool(payload.get("auto_disable_ip_abuse", True)),
+        )
+
+    async def update_service_security_settings(
+        self,
+        *,
+        xui_limit_ip: int | None = None,
+        max_distinct_ips: int | None = None,
+        auto_disable_ip_abuse: bool | None = None,
+    ) -> ServiceSecuritySettings:
+        record = await self.session.get(AppSetting, SERVICE_SECURITY_SETTINGS_KEY)
+        if record is None:
+            record = AppSetting(key=SERVICE_SECURITY_SETTINGS_KEY, value_json={})
+        payload = dict(record.value_json or {})
+
+        if xui_limit_ip is not None:
+            payload["xui_limit_ip"] = max(int(xui_limit_ip), 0)
+        if max_distinct_ips is not None:
+            payload["max_distinct_ips"] = max(int(max_distinct_ips), 0)
+        if auto_disable_ip_abuse is not None:
+            payload["auto_disable_ip_abuse"] = auto_disable_ip_abuse
+
+        record.value_json = payload
+        self.session.add(record)
+        await self.session.flush()
+        return await self.get_service_security_settings()
 
     async def _get_or_create_custom_purchase_record(self) -> AppSetting:
         record = await self.session.get(AppSetting, CUSTOM_PURCHASE_SETTINGS_KEY)

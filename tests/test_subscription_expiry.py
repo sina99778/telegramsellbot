@@ -5,12 +5,15 @@ from uuid import uuid4
 import pytest
 
 from core.database import utcnow
-from apps.worker.jobs.subscriptions import _expire_subscription_in_xui, _get_expiry_reason
+from apps.worker.jobs.subscriptions import _expire_subscription_in_xui, _get_expiry_reason, _get_ip_abuse
+from repositories.settings import ServiceSecuritySettings
+from services.xui.client import SanaeiXUIClient
 
 
 class FakeXUIClient:
-    def __init__(self):
+    def __init__(self, ips=None):
         self.calls = []
+        self.ips = ips or []
 
     async def update_client(self, *, inbound_id, client_id, client):
         self.calls.append(
@@ -20,6 +23,9 @@ class FakeXUIClient:
                 "client": client,
             }
         )
+
+    async def get_client_ips(self, email):
+        return self.ips
 
 
 def make_subscription(*, used_bytes=1024, volume_bytes=1024):
@@ -75,3 +81,32 @@ async def test_expire_subscription_rotates_uuid_and_disables_client():
     assert call["client"].enable is False
     assert call["client"].uuid == subscription.xui_client.client_uuid
     assert call["client"].sub_id == "existing-sub-id"
+
+
+@pytest.mark.asyncio
+async def test_get_ip_abuse_detects_too_many_distinct_ips():
+    subscription = make_subscription()
+    xui_client = FakeXUIClient(ips=["1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4"])
+    settings = ServiceSecuritySettings(
+        xui_limit_ip=1,
+        max_distinct_ips=3,
+        auto_disable_ip_abuse=True,
+    )
+
+    result = await _get_ip_abuse(subscription, xui_client, settings)
+
+    assert result == (4, ["1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4"])
+
+
+def test_xui_client_normalizes_client_ip_payloads():
+    payload = [
+        {"ip": "1.1.1.1"},
+        "2.2.2.2,3.3.3.3",
+        {"address": "1.1.1.1"},
+    ]
+
+    assert SanaeiXUIClient._normalize_client_ips(payload) == [
+        "1.1.1.1",
+        "2.2.2.2",
+        "3.3.3.3",
+    ]

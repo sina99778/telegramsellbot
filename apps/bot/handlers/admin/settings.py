@@ -29,6 +29,7 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     settings_repo = AppSettingsRepository(session)
     renewal_settings = await settings_repo.get_renewal_settings()
     custom_settings = await settings_repo.get_custom_purchase_settings()
+    security_settings = await settings_repo.get_service_security_settings()
     toman_rate = await settings_repo.get_toman_rate()
     
     text = AdminMessages.SETTINGS_MENU.format(
@@ -44,12 +45,22 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
         f"قیمت خرید دلخواه هر ۱ روز: {custom_settings.price_per_day} دلار\n"
     )
 
+    ip_guard_status = "فعال" if security_settings.auto_disable_ip_abuse else "غیرفعال"
+    text += (
+        f"🛡 محدودیت IP پنل: {security_settings.xui_limit_ip}\n"
+        f"🛡 سقف IPهای مجاز: {security_settings.max_distinct_ips}\n"
+        f"🛡 ضد اشتراک‌گذاری: {ip_guard_status}\n"
+    )
+
     builder = InlineKeyboardBuilder()
     builder.button(text="تغییر قیمت تمدید هر ۱ گیگ", callback_data="admin:settings:edit_gb")
     builder.button(text="تغییر قیمت تمدید هر ۱۰ روز", callback_data="admin:settings:edit_days")
     builder.button(text="🧩 فعال/غیرفعال خرید دلخواه", callback_data="admin:settings:custom_toggle")
     builder.button(text="🧩 قیمت خرید دلخواه هر ۱ گیگ", callback_data="admin:settings:custom_gb")
     builder.button(text="🧩 قیمت خرید دلخواه هر ۱ روز", callback_data="admin:settings:custom_day")
+    builder.button(text="🛡 تغییر limitIp پنل", callback_data="admin:settings:xui_limit_ip")
+    builder.button(text="🛡 تغییر سقف IPهای مجاز", callback_data="admin:settings:max_ips")
+    builder.button(text="🛡 فعال/غیرفعال ضد اشتراک‌گذاری", callback_data="admin:settings:ip_guard_toggle")
     builder.button(text="💱 تغییر نرخ دلار به تومان", callback_data="admin:settings:edit_toman")
     builder.button(text="💳 مدیریت درگاه‌های پرداخت", callback_data="admin:settings:gateways")
     builder.button(text="تایید شماره موبایل", callback_data="admin:settings:phone_verification")
@@ -195,6 +206,64 @@ async def edit_custom_price_day_submit(message: Message, state: FSMContext, sess
     await AppSettingsRepository(session).update_custom_purchase_settings(price_per_day=new_price)
     await state.clear()
     await message.answer(AdminMessages.SETTINGS_UPDATED)
+
+
+@router.callback_query(F.data == "admin:settings:xui_limit_ip")
+async def edit_xui_limit_ip_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(SettingsStates.waiting_for_xui_limit_ip)
+    await safe_edit_or_send(callback, "عدد limitIp پنل را وارد کنید. 0 یعنی بدون محدودیت، 1 یعنی فقط یک IP همزمان.")
+
+
+@router.message(SettingsStates.waiting_for_xui_limit_ip)
+async def edit_xui_limit_ip_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text:
+        return
+    try:
+        value = int(message.text.strip())
+        if value < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("عدد معتبر وارد کنید.")
+        return
+
+    await AppSettingsRepository(session).update_service_security_settings(xui_limit_ip=value)
+    await state.clear()
+    await message.answer(AdminMessages.SETTINGS_UPDATED)
+
+
+@router.callback_query(F.data == "admin:settings:max_ips")
+async def edit_max_ips_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(SettingsStates.waiting_for_max_distinct_ips)
+    await safe_edit_or_send(callback, "سقف IPهای distinct مجاز برای هر کانفیگ را وارد کنید. پیشنهاد: 3. عدد 0 یعنی پایش خودکار خاموش شود.")
+
+
+@router.message(SettingsStates.waiting_for_max_distinct_ips)
+async def edit_max_ips_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text:
+        return
+    try:
+        value = int(message.text.strip())
+        if value < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("عدد معتبر وارد کنید.")
+        return
+
+    await AppSettingsRepository(session).update_service_security_settings(max_distinct_ips=value)
+    await state.clear()
+    await message.answer(AdminMessages.SETTINGS_UPDATED)
+
+
+@router.callback_query(F.data == "admin:settings:ip_guard_toggle")
+async def toggle_ip_guard(callback: CallbackQuery, session: AsyncSession) -> None:
+    settings_repo = AppSettingsRepository(session)
+    current = await settings_repo.get_service_security_settings()
+    await settings_repo.update_service_security_settings(
+        auto_disable_ip_abuse=not current.auto_disable_ip_abuse,
+    )
+    await bot_settings_menu(callback, session)
 
 
 @router.callback_query(F.data == "admin:settings:edit_toman")

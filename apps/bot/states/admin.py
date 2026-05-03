@@ -61,6 +61,8 @@ class SettingsStates(StatesGroup):
     waiting_for_toman_rate = State()
     waiting_for_custom_price_gb = State()
     waiting_for_custom_price_day = State()
+    waiting_for_xui_limit_ip = State()
+    waiting_for_max_distinct_ips = State()
 
 
 class DiscountStates(StatesGroup):

@@ -12,6 +12,7 @@ from sqlalchemy.orm import selectinload
 from core.database import AsyncSessionFactory, utcnow
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
+from repositories.settings import AppSettingsRepository, ServiceSecuritySettings
 from schemas.internal.xui import XUIClient
 from services.xui.client import SanaeiXUIClient, XUIClientError, XUIRequestError
 from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
@@ -27,7 +28,13 @@ async def sync_xui_usage_and_status(
     session: AsyncSession,
     xui_client: SanaeiXUIClient,
     subscriptions: list[Subscription],
+    security_settings: ServiceSecuritySettings | None = None,
 ) -> None:
+    security_settings = security_settings or ServiceSecuritySettings(
+        xui_limit_ip=1,
+        max_distinct_ips=3,
+        auto_disable_ip_abuse=True,
+    )
     semaphore = asyncio.Semaphore(XUI_USAGE_SYNC_CONCURRENCY)
 
     async def sync_one(subscription: Subscription) -> None:
@@ -69,11 +76,37 @@ async def sync_xui_usage_and_status(
             subscription.starts_at = now
             subscription.ends_at = now + timedelta(days=plan_duration_days)
             # Update X-UI panel with the real expiry time
-            await _update_xui_expiry_on_activation(xui_client, subscription)
+            await _update_xui_expiry_on_activation(
+                xui_client,
+                subscription,
+                limit_ip=security_settings.xui_limit_ip,
+            )
             logger.info(
                 "[SYNC] Subscription %s activated (first_use) — ends_at=%s",
                 subscription.id, subscription.ends_at,
             )
+
+        ip_abuse = await _get_ip_abuse(subscription, xui_client, security_settings)
+        if subscription.status in {"pending_activation", "active"} and ip_abuse is not None:
+            ip_count, ips = ip_abuse
+            disabled = await _expire_subscription_in_xui(
+                xui_client,
+                subscription,
+                now=now,
+                reason=f"ip_abuse:{ip_count}",
+                new_status="disabled",
+                limit_ip=security_settings.xui_limit_ip,
+            )
+            if disabled:
+                logger.warning(
+                    "[SYNC] Subscription %s disabled for IP abuse (%s > %s, email=%s, ips=%s)",
+                    subscription.id,
+                    ip_count,
+                    security_settings.max_distinct_ips,
+                    xui_record.email,
+                    ",".join(ips[:10]),
+                )
+            return
 
         expiry_reason = _get_expiry_reason(subscription, now)
         if subscription.status in {"pending_activation", "active"} and expiry_reason:
@@ -82,6 +115,7 @@ async def sync_xui_usage_and_status(
                 subscription,
                 now=now,
                 reason=expiry_reason,
+                limit_ip=security_settings.xui_limit_ip,
             )
             if not expired:
                 return
@@ -96,6 +130,7 @@ async def sync_xui_usage_and_status(
 
 async def sync_all_subscription_states() -> None:
     async with AsyncSessionFactory() as session:
+        security_settings = await AppSettingsRepository(session).get_service_security_settings()
         result = await session.execute(
             select(Subscription)
             .options(
@@ -127,7 +162,7 @@ async def sync_all_subscription_states() -> None:
             server = ensure_inbound_server_loaded(sample_inbound)
             try:
                 async with create_xui_client_for_server(server) as xui_client:
-                    await sync_xui_usage_and_status(session, xui_client, group)
+                    await sync_xui_usage_and_status(session, xui_client, group, security_settings)
             except XUIClientError as exc:
                 logger.error("[SYNC] Failed to connect to server %s: %s", server.name, exc)
                 continue
@@ -192,12 +227,37 @@ def _extract_sub_id(subscription: Subscription, xui_record: XUIClientRecord) -> 
     return ""
 
 
+async def _get_ip_abuse(
+    subscription: Subscription,
+    xui_client: SanaeiXUIClient,
+    security_settings: ServiceSecuritySettings,
+) -> tuple[int, list[str]] | None:
+    if not security_settings.auto_disable_ip_abuse or security_settings.max_distinct_ips <= 0:
+        return None
+    xui_record = subscription.xui_client
+    if xui_record is None:
+        return None
+
+    try:
+        ips = await xui_client.get_client_ips(xui_record.email)
+    except XUIClientError as exc:
+        logger.warning("[SYNC] Failed to fetch client IPs for '%s': %s", xui_record.email, exc)
+        return None
+
+    ip_count = len(ips)
+    if ip_count > security_settings.max_distinct_ips:
+        return ip_count, ips
+    return None
+
+
 async def _expire_subscription_in_xui(
     xui_client: SanaeiXUIClient,
     subscription: Subscription,
     *,
     now,
     reason: str,
+    new_status: str = "expired",
+    limit_ip: int = 1,
 ) -> bool:
     xui_record = subscription.xui_client
     if xui_record is None or xui_record.inbound is None:
@@ -209,7 +269,7 @@ async def _expire_subscription_in_xui(
         id=old_client_id,
         uuid=new_uuid,
         email=xui_record.email,
-        limitIp=1,
+        limitIp=limit_ip,
         totalGB=subscription.volume_bytes,
         expiryTime=int(now.timestamp() * 1000),
         enable=False,
@@ -233,7 +293,7 @@ async def _expire_subscription_in_xui(
 
     xui_record.client_uuid = new_uuid
     xui_record.is_active = False
-    subscription.status = "expired"
+    subscription.status = new_status
     subscription.expired_at = now
     return True
 
@@ -278,6 +338,8 @@ async def _disable_client_in_xui(
 async def _update_xui_expiry_on_activation(
     xui_client: SanaeiXUIClient,
     subscription: Subscription,
+    *,
+    limit_ip: int = 1,
 ) -> None:
     """Update X-UI client expiryTime when a first_use subscription is activated."""
     xui_record = subscription.xui_client
@@ -294,7 +356,7 @@ async def _update_xui_expiry_on_activation(
         id=xui_record.xui_client_remote_id or xui_record.client_uuid,
         uuid=xui_record.client_uuid,
         email=xui_record.email,
-        limitIp=1,
+        limitIp=limit_ip,
         totalGB=subscription.volume_bytes,
         expiryTime=expiry_ms,
         enable=True,
@@ -341,6 +403,7 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
 
     try:
         server = ensure_inbound_server_loaded(inbound)
+        security_settings = await AppSettingsRepository(session).get_service_security_settings()
         logger.info("[REALTIME] Fetching traffic for email='%s' from server '%s'", xui_record.email, server.name)
         async with create_xui_client_for_server(server) as xui_client:
             traffic = await xui_client.get_client_traffic(xui_record.email)
@@ -368,7 +431,7 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
                             id=xui_record.xui_client_remote_id or xui_record.client_uuid,
                             uuid=xui_record.client_uuid,
                             email=xui_record.email,
-                            limitIp=1,
+                            limitIp=security_settings.xui_limit_ip,
                             totalGB=subscription.volume_bytes,
                             expiryTime=int(subscription.ends_at.timestamp() * 1000),
                             enable=True,
@@ -380,12 +443,33 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
                 logger.info("[REALTIME] Auto-activated sub %s — ends_at=%s", subscription.id, subscription.ends_at)
 
             expiry_reason = _get_expiry_reason(subscription, now)
+            ip_abuse = await _get_ip_abuse(subscription, xui_client, security_settings)
+            if subscription.status in {"pending_activation", "active"} and ip_abuse is not None:
+                ip_count, ips = ip_abuse
+                disabled = await _expire_subscription_in_xui(
+                    xui_client,
+                    subscription,
+                    now=now,
+                    reason=f"ip_abuse:{ip_count}",
+                    new_status="disabled",
+                    limit_ip=security_settings.xui_limit_ip,
+                )
+                if disabled:
+                    logger.warning(
+                        "[REALTIME] Subscription %s disabled for IP abuse (%s > %s, ips=%s)",
+                        subscription.id,
+                        ip_count,
+                        security_settings.max_distinct_ips,
+                        ",".join(ips[:10]),
+                    )
+
             if subscription.status in {"pending_activation", "active"} and expiry_reason:
                 await _expire_subscription_in_xui(
                     xui_client,
                     subscription,
                     now=now,
                     reason=expiry_reason,
+                    limit_ip=security_settings.xui_limit_ip,
                 )
 
             await session.flush()
