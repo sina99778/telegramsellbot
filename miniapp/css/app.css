@@ -229,17 +229,28 @@ button {
 }
 
 .home-hero {
-    min-height: 142px;
+    min-height: 150px;
     display: flex;
     align-items: flex-end;
-    padding: 18px;
-    margin-bottom: 10px;
-    background:
-        linear-gradient(135deg, rgba(51, 199, 214, 0.18), rgba(41, 196, 122, 0.08)),
-        var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow);
+    padding: 24px;
+    margin-bottom: 16px;
+    background: linear-gradient(135deg, rgba(51, 199, 214, 0.15), rgba(41, 196, 122, 0.05)), var(--bg-surface);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 20px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+    position: relative;
+    overflow: hidden;
+}
+
+.home-hero::before {
+    content: '';
+    position: absolute;
+    top: -50%;
+    left: -50%;
+    width: 200%;
+    height: 200%;
+    background: radial-gradient(circle at center, rgba(51, 199, 214, 0.08) 0%, transparent 50%);
+    pointer-events: none;
 }
 
 .home-eyebrow {
@@ -271,14 +282,23 @@ button {
 }
 
 .quick-action {
-    min-height: 72px;
-    padding: 10px;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
+    min-height: 80px;
+    padding: 14px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 16px;
     color: var(--text);
     text-align: right;
     cursor: pointer;
+    backdrop-filter: blur(10px);
+    transition: transform 0.2s, background 0.2s, box-shadow 0.2s;
+}
+
+.quick-action:hover, .quick-action:active {
+    transform: translateY(-2px);
+    background: rgba(255, 255, 255, 0.05);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+    border-color: rgba(255, 255, 255, 0.1);
 }
 
 .quick-action span,
@@ -295,7 +315,7 @@ button {
 
 .quick-action strong {
     color: var(--text);
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 900;
 }
 
@@ -320,18 +340,21 @@ button {
 .ticket-toolbar,
 .ticket-history-item,
 .admin-ticket-head {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    box-shadow: none;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 16px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+    backdrop-filter: blur(12px);
+    transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
 }
 
 .stat-card {
     min-height: 104px;
-    padding: 14px;
+    padding: 16px;
     display: grid;
     align-content: space-between;
     position: relative;
+    overflow: hidden;
 }
 
 .stat-card::before {
@@ -340,9 +363,8 @@ button {
     inset-inline-start: 0;
     top: 0;
     bottom: 0;
-    width: 3px;
+    width: 4px;
     background: var(--cyan);
-    border-radius: var(--radius-md) 0 0 var(--radius-md);
 }
 
 .stat-card:nth-child(2)::before { background: var(--emerald); }
@@ -408,12 +430,18 @@ button {
     border-color: rgba(239, 111, 97, 0.38);
 }
 
+.config-card:hover,
+.plan-card:hover {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
 .config-card:active,
 .plan-card:active,
 .admin-module:active,
 .ticket-history-item:active {
-    transform: scale(0.99);
-    border-color: var(--border-strong);
+    transform: scale(0.98);
 }
 
 .config-header {
@@ -579,10 +607,10 @@ button {
 }
 
 .plan-spec {
-    background: var(--bg-muted);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 5px 8px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    padding: 6px 10px;
 }
 
 .plan-price {
@@ -602,12 +630,26 @@ button {
 /* Wallet */
 
 .wallet-card {
-    background: linear-gradient(135deg, #102333, #173025);
-    border: 1px solid #2d5e58;
-    border-radius: var(--radius-md);
-    padding: 18px;
-    margin-bottom: 16px;
-    box-shadow: var(--shadow);
+    background: linear-gradient(135deg, rgba(41, 196, 122, 0.15), rgba(16, 35, 51, 0.8));
+    border: 1px solid rgba(41, 196, 122, 0.3);
+    border-radius: 20px;
+    padding: 24px;
+    margin-bottom: 20px;
+    box-shadow: 0 12px 32px rgba(41, 196, 122, 0.15);
+    backdrop-filter: blur(12px);
+    position: relative;
+    overflow: hidden;
+}
+
+.wallet-card::after {
+    content: '';
+    position: absolute;
+    top: -50px;
+    right: -50px;
+    width: 150px;
+    height: 150px;
+    background: radial-gradient(circle, rgba(41, 196, 122, 0.2) 0%, transparent 70%);
+    pointer-events: none;
 }
 
 .wallet-label {
@@ -894,59 +936,122 @@ button {
 .admin-overview {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-    margin-bottom: 14px;
+    gap: 12px;
+    margin-bottom: 24px;
 }
 
 .admin-stat {
-    padding: 13px;
+    padding: 18px 14px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 16px;
+    backdrop-filter: blur(12px);
+    transition: transform 0.2s, background 0.2s;
+    text-align: center;
+}
+
+.admin-stat:hover {
+    transform: translateY(-2px);
+    background: rgba(255, 255, 255, 0.05);
 }
 
 .admin-stat span {
     display: block;
-    color: var(--text-muted);
-    font-size: 11px;
+    color: var(--text-soft);
+    font-size: 12px;
     font-weight: 700;
+    margin-bottom: 6px;
 }
 
 .admin-stat strong {
     display: block;
-    margin-top: 4px;
-    font-size: 22px;
+    color: var(--cyan);
+    font-size: 24px;
     font-weight: 900;
+    letter-spacing: 0;
 }
 
 .admin-module {
     width: 100%;
-    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 16px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 16px;
+    backdrop-filter: blur(12px);
     text-align: right;
-    color: var(--text);
-    font-family: var(--font);
-    display: grid;
-    gap: 6px;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    cursor: pointer;
     position: relative;
     overflow: hidden;
-    background: linear-gradient(135deg, rgba(51, 199, 214, 0.10), rgba(18, 29, 40, 0.92));
+    color: var(--text);
+    font-family: var(--font);
 }
 
 .admin-module::before {
     content: '';
     position: absolute;
     inset-inline-start: 0;
-    top: 10px;
-    bottom: 10px;
+    top: 0;
+    bottom: 0;
     width: 3px;
-    border-radius: 8px;
     background: var(--cyan);
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.admin-module:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.1);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+.admin-module:hover::before {
+    opacity: 1;
+}
+
+.admin-module .module-icon {
+    width: 32px;
+    height: 32px;
+    display: grid;
+    place-items: center;
+    border-radius: 10px;
+    background: rgba(51, 199, 214, 0.15);
+    color: var(--cyan);
+    margin-bottom: 4px;
+}
+
+.admin-module strong {
+    font-size: 14px;
+    font-weight: 800;
+}
+
+.admin-module span {
+    color: var(--text-soft);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.5;
 }
 
 .admin-item {
-    display: grid;
-    gap: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 16px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 14px;
+    backdrop-filter: blur(8px);
+    transition: background 0.2s;
     border-inline-start: 3px solid transparent;
 }
 
 .admin-item:hover {
+    background: rgba(255, 255, 255, 0.04);
     border-inline-start-color: var(--cyan);
 }
 
@@ -954,6 +1059,8 @@ button {
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
+    padding-top: 10px;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .admin-ticket-head {
@@ -1073,32 +1180,37 @@ button {
     align-items: center;
     justify-content: center;
     gap: 6px;
-    min-height: 42px;
-    padding: 10px 14px;
-    border-radius: var(--radius-md);
+    min-height: 44px;
+    padding: 10px 16px;
+    border-radius: 12px;
     border: 1px solid transparent;
     cursor: pointer;
     font-size: 13px;
     font-weight: 900;
     text-decoration: none;
     white-space: nowrap;
-    transition: transform 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+    transition: transform 0.2s, box-shadow 0.2s, background 0.2s;
+    backdrop-filter: blur(8px);
 }
 
 .btn:active {
-    transform: scale(0.98);
+    transform: scale(0.96);
+}
+
+.btn:hover {
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
 }
 
 .btn-primary {
     color: #05242a;
-    background: var(--cyan);
-    border-color: var(--cyan);
+    background: linear-gradient(90deg, var(--cyan), var(--emerald));
+    border-color: rgba(51, 199, 214, 0.4);
 }
 
 .btn-secondary {
     color: var(--text);
-    background: var(--bg-muted);
-    border-color: var(--border);
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.1);
 }
 
 .btn-success {
@@ -1125,40 +1237,48 @@ button {
 
 .bottom-nav {
     position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    left: 12px;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
     z-index: 90;
-    min-height: var(--nav-height);
+    min-height: 64px;
     display: grid;
     grid-auto-flow: column;
     grid-auto-columns: minmax(48px, 1fr);
     gap: 4px;
-    padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
-    background: rgba(11, 15, 20, 0.96);
-    border-top: 1px solid var(--border);
-    backdrop-filter: blur(16px);
+    padding: 6px;
+    background: rgba(11, 15, 20, 0.75);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 24px;
+    backdrop-filter: blur(20px);
     overflow-x: auto;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
 }
 
 .nav-btn {
     min-width: 48px;
-    min-height: 54px;
+    min-height: 52px;
     border: 1px solid transparent;
-    border-radius: var(--radius-md);
+    border-radius: 18px;
     background: transparent;
     color: var(--text-muted);
     display: grid;
     justify-items: center;
     align-content: center;
-    gap: 3px;
+    gap: 4px;
     cursor: pointer;
+    transition: color 0.2s, background 0.2s, transform 0.2s;
 }
 
 .nav-btn.active {
+    color: var(--text);
+    background: rgba(51, 199, 214, 0.15);
+    border-color: rgba(51, 199, 214, 0.3);
+}
+
+.nav-btn.active .nav-icon {
     color: var(--cyan);
-    background: rgba(51, 199, 214, 0.1);
-    border-color: rgba(51, 199, 214, 0.24);
+    transform: translateY(-2px);
 }
 
 .nav-icon {

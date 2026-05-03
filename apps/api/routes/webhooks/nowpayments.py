@@ -81,12 +81,12 @@ async def handle_nowpayments_ipn(
 
     # Find payment: try provider_payment_id, then order_id
     payment = await session.scalar(
-        select(Payment).where(Payment.provider_payment_id == provider_payment_id)
+        select(Payment).where(Payment.provider_payment_id == provider_payment_id).with_for_update()
     )
     if payment is None and order_id_from_payload:
         logger.info("Payment not found by provider_payment_id, trying order_id=%s", order_id_from_payload)
         payment = await session.scalar(
-            select(Payment).where(Payment.order_id == order_id_from_payload)
+            select(Payment).where(Payment.order_id == order_id_from_payload).with_for_update()
         )
 
     if payment is None:

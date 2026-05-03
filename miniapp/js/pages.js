@@ -815,6 +815,25 @@ const Pages = (() => {
         }
     }
 
+    const ADMIN_MODULE_ICONS = {
+        'stats': 'chart',
+        'finance': 'wallet',
+        'users': 'users',
+        'customers': 'users',
+        'subs': 'configs',
+        'gifts': 'package',
+        'plans': 'store',
+        'ready_configs': 'store',
+        'servers': 'server',
+        'tickets': 'support',
+        'discounts': 'package',
+        'settings': 'sliders',
+        'audit': 'database',
+        'broadcast': 'share',
+        'retargeting': 'clock',
+        'backup': 'database'
+    };
+
     function renderAdminPanel(data) {
         const overview = document.getElementById('admin-overview');
         const modules = document.getElementById('admin-modules');
@@ -829,12 +848,16 @@ const Pages = (() => {
             <div class="admin-stat"><span>سرور فعال</span><strong>${data.active_servers_count}</strong></div>
         `;
 
-        modules.innerHTML = data.modules.map(item => `
-            <button class="admin-module" onclick="Pages.openAdminModule('${escapeHtml(item.callback.replace('admin:', ''))}')">
+        modules.innerHTML = data.modules.map(item => {
+            const section = escapeHtml(item.callback.replace('admin:', ''));
+            const iconName = ADMIN_MODULE_ICONS[section] || 'package';
+            return `
+            <button class="admin-module" onclick="Pages.openAdminModule('${section}')">
+                <div class="module-icon">${UI.icon(iconName)}</div>
                 <strong>${escapeHtml(item.title)}</strong>
                 <span>${escapeHtml(item.description)}</span>
             </button>
-        `).join('');
+        `}).join('');
     }
 
     async function openAdminModule(section) {

@@ -299,65 +299,97 @@ async def toggle_premium_emoji(callback: CallbackQuery, session: AsyncSession) -
 
 
 @router.callback_query(F.data == "admin:settings:premium_emoji_map")
-async def edit_premium_emoji_map_start(callback: CallbackQuery, state: FSMContext) -> None:
+async def edit_premium_emoji_map_start(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     await callback.answer()
     await state.set_state(SettingsStates.waiting_for_premium_emoji_map)
+    
+    settings_repo = AppSettingsRepository(session)
+    current_settings = await settings_repo.get_premium_emoji_settings()
+    emoji_map = current_settings.emoji_map or {}
+    
+    from services.telegram.premium_emoji import DEFAULT_EMOJI_KEYS
+    
+    lines = []
+    for key, fallback in DEFAULT_EMOJI_KEYS.items():
+        custom_id = emoji_map.get(key)
+        if custom_id:
+            # Render actual custom emoji if possible
+            line = f"<code>{key}=</code><tg-emoji emoji-id=\"{custom_id}\">{fallback}</tg-emoji>"
+        else:
+            line = f"<code>{key}=</code>{fallback}"
+        lines.append(line)
+        
+    template = "\n".join(lines)
+    
+    msg = (
+        "✨ <b>مدیریت آسان اموجی‌های پرمیوم</b>\n\n"
+        "برای تغییر اموجی‌ها، کافیست <b>لیست زیر را کپی کنید</b>، "
+        "اموجی پیش‌فرض را پاک کرده و <b>اموجی پرمیوم خود را جایگزین کنید</b> (یا آیدی آن را بگذارید) و بفرستید:\n\n"
+        f"{template}\n\n"
+        "<i>برای لغو /cancel را بفرستید.</i>"
+    )
+    
     await safe_edit_or_send(
         callback,
-        (
-            "مپ اموجی‌های پریمیم را بفرستید.\n\n"
-            "فرمت خطی:\n"
-            "success=5368324170671202286\n"
-            "wallet=5368324170671202287\n"
-            "🚀=5368324170671202288\n\n"
-            "کلیدهای آماده: success, error, warning, info, rocket, sparkles, fire, gift, "
-            "wallet, money, support, server, config, chart, settings, back, lock, ban, refresh, link\n\n"
-            "اگر فقط یک پیام شامل اموجی پریمیم بفرستید، custom_emoji_id آن را استخراج می‌کنم."
-        ),
+        msg,
+        parse_mode="HTML"
     )
 
 
 @router.message(SettingsStates.waiting_for_premium_emoji_map)
 async def edit_premium_emoji_map_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    text = (message.text or "").strip()
-    custom_entities = [
-        entity
-        for entity in (message.entities or [])
-        if str(getattr(entity, "type", "")) == "custom_emoji" and getattr(entity, "custom_emoji_id", None)
-    ]
-    if custom_entities and ("=" not in text and ":" not in text and not text.startswith("{")):
-        lines = []
-        for entity in custom_entities:
-            fallback = entity.extract_from(text) if hasattr(entity, "extract_from") else "emoji"
-            lines.append(f"{fallback}={entity.custom_emoji_id}")
-        await message.answer("ID اموجی‌های پریمیم:\n<code>" + "\n".join(lines) + "</code>", parse_mode="HTML")
-        return
+    html_text = message.html_text or ""
+    
+    emoji_map = {}
+    import re
+    from services.telegram.premium_emoji import VALID_CUSTOM_EMOJI_ID_RE, clear_premium_emoji_cache
+    
+    for line in html_text.splitlines():
+        clean_line = line.strip()
+        if not clean_line or "=" not in clean_line:
+            continue
+            
+        key_part, val_part = clean_line.split("=", 1)
+        clean_key = re.sub(r'<[^>]+>', '', key_part).strip()
+        
+        if not clean_key:
+            continue
+            
+        match = re.search(r'emoji-id=["\']([^"\']+)["\']', val_part)
+        if match:
+            custom_id = match.group(1)
+            emoji_map[clean_key] = custom_id
+        else:
+            clean_val = re.sub(r'<[^>]+>', '', val_part).strip()
+            if VALID_CUSTOM_EMOJI_ID_RE.match(clean_val):
+                emoji_map[clean_key] = clean_val
 
-    try:
-        emoji_map = parse_emoji_map_text(text)
-    except (ValueError, json.JSONDecodeError) as exc:
-        logger.debug("Invalid premium emoji map submitted: %s", exc)
+    if not emoji_map:
         await message.answer(
-            "فرمت مپ اموجی معتبر نیست.\n\n"
-            "هر خط باید به این شکل باشد:\n"
-            "<code>کلید=emoji_id</code>\n\n"
-            "مثال:\n"
-            "<code>success=5368324170671202286</code>",
-            parse_mode="HTML",
+            "هیچ اموجی پرمیوم یا ID معتبری در پیام شما یافت نشد.\n"
+            "لطفاً مطمئن شوید که قالب (کلید=اموجی) را رعایت کرده‌اید."
         )
         return
 
-    if not emoji_map:
-        await message.answer("حداقل یک اموجی وارد کنید.")
-        return
+    # Update settings
+    settings_repo = AppSettingsRepository(session)
+    current_settings = await settings_repo.get_premium_emoji_settings()
+    
+    # Merge with existing map so we don't delete keys that weren't sent
+    new_map = dict(current_settings.emoji_map or {})
+    new_map.update(emoji_map)
 
-    await AppSettingsRepository(session).update_premium_emoji_settings(
+    await settings_repo.update_premium_emoji_settings(
         enabled=True,
-        emoji_map=emoji_map,
+        emoji_map=new_map,
     )
     clear_premium_emoji_cache()
     await state.clear()
-    await message.answer(f"اموجی‌های پریمیم ذخیره و فعال شد. تعداد: {len(emoji_map)}")
+    
+    await message.answer(
+        f"✅ <b>تغییرات ذخیره شد!</b>\n\nتعداد اموجی‌های دریافت‌شده: {len(emoji_map)}\nتعداد کل اموجی‌های فعال: {len(new_map)}",
+        parse_mode="HTML"
+    )
 
 
 @router.callback_query(F.data == "admin:settings:edit_toman")

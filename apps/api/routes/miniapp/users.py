@@ -2355,6 +2355,7 @@ async def _get_user_subscription(
             Subscription.id == subscription_id,
             Subscription.user_id == user.id,
         )
+        .with_for_update()
     )
     if subscription is None:
         raise HTTPException(status_code=404, detail="سرویس پیدا نشد.")

@@ -319,6 +319,7 @@ class ProvisioningManager:
                 Subscription.id == subscription_id,
                 Subscription.user_id == user_id,
             )
+            .with_for_update()
         )
         if subscription is None:
             raise ZeroUsageRefundError("Subscription not found.")
