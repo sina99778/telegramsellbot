@@ -309,23 +309,30 @@ async def edit_premium_emoji_map_start(callback: CallbackQuery, state: FSMContex
     
     from services.telegram.premium_emoji import DEFAULT_EMOJI_KEYS
     
+    # Build a simple key=value template (inside <pre> to prevent PremiumEmojiBot from replacing emojis)
     lines = []
     for key, fallback in DEFAULT_EMOJI_KEYS.items():
-        custom_id = emoji_map.get(key)
+        custom_id = emoji_map.get(key, "")
         if custom_id:
-            # Render actual custom emoji if possible
-            line = f"<code>{key}=</code><tg-emoji emoji-id=\"{custom_id}\">{fallback}</tg-emoji>"
+            lines.append(f"{key}={custom_id}")
         else:
-            line = f"<code>{key}=</code>{fallback}"
-        lines.append(line)
-        
+            lines.append(f"{key}=")
+    
     template = "\n".join(lines)
     
+    # Count stats
+    mapped_count = sum(1 for k in DEFAULT_EMOJI_KEYS if emoji_map.get(k))
+    total_count = len(DEFAULT_EMOJI_KEYS)
+    
     msg = (
-        "✨ <b>مدیریت آسان اموجی‌های پرمیوم</b>\n\n"
-        "برای تغییر اموجی‌ها، کافیست <b>لیست زیر را کپی کنید</b>، "
-        "اموجی پیش‌فرض را پاک کرده و <b>اموجی پرمیوم خود را جایگزین کنید</b> (یا آیدی آن را بگذارید) و بفرستید:\n\n"
-        f"{template}\n\n"
+        "✨ <b>مدیریت اموجی‌های پرمیوم</b>\n\n"
+        f"📊 وضعیت: {mapped_count} از {total_count} اموجی نگاشت شده\n\n"
+        "📋 <b>روش کار:</b>\n"
+        "1️⃣ قالب زیر را کپی کنید\n"
+        "2️⃣ جلوی هر کلید، آیدی اموجی پرمیوم را بگذارید\n"
+        "3️⃣ کلیدهایی که نمی‌خواهید تغییر کنند را خالی بگذارید\n"
+        "4️⃣ متن ویرایش‌شده را ارسال کنید\n\n"
+        f"<pre>{template}</pre>\n\n"
         "<i>برای لغو /cancel را بفرستید.</i>"
     )
     
@@ -338,36 +345,60 @@ async def edit_premium_emoji_map_start(callback: CallbackQuery, state: FSMContex
 
 @router.message(SettingsStates.waiting_for_premium_emoji_map)
 async def edit_premium_emoji_map_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    html_text = message.html_text or ""
-    
-    emoji_map = {}
     import re
-    from services.telegram.premium_emoji import VALID_CUSTOM_EMOJI_ID_RE, clear_premium_emoji_cache
+    from services.telegram.premium_emoji import VALID_CUSTOM_EMOJI_ID_RE, DEFAULT_EMOJI_KEYS, clear_premium_emoji_cache
+
+    # Try both html_text (for pasted <tg-emoji>) and plain text
+    html_text = message.html_text or ""
+    plain_text = message.text or ""
     
+    emoji_map: dict[str, str] = {}
+    skipped_keys: list[str] = []
+    invalid_keys: list[str] = []
+    
+    # Process from HTML first (to capture <tg-emoji> tags from Telegram)
     for line in html_text.splitlines():
         clean_line = line.strip()
         if not clean_line or "=" not in clean_line:
             continue
             
         key_part, val_part = clean_line.split("=", 1)
+        # Strip any HTML tags from key
         clean_key = re.sub(r'<[^>]+>', '', key_part).strip()
         
         if not clean_key:
             continue
-            
+
+        # Try to extract emoji-id from <tg-emoji> tag
         match = re.search(r'emoji-id=["\']([^"\']+)["\']', val_part)
         if match:
             custom_id = match.group(1)
             emoji_map[clean_key] = custom_id
+            continue
+        
+        # Try plain text value (strip HTML tags)
+        clean_val = re.sub(r'<[^>]+>', '', val_part).strip()
+        
+        if not clean_val:
+            # User intentionally left empty — skip (no change)
+            skipped_keys.append(clean_key)
+            continue
+            
+        if VALID_CUSTOM_EMOJI_ID_RE.match(clean_val):
+            emoji_map[clean_key] = clean_val
         else:
-            clean_val = re.sub(r'<[^>]+>', '', val_part).strip()
-            if VALID_CUSTOM_EMOJI_ID_RE.match(clean_val):
-                emoji_map[clean_key] = clean_val
+            # Not a valid emoji ID — might be a regular emoji or garbage
+            invalid_keys.append(clean_key)
 
-    if not emoji_map:
+    if not emoji_map and not invalid_keys:
         await message.answer(
-            "هیچ اموجی پرمیوم یا ID معتبری در پیام شما یافت نشد.\n"
-            "لطفاً مطمئن شوید که قالب (کلید=اموجی) را رعایت کرده‌اید."
+            "⚠️ هیچ آیدی اموجی پرمیوم معتبری در پیام شما یافت نشد.\n\n"
+            "💡 <b>راهنما:</b>\n"
+            "• جلوی هر کلید، آیدی عددی اموجی پرمیوم را بگذارید\n"
+            "• آیدی اموجی را می‌توانید از ربات @Stickers بگیرید\n"
+            "• مثال: <code>success=5368324170671202286</code>\n\n"
+            f"کلیدهای خالی (بدون تغییر): {len(skipped_keys)}",
+            parse_mode="HTML",
         )
         return
 
@@ -378,6 +409,8 @@ async def edit_premium_emoji_map_submit(message: Message, state: FSMContext, ses
     # Merge with existing map so we don't delete keys that weren't sent
     new_map = dict(current_settings.emoji_map or {})
     new_map.update(emoji_map)
+    # Remove keys that were explicitly emptied
+    # (no action needed — skipped keys just keep their old values)
 
     await settings_repo.update_premium_emoji_settings(
         enabled=True,
@@ -386,9 +419,19 @@ async def edit_premium_emoji_map_submit(message: Message, state: FSMContext, ses
     clear_premium_emoji_cache()
     await state.clear()
     
+    result_lines = [
+        f"✅ <b>تغییرات ذخیره شد!</b>\n",
+        f"📥 اموجی‌های دریافت‌شده: {len(emoji_map)}",
+        f"📊 کل اموجی‌های فعال: {len(new_map)}",
+    ]
+    if skipped_keys:
+        result_lines.append(f"⏭ بدون تغییر: {len(skipped_keys)}")
+    if invalid_keys:
+        result_lines.append(f"⚠️ نامعتبر: {', '.join(invalid_keys[:5])}")
+    
     await message.answer(
-        f"✅ <b>تغییرات ذخیره شد!</b>\n\nتعداد اموجی‌های دریافت‌شده: {len(emoji_map)}\nتعداد کل اموجی‌های فعال: {len(new_map)}",
-        parse_mode="HTML"
+        "\n".join(result_lines),
+        parse_mode="HTML",
     )
 
 
