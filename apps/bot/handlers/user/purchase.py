@@ -1319,28 +1319,30 @@ async def _finalize_purchase(
     vless_uri = provisioned.vless_uri
     volume_label = format_volume_bytes(plan.volume_bytes)
 
-    # Build message
+    # Build message with HTML
+    import html
+    esc = html.escape
     discount_line = ""
     if discount_percent > 0:
-        discount_line = f"🏷 تخفیف: *{discount_percent}%* \\(قیمت اصلی: {_escape(str(original_price))}\\)\n"
+        discount_line = f"🏷 تخفیف: <b>{discount_percent}%</b> (قیمت اصلی: {esc(str(original_price))})\n"
 
     payment_label = "کیف پول" if payment_method == "wallet" else "درگاه پرداخت"
 
     text = (
-        "✅ *کانفیگ شما آماده است\\!*\n\n"
-        f"📛 نام: *{_escape(config_name)}*\n"
-        f"📦 پلن: *{_escape(plan.name)}*\n"
-        f"💾 حجم: *{_escape(volume_label)}*\n"
-        f"📅 مدت: *{plan.duration_days} روز*\n"
-        f"💰 پرداخت شده: *{_escape(str(final_price))} {_escape(plan.currency)}*\n"
-        f"💳 روش پرداخت: *{_escape(payment_label)}*\n"
+        "✅ <b>کانفیگ شما آماده است!</b>\n\n"
+        f"📛 نام: <b>{esc(config_name)}</b>\n"
+        f"📦 پلن: <b>{esc(plan.name)}</b>\n"
+        f"💾 حجم: <b>{esc(volume_label)}</b>\n"
+        f"📅 مدت: <b>{plan.duration_days} روز</b>\n"
+        f"💰 پرداخت شده: <b>{esc(str(final_price))} {esc(plan.currency)}</b>\n"
+        f"💳 روش پرداخت: <b>{esc(payment_label)}</b>\n"
         f"{discount_line}"
-        f"🕐 فعال\u200cسازی: *از اولین اتصال*\n\n"
+        f"🕐 فعال‌سازی: <b>از اولین اتصال</b>\n\n"
         "━━━━━━━━━━━━━━━━\n"
-        "🔗 *ساب لینک \\(برای وارد کردن در اپ\\):*\n"
-        f"`{_escape(sub_link)}`\n\n"
-        "📋 *کانفیگ مستقیم:*\n"
-        f"`{_escape(vless_uri)}`\n\n"
+        "🔗 <b>ساب لینک (برای وارد کردن در اپ):</b>\n"
+        f"<code>{esc(sub_link)}</code>\n\n"
+        "📋 <b>کانفیگ مستقیم:</b>\n"
+        f"<code>{esc(vless_uri)}</code>\n\n"
         "━━━━━━━━━━━━━━━━\n"
         "⚡ برای اتصال سریع روی دکمه‌های زیر کلیک کنید"
     )
@@ -1373,14 +1375,14 @@ async def _finalize_purchase(
             photo=BufferedInputFile(banner_bytes.getvalue(), filename="banner.png"),
             caption=text,
             reply_markup=builder.as_markup() if vless_uri else None,
-            parse_mode="MarkdownV2"
+            parse_mode="HTML"
         )
     else:
         await bot.send_message(
             chat_id=chat_id, 
             text=text, 
             reply_markup=builder.as_markup() if vless_uri else None,
-            parse_mode="MarkdownV2"
+            parse_mode="HTML"
         )
 
     # ── Notify admins about the purchase ──

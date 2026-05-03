@@ -348,8 +348,9 @@ async def my_config_detail_handler(
         if ready_item:
             vless_uri = ready_item.content.split("|")[0].strip()
 
-    # Build message with MarkdownV2
-    esc = escape_markdown
+    # Build message with HTML
+    import html
+    esc = html.escape
     usage_bar = format_usage_bar(sub.used_bytes, sub.volume_bytes)
     if realtime_ok:
         sync_label = "✅ لحظه‌ای"
@@ -358,23 +359,23 @@ async def my_config_detail_handler(
     else:
         sync_label = "⚠️ آفلاین"
     lines = [
-        f"📛 *نام کانفیگ*: `{esc(xui.username if xui else '-')}`",
-        f"📦 *پلن*: `{esc(plan_name)}`",
-        f"💾 *حجم کل*: `{esc(volume_total)}`",
-        f"📊 *مصرف شده*: `{esc(volume_used)}`",
-        f"✅ *باقی‌مانده*: `{esc(volume_remaining)}`",
-        f"📶 *مصرف*: `{esc(usage_bar)}`",
-        f"📅 *زمان*: `{esc(ends_label)}`",
-        f"🔄 *وضعیت*: `{esc(_status_fa(sub.status))}`",
-        f"📡 *سینک*: {sync_label}",
+        f"📛 <b>نام کانفیگ</b>: <code>{esc(xui.username if xui else '-')}</code>",
+        f"📦 <b>پلن</b>: <code>{esc(plan_name)}</code>",
+        f"💾 <b>حجم کل</b>: <code>{esc(volume_total)}</code>",
+        f"📊 <b>مصرف شده</b>: <code>{esc(volume_used)}</code>",
+        f"✅ <b>باقی‌مانده</b>: <code>{esc(volume_remaining)}</code>",
+        f"📶 <b>مصرف</b>: <code>{esc(usage_bar)}</code>",
+        f"📅 <b>زمان</b>: <code>{esc(ends_label)}</code>",
+        f"🔄 <b>وضعیت</b>: <code>{esc(_status_fa(sub.status))}</code>",
+        f"📡 <b>سینک</b>: {sync_label}",
         "",
-        "🔗 *ساب لینک \\(برای وارد کردن در اپ\\)*:",
-        f"`{esc(sub_link)}`",
+        "🔗 <b>ساب لینک (برای وارد کردن در اپ)</b>:",
+        f"<code>{esc(sub_link)}</code>",
     ]
     if vless_uri:
         lines.append("")
-        lines.append("📋 *لینک کانفیگ مستقیم*:")
-        lines.append(f"`{esc(vless_uri)}`")
+        lines.append("📋 <b>لینک کانفیگ مستقیم</b>:")
+        lines.append(f"<code>{esc(vless_uri)}</code>")
 
     text = "\n".join(lines)
 
@@ -455,16 +456,16 @@ async def my_config_detail_handler(
                 photo=BufferedInputFile(banner_bytes.getvalue(), filename="banner.png"),
                 caption=text,
                 reply_markup=builder.as_markup(),
-                parse_mode="MarkdownV2"
+                parse_mode="HTML"
             )
             return
 
     # Fallback to text message
     if callback.message is not None:
         try:
-            await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="MarkdownV2")
+            await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
         except Exception:
-            await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="MarkdownV2")
+            await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
 

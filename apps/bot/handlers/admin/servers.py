@@ -334,7 +334,7 @@ async def sync_server_inbounds(
             password=decrypt_secret(server.credentials.password_encrypted),
         )
     except Exception as exc:
-        await safe_edit_or_send(callback, f"خطا در اتصال به پنل:\n`{exc}`", parse_mode="MarkdownV2")
+        await safe_edit_or_send(callback, f"خطا در اتصال به پنل:\n<code>{exc}</code>", parse_mode="HTML")
         return
 
     created_inbounds, synced_count, disabled_count = _sync_remote_inbounds(
@@ -440,7 +440,7 @@ async def restart_xray_core_handler(
         )
         await callback.answer("✅ هسته ایکس ری با موفقیت ریستارت شد.", show_alert=True)
     except Exception as exc:
-        await safe_edit_or_send(callback, f"❌ خطا در ریستارت هسته:\n`{exc}`", parse_mode="MarkdownV2")
+        await safe_edit_or_send(callback, f"❌ خطا در ریستارت هسته:\n<code>{exc}</code>", parse_mode="HTML")
 
 
 @router.callback_query(ServerActionCallback.filter(F.action == "delete"))
@@ -754,10 +754,10 @@ async def edit_url_start(
     await state.update_data(server_id=str(callback_data.server_id), page=callback_data.page)
     await state.set_state(ServerManageStates.waiting_for_new_base_url)
     await safe_edit_or_send(callback, 
-        f"آدرس فعلی سرور:\n`{server.base_url}`\n\n"
+        f"آدرس فعلی سرور:\n<code>{server.base_url}</code>\n\n"
         "آدرس جدید سرور (به همراه پورت) را وارد کنید:\n"
         "مثلاً: http://1.2.3.4:54321 یا https://panel.example.com:2053",
-        parse_mode="Markdown",
+        parse_mode="HTML",
     )
 
 
