@@ -394,6 +394,20 @@ button {
     padding: 14px;
 }
 
+.config-card {
+    position: relative;
+    overflow: hidden;
+}
+
+.config-card.near-limit {
+    border-color: rgba(244, 183, 64, 0.42);
+}
+
+.config-card.expired-card {
+    opacity: 0.82;
+    border-color: rgba(239, 111, 97, 0.38);
+}
+
 .config-card:active,
 .plan-card:active,
 .admin-module:active,
@@ -486,6 +500,57 @@ button {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
     margin-top: 12px;
+}
+
+.config-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.config-metric {
+    min-width: 0;
+    padding: 9px 10px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--bg-input);
+}
+
+.config-metric span {
+    display: block;
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 800;
+    margin-bottom: 4px;
+}
+
+.config-metric strong {
+    display: block;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 900;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.config-warning {
+    margin-top: 10px;
+    padding: 9px 10px;
+    color: #ffe3b3;
+    background: rgba(244, 183, 64, 0.12);
+    border: 1px solid rgba(244, 183, 64, 0.28);
+    border-radius: var(--radius-sm);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 1.7;
+}
+
+.config-warning.danger {
+    color: #ffb2aa;
+    background: rgba(239, 111, 97, 0.12);
+    border-color: rgba(239, 111, 97, 0.32);
 }
 
 /* Store */

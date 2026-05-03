@@ -87,13 +87,41 @@ const Pages = (() => {
         container.innerHTML = activeSubs.map(sub => renderConfigCard(sub)).join('');
     }
 
-    function renderConfigCard(sub, showActions = false) {
+    function getConfigHealth(sub) {
         const pct = UI.getUsagePercent(sub.used_bytes, sub.volume_bytes);
-        const pctClass = UI.getProgressClass(pct);
-        const statusText = UI.getStatusText(sub.status);
-        const statusClass = UI.getStatusClass(sub.status);
+        const remainingBytes = Math.max((sub.volume_bytes || 0) - (sub.used_bytes || 0), 0);
+        const daysLabel = UI.daysLeft(sub.ends_at);
+        const isExpired = sub.status === 'expired' || sub.status === 'disabled' || daysLabel === 'منقضی' || pct >= 100;
+        let warning = '';
+        if (isExpired) {
+            warning = 'این سرویس به پایان رسیده و دسترسی آن باید قطع باشد.';
+        } else if (pct >= 90) {
+            warning = 'حجم سرویس رو به پایان است.';
+        } else if (daysLabel === '1 روز') {
+            warning = 'کمتر از یک روز تا پایان سرویس باقی مانده است.';
+        }
+        return {
+            pct,
+            pctClass: UI.getProgressClass(pct),
+            statusText: UI.getStatusText(isExpired && sub.status === 'active' ? 'expired' : sub.status),
+            statusClass: UI.getStatusClass(isExpired ? 'expired' : sub.status),
+            remainingBytes,
+            daysLabel,
+            isExpired,
+            isNearLimit: pct >= 90,
+            warning,
+        };
+    }
+
+    function renderConfigCard(sub, showActions = false) {
+        const health = getConfigHealth(sub);
         const name = sub.config_name || sub.plan_name || 'سرویس';
 
+        const cardClass = [
+            'config-card',
+            health.isExpired ? 'expired-card' : '',
+            health.isNearLimit ? 'near-limit' : '',
+        ].filter(Boolean).join(' ');
         const safeSubLink = sub.sub_link ? encodeURIComponent(sub.sub_link) : '';
         const actionsHtml = `
             <div class="config-actions" onclick="event.stopPropagation()">
@@ -104,18 +132,29 @@ const Pages = (() => {
         `;
 
         return `
-            <div class="config-card" onclick="Pages.showConfigDetail('${sub.id}')">
+            <div class="${cardClass}" onclick="Pages.showConfigDetail('${sub.id}')">
                 <div class="config-header">
-                    <span class="config-name">${name}</span>
-                    <span class="config-status ${statusClass}">${statusText}</span>
+                    <span class="config-name">${escapeHtml(name)}</span>
+                    <span class="config-status ${health.statusClass}">${health.statusText}</span>
                 </div>
                 <div class="progress-bar-container">
-                    <div class="progress-bar-fill ${pctClass}" style="width: ${pct}%"></div>
+                    <div class="progress-bar-fill ${health.pctClass}" style="width: ${health.pct}%"></div>
                 </div>
                 <div class="config-stats">
                     <span>${UI.formatBytes(sub.used_bytes)} / ${UI.formatBytes(sub.volume_bytes)}</span>
-                    <span>${UI.daysLeft(sub.ends_at)}</span>
+                    <span>${health.pct}%</span>
                 </div>
+                <div class="config-meta-grid">
+                    <div class="config-metric">
+                        <span>باقی‌مانده حجم</span>
+                        <strong>${UI.formatBytes(health.remainingBytes)}</strong>
+                    </div>
+                    <div class="config-metric">
+                        <span>زمان</span>
+                        <strong>${health.daysLabel}</strong>
+                    </div>
+                </div>
+                ${health.warning ? `<div class="config-warning ${health.isExpired ? 'danger' : ''}">${health.warning}</div>` : ''}
                 ${actionsHtml}
             </div>
         `;
@@ -128,8 +167,9 @@ const Pages = (() => {
         ].find(s => s.id === subId);
         if (!sub) return;
 
-        const pct = UI.getUsagePercent(sub.used_bytes, sub.volume_bytes);
-        const statusText = UI.getStatusText(sub.status);
+        const health = getConfigHealth(sub);
+        const pct = health.pct;
+        const statusText = health.statusText;
         const name = sub.config_name || sub.plan_name || 'سرویس';
 
         let linkSection = '';
@@ -147,7 +187,7 @@ const Pages = (() => {
         }
 
         UI.showModal(`
-            <div class="modal-title">${UI.icon('configs')} ${name}</div>
+            <div class="modal-title">${UI.icon('configs')} ${escapeHtml(name)}</div>
             <div style="text-align:center;margin-bottom:16px">
                 <div style="font-size:36px;font-weight:800;color:var(--accent-primary)">${pct}%</div>
                 <p style="font-size:12px;color:var(--text-muted)">مصرف شده</p>
@@ -155,6 +195,7 @@ const Pages = (() => {
             <div class="progress-bar-container" style="height:8px;margin-bottom:16px">
                 <div class="progress-bar-fill ${UI.getProgressClass(pct)}" style="width:${pct}%"></div>
             </div>
+            ${health.warning ? `<div class="config-warning ${health.isExpired ? 'danger' : ''}" style="margin-bottom:12px">${health.warning}</div>` : ''}
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:13px">
                 <div>
                     <span style="color:var(--text-muted)">وضعیت</span>
@@ -162,7 +203,7 @@ const Pages = (() => {
                 </div>
                 <div>
                     <span style="color:var(--text-muted)">باقیمانده</span>
-                    <div style="font-weight:600;margin-top:2px">${UI.daysLeft(sub.ends_at)}</div>
+                    <div style="font-weight:600;margin-top:2px">${health.daysLabel}</div>
                 </div>
                 <div>
                     <span style="color:var(--text-muted)">مصرف</span>
@@ -171,6 +212,10 @@ const Pages = (() => {
                 <div>
                     <span style="color:var(--text-muted)">کل حجم</span>
                     <div style="font-weight:600;margin-top:2px">${UI.formatBytes(sub.volume_bytes)}</div>
+                </div>
+                <div>
+                    <span style="color:var(--text-muted)">باقی‌مانده حجم</span>
+                    <div style="font-weight:600;margin-top:2px">${UI.formatBytes(health.remainingBytes)}</div>
                 </div>
                 <div>
                     <span style="color:var(--text-muted)">پلن</span>

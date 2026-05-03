@@ -75,20 +75,19 @@ async def sync_xui_usage_and_status(
                 subscription.id, subscription.ends_at,
             )
 
-        should_expire_for_volume = subscription.used_bytes >= subscription.volume_bytes > 0
-        should_expire_for_time = subscription.ends_at is not None and now > subscription.ends_at
-        if subscription.status in {"pending_activation", "active"} and (
-            should_expire_for_volume or should_expire_for_time
-        ):
-            # Change UUID to block access immediately, then disable
-            await _reset_client_uuid(xui_client, subscription)
-            await _disable_client_in_xui(xui_client, subscription)
-            subscription.status = "expired"
-            subscription.expired_at = now
-            xui_record.is_active = False
+        expiry_reason = _get_expiry_reason(subscription, now)
+        if subscription.status in {"pending_activation", "active"} and expiry_reason:
+            expired = await _expire_subscription_in_xui(
+                xui_client,
+                subscription,
+                now=now,
+                reason=expiry_reason,
+            )
+            if not expired:
+                return
             logger.info(
-                "[SYNC] Subscription %s expired — UUID reset and disabled (email=%s)",
-                subscription.id, xui_record.email,
+                "[SYNC] Subscription %s expired (%s) - UUID rotated and disabled (email=%s)",
+                subscription.id, expiry_reason, xui_record.email,
             )
 
     await asyncio.gather(*(sync_one(subscription) for subscription in subscriptions))
@@ -171,9 +170,72 @@ async def _reset_client_uuid(
             client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
             client=updated_client,
         )
+        xui_record.client_uuid = new_uuid
+        xui_record.is_active = False
         logger.info("[SYNC] UUID reset for client '%s' (sub=%s)", xui_record.email, subscription.id)
     except XUIClientError as exc:
         logger.warning("[SYNC] Failed to reset UUID for '%s': %s", xui_record.email, exc)
+
+
+def _get_expiry_reason(subscription: Subscription, now) -> str | None:
+    if subscription.volume_bytes > 0 and subscription.used_bytes >= subscription.volume_bytes:
+        return "volume"
+    if subscription.ends_at is not None and now >= subscription.ends_at:
+        return "time"
+    return None
+
+
+def _extract_sub_id(subscription: Subscription, xui_record: XUIClientRecord) -> str:
+    current_sub_link = subscription.sub_link or xui_record.sub_link or ""
+    if current_sub_link and "/" in current_sub_link:
+        return current_sub_link.rsplit("/", 1)[-1]
+    return ""
+
+
+async def _expire_subscription_in_xui(
+    xui_client: SanaeiXUIClient,
+    subscription: Subscription,
+    *,
+    now,
+    reason: str,
+) -> bool:
+    xui_record = subscription.xui_client
+    if xui_record is None or xui_record.inbound is None:
+        return False
+
+    old_client_id = xui_record.xui_client_remote_id or xui_record.client_uuid
+    new_uuid = str(uuid4())
+    disabled_client = XUIClient(
+        id=old_client_id,
+        uuid=new_uuid,
+        email=xui_record.email,
+        limitIp=1,
+        totalGB=subscription.volume_bytes,
+        expiryTime=int(now.timestamp() * 1000),
+        enable=False,
+        subId=_extract_sub_id(subscription, xui_record),
+        comment=f"expired:{reason}:{subscription.id}",
+    )
+    try:
+        await xui_client.update_client(
+            inbound_id=xui_record.inbound.xui_inbound_remote_id,
+            client_id=old_client_id,
+            client=disabled_client,
+        )
+    except XUIClientError as exc:
+        logger.error(
+            "[SYNC] Failed to expire client '%s' for sub=%s: %s",
+            xui_record.email,
+            subscription.id,
+            exc,
+        )
+        return False
+
+    xui_record.client_uuid = new_uuid
+    xui_record.is_active = False
+    subscription.status = "expired"
+    subscription.expired_at = now
+    return True
 
 
 async def _disable_client_in_xui(
@@ -275,6 +337,7 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
     if inbound is None or inbound.server is None or inbound.server.credentials is None:
         logger.warning("[REALTIME] Inbound/server/credentials missing for sub %s (inbound_id=%s)", subscription.id, xui_record.inbound_id)
         return None
+    xui_record.inbound = inbound
 
     try:
         server = ensure_inbound_server_loaded(inbound)
@@ -284,14 +347,13 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
             logger.info("[REALTIME] Traffic result: up=%d, down=%d, used=%d", traffic.up, traffic.down, traffic.used_bytes)
 
             # Update local records
+            now = utcnow()
             subscription.used_bytes = traffic.used_bytes
-            subscription.last_usage_sync_at = utcnow()
+            subscription.last_usage_sync_at = now
             xui_record.usage_bytes = traffic.used_bytes
 
             # Auto-activate if still pending and has usage
             if subscription.status == "pending_activation" and traffic.used_bytes > 0:
-                from datetime import timedelta
-                now = utcnow()
                 plan_duration = plan.duration_days if plan else DEFAULT_PLAN_DURATION_DAYS
                 subscription.status = "active"
                 subscription.activated_at = now
@@ -317,12 +379,22 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
                     logger.warning("[REALTIME] Failed to update X-UI expiry: %s", exc)
                 logger.info("[REALTIME] Auto-activated sub %s — ends_at=%s", subscription.id, subscription.ends_at)
 
+            expiry_reason = _get_expiry_reason(subscription, now)
+            if subscription.status in {"pending_activation", "active"} and expiry_reason:
+                await _expire_subscription_in_xui(
+                    xui_client,
+                    subscription,
+                    now=now,
+                    reason=expiry_reason,
+                )
+
             await session.flush()
 
             return {
                 "used_bytes": traffic.used_bytes,
                 "total_bytes": subscription.volume_bytes,
                 "remaining_bytes": max(subscription.volume_bytes - traffic.used_bytes, 0),
+                "status": subscription.status,
             }
     except Exception as exc:
         logger.error("[REALTIME] Failed to fetch for email='%s': %s", xui_record.email, exc, exc_info=True)
