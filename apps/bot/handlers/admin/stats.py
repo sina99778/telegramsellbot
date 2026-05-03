@@ -393,7 +393,7 @@ async def admin_financial_dashboard(callback: CallbackQuery, session: AsyncSessi
 
     builder = InlineKeyboardBuilder()
     if stuck > 0:
-        builder.button(text=f"⚠️ بررسی {stuck} پرداخت stuck", callback_data="admin:recovery")
+        builder.button(text=f"بررسی {stuck} پرداخت بدون تحویل", callback_data="admin:recovery")
     builder.button(text=AdminButtons.BACK, callback_data="admin:stats")
     builder.adjust(1)
 

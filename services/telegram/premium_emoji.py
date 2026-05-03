@@ -64,7 +64,7 @@ def parse_emoji_map_text(text: str) -> dict[str, str]:
     if stripped.startswith("{"):
         data = json.loads(stripped)
         if not isinstance(data, dict):
-            raise ValueError("Emoji map JSON must be an object.")
+            raise ValueError("مپ اموجی در حالت JSON باید یک آبجکت باشد.")
         return _sanitize_emoji_map(data)
 
     parsed: dict[str, str] = {}
@@ -74,7 +74,7 @@ def parse_emoji_map_text(text: str) -> dict[str, str]:
             continue
         separator = "=" if "=" in clean else ":"
         if separator not in clean:
-            raise ValueError("Each emoji map line must be key=id.")
+            raise ValueError("هر خط مپ اموجی باید به شکل کلید=emoji_id باشد.")
         key, value = clean.split(separator, 1)
         parsed[key.strip()] = value.strip()
     return _sanitize_emoji_map(parsed)

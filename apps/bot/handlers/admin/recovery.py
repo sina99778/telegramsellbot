@@ -91,7 +91,7 @@ async def recovery_main_menu(callback: CallbackQuery, session: AsyncSession) -> 
     ) or 0
 
     text = (
-        "🔧 پنل Recovery و Reconciliation\n\n"
+        "پنل بازیابی و بررسی پرداخت‌ها\n\n"
         f"⚠️ پرداخت موفق بدون تحویل: {stuck_count}\n"
         f"⏳ پرداخت‌های در انتظار: {waiting_count}\n"
         f"❌ پرداخت‌های ناموفق: {failed_count}\n"

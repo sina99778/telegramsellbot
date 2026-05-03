@@ -336,7 +336,15 @@ async def edit_premium_emoji_map_submit(message: Message, state: FSMContext, ses
     try:
         emoji_map = parse_emoji_map_text(text)
     except (ValueError, json.JSONDecodeError) as exc:
-        await message.answer(f"فرمت مپ معتبر نیست: {exc}")
+        logger.debug("Invalid premium emoji map submitted: %s", exc)
+        await message.answer(
+            "فرمت مپ اموجی معتبر نیست.\n\n"
+            "هر خط باید به این شکل باشد:\n"
+            "<code>کلید=emoji_id</code>\n\n"
+            "مثال:\n"
+            "<code>success=5368324170671202286</code>",
+            parse_mode="HTML",
+        )
         return
 
     if not emoji_map:

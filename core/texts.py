@@ -166,7 +166,7 @@ class AdminButtons:
     TEST_RETARGETING = "🧪 ارسال تست"
     RESET_REVENUE = "🗑 صفر کردن درآمد"
     MANAGE_DISCOUNTS = "🏷 مدیریت تخفیف‌ها"
-    RECOVERY = "🔧 Recovery و Reconciliation"
+    RECOVERY = "بازیابی پرداخت‌ها"
 
 
 class AdminMessages:
