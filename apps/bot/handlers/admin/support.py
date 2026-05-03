@@ -46,25 +46,29 @@ async def support_ticket_list(callback: CallbackQuery, session: AsyncSession) ->
     await callback.answer()
     tickets = await TicketRepository(session).list_open_tickets(limit=20)
     if not tickets:
-        await safe_edit_or_send(callback, AdminMessages.NO_OPEN_TICKETS)
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🔙 بازگشت", callback_data="admin:main")
+        builder.adjust(1)
+        await safe_edit_or_send(callback, AdminMessages.NO_OPEN_TICKETS, reply_markup=builder.as_markup())
         return
 
     builder = InlineKeyboardBuilder()
-    lines: list[str] = [AdminMessages.TICKETS_OVERVIEW]
+    lines: list[str] = ["📬 <b>تیکت‌های باز پشتیبانی</b>\n"]
     for ticket in tickets:
         user_name = ticket.user.first_name if ticket.user is not None and ticket.user.first_name else "کاربر"
         preview = _build_ticket_preview(ticket)
+        status_icon = "🟢" if ticket.status == "open" else "🟡"
         lines.append(
-            f"#{str(ticket.id)[:8]} | {user_name} | {_format_ticket_status(ticket.status)}\n"
-            f"{preview}"
+            f"{status_icon} <b>#{str(ticket.id)[:8]}</b> | {user_name} | {_format_ticket_status(ticket.status)}\n"
+            f"   └ {preview}"
         )
         builder.button(
-            text=f"{user_name} | {_format_ticket_status(ticket.status)}",
+            text=f"{status_icon} {user_name} | {_format_ticket_status(ticket.status)}",
             callback_data=SupportTicketActionCallback(action="view", ticket_id=ticket.id).pack(),
         )
-    builder.button(text="🔙 بازگشت", callback_data="admin:main")
+    builder.button(text="🔙 بازگشت به پنل مدیریت", callback_data="admin:main")
     builder.adjust(1)
-    await safe_edit_or_send(callback, "\n\n".join(lines), reply_markup=builder.as_markup())
+    await safe_edit_or_send(callback, "\n\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
 @router.callback_query(SupportTicketActionCallback.filter(F.action == "view"))
@@ -79,33 +83,48 @@ async def support_ticket_view(
         await safe_edit_or_send(callback, SupportTexts.ADMIN_TICKET_NOT_FOUND)
         return
 
-    recent_messages = ticket.messages[-5:]
-    rendered_messages = "\n\n".join(
-        f"{'ادمین' if message.sender_id != ticket.user_id else 'کاربر'}: {message.text or SupportTexts.PHOTO_MARKER}"
-        for message in recent_messages
-    ) or "-"
+    recent_messages = ticket.messages[-10:]  # Show more messages for admin
+    msg_lines = []
+    for message in recent_messages:
+        sender = "🛠 ادمین" if message.sender_id != ticket.user_id else "👤 کاربر"
+        content = message.text or SupportTexts.PHOTO_MARKER
+        msg_lines.append(f"{sender}: {content}")
+    rendered_messages = "\n\n".join(msg_lines) or "-"
+
+    user_link = (
+        f"@{ticket.user.username}" if ticket.user.username
+        else f"<a href='tg://user?id={ticket.user.telegram_id}'>مشاهده پروفایل</a>"
+    )
+
+    text = (
+        f"🎫 <b>جزئیات تیکت #{str(ticket.id)[:8]}</b>\n"
+        f"━━━━━━━━━━━━━━━━\n"
+        f"👤 کاربر: {ticket.user.first_name or '-'} | {user_link}\n"
+        f"🆔 آیدی تلگرام: <code>{ticket.user.telegram_id}</code>\n"
+        f"📊 وضعیت: {_format_ticket_status(ticket.status)}\n"
+        f"📨 تعداد پیام‌ها: {len(ticket.messages)}\n"
+        f"━━━━━━━━━━━━━━━━\n\n"
+        f"📝 <b>آخرین پیام‌ها:</b>\n\n"
+        f"{rendered_messages}"
+    )
 
     builder = InlineKeyboardBuilder()
     builder.button(
-        text=SupportTexts.ADMIN_REPLY_BUTTON.format(ticket_short=str(ticket.id)[:8]),
+        text="💬 پاسخ دادن",
         callback_data=SupportTicketActionCallback(action="reply", ticket_id=ticket.id).pack(),
     )
+    if ticket.status != "closed":
+        builder.button(
+            text="🔒 بستن تیکت",
+            callback_data=SupportTicketActionCallback(action="close", ticket_id=ticket.id).pack(),
+        )
     builder.button(
-        text=SupportTexts.CLOSE_TICKET,
-        callback_data=SupportTicketActionCallback(action="close", ticket_id=ticket.id).pack(),
+        text="🔙 لیست تیکت‌ها",
+        callback_data="admin:tickets",
     )
-    builder.adjust(1)
+    builder.adjust(2, 1)
 
-    await safe_edit_or_send(callback, 
-        AdminMessages.TICKET_DETAILS.format(
-            ticket_id=ticket.id,
-            user_name=ticket.user.first_name or ticket.user.username or "کاربر",
-            telegram_id=ticket.user.telegram_id,
-            status=_format_ticket_status(ticket.status),
-            messages=rendered_messages,
-        ),
-        reply_markup=builder.as_markup(),
-    )
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
 @router.callback_query(SupportTicketActionCallback.filter(F.action == "reply"))
@@ -121,7 +140,40 @@ async def support_reply_start(
         prompt_chat_id=callback.message.chat.id if callback.message else None,
         prompt_message_id=callback.message.message_id if callback.message else None,
     )
-    await safe_edit_or_send(callback, SupportTexts.ADMIN_REPLY_PROMPT)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ انصراف", callback_data="admin:support:cancel_reply")
+    builder.adjust(1)
+
+    await safe_edit_or_send(
+        callback,
+        f"💬 پاسخ تیکت #{str(callback_data.ticket_id)[:8]}\n\n"
+        f"{SupportTexts.ADMIN_REPLY_PROMPT}",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "admin:support:cancel_reply")
+async def support_cancel_reply(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    data = await state.get_data()
+    await state.clear()
+
+    # Go back to ticket view if possible
+    raw_ticket_id = data.get("ticket_id")
+    if raw_ticket_id:
+        builder = InlineKeyboardBuilder()
+        builder.button(
+            text="📋 بازگشت به تیکت",
+            callback_data=SupportTicketActionCallback(
+                action="view", ticket_id=UUID(str(raw_ticket_id))
+            ).pack(),
+        )
+        builder.button(text="🔙 لیست تیکت‌ها", callback_data="admin:tickets")
+        builder.adjust(1)
+        await safe_edit_or_send(callback, "❌ پاسخ لغو شد.", reply_markup=builder.as_markup())
+    else:
+        await safe_edit_or_send(callback, "❌ پاسخ لغو شد.")
 
 
 @router.message(SupportReplyStates.waiting_for_reply)
@@ -164,22 +216,38 @@ async def support_reply_submit(
     )
 
     try:
-        user_reply_text = SupportTexts.USER_REPLY.format(
-            ticket_id=ticket.id,
-            message=clean_text or SupportTexts.PHOTO_MARKER
+        user_reply_text = (
+            f"💬 <b>پاسخ پشتیبانی</b> — تیکت #{str(ticket.id)[:8]}\n"
+            f"━━━━━━━━━━━━━━━━\n\n"
+            f"{clean_text or SupportTexts.PHOTO_MARKER}"
         )
+        
+        # Build user reply keyboard with reply + close options
+        user_builder = InlineKeyboardBuilder()
+        user_builder.button(
+            text="💬 پاسخ دادن",
+            callback_data=SupportTicketActionCallback(action="user_reply", ticket_id=ticket.id).pack(),
+        )
+        user_builder.button(
+            text="🔒 بستن تیکت",
+            callback_data=SupportTicketActionCallback(action="user_close", ticket_id=ticket.id).pack(),
+        )
+        user_builder.adjust(2)
+        
         if photo_id:
             await bot.send_photo(
                 chat_id=ticket.user.telegram_id,
                 photo=photo_id,
                 caption=user_reply_text,
-                reply_markup=_build_close_ticket_keyboard(ticket.id),
+                reply_markup=user_builder.as_markup(),
+                parse_mode="HTML",
             )
         else:
             await bot.send_message(
                 chat_id=ticket.user.telegram_id,
                 text=user_reply_text,
-                reply_markup=_build_close_ticket_keyboard(ticket.id),
+                reply_markup=user_builder.as_markup(),
+                parse_mode="HTML",
             )
         ticket.status = "answered"
     except TelegramForbiddenError:
@@ -204,6 +272,21 @@ async def support_reply_submit(
         payload={"user_id": str(ticket.user_id), "status": ticket.status},
     )
     await state.clear()
+
+    # Send confirmation with quick action buttons
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="📋 مشاهده تیکت",
+        callback_data=SupportTicketActionCallback(action="view", ticket_id=ticket.id).pack(),
+    )
+    builder.button(
+        text="🔒 بستن تیکت",
+        callback_data=SupportTicketActionCallback(action="close", ticket_id=ticket.id).pack(),
+    )
+    builder.button(text="📬 لیست تیکت‌ها", callback_data="admin:tickets")
+    builder.adjust(2, 1)
+
+    # Try to edit the prompt message
     prompt_chat_id = state_data.get("prompt_chat_id")
     prompt_message_id = state_data.get("prompt_message_id")
     if prompt_chat_id and prompt_message_id:
@@ -211,12 +294,16 @@ async def support_reply_submit(
             await bot.edit_message_text(
                 chat_id=int(prompt_chat_id),
                 message_id=int(prompt_message_id),
-                text=f"{SupportTexts.ADMIN_REPLY_SENT}\n\nTicket: #{str(ticket.id)[:8]}",
+                text=f"✅ {SupportTexts.ADMIN_REPLY_SENT}\n\nتیکت: #{str(ticket.id)[:8]}",
+                reply_markup=builder.as_markup(),
             )
             return
         except Exception:
             pass
-    await message.answer(SupportTexts.ADMIN_REPLY_SENT)
+    await message.answer(
+        f"✅ {SupportTexts.ADMIN_REPLY_SENT}",
+        reply_markup=builder.as_markup(),
+    )
 
 
 @router.callback_query(SupportTicketActionCallback.filter(F.action == "close"))
@@ -241,16 +328,30 @@ async def support_close_ticket(
         entity_id=ticket.id,
         payload={"status": "closed"},
     )
-    await safe_edit_or_send(callback, SupportTexts.TICKET_CLOSED.format(ticket_id=ticket.id))
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="📬 لیست تیکت‌ها", callback_data="admin:tickets")
+    builder.button(text="🔙 پنل مدیریت", callback_data="admin:main")
+    builder.adjust(1)
+
+    await safe_edit_or_send(
+        callback,
+        f"✅ تیکت #{str(ticket.id)[:8]} با موفقیت بسته شد.",
+        reply_markup=builder.as_markup(),
+    )
 
 
 def _build_close_ticket_keyboard(ticket_id: UUID):
     builder = InlineKeyboardBuilder()
     builder.button(
-        text=SupportTexts.CLOSE_TICKET,
-        callback_data=SupportTicketActionCallback(action="close", ticket_id=ticket_id).pack(),
+        text="💬 پاسخ دادن",
+        callback_data=SupportTicketActionCallback(action="user_reply", ticket_id=ticket_id).pack(),
     )
-    builder.adjust(1)
+    builder.button(
+        text=SupportTexts.CLOSE_TICKET,
+        callback_data=SupportTicketActionCallback(action="user_close", ticket_id=ticket_id).pack(),
+    )
+    builder.adjust(2)
     return builder.as_markup()
 
 def _build_ticket_preview(ticket: Ticket) -> str:
@@ -266,7 +367,7 @@ def _build_ticket_preview(ticket: Ticket) -> str:
 
 def _format_ticket_status(status: str) -> str:
     return {
-        "open": "باز",
-        "answered": "پاسخ داده شده",
-        "closed": "بسته",
+        "open": "🟢 باز",
+        "answered": "🟡 پاسخ داده شده",
+        "closed": "🔴 بسته",
     }.get(status, status)

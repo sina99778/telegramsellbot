@@ -43,20 +43,23 @@ async def support_start(message: Message, state: FSMContext, session: AsyncSessi
     
     await state.set_state(UserSupportStates.waiting_for_issue)
     
-    from aiogram.types import InlineKeyboardMarkup
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-
     builder = InlineKeyboardBuilder()
     builder.button(text="❌ انصراف و خروج از پشتیبانی", callback_data="support:cancel")
+    if ticket:
+        builder.button(
+            text="🔒 بستن تیکت",
+            callback_data=SupportTicketActionCallback(action="user_close", ticket_id=ticket.id).pack(),
+        )
+    builder.adjust(1)
     reply_markup = builder.as_markup()
 
     if ticket:
-        messages = ticket.messages[-5:] # Last 5 messages
+        messages = ticket.messages[-5:]  # Last 5 messages
         history_text = SupportTexts.HISTORY_TITLE.format(ticket_id=str(ticket.id)[:8])
         for msg in messages:
-            sender = "شما" if msg.sender_id == user.id else "پشتیبانی"
+            sender = "👤 شما" if msg.sender_id == user.id else "🛠 پشتیبانی"
             content = msg.text or SupportTexts.PHOTO_MARKER
-            history_text += f"🔹 {sender}: {content}\n"
+            history_text += f"{sender}: {content}\n"
         
         history_text += f"\n{SupportTexts.START}"
         await message.answer(history_text, reply_markup=reply_markup)
@@ -77,6 +80,49 @@ async def support_cancel_handler(callback: CallbackQuery, state: FSMContext) -> 
         pass
     
     await callback.message.answer(Messages.CANCELLED)
+
+
+@router.callback_query(SupportTicketActionCallback.filter(F.action == "user_reply"))
+async def user_reply_to_ticket(
+    callback: CallbackQuery,
+    callback_data: SupportTicketActionCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """User clicks 'Reply' button on admin's response — enter support typing mode."""
+    await callback.answer()
+    if callback.from_user is None:
+        return
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        return
+
+    ticket_repository = TicketRepository(session)
+    ticket = await ticket_repository.get(callback_data.ticket_id)
+    if ticket is None or ticket.user_id != user.id:
+        await callback.message.answer("تیکت پیدا نشد یا متعلق به شما نیست.")
+        return
+
+    if ticket.status == "closed":
+        await callback.message.answer("این تیکت بسته شده است. برای ارسال پیام جدید از بخش پشتیبانی اقدام کنید.")
+        return
+
+    await state.set_state(UserSupportStates.waiting_for_issue)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ انصراف", callback_data="support:cancel")
+    builder.button(
+        text="🔒 بستن تیکت",
+        callback_data=SupportTicketActionCallback(action="user_close", ticket_id=ticket.id).pack(),
+    )
+    builder.adjust(1)
+
+    await callback.message.answer(
+        f"💬 تیکت #{str(ticket.id)[:8]}\n\n"
+        "پیام یا تصویر خود را ارسال کنید:",
+        reply_markup=builder.as_markup(),
+    )
 
 
 @router.message(UserSupportStates.waiting_for_issue)
@@ -119,16 +165,11 @@ async def support_submit(
         photo_id=photo_id
     )
     
-    # We do NOT clear the state anymore, so user stays in conversation mode.
-    # However, we send a confirmation for the first message only or a small reaction?
-    # User requested history, so they can keep typing.
+    # We do NOT clear the state — user stays in conversation mode.
     
     if is_new_ticket:
-        await message.answer(SupportTexts.TICKET_CREATED.format(ticket_id=ticket.id))
+        await message.answer(SupportTexts.TICKET_CREATED.format(ticket_id=str(ticket.id)[:8]))
     else:
-        # Just a small acknowledgement or nothing? Telegram "delivered" is usually enough but bot can't show that.
-        # Let's send a small text or just let it be. 
-        # Actually, let's just confirm receipt to be safe.
         await message.answer("✅ پیام شما ثبت شد و برای پشتیبان ارسال گردید.")
 
     # Alert admins
@@ -146,7 +187,7 @@ async def support_submit(
     
     display_content = text or SupportTexts.PHOTO_MARKER
     alert_text = SupportTexts.ADMIN_ALERT.format(
-        ticket_id=ticket.id,
+        ticket_id=str(ticket.id)[:8],
         name=user.first_name or "-",
         telegram_id=user.telegram_id,
         message=display_content.strip() if display_content else "-",
@@ -171,11 +212,12 @@ async def support_submit(
             admin.is_bot_blocked = True
 
 
-@router.callback_query(SupportTicketActionCallback.filter(F.action == "close"))
+@router.callback_query(SupportTicketActionCallback.filter(F.action == "user_close"))
 async def user_close_ticket(
     callback: CallbackQuery,
     callback_data: SupportTicketActionCallback,
     session: AsyncSession,
+    state: FSMContext,
 ) -> None:
     """Allow the user to close their own ticket via the button sent with admin replies."""
     await callback.answer()
@@ -197,7 +239,18 @@ async def user_close_ticket(
         return
 
     await ticket_repository.set_status(ticket, "closed")
-    await callback.message.edit_text(  # type: ignore[union-attr]
-        SupportTexts.TICKET_CLOSED.format(ticket_id=ticket.id),
-        reply_markup=None,
-    )
+    
+    # Clear support state if active
+    if await state.get_state() is not None:
+        await state.clear()
+
+    try:
+        await callback.message.edit_text(  # type: ignore[union-attr]
+            f"✅ تیکت #{str(ticket.id)[:8]} با موفقیت بسته شد.\n"
+            "اگر مشکل دیگری دارید، می‌توانید از بخش پشتیبانی تیکت جدید ایجاد کنید.",
+            reply_markup=None,
+        )
+    except Exception:
+        await callback.message.answer(
+            f"✅ تیکت #{str(ticket.id)[:8]} با موفقیت بسته شد."
+        )

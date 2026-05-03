@@ -64,13 +64,20 @@ async def handle_nowpayments_ipn(
             detail="Invalid JSON payload.",
         ) from exc
 
-    provider_payment_id = str(payload.get("payment_id", "")).strip()
-    payment_status_str = str(payload.get("payment_status", "")).strip().lower()
-    order_id_from_payload = str(payload.get("order_id", "")).strip()
+    provider_payment_id = str(payload.get("payment_id") or "").strip()
+    payment_status_str = str(payload.get("payment_status") or "").strip().lower()
+    order_id_from_payload = str(payload.get("order_id") or "").strip()
+    invoice_id_from_payload = str(payload.get("invoice_id") or "").strip()
+
+    # Guard against "None" strings from the API
+    if order_id_from_payload.lower() in ("", "none", "null"):
+        order_id_from_payload = ""
+    if invoice_id_from_payload.lower() in ("", "none", "null"):
+        invoice_id_from_payload = ""
 
     logger.info(
-        "IPN payload: payment_id=%s, status=%s, order_id=%s",
-        provider_payment_id, payment_status_str, order_id_from_payload,
+        "IPN payload: payment_id=%s, status=%s, order_id=%s, invoice_id=%s",
+        provider_payment_id, payment_status_str, order_id_from_payload, invoice_id_from_payload,
     )
 
     if not provider_payment_id:
@@ -79,7 +86,7 @@ async def handle_nowpayments_ipn(
             detail="Missing payment_id in NOWPayments callback.",
         )
 
-    # Find payment: try provider_payment_id, then order_id
+    # Find payment: try provider_payment_id, then order_id, then invoice_id
     payment = await session.scalar(
         select(Payment).where(Payment.provider_payment_id == provider_payment_id).with_for_update()
     )
@@ -88,9 +95,17 @@ async def handle_nowpayments_ipn(
         payment = await session.scalar(
             select(Payment).where(Payment.order_id == order_id_from_payload).with_for_update()
         )
+    if payment is None and invoice_id_from_payload:
+        logger.info("Payment not found by order_id, trying provider_invoice_id=%s", invoice_id_from_payload)
+        payment = await session.scalar(
+            select(Payment).where(Payment.provider_invoice_id == invoice_id_from_payload).with_for_update()
+        )
 
     if payment is None:
-        logger.error("IPN: Payment NOT FOUND for payment_id=%s, order_id=%s", provider_payment_id, order_id_from_payload)
+        logger.error(
+            "IPN: Payment NOT FOUND for payment_id=%s, order_id=%s, invoice_id=%s",
+            provider_payment_id, order_id_from_payload, invoice_id_from_payload,
+        )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Payment not found.",
