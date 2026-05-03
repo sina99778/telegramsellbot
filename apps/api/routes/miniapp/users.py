@@ -13,7 +13,7 @@ from collections.abc import Mapping
 from decimal import Decimal, InvalidOperation
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlparse
 from uuid import UUID, uuid4
 
 from aiogram import Bot
@@ -683,12 +683,13 @@ async def update_admin_server_sub_scheme(
     scheme = str(body.get("scheme") or "").strip().lower()
     if scheme not in {"http", "https", "panel"}:
         raise HTTPException(status_code=400, detail="نوع لینک باید http، https یا panel باشد.")
+    old_scheme = _server_subscription_scheme(server)
+    host = _server_subscription_host(server)
     if scheme == "panel":
         scheme = "https" if server.base_url.strip().lower().startswith("https://") else "http"
-    metadata = dict(server.metadata_ or {})
-    old_scheme = metadata.get("subscription_scheme")
-    metadata["subscription_scheme"] = scheme
-    server.metadata_ = metadata
+        server.sub_domain = host if server.sub_domain else None
+    else:
+        server.sub_domain = f"{scheme}://{host}"
     _record_admin_action(
         session,
         user,
@@ -1455,7 +1456,7 @@ async def _admin_servers(session: AsyncSession) -> list[dict[str, Any]]:
             "title": s.name,
             "subtitle": (
                 f"{s.health_status} | {'فعال' if s.is_active else 'غیرفعال'} | "
-                f"sub: {str((s.metadata_ or {}).get('subscription_scheme') or ('https' if s.base_url.lower().startswith('https://') else 'http'))} | "
+                f"sub: {_server_subscription_scheme(s)} | "
                 f"priority {s.priority}"
             ),
             "actions": [
@@ -1467,6 +1468,21 @@ async def _admin_servers(session: AsyncSession) -> list[dict[str, Any]]:
         }
         for s in result.scalars().all()
     ]
+
+
+def _server_subscription_scheme(server: XUIServerRecord) -> str:
+    sub_domain = (server.sub_domain or "").strip().lower()
+    if sub_domain.startswith(("http://", "https://")):
+        return urlparse(sub_domain).scheme
+    return "https" if server.base_url.strip().lower().startswith("https://") else "http"
+
+
+def _server_subscription_host(server: XUIServerRecord) -> str:
+    raw = (server.sub_domain or server.base_url or "").strip()
+    if raw.startswith(("http://", "https://")):
+        parsed = urlparse(raw)
+        return parsed.hostname or raw
+    return raw.split("/")[0].split(":")[0]
 
 
 async def _admin_tickets(session: AsyncSession) -> list[dict[str, Any]]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from urllib.parse import urlparse
 
 from pydantic import SecretStr
 
@@ -22,11 +23,11 @@ def build_sub_link(server: XUIServerRecord, sub_id: str) -> str:
     If server.sub_domain is set, use it instead of extracting from base_url.
     Result: <scheme>://<host>:<port>/sub/<sub_id>
     """
+    scheme = None
     if server.sub_domain:
-        host = server.sub_domain
+        scheme, host = _split_optional_scheme(server.sub_domain)
     else:
         host = _extract_host(server.base_url)
-    scheme = str((server.metadata_ or {}).get("subscription_scheme") or "").lower()
     if scheme not in {"http", "https"}:
         scheme = "https" if server.base_url.strip().lower().startswith("https://") else "http"
     sub_port = server.subscription_port
@@ -212,6 +213,14 @@ def _extract_host(base_url: str) -> str:
     # Strip port
     host = host_port.split(":")[0]
     return host
+
+
+def _split_optional_scheme(value: str) -> tuple[str | None, str]:
+    raw = value.strip()
+    if raw.lower().startswith(("http://", "https://")):
+        parsed = urlparse(raw)
+        return parsed.scheme.lower(), parsed.hostname or _extract_host(raw)
+    return None, raw.split("/")[0].split(":")[0]
 
 
 def build_xui_client_config(server: XUIServerRecord) -> XUIClientConfig:
