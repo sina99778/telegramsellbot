@@ -322,6 +322,25 @@ async def my_config_detail_handler(
 
     sub_link = sub.sub_link or (xui.sub_link if xui else None) or "-"
 
+    # Dynamically rebuild sub_link from current server settings
+    # This ensures users always see the correct link even if admin changed server config
+    if xui and xui.inbound and xui.inbound.server and sub_link != "-" and "/" in sub_link:
+        try:
+            from services.xui.runtime import build_sub_link
+            stored_sub_id = sub_link.rsplit("/", 1)[-1]
+            if stored_sub_id:
+                fresh_sub_link = build_sub_link(xui.inbound.server, stored_sub_id)
+                if fresh_sub_link != sub_link:
+                    logger.info(
+                        "Sub link updated for sub %s: %s -> %s",
+                        sub.id, sub_link, fresh_sub_link,
+                    )
+                    sub.sub_link = fresh_sub_link
+                    xui.sub_link = fresh_sub_link
+                    sub_link = fresh_sub_link
+        except Exception as exc:
+            logger.warning("Failed to rebuild sub_link for sub %s: %s", sub.id, exc)
+
     # Try to build vless URI from xui record
     vless_uri = None
     if xui and xui.inbound:

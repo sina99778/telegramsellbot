@@ -158,6 +158,10 @@ async def _get_renewal_data(state: FSMContext, session: AsyncSession, user_id: i
     renew_price = data.get("renew_price")
 
     if not all([sub_id_str, renew_type, renew_amount is not None, renew_price is not None]):
+        logger.warning(
+            "[RENEWAL] Missing FSM data for user %s: sub_id=%s, type=%s, amount=%s, price=%s, all_keys=%s",
+            user_id, sub_id_str, renew_type, renew_amount, renew_price, list(data.keys()),
+        )
         return None
 
     user = await UserRepository(session).get_by_telegram_id(user_id)
