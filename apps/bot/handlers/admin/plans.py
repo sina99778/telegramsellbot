@@ -767,16 +767,15 @@ async def delete_plan(
     await list_plans(callback, PlanListPageCallback(page=callback_data.page), session)
 
 
-class ChangeInboundCallback(CallbackData, prefix="plan_inb"):
-    plan_id: UUID
+class ChangeInboundCallback(CallbackData, prefix="chinb"):
     inbound_id: UUID
-    page: int = 1
 
 
 @router.callback_query(PlanActionCallback.filter(F.action == "change_inbound"))
 async def change_inbound_start(
     callback: CallbackQuery,
     callback_data: PlanActionCallback,
+    state: FSMContext,
     session: AsyncSession,
 ) -> None:
     await callback.answer()
@@ -788,6 +787,12 @@ async def change_inbound_start(
     if plan is None:
         await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
         return
+
+    # Store plan_id in FSM state (callback data too large for 2 UUIDs - 84 bytes > 64 limit)
+    await state.update_data(
+        change_inbound_plan_id=str(plan.id),
+        change_inbound_page=callback_data.page,
+    )
 
     # Current inbound info
     if plan.inbound and plan.inbound.server:
@@ -818,9 +823,7 @@ async def change_inbound_start(
         builder.button(
             text=f"{is_current}{server_name} — {inb.remark} ({inb.protocol})",
             callback_data=ChangeInboundCallback(
-                plan_id=plan.id,
                 inbound_id=inb.id,
-                page=callback_data.page,
             ).pack(),
         )
     builder.button(
@@ -841,11 +844,21 @@ async def change_inbound_start(
 async def change_inbound_confirm(
     callback: CallbackQuery,
     callback_data: ChangeInboundCallback,
+    state: FSMContext,
     session: AsyncSession,
     admin_user: User,
 ) -> None:
     await callback.answer()
-    plan = await session.get(Plan, callback_data.plan_id)
+
+    # Get plan_id from FSM state (was stored in change_inbound_start)
+    data = await state.get_data()
+    plan_id_str = data.get("change_inbound_plan_id")
+    page = data.get("change_inbound_page", 1)
+    if not plan_id_str:
+        await safe_edit_or_send(callback, "\u274c \u0627\u0637\u0644\u0627\u0639\u0627\u062a \u067e\u0644\u0646 \u06cc\u0627\u0641\u062a \u0646\u0634\u062f. \u062f\u0648\u0628\u0627\u0631\u0647 \u062a\u0644\u0627\u0634 \u06a9\u0646\u06cc\u062f.")
+        return
+
+    plan = await session.get(Plan, UUID(plan_id_str))
     if plan is None:
         await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
         return
@@ -856,7 +869,7 @@ async def change_inbound_confirm(
         .where(XUIInboundRecord.id == callback_data.inbound_id)
     )
     if new_inbound is None:
-        await safe_edit_or_send(callback, "❌ اینباند پیدا نشد.")
+        await safe_edit_or_send(callback, "\u274c \u0627\u06cc\u0646\u0628\u0627\u0646\u062f \u067e\u06cc\u062f\u0627 \u0646\u0634\u062f.")
         return
 
     old_inbound_id = plan.inbound_id
@@ -875,10 +888,12 @@ async def change_inbound_confirm(
         },
     )
 
-    server_name = new_inbound.server.name if new_inbound.server else "نامشخص"
-    await callback.answer(f"✅ سرور پلن به {server_name} تغییر یافت.", show_alert=True)
+    # Clean up FSM state
+    await state.update_data(change_inbound_plan_id=None, change_inbound_page=None)
 
-    await view_plan(callback, ViewPlanCallback(plan_id=plan.id, page=callback_data.page), session)
+    server_name = new_inbound.server.name if new_inbound.server else "\u0646\u0627\u0645\u0634\u062e\u0635"
+    await callback.answer(f"\u2705 \u0633\u0631\u0648\u0631 \u067e\u0644\u0646 \u0628\u0647 {server_name} \u062a\u063a\u06cc\u06cc\u0631 \u06cc\u0627\u0641\u062a.", show_alert=True)
+    await view_plan(callback, ViewPlanCallback(plan_id=plan.id, page=page), session)
 
 
 def _build_plan_list_keyboard(
