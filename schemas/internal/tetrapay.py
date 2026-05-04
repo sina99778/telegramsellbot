@@ -12,10 +12,12 @@ class TetraPayCreateOrderRequest(BaseModel):
 
 
 class TetraPayCreateOrderResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     status: str | int
-    Authority: str
-    payment_url_bot: str
-    payment_url_web: str
+    Authority: str = Field(alias="Authority")
+    payment_url_bot: str = ""
+    payment_url_web: str = ""
     tracking_id: str | None = None
 
 
@@ -25,13 +27,28 @@ class TetraPayVerifyRequest(BaseModel):
 
 
 class TetraPayVerifyResponse(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
     status: str | int
-    Hash_id: str | None = None
+    Hash_id: str | None = Field(default=None, alias="Hash_id")
     authority: str | None = None
 
 
 class TetraPayCallbackPayload(BaseModel):
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
-    status: str | int
+    """TetraPay callback payload.
+
+    TetraPay sends inconsistent field names across different endpoints:
+    - hash_id, hashid, Hash_id
+    - status, Status
+    We handle all variations via aliases and extra="allow".
+    """
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    status: str | int = Field(default="", alias="status")
     hash_id: str | None = Field(default=None, alias="hashid")
-    authority: str
+    Hash_id: str | None = Field(default=None, alias="Hash_id")
+    authority: str = ""
+
+    def get_hash_id(self) -> str | None:
+        """Return hash_id from whichever field was populated."""
+        return self.hash_id or self.Hash_id or None

@@ -464,7 +464,7 @@ async def renew_pay_tetrapay(
         f"🔖 فاکتور تمدید (ریالی):\n\n"
         f"💵 مبلغ: {toman_amount:,} تومان\n\n"
         "بعد از پرداخت و تایید، تمدید به صورت خودکار اعمال می‌شود.",
-        reply_markup=build_topup_link_keyboard(invoice_url=tx.payment_url_bot, bot_url=tx.payment_url_bot),
+        reply_markup=build_topup_link_keyboard(invoice_url=tx.payment_url_web, bot_url=tx.payment_url_bot),
     )
 
 

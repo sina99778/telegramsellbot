@@ -1176,10 +1176,14 @@ async def _process_tetrapay_purchase(
         "purpose": "direct_purchase",
     }
     
+    # Use DB-configured API key if available, otherwise fall back to env
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    effective_tetra_key = gw.tetrapay_api_key if gw.tetrapay_api_key else settings.tetrapay_api_key.get_secret_value()
+
     try:
         async with TetraPayClient(
             TetraPayClientConfig(
-                api_key=settings.tetrapay_api_key.get_secret_value(),
+                api_key=effective_tetra_key,
                 base_url=settings.tetrapay_base_url,
             )
         ) as client:
@@ -1233,7 +1237,7 @@ async def _process_tetrapay_purchase(
         "👇 برای پرداخت روی دکمه زیر کلیک کنید:"
     )
     await safe_edit_or_send(
-        callback, text, reply_markup=build_topup_link_keyboard(invoice_url=tx.payment_url_bot, bot_url=tx.payment_url_bot)
+        callback, text, reply_markup=build_topup_link_keyboard(invoice_url=tx.payment_url_web, bot_url=tx.payment_url_bot)
     )
 
 
