@@ -257,8 +257,30 @@ async def renew_pay_wallet(
         metadata={"sub_id": str(sub.id), "type": renew_type},
     )
 
-    # Apply renewal
-    await _apply_renewal(sub, renew_type, amount, session)
+    # Apply renewal — if X-UI sync fails, the exception will propagate
+    try:
+        await _apply_renewal(sub, renew_type, amount, session)
+    except Exception as exc:
+        logger.error("Renewal X-UI sync failed for sub %s: %s", sub.id, exc, exc_info=True)
+        # Refund the wallet debit since renewal was not applied on the panel
+        await wallet_manager.process_transaction(
+            user_id=user.id,
+            amount=price,
+            transaction_type="refund",
+            direction="credit",
+            currency="USD",
+            reference_type="order",
+            reference_id=order.id,
+            description=f"Refund: renewal failed (panel unreachable)",
+            metadata={"sub_id": str(sub.id), "error": str(exc)[:200]},
+        )
+        order.status = "failed"
+        await safe_edit_or_send(callback,
+            "❌ خطا در اعمال تمدید روی سرور!\n\n"
+            "ارتباط با پنل X-UI برقرار نشد. مبلغ تمدید به کیف پول شما برگردانده شد.\n"
+            "لطفاً بعداً دوباره تلاش کنید."
+        )
+        return
 
     await safe_edit_or_send(callback, Messages.RENEWAL_SUCCESS)
 
@@ -527,87 +549,18 @@ async def renew_pay_manual(
 
 
 async def _apply_renewal(sub, renew_type: str, amount: float, session: AsyncSession) -> None:
-    """Apply the actual renewal (volume or time) to the subscription and sync with X-UI."""
-    from datetime import datetime, timezone, timedelta
-    now_utc = datetime.now(timezone.utc)
-
-    if renew_type == "volume":
-        bytes_to_add = int(amount * 1024**3)
-        sub.volume_bytes += bytes_to_add
-
-    if renew_type == "time":
-        days_to_add = int(amount)
-        if sub.ends_at is None:
-            if sub.activated_at is not None:
-                sub.ends_at = sub.activated_at + timedelta(days=days_to_add)
-            elif sub.status == "expired":
-                sub.ends_at = now_utc + timedelta(days=days_to_add)
-        else:
-            if sub.ends_at < now_utc:
-                sub.ends_at = now_utc + timedelta(days=days_to_add)
-            else:
-                sub.ends_at += timedelta(days=days_to_add)
-
-    # Change status back to active if it was expired
-    if sub.status == "expired":
-        sub.status = "active"
-
-    # Sync with X-UI panel
-    xui = sub.xui_client
-    if xui:
-        from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
-
-        xui_full = await session.scalar(
-            select(XUIClientRecord)
-            .options(
-                selectinload(XUIClientRecord.inbound)
-                .selectinload(XUIInboundRecord.server)
-                .selectinload(XUIServerRecord.credentials)
-            )
-            .where(XUIClientRecord.id == xui.id)
-        )
-
-        if xui_full and xui_full.inbound and xui_full.inbound.server:
-            try:
-                server = ensure_inbound_server_loaded(xui_full.inbound)
-                config = build_xui_client_config(server)
-                async with SanaeiXUIClient(config) as client:
-                    expiry_time = 0
-                    if sub.ends_at:
-                        expiry_time = int(sub.ends_at.timestamp() * 1000)
-
-                    # Extract subId from sub_link
-                    existing_sub_id = ""
-                    current_sub_link = sub.sub_link or (xui_full.sub_link if xui_full else "") or ""
-                    if current_sub_link and "/" in current_sub_link:
-                        existing_sub_id = current_sub_link.rsplit("/", 1)[-1]
-                    security_settings = await AppSettingsRepository(session).get_service_security_settings()
-
-                    # Reset X-UI state and make active
-                    xui_c = XUIClient(
-                        id=xui_full.client_uuid,
-                        uuid=xui_full.client_uuid,
-                        email=xui_full.email,
-                        enable=True,
-                        limitIp=security_settings.xui_limit_ip,
-                        totalGB=sub.volume_bytes,
-                        expiryTime=expiry_time,
-                        subId=existing_sub_id,
-                        comment=xui_full.username or "",
-                    )
-                    
-                    # Ensure XUI record is also marked as active locally
-                    xui_full.is_active = True
-                    
-                    await client.update_client(
-                        inbound_id=xui_full.inbound.xui_inbound_remote_id,
-                        client_id=xui_full.client_uuid,
-                        client=xui_c,
-                    )
-            except Exception as e:
-                logger.error("Failed to sync X-UI limit on renewal: %s", e, exc_info=True)
-
-    await session.flush()
+    """Apply the actual renewal (volume or time) to the subscription and sync with X-UI.
+    
+    Delegates to services.renewal.apply_renewal which uses a savepoint to ensure
+    that if X-UI sync fails, ALL DB changes are rolled back.
+    """
+    from services.renewal import apply_renewal
+    await apply_renewal(
+        session=session,
+        subscription=sub,
+        renew_type=renew_type,
+        amount=amount,
+    )
 
 
 async def _notify_renewal_admins(callback, user, renew_type, amount, price, session) -> None:

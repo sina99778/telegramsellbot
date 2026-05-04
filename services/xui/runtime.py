@@ -21,6 +21,13 @@ def build_sub_link(server: XUIServerRecord, sub_id: str) -> str:
     Subscription service uses server.subscription_port (default 2096).
 
     If server.sub_domain is set, use it instead of extracting from base_url.
+    sub_domain can include scheme: "http://sub.example.com" or "https://sub.example.com"
+
+    IMPORTANT: X-UI Sanaei subscription service runs on HTTP by default.
+    The sub link scheme should NOT be inherited from the admin panel URL
+    (which may be HTTPS). Default is always 'http' unless sub_domain
+    explicitly specifies 'https://'.
+
     Result: <scheme>://<host>:<port>/sub/<sub_id>
     """
     scheme = None
@@ -28,8 +35,12 @@ def build_sub_link(server: XUIServerRecord, sub_id: str) -> str:
         scheme, host = _split_optional_scheme(server.sub_domain)
     else:
         host = _extract_host(server.base_url)
+
+    # Default to http for X-UI subscription service
+    # Only use https if sub_domain explicitly specifies it
     if scheme not in {"http", "https"}:
-        scheme = "https" if server.base_url.strip().lower().startswith("https://") else "http"
+        scheme = "http"
+
     sub_port = server.subscription_port
     return f"{scheme}://{host}:{sub_port}/sub/{sub_id}"
 
@@ -46,7 +57,6 @@ def build_vless_uri(
     Build a VLESS/VMess URI by reading actual stream settings from inbound metadata.
     Supports: tcp, ws, grpc, http, kcp networks and none/tls/reality security.
     """
-    # Use config_domain if set, otherwise extract from base_url
     if server.config_domain:
         host = server.config_domain
     else:

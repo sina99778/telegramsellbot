@@ -17,6 +17,10 @@ from services.xui.runtime import build_xui_client_config, ensure_inbound_server_
 logger = logging.getLogger(__name__)
 
 
+class RenewalXUISyncError(Exception):
+    """Raised when renewal was computed but X-UI panel sync failed."""
+
+
 def calculate_renewal_price(
     *,
     renew_type: str,
@@ -41,30 +45,37 @@ async def apply_renewal(
     renew_type: str,
     amount: float,
 ) -> None:
+    """Apply renewal to subscription. Uses savepoint so that if X-UI sync fails,
+    ALL DB changes (volume/time/status) are rolled back automatically."""
     now_utc = datetime.now(timezone.utc)
 
-    if renew_type == "volume":
-        subscription.volume_bytes += int(amount * 1024**3)
-    elif renew_type == "time":
-        days_to_add = int(amount)
-        if subscription.ends_at is None:
-            base = subscription.activated_at or now_utc
-            subscription.ends_at = base + timedelta(days=days_to_add)
-        elif subscription.ends_at < now_utc:
-            subscription.ends_at = now_utc + timedelta(days=days_to_add)
+    # Use a savepoint (nested transaction) so we can rollback on X-UI failure
+    async with session.begin_nested():
+        # Calculate new values
+        if renew_type == "volume":
+            subscription.volume_bytes += int(amount * 1024**3)
+        elif renew_type == "time":
+            days_to_add = int(amount)
+            if subscription.ends_at is None:
+                base = subscription.activated_at or now_utc
+                subscription.ends_at = base + timedelta(days=days_to_add)
+            elif subscription.ends_at < now_utc:
+                subscription.ends_at = now_utc + timedelta(days=days_to_add)
+            else:
+                subscription.ends_at += timedelta(days=days_to_add)
         else:
-            subscription.ends_at += timedelta(days=days_to_add)
-    else:
-        raise ValueError("Invalid renewal type.")
+            raise ValueError("Invalid renewal type.")
 
-    if subscription.status == "expired":
-        subscription.status = "active"
+        if subscription.status == "expired":
+            subscription.status = "active"
 
-    xui = subscription.xui_client
-    if xui is not None:
-        await _sync_xui_limits(session, subscription, xui)
+        # Sync with X-UI panel — if this fails, the savepoint is rolled back
+        xui = subscription.xui_client
+        if xui is not None:
+            await _sync_xui_limits(session, subscription, xui)
 
-    await session.flush()
+        await session.flush()
+    # If we reach here, both DB and X-UI are updated successfully
 
 
 async def _sync_xui_limits(
@@ -114,3 +125,6 @@ async def _sync_xui_limits(
             )
     except Exception as exc:
         logger.error("Failed to sync X-UI limits after renewal: %s", exc, exc_info=True)
+        raise RenewalXUISyncError(
+            f"Renewal could not be applied on X-UI panel: {exc}"
+        ) from exc
