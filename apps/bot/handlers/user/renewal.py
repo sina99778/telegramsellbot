@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 router = Router(name="user-renewal")
 
+# In-process lock: tracks (user_id, sub_id) pairs currently being renewed
+# This prevents double-processing when user taps a button multiple times fast
+_RENEWAL_IN_PROGRESS: set[str] = set()
+
 
 class RenewTypeCallback(CallbackData, prefix="renew"):
     type: str # 'volume' or 'time'
@@ -237,6 +241,14 @@ async def renew_pay_wallet(
         )
         return
 
+    # ─── Double-tap protection ───────────────────────────────────────────────
+    lock_key = f"{callback.from_user.id}:{sub_id}"
+    if lock_key in _RENEWAL_IN_PROGRESS:
+        await callback.answer("⛔ تمدید در حال پردازش است — لطفاً صبر کنید.", show_alert=True)
+        return
+    _RENEWAL_IN_PROGRESS.add(lock_key)
+    # ────────────────────────────────────────────────────────
+
     await state.clear()
 
     # Send loading message as a NEW message so we can edit it with the result
@@ -245,85 +257,91 @@ async def renew_pay_wallet(
     except Exception:
         loading_msg = None
 
-    # Optionally delete the payment method selection message
+    # Delete the payment method selection message
     try:
         await callback.message.delete()
     except Exception:
         pass
 
-    # Create order
-    order = Order(
-        user_id=user.id,
-        plan_id=sub.plan_id,
-        amount=price,
-        currency="USD",
-        status="completed",
-        source="bot",
-    )
-    session.add(order)
-    await session.flush()
-
-    # Link order to subscription
-    sub.order_id = order.id
-
-    # Deduct from wallet using WalletManager
-    from services.wallet.manager import WalletManager
-    wallet_manager = WalletManager(session)
-    await wallet_manager.process_transaction(
-        user_id=user.id,
-        amount=price,
-        transaction_type="renewal",
-        direction="debit",
-        currency="USD",
-        reference_type="order",
-        reference_id=order.id,
-        description=f"Renewal of subscription {sub.id}",
-        metadata={"sub_id": str(sub.id), "type": renew_type},
-    )
-
-    # Apply renewal — if X-UI sync fails, the exception will propagate
     try:
-        await _apply_renewal(sub, renew_type, amount, session)
-    except Exception as exc:
-        logger.error("Renewal X-UI sync failed for sub %s: %s", sub.id, exc, exc_info=True)
-        # Refund the wallet debit since renewal was not applied on the panel
+        # Create order
+        order = Order(
+            user_id=user.id,
+            plan_id=sub.plan_id,
+            amount=price,
+            currency="USD",
+            status="completed",
+            source="bot",
+        )
+        session.add(order)
+        await session.flush()
+
+        # Link order to subscription
+        sub.order_id = order.id
+
+        # Deduct from wallet using WalletManager
+        from services.wallet.manager import WalletManager
+        wallet_manager = WalletManager(session)
         await wallet_manager.process_transaction(
             user_id=user.id,
             amount=price,
-            transaction_type="refund",
-            direction="credit",
+            transaction_type="renewal",
+            direction="debit",
             currency="USD",
             reference_type="order",
             reference_id=order.id,
-            description=f"Refund: renewal failed (panel unreachable)",
-            metadata={"sub_id": str(sub.id), "error": str(exc)[:200]},
+            description=f"Renewal of subscription {sub.id}",
+            metadata={"sub_id": str(sub.id), "type": renew_type},
         )
-        order.status = "failed"
-        error_text = (
-            "❌ خطا در اعمال تمدید روی سرور!\n\n"
-            "ارتباط با پنل X-UI برقرار نشد. مبلغ تمدید به کیف پول شما برگردانده شد.\n"
-            "لطفاً بعداً دوباره تلاش کنید."
-        )
+
+        # Apply renewal — if X-UI sync fails, the exception will propagate
+        try:
+            await _apply_renewal(sub, renew_type, amount, session)
+        except Exception as exc:
+            logger.error("Renewal X-UI sync failed for sub %s: %s", sub.id, exc, exc_info=True)
+            # Refund the wallet debit since renewal was not applied on the panel
+            await wallet_manager.process_transaction(
+                user_id=user.id,
+                amount=price,
+                transaction_type="refund",
+                direction="credit",
+                currency="USD",
+                reference_type="order",
+                reference_id=order.id,
+                description="Refund: renewal failed (panel unreachable)",
+                metadata={"sub_id": str(sub.id), "error": str(exc)[:200]},
+            )
+            order.status = "failed"
+            error_text = (
+                "❌ خطا در اعمال تمدید روی سرور!\n\n"
+                "ارتباط با پنل X-UI برقرار نشد. مبلغ تمدید به کیف پول شما برگردانده شد.\n"
+                "لطفاً بعداً دوباره تلاش کنید."
+            )
+            if loading_msg:
+                try:
+                    await loading_msg.edit_text(error_text)
+                except Exception:
+                    await callback.message.answer(error_text)
+            else:
+                await callback.message.answer(error_text)
+            return
+
+        success_text = Messages.RENEWAL_SUCCESS
         if loading_msg:
             try:
-                await loading_msg.edit_text(error_text)
+                await loading_msg.edit_text(success_text)
             except Exception:
-                await callback.message.answer(error_text)
+                await callback.message.answer(success_text)
         else:
-            await callback.message.answer(error_text)
-        return
-
-    success_text = Messages.RENEWAL_SUCCESS
-    if loading_msg:
-        try:
-            await loading_msg.edit_text(success_text)
-        except Exception:
             await callback.message.answer(success_text)
-    else:
-        await callback.message.answer(success_text)
 
-    # Notify admins
-    await _notify_renewal_admins(callback, user, renew_type, amount, price, session)
+        # Notify admins
+        await _notify_renewal_admins(callback, user, renew_type, amount, price, session)
+
+    finally:
+        # Always release the lock
+        _RENEWAL_IN_PROGRESS.discard(lock_key)
+
 
 
 @router.callback_query(RenewPayCallback.filter(F.m == "n"))
