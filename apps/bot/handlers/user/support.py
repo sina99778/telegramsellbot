@@ -172,16 +172,34 @@ async def support_submit(
     else:
         await message.answer("✅ پیام شما ثبت شد و برای پشتیبان ارسال گردید.")
 
-    # Alert admins
+    # Alert admins — include all admins/owners regardless of status
+    from core.config import settings as app_settings
     admin_result = await session.execute(
-        select(User).where(User.role.in_(["admin", "owner"]), User.status == "active")
+        select(User).where(
+            User.role.in_(["admin", "owner"]),
+            User.is_bot_blocked.is_(False),
+        )
     )
     admins = list(admin_result.scalars().all())
-    
+
+    # Also add owner by telegram_id if configured and not already in list
+    owner_tg_ids = {a.telegram_id for a in admins}
+    if app_settings.owner_telegram_id and app_settings.owner_telegram_id not in owner_tg_ids:
+        # Try to notify owner directly even if not in DB
+        owner_tg_ids.add(app_settings.owner_telegram_id)
+        class _FakeAdmin:
+            telegram_id = app_settings.owner_telegram_id
+            is_bot_blocked = False
+        admins.append(_FakeAdmin())  # type: ignore[arg-type]
+
     builder = InlineKeyboardBuilder()
     builder.button(
         text=SupportTexts.ADMIN_REPLY_BUTTON.format(ticket_short=str(ticket.id)[:8]),
         callback_data=SupportTicketActionCallback(action="reply", ticket_id=ticket.id).pack(),
+    )
+    builder.button(
+        text="📋 مشاهده تیکت",
+        callback_data=SupportTicketActionCallback(action="view", ticket_id=ticket.id).pack(),
     )
     builder.adjust(1)
     
@@ -208,8 +226,14 @@ async def support_submit(
                     alert_text,
                     reply_markup=builder.as_markup()
                 )
-        except (TelegramForbiddenError, TelegramBadRequest):
-            admin.is_bot_blocked = True
+        except TelegramForbiddenError:
+            # Only mark real DB users as blocked, not fake owner object
+            if hasattr(admin, 'is_bot_blocked'):
+                admin.is_bot_blocked = True
+        except TelegramBadRequest as exc:
+            logger.warning("TelegramBadRequest sending ticket alert to %s: %s", admin.telegram_id, exc)
+        except Exception as exc:
+            logger.warning("Unexpected error sending ticket alert to %s: %s", admin.telegram_id, exc)
 
 
 @router.callback_query(SupportTicketActionCallback.filter(F.action == "user_close"))

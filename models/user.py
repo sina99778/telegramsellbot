@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -55,6 +55,9 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         server_default="active",
     )
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    personal_discount_percent: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
     referred_by: Mapped[User | None] = relationship(
         "User",

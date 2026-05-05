@@ -7,6 +7,7 @@ from uuid import UUID
 
 from aiogram import Bot, F, Router
 from aiogram.filters.callback_data import CallbackData
+from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     BufferedInputFile,
     CallbackQuery,
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from apps.bot.utils.messaging import safe_edit_or_send
+from apps.bot.states.admin import UserConfigSearchStates
 from core.formatting import escape_markdown, format_usage_bar, format_volume_bytes
 from core.texts import Buttons
 from models.subscription import Subscription
@@ -49,10 +51,12 @@ class MyConfigListCallback(CallbackData, prefix="myconfigs"):
 
 
 @router.message(F.text == Buttons.MY_CONFIGS)
-async def my_configs_handler(message: Message, session: AsyncSession) -> None:
+async def my_configs_handler(message: Message, state: FSMContext, session: AsyncSession) -> None:
     """Show a list of inline buttons for each active config."""
     if message.from_user is None:
         return
+    # Clear any ongoing state (e.g. search)
+    await state.clear()
 
     user = await UserRepository(session).get_by_telegram_id(message.from_user.id)
     if user is None:
@@ -213,6 +217,14 @@ def _build_config_list_keyboard(
             )
         builder.row(*nav_buttons)
 
+    # Search button
+    builder.row(
+        InlineKeyboardButton(
+            text="🔍 جستجوی کانفیگ",
+            callback_data=MyConfigListCallback(action="search", page=0).pack(),
+        )
+    )
+
     return builder.as_markup()
 
 
@@ -246,6 +258,102 @@ def _config_list_page_from_action(action: str) -> int:
         return max(int(action.removeprefix("viewp")), 0)
     except ValueError:
         return 0
+
+
+# ─── Config Search ────────────────────────────────────────────────────────────
+
+
+@router.callback_query(MyConfigListCallback.filter(F.action == "search"))
+async def my_configs_search_prompt(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    """User clicked the search button — ask for a config name."""
+    await callback.answer()
+    await state.set_state(UserConfigSearchStates.waiting_for_search_query)
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ انصراف", callback_data=MyConfigListCallback(action="page", page=0).pack())
+    builder.adjust(1)
+    await safe_edit_or_send(
+        callback,
+        "🔍 نام کانفیگ مورد نظر را تایپ کنید:\n"
+        "(دقیق یا بخشی از نام کانفیگ)",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.message(UserConfigSearchStates.waiting_for_search_query)
+async def my_configs_search_handler(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Handle the search query typed by user."""
+    if message.from_user is None or not message.text:
+        return
+
+    query = message.text.strip().lower()
+    if not query:
+        await message.answer("❌ متن جستجو خالی است.")
+        return
+
+    user = await UserRepository(session).get_by_telegram_id(message.from_user.id)
+    if user is None:
+        await state.clear()
+        return
+
+    # Search in XUIClientRecord.username and plan.name
+    from models.xui import XUIClientRecord
+    from models.plan import Plan
+    from sqlalchemy.orm import aliased
+    from sqlalchemy import or_, func as sqfunc
+
+    result = await session.execute(
+        select(Subscription)
+        .join(XUIClientRecord, Subscription.xui_client_id == XUIClientRecord.id, isouter=True)
+        .join(Plan, Subscription.plan_id == Plan.id, isouter=True)
+        .options(
+            selectinload(Subscription.plan),
+            selectinload(Subscription.xui_client),
+        )
+        .where(
+            Subscription.user_id == user.id,
+            Subscription.status.in_(list(_ACTIVE_STATUSES)),
+            or_(
+                sqfunc.lower(XUIClientRecord.username).contains(query),
+                sqfunc.lower(Plan.name).contains(query),
+            ),
+        )
+        .order_by(Subscription.created_at.desc())
+        .limit(20)
+    )
+    subs = list(result.scalars().all())
+
+    await state.clear()
+
+    if not subs:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🔄 بازگشت", callback_data=MyConfigListCallback(action="page", page=0).pack())
+        builder.adjust(1)
+        await message.answer(
+            f"🔍 هیچ کانفیگی با '‏{query}‏' یافت نشد.",
+            reply_markup=builder.as_markup(),
+        )
+        return
+
+    builder = InlineKeyboardBuilder()
+    for sub in subs:
+        builder.button(
+            text=_build_config_button_label(sub),
+            callback_data=MyConfigCallback(action="view", subscription_id=sub.id).pack(),
+        )
+    builder.button(text="🔄 بازگشت به لیست", callback_data=MyConfigListCallback(action="page", page=0).pack())
+    builder.adjust(1)
+
+    await message.answer(
+        f"🔍 نتایج جستجو برای '‏{query}‏' ({len(subs)} کانفیگ):",
+        reply_markup=builder.as_markup(),
+    )
 
 
 @router.callback_query(MyConfigCallback.filter(F.action.startswith("view")))

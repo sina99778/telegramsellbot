@@ -6,7 +6,7 @@ from math import ceil
 from uuid import UUID
 
 from aiogram import F, Router
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -28,6 +28,8 @@ from services.phone_verification import get_verified_phone
 from services.wallet.manager import WalletManager
 from apps.bot.utils.messaging import safe_edit_or_send
 
+
+logger = logging.getLogger(__name__)
 
 router = Router(name="admin-users")
 router.message.middleware(AdminOnlyMiddleware())
@@ -122,7 +124,6 @@ async def admin_users_list(
 
     builder.button(text=AdminButtons.BACK, callback_data="admin:users")
 
-    # Layout: user buttons 1 per row, then pagination row, then back
     rows = [1] * len(users)
     rows.append(len(nav_buttons))
     rows.append(1)
@@ -135,7 +136,7 @@ async def admin_users_list(
                 reply_markup=builder.as_markup(),
             )
         except Exception:
-            await safe_edit_or_send(callback, 
+            await safe_edit_or_send(callback,
                 f"👥 لیست کاربران ({total_users} نفر):",
                 reply_markup=builder.as_markup(),
             )
@@ -148,7 +149,7 @@ async def admin_users_list(
 async def admin_users_search_prompt(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(ManageUserStates.waiting_for_telegram_id)
-    await safe_edit_or_send(callback, 
+    await safe_edit_or_send(callback,
         "🔍 شناسه تلگرام (عددی) یا یوزرنیم کاربر را ارسال کنید.\n"
         "برای لغو /cancel بزنید."
     )
@@ -165,7 +166,6 @@ async def admin_users_lookup(
 
     query_text = message.text.strip().lstrip("@")
 
-    # Try numeric telegram_id first, fallback to username search
     user: User | None = None
     try:
         telegram_id = int(query_text)
@@ -175,7 +175,6 @@ async def admin_users_lookup(
             .where(User.telegram_id == telegram_id)
         )
     except ValueError:
-        # Search by username (case-insensitive)
         user = await session.scalar(
             select(User)
             .options(selectinload(User.wallet), selectinload(User.profile), selectinload(User.subscriptions))
@@ -198,6 +197,7 @@ async def admin_users_lookup(
     await message.answer(
         _build_user_profile_text(user=user, total_orders=total_orders),
         reply_markup=_build_user_profile_keyboard(user.id, user.status),
+        parse_mode="HTML",
     )
 
 
@@ -223,9 +223,10 @@ async def admin_user_profile_from_list(
     total_orders = int(
         await session.scalar(select(func.count()).select_from(Order).where(Order.user_id == user.id)) or 0
     )
-    await safe_edit_or_send(callback, 
+    await safe_edit_or_send(callback,
         _build_user_profile_text(user=user, total_orders=total_orders),
         reply_markup=_build_user_profile_keyboard(user.id, user.status),
+        parse_mode="HTML",
     )
 
 
@@ -313,6 +314,87 @@ async def admin_edit_balance_submit(
     await message.answer(
         _build_user_profile_text(user=user, total_orders=total_orders),
         reply_markup=_build_user_profile_keyboard(user.id, user.status),
+        parse_mode="HTML",
+    )
+
+
+# ─── Set Personal Discount ────────────────────────────────────────────────────
+
+
+@router.callback_query(AdminUserActionCallback.filter(F.action == "set_discount"))
+async def admin_set_discount_prompt(
+    callback: CallbackQuery,
+    callback_data: AdminUserActionCallback,
+    state: FSMContext,
+) -> None:
+    await callback.answer()
+    await state.set_state(ManageUserStates.waiting_for_personal_discount)
+    await state.update_data(target_user_id=str(callback_data.user_id))
+    await safe_edit_or_send(
+        callback,
+        "🏷 درصد تخفیف شخصی کاربر را وارد کنید (0 تا 100):\n"
+        "مثال: 20 (یعنی ۲۰٪ تخفیف روی تمام خریدها)\n"
+        "برای لغو /cancel بزنید."
+    )
+
+
+@router.message(ManageUserStates.waiting_for_personal_discount)
+async def admin_set_discount_submit(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    if not message.text:
+        return
+
+    state_data = await state.get_data()
+    raw_user_id = state_data.get("target_user_id")
+    if raw_user_id is None:
+        await state.clear()
+        await message.answer("کاربر پیدا نشد.")
+        return
+
+    try:
+        discount = int(message.text.strip())
+        if not (0 <= discount <= 100):
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ لطفاً یک عدد بین 0 تا 100 وارد کنید.")
+        return
+
+    target_user_id = UUID(str(raw_user_id))
+    user = await session.scalar(
+        select(User)
+        .options(selectinload(User.wallet), selectinload(User.profile))
+        .where(User.id == target_user_id)
+    )
+    if user is None:
+        await state.clear()
+        await message.answer(AdminMessages.USER_NOT_FOUND)
+        return
+
+    old_discount = user.personal_discount_percent
+    user.personal_discount_percent = discount
+    await session.flush()
+
+    await AuditLogRepository(session).log_action(
+        actor_user_id=admin_user.id,
+        action="set_personal_discount",
+        entity_type="user",
+        entity_id=user.id,
+        payload={"old": old_discount, "new": discount, "telegram_id": user.telegram_id},
+    )
+
+    total_orders = int(
+        await session.scalar(select(func.count()).select_from(Order).where(Order.user_id == user.id)) or 0
+    )
+    await state.clear()
+    await message.answer(
+        _build_user_profile_text(user=user, total_orders=total_orders)
+        + f"\n\n✅ تخفیف شخصی به {discount}٪ تنظیم شد.",
+        reply_markup=_build_user_profile_keyboard(user.id, user.status),
+        parse_mode="HTML",
     )
 
 
@@ -354,9 +436,10 @@ async def admin_toggle_ban(
     total_orders = int(
         await session.scalar(select(func.count()).select_from(Order).where(Order.user_id == user.id)) or 0
     )
-    await safe_edit_or_send(callback, 
+    await safe_edit_or_send(callback,
         _build_user_profile_text(user=user, total_orders=total_orders),
         reply_markup=_build_user_profile_keyboard(user.id, user.status),
+        parse_mode="HTML",
     )
 
 
@@ -372,7 +455,7 @@ async def admin_send_msg_prompt(
     await callback.answer()
     await state.set_state(ManageUserStates.waiting_for_message_to_user)
     await state.update_data(target_user_id=str(callback_data.user_id))
-    await safe_edit_or_send(callback, 
+    await safe_edit_or_send(callback,
         "📩 پیام مورد نظر خود را برای این کاربر ارسال کنید.\n"
         "برای لغو /cancel بزنید."
     )
@@ -403,7 +486,6 @@ async def admin_send_msg_submit(
         await message.answer(AdminMessages.USER_NOT_FOUND)
         return
 
-    from aiogram.exceptions import TelegramForbiddenError, TelegramBadRequest
     try:
         await message.bot.send_message(
             target_user.telegram_id,
@@ -420,6 +502,9 @@ async def admin_send_msg_submit(
     await state.clear()
 
 
+# ─── Toggle Admin Role ────────────────────────────────────────────────────────
+
+
 @router.callback_query(AdminUserActionCallback.filter(F.action == "toggle_admin"))
 async def admin_user_toggle_admin(
     callback: CallbackQuery,
@@ -427,7 +512,7 @@ async def admin_user_toggle_admin(
     session: AsyncSession,
 ) -> None:
     await callback.answer()
-    
+
     user = await session.scalar(
         select(User)
         .options(selectinload(User.wallet), selectinload(User.profile), selectinload(User.subscriptions))
@@ -436,10 +521,8 @@ async def admin_user_toggle_admin(
     if user is None:
         await safe_edit_or_send(callback, AdminMessages.USER_NOT_FOUND)
         return
-        
-    # Toggle logic
+
     from core.config import settings
-    # Cannot demote owner
     if user.telegram_id == settings.owner_telegram_id:
         await safe_edit_or_send(callback, "❌ نقش مالک اصلی ربات (owner) قابل تغییر نیست.")
         return
@@ -447,8 +530,7 @@ async def admin_user_toggle_admin(
     new_role = "admin" if user.role == "user" else "user"
     user.role = new_role
     await session.flush()
-    
-    # Reload profile page with updated role
+
     total_orders = int(
         await session.scalar(select(func.count()).select_from(Order).where(Order.user_id == user.id)) or 0
     )
@@ -458,12 +540,17 @@ async def admin_user_toggle_admin(
             await callback.message.edit_text(
                 _build_user_profile_text(user=user, total_orders=total_orders) + f"\n\n✅ نقش به {status_text} تغییر یافت.",
                 reply_markup=_build_user_profile_keyboard(user.id, user.status),
+                parse_mode="HTML",
             )
         except Exception:
-            await safe_edit_or_send(callback, 
+            await safe_edit_or_send(callback,
                 _build_user_profile_text(user=user, total_orders=total_orders) + f"\n\n✅ نقش به {status_text} تغییر یافت.",
                 reply_markup=_build_user_profile_keyboard(user.id, user.status),
+                parse_mode="HTML",
             )
+
+
+# ─── Reset Free Trial ─────────────────────────────────────────────────────────
 
 
 @router.callback_query(AdminUserActionCallback.filter(F.action == "reset_trial"))
@@ -497,6 +584,7 @@ async def admin_user_reset_trial(
         callback,
         _build_user_profile_text(user=user, total_orders=total_orders) + "\n\n✅ محدودیت تست کاربر ریست شد.",
         reply_markup=_build_user_profile_keyboard(user.id, user.status),
+        parse_mode="HTML",
     )
 
 
@@ -526,13 +614,15 @@ def _build_user_profile_text(*, user: User, total_orders: int) -> str:
     role_text = "ادمین 👑" if user.role == "admin" else ("مالک 💎" if user.role == "owner" else "کاربر عادی 👤")
     verified_phone = get_verified_phone(user)
     phone_text = f"<code>{verified_phone}</code>" if verified_phone else "ثبت نشده"
+    discount = getattr(user, "personal_discount_percent", 0) or 0
+    discount_text = f"\n🏷 تخفیف شخصی: <b>{discount}٪</b>" if discount > 0 else ""
     return AdminMessages.USER_PROFILE.format(
         name=user.first_name or "-",
         telegram_id=user.telegram_id,
         status=user.status,
         wallet_balance=f"{wallet_balance:.2f}",
         total_orders=total_orders,
-    ) + f"\n🎖 نقش: {role_text}\n📱 شماره موبایل: {phone_text}"
+    ) + f"\n🎖 نقش: {role_text}\n📱 شماره موبایل: {phone_text}{discount_text}"
 
 
 def _build_user_profile_keyboard(user_id: UUID, status: str):
@@ -540,6 +630,10 @@ def _build_user_profile_keyboard(user_id: UUID, status: str):
     builder.button(
         text=AdminButtons.EDIT_BALANCE,
         callback_data=AdminUserActionCallback(action="edit_balance", user_id=user_id).pack(),
+    )
+    builder.button(
+        text="🏷 تخفیف شخصی",
+        callback_data=AdminUserActionCallback(action="set_discount", user_id=user_id).pack(),
     )
     builder.button(
         text=AdminButtons.BAN_USER if status != "banned" else AdminButtons.UNBAN_USER,
@@ -553,10 +647,6 @@ def _build_user_profile_keyboard(user_id: UUID, status: str):
         text="📩 ارسال پیام",
         callback_data=AdminUserActionCallback(action="send_msg", user_id=user_id).pack(),
     )
-    # Add toggle admin role button
-    # To determine text, we need the user's current role which isn't passed here.
-    # We should update _build_user_profile_keyboard signature if we want dynamic text. 
-    # For now, we will add a generic "تغییر نقش (ادمین/کاربر)" button.
     builder.button(
         text="👑 تغییر نقش (ادمین/کاربر)",
         callback_data=AdminUserActionCallback(action="toggle_admin", user_id=user_id).pack(),
@@ -571,4 +661,3 @@ def _build_user_profile_keyboard(user_id: UUID, status: str):
     )
     builder.adjust(1)
     return builder.as_markup()
-

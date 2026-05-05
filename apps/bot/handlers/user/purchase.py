@@ -350,7 +350,14 @@ async def skip_discount_code(
 ) -> None:
     """Skip discount and show payment method choice."""
     await callback.answer()
-    await state.update_data(discount_code=None, discount_percent=0)
+    # Apply personal discount if user has one
+    if callback.from_user:
+        from repositories.user import UserRepository
+        user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+        personal_pct = getattr(user, "personal_discount_percent", 0) if user else 0
+    else:
+        personal_pct = 0
+    await state.update_data(discount_code=None, discount_percent=personal_pct)
     await _show_payment_method_choice(callback, state, session)
 
 
@@ -378,9 +385,19 @@ async def discount_code_entered(
         )
         return
 
+    # Take the better of: personal discount vs code discount
+    if message.from_user:
+        from repositories.user import UserRepository
+        user = await UserRepository(session).get_by_telegram_id(message.from_user.id)
+        personal_pct = getattr(user, "personal_discount_percent", 0) if user else 0
+    else:
+        personal_pct = 0
+
+    effective_percent = max(discount.discount_percent, personal_pct)
+
     await state.update_data(
         discount_code=discount.code,
-        discount_percent=discount.discount_percent,
+        discount_percent=effective_percent,
         discount_id=str(discount.id),
     )
     await _show_payment_method_choice_msg(message, state, session)
