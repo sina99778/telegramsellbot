@@ -238,7 +238,18 @@ async def renew_pay_wallet(
         return
 
     await state.clear()
-    await safe_edit_or_send(callback, "⏳ در حال تمدید...")
+
+    # Send loading message as a NEW message so we can edit it with the result
+    try:
+        loading_msg = await callback.message.answer("⏳ در حال تمدید...")
+    except Exception:
+        loading_msg = None
+
+    # Optionally delete the payment method selection message
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
 
     # Create order
     order = Order(
@@ -288,14 +299,28 @@ async def renew_pay_wallet(
             metadata={"sub_id": str(sub.id), "error": str(exc)[:200]},
         )
         order.status = "failed"
-        await safe_edit_or_send(callback,
+        error_text = (
             "❌ خطا در اعمال تمدید روی سرور!\n\n"
             "ارتباط با پنل X-UI برقرار نشد. مبلغ تمدید به کیف پول شما برگردانده شد.\n"
             "لطفاً بعداً دوباره تلاش کنید."
         )
+        if loading_msg:
+            try:
+                await loading_msg.edit_text(error_text)
+            except Exception:
+                await callback.message.answer(error_text)
+        else:
+            await callback.message.answer(error_text)
         return
 
-    await safe_edit_or_send(callback, Messages.RENEWAL_SUCCESS)
+    success_text = Messages.RENEWAL_SUCCESS
+    if loading_msg:
+        try:
+            await loading_msg.edit_text(success_text)
+        except Exception:
+            await callback.message.answer(success_text)
+    else:
+        await callback.message.answer(success_text)
 
     # Notify admins
     await _notify_renewal_admins(callback, user, renew_type, amount, price, session)
