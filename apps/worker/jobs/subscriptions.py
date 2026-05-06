@@ -29,15 +29,21 @@ async def sync_xui_usage_and_status(
     xui_client: SanaeiXUIClient,
     subscriptions: list[Subscription],
     security_settings: ServiceSecuritySettings | None = None,
-) -> None:
+) -> bool:
+    """Sync usage and status for subscriptions on one server.
+
+    Returns True if any subscription expired (caller should restart Xray).
+    """
     security_settings = security_settings or ServiceSecuritySettings(
         xui_limit_ip=1,
         max_distinct_ips=3,
         auto_disable_ip_abuse=True,
     )
     semaphore = asyncio.Semaphore(XUI_USAGE_SYNC_CONCURRENCY)
+    any_expired = False
 
     async def sync_one(subscription: Subscription) -> None:
+        nonlocal any_expired
         xui_record = subscription.xui_client
         if xui_record is None:
             return
@@ -47,7 +53,6 @@ async def sync_xui_usage_and_status(
                 traffic = await xui_client.get_client_traffic(xui_record.email)
         except XUIRequestError as exc:
             error_msg = str(exc)
-            # If traffic not found, the client was likely deleted from panel
             if "No traffic stats found" in error_msg or "404" in error_msg:
                 logger.warning(
                     "[SYNC] Client '%s' not found on panel — marking as deleted (sub=%s)",
@@ -56,8 +61,8 @@ async def sync_xui_usage_and_status(
                 subscription.status = "expired"
                 subscription.expired_at = utcnow()
                 xui_record.is_active = False
+                any_expired = True
                 return
-            # Other errors — skip
             logger.warning("[SYNC] Error fetching traffic for '%s': %s", xui_record.email, exc)
             return
         except XUIClientError as exc:
@@ -75,7 +80,6 @@ async def sync_xui_usage_and_status(
             subscription.activated_at = now
             subscription.starts_at = now
             subscription.ends_at = now + timedelta(days=plan_duration_days)
-            # Update X-UI panel with the real expiry time
             await _update_xui_expiry_on_activation(
                 xui_client,
                 subscription,
@@ -98,6 +102,7 @@ async def sync_xui_usage_and_status(
                 limit_ip=security_settings.xui_limit_ip,
             )
             if disabled:
+                any_expired = True
                 logger.warning(
                     "[SYNC] Subscription %s disabled for IP abuse (%s > %s, email=%s, ips=%s)",
                     subscription.id,
@@ -119,13 +124,15 @@ async def sync_xui_usage_and_status(
             )
             if not expired:
                 return
+            any_expired = True
             logger.info(
-                "[SYNC] Subscription %s expired (%s) - UUID rotated and disabled (email=%s)",
+                "[SYNC] Subscription %s expired (%s) - kept enabled for sub link (email=%s)",
                 subscription.id, expiry_reason, xui_record.email,
             )
 
     await asyncio.gather(*(sync_one(subscription) for subscription in subscriptions))
     await session.flush()
+    return any_expired
 
 
 async def sync_all_subscription_states() -> None:
@@ -162,12 +169,20 @@ async def sync_all_subscription_states() -> None:
             server = ensure_inbound_server_loaded(sample_inbound)
             try:
                 async with create_xui_client_for_server(server) as xui_client:
-                    await sync_xui_usage_and_status(session, xui_client, group, security_settings)
+                    any_expired = await sync_xui_usage_and_status(session, xui_client, group, security_settings)
+                    # Restart Xray core after expiry to enforce limits immediately
+                    if any_expired:
+                        try:
+                            await xui_client.restart_xray_core()
+                            logger.info("[SYNC] Xray core restarted on server '%s' after config expiry", server.name)
+                        except Exception as restart_exc:
+                            logger.warning("[SYNC] Failed to restart Xray on server '%s': %s", server.name, restart_exc)
             except XUIClientError as exc:
                 logger.error("[SYNC] Failed to connect to server %s: %s", server.name, exc)
                 continue
 
         await session.commit()
+
 
 
 async def _reset_client_uuid(
