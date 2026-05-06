@@ -295,8 +295,14 @@ async def renew_pay_wallet(
             session.add(order)
             await session.flush()
 
-            # Link order to subscription
-            sub.order_id = order.id
+            # Link order to subscription via explicit update (avoid triggering
+            # lazy relationship loading on the subscription object)
+            from sqlalchemy import update
+            await session.execute(
+                update(Subscription)
+                .where(Subscription.id == sub.id)
+                .values(order_id=order.id)
+            )
 
             # Deduct from wallet using WalletManager if price > 0
             from services.wallet.manager import WalletManager, InsufficientBalanceError

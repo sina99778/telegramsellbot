@@ -45,66 +45,87 @@ async def apply_renewal(
     renew_type: str,
     amount: float,
 ) -> None:
-    """Apply renewal to subscription. Uses savepoint so that if X-UI sync fails,
-    ALL DB changes (volume/time/status) are rolled back automatically."""
-    now_utc = datetime.now(timezone.utc)
+    """Apply renewal to subscription and sync with X-UI panel.
 
-    # Explicitly query xui_client from DB instead of using the relationship
-    # attribute, which can trigger lazy loading after session flushes/nested
-    # transactions and cause "greenlet_spawn has not been called" errors.
+    Re-loads the subscription fresh from the DB to avoid stale relationship
+    references (which cause 'greenlet_spawn has not been called' errors in
+    async SQLAlchemy when lazy loading is implicitly triggered).
+    """
+    now_utc = datetime.now(timezone.utc)
+    sub_id = subscription.id
+
+    # ── Re-load subscription + xui_client fresh from DB ──────────────────
+    # The subscription object passed by callers is often stale after
+    # session.flush() / WalletManager.process_transaction() / begin_nested()
+    # calls.  Accessing ANY relationship on a stale object triggers lazy
+    # loading which is forbidden in async sessions.  Re-querying with
+    # explicit column-only access guarantees safety.
+    fresh = await session.scalar(
+        select(Subscription).where(Subscription.id == sub_id)
+    )
+    if fresh is None:
+        raise ValueError(f"Subscription {sub_id} not found during renewal.")
+
     xui = await session.scalar(
         select(XUIClientRecord).where(
-            XUIClientRecord.subscription_id == subscription.id
+            XUIClientRecord.subscription_id == sub_id
         )
     )
 
-    # Use a savepoint (nested transaction) so we can rollback on X-UI failure
-    async with session.begin_nested():
-        # Calculate new values
-        if renew_type == "volume":
-            subscription.volume_bytes += int(amount * 1024**3)
-            # Reset used bytes when adding volume (the panel keeps its own traffic counter)
-            subscription.used_bytes = 0
-            # If subscription is expired, ensure ends_at is in the future
-            # so the config doesn't immediately re-expire after volume renewal
-            if subscription.status == "expired" and (subscription.ends_at is None or subscription.ends_at < now_utc):
-                if subscription.ends_at is not None and subscription.ends_at < now_utc:
-                    pass
-        elif renew_type == "time":
-            days_to_add = int(amount)
-            if subscription.ends_at is None:
-                base = subscription.activated_at or now_utc
-                subscription.ends_at = base + timedelta(days=days_to_add)
-            elif subscription.ends_at < now_utc:
-                subscription.ends_at = now_utc + timedelta(days=days_to_add)
-            else:
-                subscription.ends_at += timedelta(days=days_to_add)
+    # ── Apply volume/time changes ────────────────────────────────────────
+    if renew_type == "volume":
+        fresh.volume_bytes += int(amount * 1024**3)
+        fresh.used_bytes = 0
+    elif renew_type == "time":
+        days_to_add = int(amount)
+        if fresh.ends_at is None:
+            base = fresh.activated_at or now_utc
+            fresh.ends_at = base + timedelta(days=days_to_add)
+        elif fresh.ends_at < now_utc:
+            fresh.ends_at = now_utc + timedelta(days=days_to_add)
         else:
-            raise ValueError("Invalid renewal type.")
+            fresh.ends_at += timedelta(days=days_to_add)
+    else:
+        raise ValueError("Invalid renewal type.")
 
-        if subscription.status == "expired":
-            subscription.status = "active"
+    if fresh.status == "expired":
+        fresh.status = "active"
 
-        # Sync with X-UI panel — if this fails, the savepoint is rolled back
-        if xui is not None:
-            await _sync_xui_limits(session, subscription, xui)
+    await session.flush()
 
-        await session.flush()
+    # ── Sync with X-UI panel ─────────────────────────────────────────────
+    if xui is not None:
+        try:
+            await _sync_xui_limits(session, fresh, xui)
+        except Exception as exc:
+            # Rollback the DB changes we just flushed
+            fresh.volume_bytes = subscription.volume_bytes
+            fresh.used_bytes = subscription.used_bytes
+            fresh.ends_at = subscription.ends_at
+            fresh.status = subscription.status
+            await session.flush()
+            raise RenewalXUISyncError(
+                f"Renewal could not be applied on X-UI panel: {exc}"
+            ) from exc
 
-    # Clear alert dedup keys from DB so user gets re-notified next expiry cycle
+    # ── Copy updated values back to the caller's object ──────────────────
+    subscription.volume_bytes = fresh.volume_bytes
+    subscription.used_bytes = fresh.used_bytes
+    subscription.ends_at = fresh.ends_at
+    subscription.status = fresh.status
+
+    # ── Clear alert dedup keys ───────────────────────────────────────────
     try:
         from sqlalchemy import delete
         from models.app_setting import AppSetting
         await session.execute(
             delete(AppSetting).where(
-                AppSetting.key.like(f"alert.sub.{subscription.id}.%")
+                AppSetting.key.like(f"alert.sub.{sub_id}.%")
             )
         )
         await session.flush()
     except Exception as exc:
-        logger.warning("Failed to clear alert keys for sub %s: %s", subscription.id, exc)
-
-    # If we reach here, both DB and X-UI are updated successfully
+        logger.warning("Failed to clear alert keys for sub %s: %s", sub_id, exc)
 
 
 async def _sync_xui_limits(
@@ -136,6 +157,7 @@ async def _sync_xui_limits(
             expiry_time = 0
         security_settings = await AppSettingsRepository(session).get_service_security_settings()
         sub_id = ""
+        # Use column values only — never access relationships on subscription
         current_sub_link = subscription.sub_link or xui_full.sub_link or ""
         if "/" in current_sub_link:
             sub_id = current_sub_link.rsplit("/", 1)[-1]
