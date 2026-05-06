@@ -94,17 +94,57 @@ button {
 }
 
 .loading-spinner {
-    width: 42px;
-    height: 42px;
+    width: 46px;
+    height: 46px;
     border-radius: 50%;
     border: 3px solid var(--border);
     border-top-color: var(--cyan);
     animation: spin 0.75s linear infinite;
     margin: 0 auto;
+    filter: drop-shadow(0 0 8px rgba(51, 199, 214, 0.3));
 }
 
 @keyframes spin {
     to { transform: rotate(360deg); }
+}
+
+/* Shimmer skeleton */
+.skeleton {
+    background: linear-gradient(90deg, var(--bg-muted) 25%, var(--bg-elevated) 50%, var(--bg-muted) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s ease-in-out infinite;
+    border-radius: var(--radius-md);
+}
+
+@keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+/* Staggered card entrance */
+@keyframes cardIn {
+    from { opacity: 0; transform: translateY(16px) scale(0.97); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.config-card, .plan-card, .stat-card, .admin-stat, .admin-module {
+    animation: cardIn 0.35s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+.config-card:nth-child(1), .stat-card:nth-child(1) { animation-delay: 0.04s; }
+.config-card:nth-child(2), .stat-card:nth-child(2) { animation-delay: 0.08s; }
+.config-card:nth-child(3), .stat-card:nth-child(3) { animation-delay: 0.12s; }
+.config-card:nth-child(4), .stat-card:nth-child(4) { animation-delay: 0.16s; }
+.config-card:nth-child(5) { animation-delay: 0.20s; }
+
+/* Animated progress bar fill */
+@keyframes progressGrow {
+    from { width: 0; }
+}
+
+/* Pulsing glow for active status */
+@keyframes pulseGlow {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(41, 196, 122, 0.3); }
+    50% { box-shadow: 0 0 0 6px rgba(41, 196, 122, 0); }
 }
 
 /* App Shell */
@@ -188,11 +228,11 @@ button {
 
 .page.active {
     display: block;
-    animation: pageIn 0.18s ease-out;
+    animation: pageIn 0.3s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @keyframes pageIn {
-    from { opacity: 0; transform: translateY(6px); }
+    from { opacity: 0; transform: translateY(12px); }
     to { opacity: 1; transform: translateY(0); }
 }
 
@@ -475,6 +515,7 @@ button {
     color: var(--emerald);
     background: rgba(41, 196, 122, 0.12);
     border-color: rgba(41, 196, 122, 0.28);
+    animation: pulseGlow 2s ease-in-out infinite;
 }
 
 .config-status.pending {
@@ -501,6 +542,17 @@ button {
 .progress-bar-fill {
     height: 100%;
     background: linear-gradient(90deg, var(--cyan), var(--emerald));
+    border-radius: inherit;
+    animation: progressGrow 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+    transition: width 0.4s ease;
+    position: relative;
+}
+
+.progress-bar-fill::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent 60%, rgba(255,255,255,0.15) 100%);
     border-radius: inherit;
 }
 
@@ -1348,11 +1400,11 @@ button {
     border-radius: 8px 8px 0 0;
     padding: 18px;
     box-shadow: var(--shadow);
-    animation: sheetIn 0.2s ease-out;
+    animation: sheetIn 0.35s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @keyframes sheetIn {
-    from { transform: translateY(22px); opacity: 0; }
+    from { transform: translateY(40px); opacity: 0; }
     to { transform: translateY(0); opacity: 1; }
 }
 

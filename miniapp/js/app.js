@@ -1,5 +1,5 @@
 /**
- * App initialization.
+ * App initialization — premium experience with haptic feedback & pull-to-refresh.
  */
 (async function init() {
     const tg = window.Telegram?.WebApp;
@@ -7,17 +7,23 @@
         tg.ready();
         tg.expand();
         try { tg.enableClosingConfirmation(); } catch {}
+        // Set header color to match app background
+        try { tg.setHeaderColor('#0b0f14'); } catch {}
+        try { tg.setBackgroundColor('#0b0f14'); } catch {}
     }
 
     document.querySelectorAll('[data-icon]').forEach(el => {
         el.innerHTML = UI.icon(el.dataset.icon, el.classList.contains('nav-icon') ? 'nav-svg' : 'inline-icon');
     });
 
-    // Navigation
+    // Navigation with haptic feedback
     document.querySelectorAll('.nav-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             const page = btn.dataset.page;
-            if (page) UI.navigate(page);
+            if (page) {
+                UI.navigate(page);
+                try { tg?.HapticFeedback?.selectionChanged(); } catch {}
+            }
         });
     });
 
@@ -30,6 +36,7 @@
             await API.sendTicket(text);
             input.value = '';
             UI.toast('پیام ارسال شد');
+            try { tg?.HapticFeedback?.notificationOccurred('success'); } catch {}
             Pages.load_support();
         } catch (e) {
             UI.toast('خطا: ' + e.message, 'error');
@@ -43,11 +50,14 @@
         }
     });
 
-    // Show UI immediately
+    // Show UI with staggered entrance
     document.getElementById('loading-screen').classList.add('hidden');
     document.getElementById('app-header').classList.remove('hidden');
-    document.getElementById('main-content').classList.remove('hidden');
-    document.getElementById('bottom-nav').classList.remove('hidden');
+
+    requestAnimationFrame(() => {
+        document.getElementById('main-content').classList.remove('hidden');
+        setTimeout(() => document.getElementById('bottom-nav').classList.remove('hidden'), 80);
+    });
 
     // Load dashboard
     try {

@@ -27,6 +27,13 @@ const Pages = (() => {
     // DASHBOARD
     // ═══════════════════════════════════════════════════════════════════════
     async function load_dashboard() {
+        // Show skeleton while loading
+        document.getElementById('stats-grid').innerHTML = `
+            <div class="stat-card skeleton" style="height:104px"></div>
+            <div class="stat-card skeleton" style="height:104px"></div>
+            <div class="stat-card skeleton" style="height:104px"></div>
+            <div class="stat-card skeleton" style="height:104px"></div>
+        `;
         try {
             dashboardData = await API.getDashboard();
             renderDashboard(dashboardData);
@@ -44,28 +51,36 @@ const Pages = (() => {
         document.getElementById('user-balance').textContent = `$${UI.formatMoney(data.wallet.balance)}`;
         document.getElementById('user-avatar').textContent = (data.first_name || 'U')[0].toUpperCase();
 
-        // Stats
+        // Stats with circular progress ring
         const usagePct = UI.getUsagePercent(data.total_volume_used, data.total_volume);
+        const circumference = 2 * Math.PI * 28;
+        const strokeDash = circumference - (usagePct / 100) * circumference;
+        const ringColor = usagePct >= 90 ? 'var(--coral)' : usagePct >= 70 ? 'var(--amber)' : 'var(--emerald)';
         document.getElementById('stats-grid').innerHTML = `
             <div class="stat-card">
-                <div class="stat-icon">${UI.icon('server')}</div>
+                <div class="stat-icon">🌐</div>
                 <div class="stat-value">${data.active_config_count}</div>
                 <div class="stat-label">سرویس فعال</div>
             </div>
             <div class="stat-card">
-                <div class="stat-icon">${UI.icon('wallet')}</div>
+                <div class="stat-icon">💰</div>
                 <div class="stat-value">$${UI.formatMoney(data.wallet.balance)}</div>
                 <div class="stat-label">موجودی کیف پول</div>
             </div>
-            <div class="stat-card">
-                <div class="stat-icon">${UI.icon('chart')}</div>
-                <div class="stat-value">${usagePct}%</div>
-                <div class="stat-label">مصرف کل</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-icon">${UI.icon('database')}</div>
-                <div class="stat-value">${UI.formatBytes(data.total_volume_used)}</div>
-                <div class="stat-label">ترافیک مصرفی</div>
+            <div class="stat-card" style="grid-column: span 2; display:flex; align-items:center; gap:16px">
+                <svg viewBox="0 0 64 64" width="72" height="72" style="flex:0 0 72px">
+                    <circle cx="32" cy="32" r="28" fill="none" stroke="var(--border)" stroke-width="5"/>
+                    <circle cx="32" cy="32" r="28" fill="none" stroke="${ringColor}" stroke-width="5"
+                        stroke-linecap="round" stroke-dasharray="${circumference}"
+                        stroke-dashoffset="${strokeDash}"
+                        transform="rotate(-90 32 32)"
+                        style="transition: stroke-dashoffset 1s cubic-bezier(0.22,1,0.36,1)"/>
+                    <text x="32" y="35" text-anchor="middle" fill="var(--text)" font-size="14" font-weight="900" font-family="var(--font)">${usagePct}%</text>
+                </svg>
+                <div style="min-width:0">
+                    <div class="stat-value" style="font-size:16px">${UI.formatBytes(data.total_volume_used)}</div>
+                    <div class="stat-label">مصرف از ${UI.formatBytes(data.total_volume)}</div>
+                </div>
             </div>
         `;
 
@@ -352,6 +367,10 @@ const Pages = (() => {
     // STORE
     // ═══════════════════════════════════════════════════════════════════════
     async function load_store() {
+        document.getElementById('plans-list').innerHTML = `
+            <div class="plan-card skeleton" style="height:180px"></div>
+            <div class="plan-card skeleton" style="height:180px"></div>
+        `;
         try {
             const data = await API.getPlans();
             plansCache = data.plans || [];
@@ -721,6 +740,7 @@ const Pages = (() => {
     // SUPPORT
     // ═══════════════════════════════════════════════════════════════════════
     async function load_support() {
+        document.getElementById('tickets-container').innerHTML = '<div class="skeleton" style="height:200px"></div>';
         try {
             const data = await API.getTickets();
             supportTicketsCache = data.tickets || [];
