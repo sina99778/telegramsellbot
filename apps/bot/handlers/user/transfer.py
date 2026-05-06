@@ -199,10 +199,6 @@ async def transfer_confirmed(
     recipient_uuid = UUID(recipient_user_id_str)
     sub.user_id = recipient_uuid
 
-    # Update XUI record ownership too
-    if sub.xui_client:
-        sub.xui_client.user_id = recipient_uuid
-
     await session.flush()
 
     await safe_edit_or_send(

@@ -113,7 +113,14 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
     elif renew_type == "time":
         price = (amount / 10.0) * renewal_settings.price_per_10_days
         time_added_days = amount
-        
+
+    # Apply personal discount so the displayed price matches the actual charge
+    if message.from_user:
+        user = await UserRepository(session).get_by_telegram_id(message.from_user.id)
+        discount_pct = getattr(user, "personal_discount_percent", 0) or 0 if user else 0
+        if discount_pct > 0:
+            price = price * (1.0 - (discount_pct / 100.0))
+
     price = round(price, 2)
 
     # Store renewal data in FSM state

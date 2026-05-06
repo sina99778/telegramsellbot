@@ -226,6 +226,7 @@ async def _render_sub_detail(
 
     elif sub.status == "expired":
         builder.button(text="📅 تمدید (روز)", callback_data=cb("e"))
+        builder.button(text="📦 افزایش حجم (GB)", callback_data=cb("v"))
         builder.button(text="🟢 فعال کردن مجدد", callback_data=cb("t"))
 
     elif sub.status == "cancelled":
