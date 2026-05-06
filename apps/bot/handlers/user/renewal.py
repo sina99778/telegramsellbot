@@ -286,19 +286,30 @@ async def renew_pay_wallet(
         sub.order_id = order.id
 
         # Deduct from wallet using WalletManager
-        from services.wallet.manager import WalletManager
+        from services.wallet.manager import WalletManager, InsufficientBalanceError
         wallet_manager = WalletManager(session)
-        await wallet_manager.process_transaction(
-            user_id=user.id,
-            amount=price,
-            transaction_type="renewal",
-            direction="debit",
-            currency="USD",
-            reference_type="order",
-            reference_id=order.id,
-            description=f"Renewal of subscription {sub.id}",
-            metadata={"sub_id": str(sub.id), "type": renew_type},
-        )
+        try:
+            await wallet_manager.process_transaction(
+                user_id=user.id,
+                amount=price,
+                transaction_type="renewal",
+                direction="debit",
+                currency="USD",
+                reference_type="order",
+                reference_id=order.id,
+                description=f"Renewal of subscription {sub.id}",
+                metadata={"sub_id": str(sub.id), "type": renew_type},
+            )
+        except InsufficientBalanceError:
+            error_text = "❌ موجودی کیف پول کافی نیست یا درخواست تکراری است."
+            if loading_msg:
+                try:
+                    await loading_msg.edit_text(error_text)
+                except Exception:
+                    await callback.message.answer(error_text)
+            else:
+                await callback.message.answer(error_text)
+            return
 
         # Apply renewal — if X-UI sync fails, the exception will propagate
         try:
