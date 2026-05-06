@@ -116,13 +116,17 @@ async def _show_customers_page(callback: CallbackQuery, session: AsyncSession, p
     if page < total_pages - 1:
         nav_row.append(("بعدی ▶️", CustPageCallback(page=page + 1).pack()))
 
-    builder.adjust(1)
     for label, cbd in nav_row:
         builder.button(text=label, callback_data=cbd)
-    if nav_row:
-        builder.adjust(*([1] * len(users)), len(nav_row))
 
-    builder.button(text="🔙 بازگشت", callback_data="admin:panel")
+    builder.button(text="🔙 بازگشت", callback_data="admin:main")
+
+    # Layout: 1 button per row for users, then nav buttons in one row, then back button
+    rows = [1] * len(users)
+    if nav_row:
+        rows.append(len(nav_row))
+    rows.append(1)  # back button
+    builder.adjust(*rows)
 
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
 
