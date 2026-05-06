@@ -304,33 +304,44 @@ async def my_configs_search_handler(
         await state.clear()
         return
 
-    # Search in XUIClientRecord.username and plan.name
-    from models.xui import XUIClientRecord
-    from models.plan import Plan
-    from sqlalchemy.orm import aliased
-    from sqlalchemy import or_, func as sqfunc
+    try:
+        # Search in XUIClientRecord.username and plan.name
+        from models.xui import XUIClientRecord
+        from models.plan import Plan
+        from sqlalchemy import or_, func as sqfunc
 
-    result = await session.execute(
-        select(Subscription)
-        .join(XUIClientRecord, Subscription.xui_client_id == XUIClientRecord.id, isouter=True)
-        .join(Plan, Subscription.plan_id == Plan.id, isouter=True)
-        .options(
-            selectinload(Subscription.plan),
-            selectinload(Subscription.xui_client),
+        result = await session.execute(
+            select(Subscription)
+            .join(XUIClientRecord, XUIClientRecord.subscription_id == Subscription.id, isouter=True)
+            .join(Plan, Subscription.plan_id == Plan.id, isouter=True)
+            .options(
+                selectinload(Subscription.plan),
+                selectinload(Subscription.xui_client),
+            )
+            .where(
+                Subscription.user_id == user.id,
+                Subscription.status.in_(list(_ACTIVE_STATUSES)),
+                or_(
+                    sqfunc.lower(XUIClientRecord.username).contains(query),
+                    sqfunc.lower(Plan.name).contains(query),
+                ),
+            )
+            .distinct()
+            .order_by(Subscription.created_at.desc())
+            .limit(20)
         )
-        .where(
-            Subscription.user_id == user.id,
-            Subscription.status.in_(list(_ACTIVE_STATUSES)),
-            or_(
-                sqfunc.lower(XUIClientRecord.username).contains(query),
-                sqfunc.lower(Plan.name).contains(query),
-            ),
+        subs = list(result.scalars().all())
+    except Exception as exc:
+        logger.error("Config search failed: %s", exc, exc_info=True)
+        await state.clear()
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🔄 بازگشت", callback_data=MyConfigListCallback(action="page", page=0).pack())
+        builder.adjust(1)
+        await message.answer(
+            "❌ خطا در جستجو. لطفاً دوباره تلاش کنید.",
+            reply_markup=builder.as_markup(),
         )
-        .distinct()
-        .order_by(Subscription.created_at.desc())
-        .limit(20)
-    )
-    subs = list(result.scalars().all())
+        return
 
     await state.clear()
 

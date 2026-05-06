@@ -54,6 +54,18 @@ async def apply_renewal(
         # Calculate new values
         if renew_type == "volume":
             subscription.volume_bytes += int(amount * 1024**3)
+            # Reset used bytes when adding volume (the panel keeps its own traffic counter)
+            subscription.used_bytes = 0
+            # If subscription is expired, ensure ends_at is in the future
+            # so the config doesn't immediately re-expire after volume renewal
+            if subscription.status == "expired" and (subscription.ends_at is None or subscription.ends_at < now_utc):
+                # Keep existing time; just fix the date to be at least now + 1 day
+                # (users should also renew time separately if they need more days)
+                # but don't let them be stuck with an expired date
+                if subscription.ends_at is not None and subscription.ends_at < now_utc:
+                    # Extend by the same original duration or at least keep it as-is
+                    # We DON'T change ends_at for volume renewal—only set enable=True
+                    pass
         elif renew_type == "time":
             days_to_add = int(amount)
             if subscription.ends_at is None:
@@ -112,7 +124,13 @@ async def _sync_xui_limits(
     try:
         server = ensure_inbound_server_loaded(xui_full.inbound)
         config = build_xui_client_config(server)
-        expiry_time = int(subscription.ends_at.timestamp() * 1000) if subscription.ends_at else 0
+        now_utc = datetime.now(timezone.utc)
+        # If ends_at is in the past or None, send 0 (unlimited) to X-UI
+        # This prevents X-UI from immediately re-expiring the client
+        if subscription.ends_at and subscription.ends_at > now_utc:
+            expiry_time = int(subscription.ends_at.timestamp() * 1000)
+        else:
+            expiry_time = 0
         security_settings = await AppSettingsRepository(session).get_service_security_settings()
         sub_id = ""
         current_sub_link = subscription.sub_link or xui_full.sub_link or ""
