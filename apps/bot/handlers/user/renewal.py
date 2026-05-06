@@ -264,45 +264,79 @@ async def renew_pay_wallet(
         except Exception:
             loading_msg = None
 
-        # Delete the payment method selection message
         try:
-            await callback.message.delete()
-        except Exception:
-            pass
-
-        # Create order
-        order = Order(
-            user_id=user.id,
-            plan_id=sub.plan_id,
-            amount=price,
-            currency="USD",
-            status="completed",
-            source="bot",
-        )
-        session.add(order)
-        await session.flush()
-
-        # Link order to subscription
-        sub.order_id = order.id
-
-        # Deduct from wallet using WalletManager if price > 0
-        from services.wallet.manager import WalletManager, InsufficientBalanceError
-        wallet_manager = WalletManager(session)
-        if price > 0:
+            # Delete the payment method selection message
             try:
-                await wallet_manager.process_transaction(
-                    user_id=user.id,
-                    amount=price,
-                    transaction_type="renewal",
-                    direction="debit",
-                    currency="USD",
-                    reference_type="order",
-                    reference_id=order.id,
-                    description=f"Renewal of subscription {sub.id}",
-                    metadata={"sub_id": str(sub.id), "type": renew_type},
+                await callback.message.delete()
+            except Exception:
+                pass
+
+            # Create order
+            order = Order(
+                user_id=user.id,
+                plan_id=sub.plan_id,
+                amount=price,
+                currency="USD",
+                status="completed",
+                source="bot",
+            )
+            session.add(order)
+            await session.flush()
+
+            # Link order to subscription
+            sub.order_id = order.id
+
+            # Deduct from wallet using WalletManager if price > 0
+            from services.wallet.manager import WalletManager, InsufficientBalanceError
+            wallet_manager = WalletManager(session)
+            if price > 0:
+                try:
+                    await wallet_manager.process_transaction(
+                        user_id=user.id,
+                        amount=price,
+                        transaction_type="renewal",
+                        direction="debit",
+                        currency="USD",
+                        reference_type="order",
+                        reference_id=order.id,
+                        description=f"Renewal of subscription {sub.id}",
+                        metadata={"sub_id": str(sub.id), "type": renew_type},
+                    )
+                except InsufficientBalanceError:
+                    error_text = "❌ موجودی کیف پول کافی نیست یا درخواست تکراری است."
+                    if loading_msg:
+                        try:
+                            await loading_msg.edit_text(error_text)
+                        except Exception:
+                            await callback.message.answer(error_text)
+                    else:
+                        await callback.message.answer(error_text)
+                    return
+
+            # Apply renewal — if X-UI sync fails, the exception will propagate
+            try:
+                await _apply_renewal(sub, renew_type, amount, session)
+            except Exception as exc:
+                logger.error("Renewal X-UI sync failed for sub %s: %s", sub.id, exc, exc_info=True)
+                # Refund the wallet debit since renewal was not applied on the panel
+                if price > 0:
+                    await wallet_manager.process_transaction(
+                        user_id=user.id,
+                        amount=price,
+                        transaction_type="refund",
+                        direction="credit",
+                        currency="USD",
+                        reference_type="order",
+                        reference_id=order.id,
+                        description="Refund: renewal failed (panel unreachable)",
+                        metadata={"sub_id": str(sub.id), "error": str(exc)[:200]},
+                    )
+                order.status = "failed"
+                error_text = (
+                    "❌ خطا در اعمال تمدید روی سرور!\n\n"
+                    "ارتباط با پنل X-UI برقرار نشد. مبلغ تمدید به کیف پول شما برگردانده شد.\n"
+                    "لطفاً بعداً دوباره تلاش کنید."
                 )
-            except InsufficientBalanceError:
-                error_text = "❌ موجودی کیف پول کافی نیست یا درخواست تکراری است."
                 if loading_msg:
                     try:
                         await loading_msg.edit_text(error_text)
@@ -312,53 +346,30 @@ async def renew_pay_wallet(
                     await callback.message.answer(error_text)
                 return
 
-        # Apply renewal — if X-UI sync fails, the exception will propagate
-        try:
-            await _apply_renewal(sub, renew_type, amount, session)
-        except Exception as exc:
-            logger.error("Renewal X-UI sync failed for sub %s: %s", sub.id, exc, exc_info=True)
-            # Refund the wallet debit since renewal was not applied on the panel
-            if price > 0:
-                await wallet_manager.process_transaction(
-                    user_id=user.id,
-                    amount=price,
-                    transaction_type="refund",
-                    direction="credit",
-                    currency="USD",
-                    reference_type="order",
-                    reference_id=order.id,
-                    description="Refund: renewal failed (panel unreachable)",
-                    metadata={"sub_id": str(sub.id), "error": str(exc)[:200]},
-                )
-            order.status = "failed"
-            error_text = (
-                "❌ خطا در اعمال تمدید روی سرور!\n\n"
-                "ارتباط با پنل X-UI برقرار نشد. مبلغ تمدید به کیف پول شما برگردانده شد.\n"
-                "لطفاً بعداً دوباره تلاش کنید."
-            )
+            # Clear alert dedup keys so user gets re-notified in next cycle
+            await _clear_sub_alert_keys(sub.id)
+
+            success_text = Messages.RENEWAL_SUCCESS
             if loading_msg:
                 try:
-                    await loading_msg.edit_text(error_text)
+                    await loading_msg.edit_text(success_text)
                 except Exception:
-                    await callback.message.answer(error_text)
+                    await callback.message.answer(success_text)
             else:
-                await callback.message.answer(error_text)
-            return
-
-        # Clear alert dedup keys so user gets re-notified in next cycle
-        await _clear_sub_alert_keys(sub.id)
-
-        success_text = Messages.RENEWAL_SUCCESS
-        if loading_msg:
-            try:
-                await loading_msg.edit_text(success_text)
-            except Exception:
                 await callback.message.answer(success_text)
-        else:
-            await callback.message.answer(success_text)
 
-        # Notify admins
-        await _notify_renewal_admins(callback, user, renew_type, amount, price, session)
+            # Notify admins
+            await _notify_renewal_admins(callback, user, renew_type, amount, price, session)
+            
+        except Exception as general_exc:
+            logger.error("Unexpected crash in renew_pay_wallet: %s", general_exc, exc_info=True)
+            crash_text = f"❌ خطای سیستمی رخ داد:\n`{str(general_exc)[:200]}`"
+            if loading_msg:
+                try:
+                    await loading_msg.edit_text(crash_text, parse_mode="Markdown")
+                except Exception:
+                    pass
+            raise  # Re-raise to let middleware rollback DB!
 
 
 
