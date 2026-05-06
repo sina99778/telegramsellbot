@@ -1388,6 +1388,7 @@ async def _finalize_purchase(
         days_left=plan.duration_days,
         is_active=True,
         bot_username=(bot._me.username if bot._me else (await bot.get_me()).username) if bot else None,
+        vless_uri=vless_uri,
     )
     
     if banner_bytes:

@@ -35,6 +35,7 @@ def create_traffic_banner(
     days_left: int,
     is_active: bool,
     bot_username: str | None = None,
+    vless_uri: str | None = None,
 ) -> io.BytesIO:
     """
     Generate a modern dark-mode visual banner displaying config status.
@@ -96,6 +97,17 @@ def create_traffic_banner(
     
     draw.text((details_x, 260), reshape_text("Time Remaining:"), fill="#9ca3af", font=font_small)
     draw.text((details_x, 290), reshape_text(f"{days_left} Days"), fill="#f3f4f6", font=font_large)
+
+    # Draw QR Code if link is provided
+    if vless_uri:
+        try:
+            import segno
+            qr = segno.make_qr(vless_uri)
+            qr_img = qr.to_pil(scale=5, border=1, dark="#111827", light="#f3f4f6")
+            qr_img = qr_img.resize((150, 150), Image.Resampling.LANCZOS)
+            image.paste(qr_img, (600, 140))
+        except Exception as exc:
+            pass # ignore if QR generation fails
 
     # Footer
     draw.text((40, height - 40), reshape_text(f"User ID: {user_id}"), fill="#6b7280", font=font_small)

@@ -579,6 +579,7 @@ async def my_config_detail_handler(
             days_left=days_left,
             is_active=(sub.status in ["active", "pending_activation"]),
             bot_username=(bot._me.username if bot._me else (await bot.get_me()).username) if bot else None,
+            vless_uri=vless_uri,
         )
         if banner_bytes:
             try:
