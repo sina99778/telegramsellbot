@@ -47,74 +47,58 @@ async def apply_renewal(
 ) -> None:
     """Apply renewal to subscription and sync with X-UI panel.
 
-    Re-loads the subscription fresh from the DB to avoid stale relationship
-    references (which cause 'greenlet_spawn has not been called' errors in
-    async SQLAlchemy when lazy loading is implicitly triggered).
+    Uses begin_nested() (savepoint) so that if X-UI sync fails, ALL DB
+    changes are automatically rolled back by PostgreSQL.
+
+    CRITICAL: Inside the savepoint, we ONLY access column attributes on
+    the subscription object (volume_bytes, used_bytes, ends_at, status,
+    sub_link, activated_at, id).  We NEVER access relationship attributes
+    (user, order, plan, xui_client) because that triggers SQLAlchemy
+    lazy loading which is forbidden in async sessions and causes the
+    'greenlet_spawn has not been called' error.
+
+    The xui_client is loaded via an explicit query BEFORE the savepoint.
     """
     now_utc = datetime.now(timezone.utc)
     sub_id = subscription.id
 
-    # ── Re-load subscription + xui_client fresh from DB ──────────────────
-    # The subscription object passed by callers is often stale after
-    # session.flush() / WalletManager.process_transaction() / begin_nested()
-    # calls.  Accessing ANY relationship on a stale object triggers lazy
-    # loading which is forbidden in async sessions.  Re-querying with
-    # explicit column-only access guarantees safety.
-    fresh = await session.scalar(
-        select(Subscription).where(Subscription.id == sub_id)
-    )
-    if fresh is None:
-        raise ValueError(f"Subscription {sub_id} not found during renewal.")
-
+    # ── Load xui_client via explicit query ───────────────────────────────
+    # NEVER use subscription.xui_client — that triggers lazy loading!
     xui = await session.scalar(
         select(XUIClientRecord).where(
             XUIClientRecord.subscription_id == sub_id
         )
     )
 
-    # ── Apply volume/time changes ────────────────────────────────────────
-    if renew_type == "volume":
-        fresh.volume_bytes += int(amount * 1024**3)
-        fresh.used_bytes = 0
-    elif renew_type == "time":
-        days_to_add = int(amount)
-        if fresh.ends_at is None:
-            base = fresh.activated_at or now_utc
-            fresh.ends_at = base + timedelta(days=days_to_add)
-        elif fresh.ends_at < now_utc:
-            fresh.ends_at = now_utc + timedelta(days=days_to_add)
+    # ── Savepoint: if X-UI sync fails, all DB changes auto-rollback ─────
+    async with session.begin_nested():
+        # Only modify COLUMN attributes — never touch relationships!
+        if renew_type == "volume":
+            subscription.volume_bytes += int(amount * 1024**3)
+            subscription.used_bytes = 0
+        elif renew_type == "time":
+            days_to_add = int(amount)
+            if subscription.ends_at is None:
+                base = subscription.activated_at or now_utc
+                subscription.ends_at = base + timedelta(days=days_to_add)
+            elif subscription.ends_at < now_utc:
+                subscription.ends_at = now_utc + timedelta(days=days_to_add)
+            else:
+                subscription.ends_at += timedelta(days=days_to_add)
         else:
-            fresh.ends_at += timedelta(days=days_to_add)
-    else:
-        raise ValueError("Invalid renewal type.")
+            raise ValueError("Invalid renewal type.")
 
-    if fresh.status == "expired":
-        fresh.status = "active"
+        if subscription.status == "expired":
+            subscription.status = "active"
 
-    await session.flush()
+        # Sync with X-UI panel — if this fails, the SAVEPOINT rolls back
+        # all the DB changes above automatically.
+        if xui is not None:
+            await _sync_xui_limits(session, subscription, xui)
 
-    # ── Sync with X-UI panel ─────────────────────────────────────────────
-    if xui is not None:
-        try:
-            await _sync_xui_limits(session, fresh, xui)
-        except Exception as exc:
-            # Rollback the DB changes we just flushed
-            fresh.volume_bytes = subscription.volume_bytes
-            fresh.used_bytes = subscription.used_bytes
-            fresh.ends_at = subscription.ends_at
-            fresh.status = subscription.status
-            await session.flush()
-            raise RenewalXUISyncError(
-                f"Renewal could not be applied on X-UI panel: {exc}"
-            ) from exc
+        await session.flush()
 
-    # ── Copy updated values back to the caller's object ──────────────────
-    subscription.volume_bytes = fresh.volume_bytes
-    subscription.used_bytes = fresh.used_bytes
-    subscription.ends_at = fresh.ends_at
-    subscription.status = fresh.status
-
-    # ── Clear alert dedup keys ───────────────────────────────────────────
+    # ── Clear alert dedup keys (outside savepoint) ───────────────────────
     try:
         from sqlalchemy import delete
         from models.app_setting import AppSetting
@@ -133,6 +117,12 @@ async def _sync_xui_limits(
     subscription: Subscription,
     xui: XUIClientRecord,
 ) -> None:
+    """Sync subscription limits to X-UI panel.
+
+    Loads xui_full with full eager loading (inbound → server → credentials).
+    Only reads COLUMN attributes from subscription (ends_at, volume_bytes,
+    sub_link).  Never accesses any relationship on subscription.
+    """
     xui_full = await session.scalar(
         select(XUIClientRecord)
         .options(
@@ -149,18 +139,20 @@ async def _sync_xui_limits(
         server = ensure_inbound_server_loaded(xui_full.inbound)
         config = build_xui_client_config(server)
         now_utc = datetime.now(timezone.utc)
-        # If ends_at is in the past or None, send 0 (unlimited) to X-UI
-        # This prevents X-UI from immediately re-expiring the client
+
+        # Column access only — safe in async
         if subscription.ends_at and subscription.ends_at > now_utc:
             expiry_time = int(subscription.ends_at.timestamp() * 1000)
         else:
             expiry_time = 0
+
         security_settings = await AppSettingsRepository(session).get_service_security_settings()
-        sub_id = ""
-        # Use column values only — never access relationships on subscription
+
+        # Extract sub_id from sub_link (column attributes only)
+        sub_id_str = ""
         current_sub_link = subscription.sub_link or xui_full.sub_link or ""
         if "/" in current_sub_link:
-            sub_id = current_sub_link.rsplit("/", 1)[-1]
+            sub_id_str = current_sub_link.rsplit("/", 1)[-1]
 
         xui_client = XUIClient(
             id=xui_full.client_uuid,
@@ -170,7 +162,7 @@ async def _sync_xui_limits(
             limitIp=security_settings.xui_limit_ip,
             totalGB=subscription.volume_bytes,
             expiryTime=expiry_time,
-            subId=sub_id,
+            subId=sub_id_str,
             comment=xui_full.username or "",
         )
         xui_full.is_active = True
