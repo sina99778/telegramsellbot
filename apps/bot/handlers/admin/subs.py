@@ -316,7 +316,7 @@ async def extend_submit(
     await state.clear()
 
     sub = await session.scalar(
-        select(Subscription).options(selectinload(Subscription.plan))
+        select(Subscription).options(selectinload(Subscription.plan), selectinload(Subscription.xui_client))
         .where(Subscription.id == UUID(data["sub_id"]))
     )
     if sub is None:
@@ -385,7 +385,9 @@ async def add_volume_submit(
     await state.clear()
 
     sub = await session.scalar(
-        select(Subscription).where(Subscription.id == UUID(data["sub_id"]))
+        select(Subscription)
+        .options(selectinload(Subscription.xui_client))
+        .where(Subscription.id == UUID(data["sub_id"]))
     )
     if sub is None:
         await message.answer(AdminMessages.SUBSCRIPTION_NOT_FOUND)

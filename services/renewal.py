@@ -49,6 +49,11 @@ async def apply_renewal(
     ALL DB changes (volume/time/status) are rolled back automatically."""
     now_utc = datetime.now(timezone.utc)
 
+    # Grab the xui_client reference BEFORE entering nested transaction
+    # to prevent SQLAlchemy from attempting a lazy load inside begin_nested(),
+    # which causes "greenlet_spawn has not been called" errors in async mode.
+    xui = subscription.xui_client
+
     # Use a savepoint (nested transaction) so we can rollback on X-UI failure
     async with session.begin_nested():
         # Calculate new values
@@ -59,12 +64,7 @@ async def apply_renewal(
             # If subscription is expired, ensure ends_at is in the future
             # so the config doesn't immediately re-expire after volume renewal
             if subscription.status == "expired" and (subscription.ends_at is None or subscription.ends_at < now_utc):
-                # Keep existing time; just fix the date to be at least now + 1 day
-                # (users should also renew time separately if they need more days)
-                # but don't let them be stuck with an expired date
                 if subscription.ends_at is not None and subscription.ends_at < now_utc:
-                    # Extend by the same original duration or at least keep it as-is
-                    # We DON'T change ends_at for volume renewal—only set enable=True
                     pass
         elif renew_type == "time":
             days_to_add = int(amount)
@@ -82,7 +82,6 @@ async def apply_renewal(
             subscription.status = "active"
 
         # Sync with X-UI panel — if this fails, the savepoint is rolled back
-        xui = subscription.xui_client
         if xui is not None:
             await _sync_xui_limits(session, subscription, xui)
 
