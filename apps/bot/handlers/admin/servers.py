@@ -237,7 +237,7 @@ async def add_server_password(
     for url in urls_to_try:
         try:
             logger.info("Trying to connect to X-UI panel at: %s", url)
-            remote_inbounds = await _fetch_remote_inbounds(
+            remote_inbounds, panel_settings = await _fetch_remote_inbounds(
                 base_url=url,
                 username=str(form_data["username"]),
                 password=password,
@@ -262,12 +262,19 @@ async def add_server_password(
 
     base_url = working_url
 
+    sub_port_str = panel_settings.get("subPort", "")
+    try:
+        sub_port = int(sub_port_str) if sub_port_str else 2096
+    except ValueError:
+        sub_port = 2096
+
     server = XUIServerRecord(
         name=str(form_data["name"]),
         base_url=base_url,
         panel_type="sanaei_xui",
         is_active=True,
         health_status="healthy",
+        subscription_port=sub_port,
     )
     session.add(server)
     await session.flush()
@@ -328,7 +335,7 @@ async def sync_server_inbounds(
         return
 
     try:
-        remote_inbounds = await _fetch_remote_inbounds(
+        remote_inbounds, panel_settings = await _fetch_remote_inbounds(
             base_url=server.base_url,
             username=server.credentials.username,
             password=decrypt_secret(server.credentials.password_encrypted),
@@ -342,6 +349,15 @@ async def sync_server_inbounds(
         existing_inbounds=server.inbounds,
         remote_inbounds=remote_inbounds,
     )
+
+    sub_port_str = panel_settings.get("subPort", "")
+    if sub_port_str:
+        try:
+            sub_port = int(sub_port_str)
+            if server.subscription_port != sub_port:
+                server.subscription_port = sub_port
+        except ValueError:
+            pass
     session.add_all(created_inbounds)
     await session.flush()
 
@@ -788,7 +804,7 @@ async def edit_url_receive(
     # Test connection with the new URL
     password = decrypt_secret(server.credentials.password_encrypted)
     try:
-        await _fetch_remote_inbounds(
+        remote_inbounds, _ = await _fetch_remote_inbounds(
             base_url=new_url,
             username=server.credentials.username,
             password=password,
@@ -1038,4 +1054,9 @@ async def _fetch_remote_inbounds(*, base_url: str, username: str, password: str)
         )
     ) as xui_client:
         await xui_client.login()
-        return await xui_client.get_inbounds()
+        inbounds = await xui_client.get_inbounds()
+        try:
+            settings = await xui_client.get_panel_settings()
+        except Exception:
+            settings = {}
+        return inbounds, settings

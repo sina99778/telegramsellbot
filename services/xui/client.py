@@ -215,6 +215,15 @@ class SanaeiXUIClient:
             raise XUIRequestError(api_response.msg or "Failed to clear client IPs.")
         return api_response
 
+    async def get_panel_settings(self) -> dict[str, Any]:
+        response = await self._request("POST", "panel/setting/all")
+        if isinstance(response, dict) and "obj" in response:
+            wrapper = XUIAPIResponse[dict[str, Any]].model_validate(response)
+            if wrapper.success is False:
+                raise XUIRequestError(wrapper.msg or "Failed to fetch panel settings.")
+            return wrapper.obj or {}
+        return {}
+
     async def get_db_backup(self) -> bytes:
         """Download X-UI panel database backup, trying known endpoints."""
         if not self._authenticated:

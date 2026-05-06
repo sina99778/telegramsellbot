@@ -808,26 +808,52 @@ async def global_search_execute(
                 callback_data=RecoveryPaymentCallback(action="view", payment_id=payment.id).pack(),
             )
 
-    # 5. Try as config name in subscriptions (via callback_payload)
+    # 5. Try as config name in subscriptions
     if not results:
-        pay_result = await session.execute(
-            select(Payment).options(selectinload(Payment.user))
-            .where(Payment.callback_payload["config_name"].as_string() == query)
-            .order_by(Payment.created_at.desc())
+        # Search by XUIClientRecord.username (which is the config name)
+        from models.xui import XUIClientRecord
+        xui_result = await session.execute(
+            select(Subscription)
+            .join(XUIClientRecord, Subscription.id == XUIClientRecord.subscription_id)
+            .options(selectinload(Subscription.user), selectinload(Subscription.plan))
+            .where(XUIClientRecord.username == query)
             .limit(5)
         )
-        config_pays = list(pay_result.scalars().all())
-        if config_pays:
-            for cp in config_pays:
-                u = cp.user
+        subs = list(xui_result.scalars().all())
+        if subs:
+            for s in subs:
+                u = s.user
                 results.append(
-                    f"📛 کانفیگ '{query}': پرداخت {str(cp.id)[:8]}\n"
-                    f"   {cp.price_amount}$ | {cp.payment_status} | کاربر: {u.first_name if u else '-'}"
+                    f"📛 کانفیگ '{query}': اشتراک {str(s.id)[:8]}\n"
+                    f"   {s.status} | پلن: {s.plan.name if s.plan else '-'}\n"
+                    f"   کاربر: {u.first_name if u else '-'} (TG: {u.telegram_id if u else '-'})"
                 )
-                builder.button(
-                    text=f"🔍 {str(cp.id)[:8]}",
-                    callback_data=RecoveryPaymentCallback(action="view", payment_id=cp.id).pack(),
-                )
+                if s.user_id:
+                    builder.button(
+                        text=f"📋 Timeline کاربر",
+                        callback_data=TimelineCallback(user_id=s.user_id).pack(),
+                    )
+        
+        # Fallback to payment callback_payload
+        if not subs:
+            pay_result = await session.execute(
+                select(Payment).options(selectinload(Payment.user))
+                .where(Payment.callback_payload["config_name"].as_string() == query)
+                .order_by(Payment.created_at.desc())
+                .limit(5)
+            )
+            config_pays = list(pay_result.scalars().all())
+            if config_pays:
+                for cp in config_pays:
+                    u = cp.user
+                    results.append(
+                        f"📛 کانفیگ '{query}': پرداخت {str(cp.id)[:8]}\n"
+                        f"   {cp.price_amount}$ | {cp.payment_status} | کاربر: {u.first_name if u else '-'}"
+                    )
+                    builder.button(
+                        text=f"🔍 پرداخت {str(cp.id)[:8]}",
+                        callback_data=RecoveryPaymentCallback(action="view", payment_id=cp.id).pack(),
+                    )
 
     # 6. Try partial first_name search as last resort
     if not results:

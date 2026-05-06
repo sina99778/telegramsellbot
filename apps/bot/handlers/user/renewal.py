@@ -187,6 +187,11 @@ async def _get_renewal_data(callback_data: RenewPayCallback, session: AsyncSessi
     else:
         price = (amount / 10.0) * renewal_settings.price_per_10_days
 
+    # Apply personal discount
+    discount_pct = getattr(user, "personal_discount_percent", 0) or 0
+    if discount_pct > 0:
+        price = price * (1.0 - (discount_pct / 100.0))
+
     price = round(Decimal(str(price)), 2)
 
     return {
