@@ -1194,14 +1194,34 @@ def _serialize_ticket_for_admin(ticket: Ticket) -> dict[str, Any]:
 
 
 async def _notify_ticket_user(telegram_id: int, ticket_id: UUID, text: str) -> bool:
+    from apps.bot.handlers.admin.support import SupportTicketActionCallback
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
     bot = PremiumEmojiBot(
         token=settings.bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
     )
     try:
+        builder = InlineKeyboardBuilder()
+        builder.button(
+            text="💬 پاسخ دادن",
+            callback_data=SupportTicketActionCallback(action="user_reply", ticket_id=ticket_id).pack(),
+        )
+        builder.button(
+            text="🔒 بستن تیکت",
+            callback_data=SupportTicketActionCallback(action="user_close", ticket_id=ticket_id).pack(),
+        )
+        builder.adjust(2)
+
         await bot.send_message(
             chat_id=telegram_id,
-            text=f"پاسخ پشتیبانی برای تیکت #{str(ticket_id)[:8]}:\n\n{text}",
+            text=(
+                f"💬 <b>پاسخ پشتیبانی</b> — تیکت #{str(ticket_id)[:8]}\n"
+                f"━━━━━━━━━━━━━━━━\n\n"
+                f"{text}"
+            ),
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML",
         )
         return True
     except (TelegramBadRequest, TelegramForbiddenError):
@@ -2672,8 +2692,10 @@ async def send_ticket_message(
     repo = TicketRepository(session)
     ticket = await repo.get_open_ticket_for_user(user.id)
 
+    is_new_ticket = False
     if ticket is None:
         ticket = await repo.create_ticket(user_id=user.id, status="open")
+        is_new_ticket = True
 
     if ticket.status == "answered":
         ticket.status = "open"
@@ -2683,6 +2705,45 @@ async def send_ticket_message(
         sender_id=user.id,
         text=text,
     )
+    await session.flush()
+
+    # ── Notify admins via Telegram ──
+    try:
+        admin_result = await session.execute(
+            select(User).where(
+                User.role.in_(["admin", "owner"]),
+                User.is_bot_blocked.is_(False),
+            )
+        )
+        admins = list(admin_result.scalars().all())
+
+        admin_tg_ids = {a.telegram_id for a in admins}
+        if settings.owner_telegram_id and settings.owner_telegram_id not in admin_tg_ids:
+            admin_tg_ids.add(settings.owner_telegram_id)
+
+        if admin_tg_ids:
+            bot = PremiumEmojiBot(
+                token=settings.bot_token.get_secret_value(),
+                default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
+            )
+            try:
+                ticket_label = "تیکت جدید" if is_new_ticket else "پیام جدید"
+                alert_text = (
+                    f"🎫 <b>{ticket_label}</b> — #{str(ticket.id)[:8]}\n"
+                    f"👤 {user.first_name or '-'} | <code>{user.telegram_id}</code>\n"
+                    f"━━━━━━━━━━━━━━━━\n"
+                    f"{text}"
+                )
+                for tg_id in admin_tg_ids:
+                    try:
+                        await bot.send_message(chat_id=tg_id, text=alert_text, parse_mode="HTML")
+                    except Exception:
+                        pass
+            finally:
+                await bot.session.close()
+    except Exception as exc:
+        logger.warning("Failed to notify admins about ticket %s: %s", ticket.id, exc)
+
     return {"ok": True, "ticket_id": str(ticket.id)}
 
 
