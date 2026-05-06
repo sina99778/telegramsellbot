@@ -39,8 +39,6 @@ class ManageUserStates(StatesGroup):
     waiting_for_personal_discount = State()
 
 
-class UserConfigSearchStates(StatesGroup):
-    waiting_for_search_query = State()
 
 
 class BroadcastStates(StatesGroup):

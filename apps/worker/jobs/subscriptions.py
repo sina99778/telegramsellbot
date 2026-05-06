@@ -472,7 +472,7 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
                     limit_ip=security_settings.xui_limit_ip,
                 )
 
-            await session.flush()
+            await session.commit()
 
             return {
                 "used_bytes": traffic.used_bytes,

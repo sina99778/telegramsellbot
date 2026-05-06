@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from apps.bot.utils.messaging import safe_edit_or_send
-from apps.bot.states.admin import UserConfigSearchStates
+from apps.bot.states.my_configs import UserConfigSearchStates
 from core.formatting import escape_markdown, format_usage_bar, format_volume_bytes
 from core.texts import Buttons
 from models.subscription import Subscription
@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 router = Router(name="user-my-configs")
 
-_ACTIVE_STATUSES = {"pending_activation", "active", "expired"}
+_ACTIVE_STATUSES = {"pending_activation", "active", "expired", "disabled"}
 _CONFIGS_PAGE_SIZE = 8
 
 
@@ -232,7 +232,7 @@ def _build_config_button_label(sub: Subscription) -> str:
     config_name = (
         sub.xui_client.username if sub.xui_client else (sub.plan.name if sub.plan else "نامشخص")
     )
-    status_emoji = {"active": "✅", "pending_activation": "⏳", "expired": "❌"}.get(sub.status, "❓")
+    status_emoji = {"active": "✅", "pending_activation": "⏳", "expired": "❌", "disabled": "🚫"}.get(sub.status, "❓")
     label = f"{status_emoji} {config_name}"
     if sub.ends_at is not None:
         now = datetime.now(timezone.utc)
@@ -240,13 +240,15 @@ def _build_config_button_label(sub: Subscription) -> str:
         label += f" — {remaining_days} روز"
     elif sub.status == "pending_activation":
         label += " — هنوز فعال نشده"
+    elif sub.status == "disabled":
+        label += " — غیرفعال"
     return label
 
 
 def _build_config_list_text(total_count: int, page: int, total_pages: int) -> str:
     page_hint = f"\nصفحه {page + 1} از {total_pages}" if total_pages > 1 else ""
     return (
-        f"📋 کانفیگ‌های فعال شما ({total_count} عدد):{page_hint}\n"
+        f"📋 کانفیگ‌های شما ({total_count} عدد):{page_hint}\n"
         "برای مشاهده جزئیات روی هر کدام بزنید:"
     )
 
@@ -324,6 +326,7 @@ async def my_configs_search_handler(
                 sqfunc.lower(Plan.name).contains(query),
             ),
         )
+        .distinct()
         .order_by(Subscription.created_at.desc())
         .limit(20)
     )
