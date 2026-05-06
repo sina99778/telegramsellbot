@@ -38,9 +38,11 @@ def create_traffic_banner(
     vless_uri: str | None = None,
 ) -> io.BytesIO:
     """
-    Generate a modern dark-mode visual banner displaying config status.
+    Generate a modern dark-mode visual banner displaying config status
+    with a QR code of the vless URI.
     """
-    width, height = 800, 400
+    # Make the banner wider to accommodate QR code
+    width, height = 900, 420
     
     # Create dark background
     image = Image.new("RGB", (width, height), "#111827")
@@ -65,10 +67,11 @@ def create_traffic_banner(
     
     status_text = "🟢 ACTIVE" if is_active else ("🔴 " + status.upper())
     status_color = "#34d399" if is_active else "#f87171"
-    draw.text((width - 250, 40), reshape_text(status_text), fill=status_color, font=font_medium)
+    # Place status text before QR area
+    draw.text((40, 80), reshape_text(status_text), fill=status_color, font=font_medium)
 
     # Draw progress ring
-    ring_x, ring_y, ring_r = 150, 220, 90
+    ring_x, ring_y, ring_r = 150, 250, 90
     draw.arc(
         (ring_x - ring_r, ring_y - ring_r, ring_x + ring_r, ring_y + ring_r),
         start=0, end=360, fill="#374151", width=15
@@ -98,16 +101,64 @@ def create_traffic_banner(
     draw.text((details_x, 260), reshape_text("Time Remaining:"), fill="#9ca3af", font=font_small)
     draw.text((details_x, 290), reshape_text(f"{days_left} Days"), fill="#f3f4f6", font=font_large)
 
-    # Draw QR Code if link is provided
+    # ── QR Code ──────────────────────────────────────────────────────────
+    # Generate a clearly visible QR code of the vless URI
     if vless_uri:
         try:
             import segno
-            qr = segno.make_qr(vless_uri)
-            qr_img = qr.to_pil(scale=5, border=1, dark="#111827", light="#f3f4f6")
-            qr_img = qr_img.resize((150, 150), Image.Resampling.LANCZOS)
-            image.paste(qr_img, (600, 140))
-        except Exception as exc:
-            pass # ignore if QR generation fails
+
+            qr = segno.make_qr(vless_uri, error="L")
+
+            # Render QR to a temporary PNG buffer, then load as PIL Image
+            qr_buf = io.BytesIO()
+            qr.save(
+                qr_buf,
+                kind="png",
+                scale=6,
+                border=2,
+                dark="#111827",   # dark modules = banner background color
+                light="#e5e7eb", # light modules = bright gray (visible!)
+            )
+            qr_buf.seek(0)
+            qr_img = Image.open(qr_buf).convert("RGB")
+
+            # Fit QR into a 160x160 box
+            qr_size = 160
+            qr_img = qr_img.resize((qr_size, qr_size), Image.Resampling.LANCZOS)
+
+            # Position: top-right corner with padding
+            qr_x = width - qr_size - 30
+            qr_y = 30
+
+            # Draw a rounded border around QR
+            border_pad = 8
+            draw.rounded_rectangle(
+                (qr_x - border_pad, qr_y - border_pad,
+                 qr_x + qr_size + border_pad, qr_y + qr_size + border_pad),
+                radius=10,
+                fill="#1f2937",
+                outline="#3b82f6",
+                width=2,
+            )
+
+            # Paste QR code
+            image.paste(qr_img, (qr_x, qr_y))
+
+            # Label under QR
+            label = "Scan to connect"
+            label_w = draw.textlength(label, font=font_small)
+            draw.text(
+                (qr_x + (qr_size - label_w) // 2, qr_y + qr_size + border_pad + 4),
+                label,
+                fill="#9ca3af",
+                font=font_small,
+            )
+        except ImportError:
+            # segno not installed — skip QR
+            pass
+        except Exception:
+            # Any other QR failure — skip silently
+            pass
 
     # Footer
     draw.text((40, height - 40), reshape_text(f"User ID: {user_id}"), fill="#6b7280", font=font_small)
