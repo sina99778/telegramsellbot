@@ -7,13 +7,14 @@ preventing repeated alerts for the same threshold.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -26,7 +27,6 @@ from models.user import User
 
 logger = logging.getLogger(__name__)
 
-# AppSetting key prefix for tracking which alerts have been sent
 _ALERT_KEY_PREFIX = "alert.sub."
 
 
@@ -51,14 +51,25 @@ async def send_expiry_notifications(session: AsyncSession, bot: Bot) -> None:
     )
     subscriptions = list(result.scalars().all())
 
+    if not subscriptions:
+        await _send_volume_warnings(session, bot)
+        return
+
+    # ── Batch-load all alert keys in ONE query (eliminates N+1) ──────────────
+    sub_ids = [str(s.id) for s in subscriptions]
+    alerted_keys = await _load_alerted_keys_batch(session, sub_ids)
+    # ─────────────────────────────────────────────────────────────────────────
+
+    new_keys_to_mark: list[str] = []
+    tasks = []
+
     for sub in subscriptions:
         user = sub.user
         if user is None or user.is_bot_blocked:
             continue
 
-        # Dedup: only send once per subscription for time expiry
         alert_key = f"{_ALERT_KEY_PREFIX}{sub.id}.time_24h"
-        if await _already_alerted(session, alert_key):
+        if alert_key in alerted_keys:
             continue
 
         plan_name = sub.plan.name if sub.plan else "نامشخص"
@@ -82,15 +93,28 @@ async def send_expiry_notifications(session: AsyncSession, bot: Bot) -> None:
             "برای تمدید روی دکمه زیر بزنید:"
         )
 
+        tasks.append((user, sub, alert_key, text, builder.as_markup()))
+        new_keys_to_mark.append(alert_key)
+
+    # Send all notifications in parallel
+    async def _send_one(user, sub, alert_key, text, markup):
         try:
-            await bot.send_message(user.telegram_id, text, reply_markup=builder.as_markup())
-            await _mark_alerted(session, alert_key)
+            await bot.send_message(user.telegram_id, text, reply_markup=markup)
+            return alert_key
         except TelegramForbiddenError:
             user.is_bot_blocked = True
+            return None
         except Exception as exc:
             logger.warning("Failed to send expiry notification to %s: %s", user.telegram_id, exc)
+            return None
 
-    # ─── Volume-based alerts ─────────────────────────────────────────────
+    results = await asyncio.gather(*[_send_one(*t) for t in tasks], return_exceptions=True)
+
+    # Mark only successfully sent alerts
+    for result in results:
+        if isinstance(result, str):
+            await _mark_alerted(session, result)
+
     await _send_volume_warnings(session, bot)
 
 
@@ -110,6 +134,14 @@ async def _send_volume_warnings(session: AsyncSession, bot: Bot) -> None:
     )
     volume_subs = list(volume_result.scalars().all())
 
+    if not volume_subs:
+        return
+
+    # Batch-load alert keys
+    sub_ids = [str(s.id) for s in volume_subs]
+    alerted_keys = await _load_alerted_keys_batch(session, sub_ids)
+
+    tasks = []
     for sub in volume_subs:
         if sub.volume_bytes <= 0:
             continue
@@ -119,7 +151,6 @@ async def _send_volume_warnings(session: AsyncSession, bot: Bot) -> None:
         if user is None or user.is_bot_blocked:
             continue
 
-        # Determine which threshold to alert for
         if usage_ratio >= 0.95:
             threshold_key = "vol_95"
             pct_remaining = max(100 - round(usage_ratio * 100), 0)
@@ -133,9 +164,8 @@ async def _send_volume_warnings(session: AsyncSession, bot: Bot) -> None:
         else:
             continue
 
-        # Dedup check
         alert_key = f"{_ALERT_KEY_PREFIX}{sub.id}.{threshold_key}"
-        if await _already_alerted(session, alert_key):
+        if alert_key in alerted_keys:
             continue
 
         plan_name = sub.plan.name if sub.plan else "نامشخص"
@@ -158,26 +188,47 @@ async def _send_volume_warnings(session: AsyncSession, bot: Bot) -> None:
             f"📊 مصرف: {pct_used}% ({format_volume_bytes(sub.used_bytes)} از {volume_total})\n"
             f"💾 باقی‌مانده: {volume_remaining} ({pct_remaining}%)\n\n"
         )
-
         if usage_ratio >= 0.95:
             text += "❗ حجم سرویس شما تقریباً تمام شده!\nبرای جلوگیری از قطع سرویس، هرچه سریع‌تر حجم اضافه کنید."
         else:
             text += "برای افزایش حجم از بخش «سرویس‌های من» → تمدید اقدام کنید."
 
+        tasks.append((user, sub, alert_key, text, builder.as_markup(), pct_used))
+
+    async def _send_vol(user, sub, alert_key, text, markup, pct_used):
         try:
-            await bot.send_message(user.telegram_id, text, reply_markup=builder.as_markup())
-            await _mark_alerted(session, alert_key)
-            logger.info(
-                "Volume warning sent: user=%s, sub=%s, usage=%d%%",
-                user.telegram_id, sub.id, pct_used,
-            )
+            await bot.send_message(user.telegram_id, text, reply_markup=markup)
+            logger.info("Volume warning sent: user=%s, sub=%s, usage=%d%%", user.telegram_id, sub.id, pct_used)
+            return alert_key
         except TelegramForbiddenError:
             user.is_bot_blocked = True
+            return None
         except Exception as exc:
             logger.warning("Failed to send volume warning to %s: %s", user.telegram_id, exc)
+            return None
+
+    results = await asyncio.gather(*[_send_vol(*t) for t in tasks], return_exceptions=True)
+
+    for result in results:
+        if isinstance(result, str):
+            await _mark_alerted(session, result)
 
 
 # ─── Alert deduplication helpers ──────────────────────────────────────────────
+
+
+async def _load_alerted_keys_batch(session: AsyncSession, sub_ids: list[str]) -> set[str]:
+    """Load all alert keys for a batch of subscription IDs in ONE query."""
+    if not sub_ids:
+        return set()
+    prefixes = [f"{_ALERT_KEY_PREFIX}{sid}." for sid in sub_ids]
+    # Build OR conditions
+    from sqlalchemy import or_
+    conditions = [AppSetting.key.like(f"{p}%") for p in prefixes]
+    result = await session.execute(
+        select(AppSetting.key).where(or_(*conditions))
+    )
+    return set(result.scalars().all())
 
 
 async def _already_alerted(session: AsyncSession, key: str) -> bool:
@@ -196,3 +247,5 @@ async def _mark_alerted(session: AsyncSession, key: str) -> None:
         )
         session.add(record)
         await session.flush()
+
+

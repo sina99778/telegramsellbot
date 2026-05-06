@@ -63,7 +63,9 @@ async def process_successful_payment(
     wallet_already_credited = payment.actually_paid is not None
 
     if not wallet_already_credited:
+        # Flush immediately so concurrent IPN retries see the marker before we credit
         payment.actually_paid = amount_to_credit
+        await session.flush()
 
         # 1. Top up wallet
         logger.info("[PAYMENT] Step 1: Credit wallet for user %s", payment.user_id)
@@ -86,6 +88,7 @@ async def process_successful_payment(
         logger.info("[PAYMENT] Wallet credited OK")
     else:
         logger.info("[PAYMENT] Wallet already credited — skipping credit step")
+
 
     # 2. If it is direct purchase, attempt provisioning (retriable)
     if payment.kind == "direct_purchase":

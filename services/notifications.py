@@ -4,6 +4,7 @@ Sends purchase/renewal alerts to all admin/owner users.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiogram import Bot
@@ -22,14 +23,12 @@ async def notify_admins(
     bot: Bot,
     text: str,
 ) -> None:
-    """Send a text notification to all admin/owner users."""
+    """Send a text notification to all admin/owner users (parallel)."""
     admin_telegram_ids: set[int] = set()
 
-    # Always include the owner from settings
     if settings.owner_telegram_id:
         admin_telegram_ids.add(settings.owner_telegram_id)
 
-    # Also find admin/owner users from database
     try:
         result = await session.execute(
             select(User.telegram_id).where(
@@ -47,7 +46,7 @@ async def notify_admins(
 
     logger.info("Notifying %d admin(s): %s", len(admin_telegram_ids), admin_telegram_ids)
 
-    for tg_id in admin_telegram_ids:
+    async def _send(tg_id: int) -> None:
         try:
             await bot.send_message(tg_id, text)
             logger.info("Admin notification sent to %s", tg_id)
@@ -55,3 +54,5 @@ async def notify_admins(
             logger.warning("Could not notify admin tg=%s: %s", tg_id, exc)
         except Exception as exc:
             logger.error("Unexpected error notifying admin tg=%s: %s", tg_id, exc)
+
+    await asyncio.gather(*[_send(tg_id) for tg_id in admin_telegram_ids], return_exceptions=True)

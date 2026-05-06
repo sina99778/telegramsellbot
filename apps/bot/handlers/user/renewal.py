@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 from apps.bot.handlers.user.my_configs import MyConfigCallback
 from apps.bot.keyboards.inline import build_renewal_keyboard
 from apps.bot.states.renew import RenewStates
+from core.redis import distributed_lock
 from core.texts import Buttons, Messages
 from models.order import Order
 from models.subscription import Subscription
@@ -28,9 +29,8 @@ logger = logging.getLogger(__name__)
 
 router = Router(name="user-renewal")
 
-# In-process lock: tracks (user_id, sub_id) pairs currently being renewed
-# This prevents double-processing when user taps a button multiple times fast
-_RENEWAL_IN_PROGRESS: set[str] = set()
+_MIN_VOLUME_GB = 0.1
+_MIN_TIME_DAYS = 1
 
 
 class RenewTypeCallback(CallbackData, prefix="renew"):
@@ -86,11 +86,19 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
     renew_type = data["renew_type"]
 
     try:
-        amount = float(message.text.strip())
+        amount = float(message.text.strip().replace(",", "."))
         if amount <= 0:
             raise ValueError
     except ValueError:
         await message.answer(Messages.RENEWAL_INVALID_VALUE)
+        return
+
+    # Minimum amount validation
+    if renew_type == "volume" and amount < _MIN_VOLUME_GB:
+        await message.answer(f"❌ حداقل حجم قابل افزودن {_MIN_VOLUME_GB} گیگابایت است.")
+        return
+    if renew_type == "time" and amount < _MIN_TIME_DAYS:
+        await message.answer("❌ حداقل مدت قابل افزودن ۱ روز است.")
         return
 
     settings_repo = AppSettingsRepository(session)
@@ -121,27 +129,27 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
     builder = InlineKeyboardBuilder()
     builder.button(
         text="👛 کیف پول",
-        callback_data=RenewPayCallback(m="w", s=sub_id.hex, t=renew_type[0], a=str(amount)).pack()
+        callback_data=RenewPayCallback(m="w", s=sub_id.hex, t=(renew_type[:1] or "v"), a=str(amount)).pack()
     )
     if gw.tetrapay_enabled:
         builder.button(
             text="💳 درگاه ریالی (تتراپی)",
-            callback_data=RenewPayCallback(m="t", s=sub_id.hex, t=renew_type[0], a=str(amount)).pack()
+            callback_data=RenewPayCallback(m="t", s=sub_id.hex, t=(renew_type[:1] or "v"), a=str(amount)).pack()
         )
     if gw.tronado_enabled:
         builder.button(
             text="درگاه ترونادو",
-            callback_data=RenewPayCallback(m="tr", s=sub_id.hex, t=renew_type[0], a=str(amount)).pack()
+            callback_data=RenewPayCallback(m="tr", s=sub_id.hex, t=(renew_type[:1] or "v"), a=str(amount)).pack()
         )
     if gw.nowpayments_enabled:
         builder.button(
             text="💎 درگاه ارزی (NOWPayments)",
-            callback_data=RenewPayCallback(m="n", s=sub_id.hex, t=renew_type[0], a=str(amount)).pack()
+            callback_data=RenewPayCallback(m="n", s=sub_id.hex, t=(renew_type[:1] or "v"), a=str(amount)).pack()
         )
     if gw.manual_crypto_enabled and gw.manual_crypto_address:
         builder.button(
             text="💰 پرداخت به ولت (دستی)",
-            callback_data=RenewPayCallback(m="m", s=sub_id.hex, t=renew_type[0], a=str(amount)).pack()
+            callback_data=RenewPayCallback(m="m", s=sub_id.hex, t=(renew_type[:1] or "v"), a=str(amount)).pack()
         )
     builder.button(text=Buttons.BACK, callback_data=MyConfigCallback(action="view", subscription_id=sub_id).pack())
     builder.adjust(1)
@@ -241,29 +249,27 @@ async def renew_pay_wallet(
         )
         return
 
-    # ─── Double-tap protection ───────────────────────────────────────────────
-    lock_key = f"{callback.from_user.id}:{sub_id}"
-    if lock_key in _RENEWAL_IN_PROGRESS:
-        await callback.answer("⛔ تمدید در حال پردازش است — لطفاً صبر کنید.", show_alert=True)
-        return
-    _RENEWAL_IN_PROGRESS.add(lock_key)
-    # ────────────────────────────────────────────────────────
+    # ─── Distributed Redis lock (prevents double-tap / double-charge) ────────
+    lock_key = f"renewal_lock:{callback.from_user.id}:{sub_id}"
+    async with distributed_lock(lock_key, ttl_seconds=60) as acquired:
+        if not acquired:
+            await callback.answer("⛔ تمدید در حال پردازش است — لطفاً صبر کنید.", show_alert=True)
+            return
 
-    await state.clear()
+        await state.clear()
 
-    # Send loading message as a NEW message so we can edit it with the result
-    try:
-        loading_msg = await callback.message.answer("⏳ در حال تمدید...")
-    except Exception:
-        loading_msg = None
+        # Send loading message as a NEW message so we can edit it with the result
+        try:
+            loading_msg = await callback.message.answer("⏳ در حال تمدید...")
+        except Exception:
+            loading_msg = None
 
-    # Delete the payment method selection message
-    try:
-        await callback.message.delete()
-    except Exception:
-        pass
+        # Delete the payment method selection message
+        try:
+            await callback.message.delete()
+        except Exception:
+            pass
 
-    try:
         # Create order
         order = Order(
             user_id=user.id,
@@ -326,6 +332,9 @@ async def renew_pay_wallet(
                 await callback.message.answer(error_text)
             return
 
+        # Clear alert dedup keys so user gets re-notified in next cycle
+        await _clear_sub_alert_keys(sub.id)
+
         success_text = Messages.RENEWAL_SUCCESS
         if loading_msg:
             try:
@@ -337,10 +346,6 @@ async def renew_pay_wallet(
 
         # Notify admins
         await _notify_renewal_admins(callback, user, renew_type, amount, price, session)
-
-    finally:
-        # Always release the lock
-        _RENEWAL_IN_PROGRESS.discard(lock_key)
 
 
 
@@ -640,3 +645,22 @@ async def _notify_renewal_admins(callback, user, renew_type, amount, price, sess
         await notify_admins(session, bot, admin_text)
     except Exception as exc:
         logger.warning("Failed to notify admins about renewal: %s", exc)
+
+
+async def _clear_sub_alert_keys(sub_id) -> None:
+    """Remove all alert dedup keys for a subscription after renewal.
+
+    This ensures the user will be re-notified the next time they approach
+    expiry/volume limits (instead of being silenced forever).
+    """
+    try:
+        from core.redis import get_redis
+        redis = get_redis()
+        pattern = f"alert.sub.{sub_id}.*"
+        # Also clear AppSetting-based keys via DB-side delete (done in renewal service)
+        # Here we delete any Redis-cached versions
+        keys = await redis.keys(pattern)
+        if keys:
+            await redis.delete(*keys)
+    except Exception as exc:
+        logger.warning("Failed to clear alert keys for sub %s: %s", sub_id, exc)

@@ -75,6 +75,20 @@ async def apply_renewal(
             await _sync_xui_limits(session, subscription, xui)
 
         await session.flush()
+
+    # Clear alert dedup keys from DB so user gets re-notified next expiry cycle
+    try:
+        from sqlalchemy import delete
+        from models.app_setting import AppSetting
+        await session.execute(
+            delete(AppSetting).where(
+                AppSetting.key.like(f"alert.sub.{subscription.id}.%")
+            )
+        )
+        await session.flush()
+    except Exception as exc:
+        logger.warning("Failed to clear alert keys for sub %s: %s", subscription.id, exc)
+
     # If we reach here, both DB and X-UI are updated successfully
 
 
