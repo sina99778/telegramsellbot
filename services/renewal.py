@@ -49,10 +49,14 @@ async def apply_renewal(
     ALL DB changes (volume/time/status) are rolled back automatically."""
     now_utc = datetime.now(timezone.utc)
 
-    # Grab the xui_client reference BEFORE entering nested transaction
-    # to prevent SQLAlchemy from attempting a lazy load inside begin_nested(),
-    # which causes "greenlet_spawn has not been called" errors in async mode.
-    xui = subscription.xui_client
+    # Explicitly query xui_client from DB instead of using the relationship
+    # attribute, which can trigger lazy loading after session flushes/nested
+    # transactions and cause "greenlet_spawn has not been called" errors.
+    xui = await session.scalar(
+        select(XUIClientRecord).where(
+            XUIClientRecord.subscription_id == subscription.id
+        )
+    )
 
     # Use a savepoint (nested transaction) so we can rollback on X-UI failure
     async with session.begin_nested():
