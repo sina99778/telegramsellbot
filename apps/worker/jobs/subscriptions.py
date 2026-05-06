@@ -195,7 +195,7 @@ async def _reset_client_uuid(
         limitIp=1,
         totalGB=subscription.volume_bytes,
         expiryTime=expiry_ms,
-        enable=False,
+        enable=True,  # keep enabled so sub link works
         subId=existing_sub_id,
         comment=f"uuid_reset:{subscription.id}",
     )
@@ -259,20 +259,27 @@ async def _expire_subscription_in_xui(
     new_status: str = "expired",
     limit_ip: int = 1,
 ) -> bool:
+    """Mark subscription as expired but keep the client ENABLED in X-UI
+    so the subscription link still works and the user can see their
+    service has expired.  The X-UI panel's own traffic/time limits
+    will prevent actual VPN usage.
+
+    We do NOT rotate the UUID — that would break the sub link.
+    """
     xui_record = subscription.xui_client
     if xui_record is None or xui_record.inbound is None:
         return False
 
     old_client_id = xui_record.xui_client_remote_id or xui_record.client_uuid
-    new_uuid = str(uuid4())
-    disabled_client = XUIClient(
+    # Keep the SAME UUID so the subscription link remains valid
+    expired_client = XUIClient(
         id=old_client_id,
-        uuid=new_uuid,
+        uuid=xui_record.client_uuid,  # same UUID — sub link stays valid
         email=xui_record.email,
         limitIp=limit_ip,
         totalGB=subscription.volume_bytes,
         expiryTime=int(now.timestamp() * 1000),
-        enable=False,
+        enable=True,  # keep enabled so sub link works
         subId=_extract_sub_id(subscription, xui_record),
         comment=f"expired:{reason}:{subscription.id}",
     )
@@ -280,7 +287,7 @@ async def _expire_subscription_in_xui(
         await xui_client.update_client(
             inbound_id=xui_record.inbound.xui_inbound_remote_id,
             client_id=old_client_id,
-            client=disabled_client,
+            client=expired_client,
         )
     except XUIClientError as exc:
         logger.error(
@@ -291,7 +298,7 @@ async def _expire_subscription_in_xui(
         )
         return False
 
-    xui_record.client_uuid = new_uuid
+    # Keep UUID unchanged, mark as inactive in our DB
     xui_record.is_active = False
     subscription.status = new_status
     subscription.expired_at = now
@@ -321,7 +328,7 @@ async def _disable_client_in_xui(
         limitIp=1,
         totalGB=subscription.volume_bytes,
         expiryTime=expiry_ms,
-        enable=False,
+        enable=True,  # keep enabled so sub link works
         subId=existing_sub_id,
         comment=f"expired:{subscription.id}",
     )
