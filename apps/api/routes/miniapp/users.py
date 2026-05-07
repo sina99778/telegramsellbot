@@ -1839,6 +1839,32 @@ async def _purchase_with_wallet(
         ) from exc
 
     order.status = "provisioned"
+
+    # ── Notify admins ──
+    try:
+        from services.notifications import notify_admins
+        from core.formatting import format_volume_bytes
+        bot = PremiumEmojiBot(
+            token=settings.bot_token.get_secret_value(),
+            default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
+        )
+        try:
+            volume_label = format_volume_bytes(plan.volume_bytes)
+            user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
+            admin_text = (
+                "🛒 خرید جدید (مینی‌اپ)!\n\n"
+                f"👤 کاربر: {user.first_name or '-'} | {user_link} (ID: <code>{user.telegram_id}</code>)\n"
+                f"📦 پلن: {plan.name}\n"
+                f"💰 مبلغ: {final_price:.2f} {plan.currency}\n"
+                f"📛 کانفیگ: {config_name}\n"
+                f"💳 روش: کیف پول"
+            )
+            await notify_admins(session, bot, admin_text)
+        finally:
+            await bot.session.close()
+    except Exception as exc:
+        logger.warning("[PURCHASE] Failed to notify admins: %s", exc)
+
     return PurchaseResponse(
         status="provisioned",
         message="خرید با کیف پول انجام شد و کانفیگ ساخته شد.",
@@ -2355,6 +2381,31 @@ async def renew_subscription(
         amount=body.amount,
     )
     await session.refresh(user.wallet)
+
+    # ── Notify admins ──
+    try:
+        from services.notifications import notify_admins
+        bot = PremiumEmojiBot(
+            token=settings.bot_token.get_secret_value(),
+            default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
+        )
+        try:
+            type_label = "حجم" if body.renew_type == "volume" else "زمان"
+            amount_label = f"{body.amount} گیگابایت" if body.renew_type == "volume" else f"{int(body.amount)} روز"
+            user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
+            admin_text = (
+                "🔄 تمدید جدید (مینی‌اپ)!\n\n"
+                f"👤 کاربر: {user.first_name or '-'} | {user_link}\n"
+                f"📦 نوع: {type_label} ({amount_label})\n"
+                f"💰 مبلغ: {price:.2f} USD\n"
+                f"💳 روش: کیف پول"
+            )
+            await notify_admins(session, bot, admin_text)
+        finally:
+            await bot.session.close()
+    except Exception as exc:
+        logger.warning("[RENEWAL] Failed to notify admins: %s", exc)
+
     return RenewalResponse(
         status="renewed",
         message="تمدید با موفقیت انجام شد.",

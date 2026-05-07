@@ -48,7 +48,7 @@ async def notify_admins(
 
     async def _send(tg_id: int) -> None:
         try:
-            await bot.send_message(tg_id, text)
+            await bot.send_message(tg_id, text, parse_mode="HTML")
             logger.info("Admin notification sent to %s", tg_id)
         except (TelegramForbiddenError, TelegramBadRequest) as exc:
             logger.warning("Could not notify admin tg=%s: %s", tg_id, exc)
