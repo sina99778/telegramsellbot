@@ -434,6 +434,22 @@ async def post_admin_action(
     user, session = auth
     _require_admin(user)
     action = str(body.get("action") or "")
+
+    # Settings toggles — no target_id needed
+    if action == "toggle_user_delete":
+        repo = AppSettingsRepository(session)
+        current = await repo.get_user_actions_settings()
+        updated = await repo.update_user_actions_settings(delete_enabled=not current.delete_enabled)
+        _record_admin_action(session, user, action, "settings", None, {"delete_enabled": updated.delete_enabled})
+        return {"ok": True, "message": f"حذف کانفیگ توسط کاربر: {'فعال ✅' if updated.delete_enabled else 'غیرفعال ❌'}"}
+
+    if action == "toggle_user_refund":
+        repo = AppSettingsRepository(session)
+        current = await repo.get_user_actions_settings()
+        updated = await repo.update_user_actions_settings(refund_enabled=not current.refund_enabled)
+        _record_admin_action(session, user, action, "settings", None, {"refund_enabled": updated.refund_enabled})
+        return {"ok": True, "message": f"بازپرداخت توسط کاربر: {'فعال ✅' if updated.refund_enabled else 'غیرفعال ❌'}"}
+
     target_id_raw = str(body.get("id") or "")
 
     try:
@@ -1543,6 +1559,7 @@ async def _admin_settings(session: AsyncSession) -> list[dict[str, Any]]:
     gw = await repo.get_gateway_settings()
     toman = await repo.get_toman_rate()
     custom = await repo.get_custom_purchase_settings()
+    user_actions = await repo.get_user_actions_settings()
     return [
         {"id": "trial", "title": "کانفیگ تست", "subtitle": "فعال" if trial.enabled else "غیرفعال", "actions": []},
         {
@@ -1563,6 +1580,18 @@ async def _admin_settings(session: AsyncSession) -> list[dict[str, Any]]:
         {"id": "nowpayments", "title": "NOWPayments", "subtitle": "فعال" if gw.nowpayments_enabled else "غیرفعال", "actions": []},
         {"id": "manual", "title": "پرداخت دستی", "subtitle": "فعال" if gw.manual_crypto_enabled else "غیرفعال", "actions": []},
         {"id": "rate", "title": "نرخ دلار/تومان", "subtitle": str(toman), "actions": []},
+        {
+            "id": "user_delete",
+            "title": "حذف کانفیگ توسط کاربر",
+            "subtitle": "فعال ✅" if user_actions.delete_enabled else "غیرفعال ❌",
+            "actions": [{"label": "فعال/غیرفعال", "action": "toggle_user_delete"}],
+        },
+        {
+            "id": "user_refund",
+            "title": "بازپرداخت توسط کاربر",
+            "subtitle": "فعال ✅" if user_actions.refund_enabled else "غیرفعال ❌",
+            "actions": [{"label": "فعال/غیرفعال", "action": "toggle_user_refund"}],
+        },
     ]
 
 

@@ -33,6 +33,7 @@ CUSTOM_PURCHASE_SETTINGS_KEY = "service.custom_purchase"
 PHONE_VERIFICATION_SETTINGS_KEY = "user.phone_verification"
 SERVICE_SECURITY_SETTINGS_KEY = "service.security"
 PREMIUM_EMOJI_SETTINGS_KEY = "bot.premium_emoji"
+USER_ACTIONS_SETTINGS_KEY = "user.actions"
 
 @dataclass(slots=True)
 class RenewalSettings:
@@ -76,6 +77,12 @@ class ServiceSecuritySettings:
 class PremiumEmojiSettings:
     enabled: bool
     emoji_map: dict[str, str]
+
+
+@dataclass(slots=True)
+class UserActionsSettings:
+    delete_enabled: bool
+    refund_enabled: bool
 
 
 REVENUE_SETTINGS_KEY = "admin.revenue_reset"
@@ -606,3 +613,40 @@ class AppSettingsRepository:
         self.session.add(record)
         await self.session.flush()
         return await self.get_referral_settings()
+
+
+    # ── User actions (delete / refund toggles) ───────────────────────────
+
+    async def get_user_actions_settings(self) -> 'UserActionsSettings':
+        record = await self.session.get(AppSetting, USER_ACTIONS_SETTINGS_KEY)
+        if record is None or not record.value_json:
+            return UserActionsSettings(delete_enabled=True, refund_enabled=True)
+        payload = dict(record.value_json)
+        return UserActionsSettings(
+            delete_enabled=bool(payload.get('delete_enabled', True)),
+            refund_enabled=bool(payload.get('refund_enabled', True)),
+        )
+
+    async def update_user_actions_settings(
+        self,
+        *,
+        delete_enabled: bool | None = None,
+        refund_enabled: bool | None = None,
+    ) -> 'UserActionsSettings':
+        record = await self.session.get(AppSetting, USER_ACTIONS_SETTINGS_KEY)
+        if record is None:
+            record = AppSetting(
+                key=USER_ACTIONS_SETTINGS_KEY,
+                value_json={'delete_enabled': True, 'refund_enabled': True},
+            )
+        payload = dict(record.value_json or {})
+
+        if delete_enabled is not None:
+            payload['delete_enabled'] = delete_enabled
+        if refund_enabled is not None:
+            payload['refund_enabled'] = refund_enabled
+
+        record.value_json = payload
+        self.session.add(record)
+        await self.session.flush()
+        return await self.get_user_actions_settings()

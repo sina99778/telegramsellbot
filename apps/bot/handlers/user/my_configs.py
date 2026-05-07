@@ -549,7 +549,9 @@ async def my_config_detail_handler(
         builder.button(text="🔀 انتقال کانفیگ", callback_data=MyConfigCallback(action="transfer", subscription_id=sub.id).pack())
 
     # Cancel & refund for unused configs — but NOT for ready configs (they can't be returned)
-    if sub.status == "pending_activation" and sub.used_bytes == 0:
+    # Only show if admin has enabled refund
+    user_actions_settings = await AppSettingsRepository(session).get_user_actions_settings()
+    if user_actions_settings.refund_enabled and sub.status == "pending_activation" and sub.used_bytes == 0:
         from models.ready_config import ReadyConfigItem
         is_ready_config = await session.scalar(
             select(ReadyConfigItem.id).where(ReadyConfigItem.subscription_id == sub.id)
@@ -557,7 +559,8 @@ async def my_config_detail_handler(
         if not is_ready_config:
             builder.button(text="🔄 لغو و بازپرداخت", callback_data=MyConfigCallback(action="cancel_refund", subscription_id=sub.id).pack())
     # Delete: expired configs OR configs with deleted/missing server
-    if sub.status == "expired" or server_deleted:
+    # Only show if admin has enabled delete
+    if user_actions_settings.delete_enabled and (sub.status == "expired" or server_deleted):
         builder.button(text="🗑 حذف کانفیگ", callback_data=MyConfigCallback(action="delete", subscription_id=sub.id).pack())
         
     if vless_uri:
@@ -925,6 +928,12 @@ async def cancel_and_refund_config(
     if callback.from_user is None:
         return
 
+    # Check if refund is enabled
+    user_actions = await AppSettingsRepository(session).get_user_actions_settings()
+    if not user_actions.refund_enabled:
+        await safe_edit_or_send(callback, "❌ بازپرداخت توسط مدیر غیرفعال شده است.")
+        return
+
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     if user is None:
         return
@@ -1034,6 +1043,12 @@ async def delete_expired_config(
     """Delete an expired config (no refund)."""
     await callback.answer()
     if callback.from_user is None:
+        return
+
+    # Check if delete is enabled
+    user_actions = await AppSettingsRepository(session).get_user_actions_settings()
+    if not user_actions.delete_enabled:
+        await safe_edit_or_send(callback, "❌ حذف کانفیگ توسط مدیر غیرفعال شده است.")
         return
 
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
