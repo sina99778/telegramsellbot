@@ -8,7 +8,7 @@ import time
 from core.config import settings
 
 
-DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60
+DEFAULT_TTL_SECONDS = 24 * 60 * 60  # 24 hours
 
 
 def create_miniapp_session_token(telegram_id: int, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> str:

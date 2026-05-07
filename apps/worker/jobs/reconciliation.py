@@ -23,6 +23,7 @@ from services.payment import process_successful_payment
 logger = logging.getLogger(__name__)
 
 MAX_AUTO_RETRY = 5  # Max payments to auto-retry per reconciliation run
+MAX_RETRY_COUNT = 10  # Max total retries before giving up on a payment
 
 
 async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
@@ -46,7 +47,11 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
 
     retried_purchase = 0
     for payment in stuck_purchases:
-        logger.info("[RECONCILIATION] Auto-retrying provisioning for payment %s", payment.id)
+        retry_count = (payment.callback_payload or {}).get("retry_count", 0)
+        if retry_count >= MAX_RETRY_COUNT:
+            logger.warning("[RECONCILIATION] Skipping payment %s — max retries (%d) exceeded", payment.id, retry_count)
+            continue
+        logger.info("[RECONCILIATION] Auto-retrying provisioning for payment %s (attempt %d)", payment.id, retry_count + 1)
         try:
             await process_successful_payment(
                 session=session,
@@ -56,6 +61,11 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
             retried_purchase += 1
             logger.info("[RECONCILIATION] Provisioning retry SUCCESS for payment %s", payment.id)
         except Exception as exc:
+            # Increment retry count
+            payload = dict(payment.callback_payload or {})
+            payload["retry_count"] = retry_count + 1
+            payment.callback_payload = payload
+            await session.flush()
             logger.error("[RECONCILIATION] Provisioning retry FAILED for payment %s: %s", payment.id, exc)
 
     # ─── AUTO-RETRY: paid but renewal not applied (direct_renewal) ───
@@ -74,7 +84,11 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
 
     retried_renewal = 0
     for payment in stuck_renewals:
-        logger.info("[RECONCILIATION] Auto-retrying renewal for payment %s", payment.id)
+        retry_count = (payment.callback_payload or {}).get("retry_count", 0)
+        if retry_count >= MAX_RETRY_COUNT:
+            logger.warning("[RECONCILIATION] Skipping renewal %s — max retries (%d) exceeded", payment.id, retry_count)
+            continue
+        logger.info("[RECONCILIATION] Auto-retrying renewal for payment %s (attempt %d)", payment.id, retry_count + 1)
         try:
             await process_successful_payment(
                 session=session,
@@ -84,6 +98,10 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
             retried_renewal += 1
             logger.info("[RECONCILIATION] Renewal retry SUCCESS for payment %s", payment.id)
         except Exception as exc:
+            payload = dict(payment.callback_payload or {})
+            payload["retry_count"] = retry_count + 1
+            payment.callback_payload = payload
+            await session.flush()
             logger.error("[RECONCILIATION] Renewal retry FAILED for payment %s: %s", payment.id, exc)
 
     # ─── COUNTS for alerting ───

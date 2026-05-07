@@ -94,6 +94,7 @@ from services.renewal import apply_renewal, calculate_renewal_price
 from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
 from services.tronado.payments import create_tronado_invoice
 from services.wallet.manager import InsufficientBalanceError, WalletManager
+from core.rate_limit import check_rate_limit
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -449,6 +450,13 @@ async def post_admin_action(
         updated = await repo.update_user_actions_settings(refund_enabled=not current.refund_enabled)
         _record_admin_action(session, user, action, "settings", None, {"refund_enabled": updated.refund_enabled})
         return {"ok": True, "message": f"بازپرداخت توسط کاربر: {'فعال ✅' if updated.refund_enabled else 'غیرفعال ❌'}"}
+
+    if action == "toggle_user_transfer":
+        repo = AppSettingsRepository(session)
+        current = await repo.get_user_actions_settings()
+        updated = await repo.update_user_actions_settings(transfer_enabled=not current.transfer_enabled)
+        _record_admin_action(session, user, action, "settings", None, {"transfer_enabled": updated.transfer_enabled})
+        return {"ok": True, "message": f"انتقال کانفیگ توسط کاربر: {'فعال ✅' if updated.transfer_enabled else 'غیرفعال ❌'}"}
 
     target_id_raw = str(body.get("id") or "")
 
@@ -1592,6 +1600,12 @@ async def _admin_settings(session: AsyncSession) -> list[dict[str, Any]]:
             "subtitle": "فعال ✅" if user_actions.refund_enabled else "غیرفعال ❌",
             "actions": [{"label": "فعال/غیرفعال", "action": "toggle_user_refund"}],
         },
+        {
+            "id": "user_transfer",
+            "title": "انتقال کانفیگ توسط کاربر",
+            "subtitle": "فعال ✅" if user_actions.transfer_enabled else "غیرفعال ❌",
+            "actions": [{"label": "فعال/غیرفعال", "action": "toggle_user_transfer"}],
+        },
     ]
 
 
@@ -1673,6 +1687,7 @@ async def create_purchase(
     auth: tuple[User, AsyncSession] = Depends(_get_current_user),
 ) -> PurchaseResponse:
     user, session = auth
+    await check_rate_limit(user.telegram_id, "purchase")
     config_name = body.config_name.strip()
     payment_method = body.payment_method.strip().lower()
 
@@ -2236,6 +2251,7 @@ async def renew_subscription(
     auth: tuple[User, AsyncSession] = Depends(_get_current_user),
 ) -> RenewalResponse:
     user, session = auth
+    await check_rate_limit(user.telegram_id, "renewal")
     subscription = await _get_user_subscription(session, user, body.subscription_id)
     _validate_renewal_request(subscription, body.renew_type, body.amount)
 
@@ -2549,6 +2565,7 @@ async def create_wallet_topup(
     auth: tuple[User, AsyncSession] = Depends(_get_current_user),
 ) -> TopUpResponse:
     user, session = auth
+    await check_rate_limit(user.telegram_id, "topup")
     amount = body.amount.quantize(Decimal("0.01"))
     if amount <= 0:
         raise HTTPException(status_code=400, detail="مبلغ شارژ باید بیشتر از صفر باشد.")
@@ -2766,6 +2783,7 @@ async def send_ticket_message(
     auth: tuple[User, AsyncSession] = Depends(_get_current_user),
 ) -> dict:
     user, session = auth
+    await check_rate_limit(user.telegram_id, "ticket_msg")
     text = body.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="متن پیام خالی است.")

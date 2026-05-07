@@ -61,6 +61,7 @@ class WalletTransaction(UUIDPrimaryKeyMixin, Base):
     wallet_id: Mapped[UUID] = mapped_column(
         ForeignKey("wallets.id", ondelete="CASCADE"),
         nullable=False,
+        index=True,
     )
     user_id: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"),

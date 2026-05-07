@@ -19,8 +19,10 @@ from sqlalchemy.orm import selectinload
 
 from apps.bot.handlers.user.my_configs import MyConfigCallback
 from apps.bot.utils.messaging import safe_edit_or_send
+from models.audit import AuditLog
 from models.subscription import Subscription
 from models.user import User
+from repositories.settings import AppSettingsRepository
 from repositories.user import UserRepository
 
 logger = logging.getLogger(__name__)
@@ -48,6 +50,12 @@ async def transfer_start(
     if callback.from_user is None:
         return
     await callback.answer()
+
+    # Check if transfer is enabled by admin
+    user_actions = await AppSettingsRepository(session).get_user_actions_settings()
+    if not user_actions.transfer_enabled:
+        await safe_edit_or_send(callback, "❌ انتقال کانفیگ توسط مدیر غیرفعال شده است.")
+        return
 
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     if user is None:
@@ -198,6 +206,18 @@ async def transfer_confirmed(
     # Transfer ownership
     recipient_uuid = UUID(recipient_user_id_str)
     sub.user_id = recipient_uuid
+
+    # Record audit log
+    session.add(AuditLog(
+        actor_user_id=sender.id,
+        action="transfer_config",
+        entity_type="subscription",
+        entity_id=sub.id,
+        payload={
+            "recipient_user_id": str(recipient_uuid),
+            "recipient_telegram_id": recipient_telegram_id,
+        },
+    ))
 
     await session.flush()
 
