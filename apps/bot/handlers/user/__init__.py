@@ -2,10 +2,6 @@ from aiogram import Router
 
 from apps.bot.handlers.user.my_configs import router as my_configs_router
 from apps.bot.handlers.user.purchase import router as purchase_router
-from aiogram import Router
-
-from apps.bot.handlers.user.my_configs import router as my_configs_router
-from apps.bot.handlers.user.purchase import router as purchase_router
 from apps.bot.handlers.user.referral import router as referral_router
 from apps.bot.handlers.user.free_trial import router as free_trial_router
 from apps.bot.handlers.user.start import router as start_router

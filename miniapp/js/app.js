@@ -8,8 +8,8 @@
         tg.expand();
         try { tg.enableClosingConfirmation(); } catch {}
         // Set header color to match app background
-        try { tg.setHeaderColor('#0b0f14'); } catch {}
-        try { tg.setBackgroundColor('#0b0f14'); } catch {}
+        try { tg.setHeaderColor('#050505'); } catch {}
+        try { tg.setBackgroundColor('#050505'); } catch {}
     }
 
     document.querySelectorAll('[data-icon]').forEach(el => {
