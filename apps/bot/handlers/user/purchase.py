@@ -87,6 +87,12 @@ async def ignore_pagination_noop(callback: CallbackQuery) -> None:
 
 @router.message(F.text == Buttons.BUY_CONFIG)
 async def show_available_plans(message: Message, session: AsyncSession, state: FSMContext) -> None:
+    # Check if sales are enabled by admin
+    user_actions = await AppSettingsRepository(session).get_user_actions_settings()
+    if not user_actions.sales_enabled:
+        await message.answer("⛔ فروش سرویس توسط مدیر موقتاً غیرفعال شده است. لطفاً بعداً تلاش کنید.")
+        return
+
     if not await _ensure_phone_verified_for_purchase(message, session, state):
         return
 

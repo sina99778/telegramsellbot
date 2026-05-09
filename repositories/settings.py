@@ -84,6 +84,8 @@ class UserActionsSettings:
     delete_enabled: bool
     refund_enabled: bool
     transfer_enabled: bool
+    sales_enabled: bool = True
+    renewals_enabled: bool = True
 
 
 REVENUE_SETTINGS_KEY = "admin.revenue_reset"
@@ -621,12 +623,14 @@ class AppSettingsRepository:
     async def get_user_actions_settings(self) -> 'UserActionsSettings':
         record = await self.session.get(AppSetting, USER_ACTIONS_SETTINGS_KEY)
         if record is None or not record.value_json:
-            return UserActionsSettings(delete_enabled=True, refund_enabled=True, transfer_enabled=True)
+            return UserActionsSettings(delete_enabled=True, refund_enabled=True, transfer_enabled=True, sales_enabled=True, renewals_enabled=True)
         payload = dict(record.value_json)
         return UserActionsSettings(
             delete_enabled=bool(payload.get('delete_enabled', True)),
             refund_enabled=bool(payload.get('refund_enabled', True)),
             transfer_enabled=bool(payload.get('transfer_enabled', True)),
+            sales_enabled=bool(payload.get('sales_enabled', True)),
+            renewals_enabled=bool(payload.get('renewals_enabled', True)),
         )
 
     async def update_user_actions_settings(
@@ -635,12 +639,14 @@ class AppSettingsRepository:
         delete_enabled: bool | None = None,
         refund_enabled: bool | None = None,
         transfer_enabled: bool | None = None,
+        sales_enabled: bool | None = None,
+        renewals_enabled: bool | None = None,
     ) -> 'UserActionsSettings':
         record = await self.session.get(AppSetting, USER_ACTIONS_SETTINGS_KEY)
         if record is None:
             record = AppSetting(
                 key=USER_ACTIONS_SETTINGS_KEY,
-                value_json={'delete_enabled': True, 'refund_enabled': True, 'transfer_enabled': True},
+                value_json={'delete_enabled': True, 'refund_enabled': True, 'transfer_enabled': True, 'sales_enabled': True, 'renewals_enabled': True},
             )
         payload = dict(record.value_json or {})
 
@@ -650,6 +656,10 @@ class AppSettingsRepository:
             payload['refund_enabled'] = refund_enabled
         if transfer_enabled is not None:
             payload['transfer_enabled'] = transfer_enabled
+        if sales_enabled is not None:
+            payload['sales_enabled'] = sales_enabled
+        if renewals_enabled is not None:
+            payload['renewals_enabled'] = renewals_enabled
 
         record.value_json = payload
         self.session.add(record)

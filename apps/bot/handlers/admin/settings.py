@@ -34,11 +34,19 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     custom_settings = await settings_repo.get_custom_purchase_settings()
     security_settings = await settings_repo.get_service_security_settings()
     premium_emoji_settings = await settings_repo.get_premium_emoji_settings()
+    user_actions = await settings_repo.get_user_actions_settings()
     toman_rate = await settings_repo.get_toman_rate()
     
     text = admin_panel(
         "⚙️ تنظیمات عمومی ربات",
         [
+            (
+                "وضعیت فروش",
+                [
+                    ("فروش سرویس", status_label(user_actions.sales_enabled)),
+                    ("تمدید سرویس", status_label(user_actions.renewals_enabled)),
+                ],
+            ),
             (
                 "قیمت‌ها",
                 [
@@ -73,7 +81,13 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
         ],
     )
 
+    # Dynamic labels for sales/renewal toggles
+    sales_label = "🔴 خاموش کردن فروش" if user_actions.sales_enabled else "🟢 روشن کردن فروش"
+    renewal_label = "🔴 خاموش کردن تمدید" if user_actions.renewals_enabled else "🟢 روشن کردن تمدید"
+
     builder = InlineKeyboardBuilder()
+    builder.button(text=sales_label, callback_data="admin:settings:toggle_sales")
+    builder.button(text=renewal_label, callback_data="admin:settings:toggle_renewals")
     builder.button(text="قیمت گیگ", callback_data="admin:settings:edit_gb")
     builder.button(text="قیمت روز", callback_data="admin:settings:edit_days")
     builder.button(text="خرید دلخواه", callback_data="admin:settings:custom_toggle")
@@ -91,9 +105,31 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     builder.button(text="رفرال", callback_data="admin:settings:referral")
     builder.button(text="جوین اجباری", callback_data="admin:settings:force_join")
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
-    builder.adjust(2, 1, 2, 3, 2, 3, 1)
+    builder.adjust(1, 1, 2, 1, 2, 3, 2, 3, 1)
 
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "admin:settings:toggle_sales")
+async def toggle_sales(callback: CallbackQuery, session: AsyncSession) -> None:
+    repo = AppSettingsRepository(session)
+    current = await repo.get_user_actions_settings()
+    new_val = not current.sales_enabled
+    await repo.update_user_actions_settings(sales_enabled=new_val)
+    status = "روشن ✅" if new_val else "خاموش 🔴"
+    await callback.answer(f"فروش سرویس: {status}", show_alert=True)
+    await bot_settings_menu(callback, session)
+
+
+@router.callback_query(F.data == "admin:settings:toggle_renewals")
+async def toggle_renewals(callback: CallbackQuery, session: AsyncSession) -> None:
+    repo = AppSettingsRepository(session)
+    current = await repo.get_user_actions_settings()
+    new_val = not current.renewals_enabled
+    await repo.update_user_actions_settings(renewals_enabled=new_val)
+    status = "روشن ✅" if new_val else "خاموش 🔴"
+    await callback.answer(f"تمدید سرویس: {status}", show_alert=True)
+    await bot_settings_menu(callback, session)
 
 
 @router.callback_query(F.data == "admin:settings:edit_gb")

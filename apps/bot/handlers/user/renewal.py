@@ -49,8 +49,15 @@ class RenewPayCallback(CallbackData, prefix="rp"):
 from apps.bot.utils.messaging import safe_edit_or_send
 
 @router.callback_query(MyConfigCallback.filter(F.action == "renew"))
-async def renew_config_start(callback: CallbackQuery, callback_data: MyConfigCallback, state: FSMContext) -> None:
+async def renew_config_start(callback: CallbackQuery, callback_data: MyConfigCallback, state: FSMContext, session: AsyncSession) -> None:
     await callback.answer()
+
+    # Check if renewals are enabled by admin
+    user_actions = await AppSettingsRepository(session).get_user_actions_settings()
+    if not user_actions.renewals_enabled:
+        await safe_edit_or_send(callback, "⛔ تمدید سرویس توسط مدیر موقتاً غیرفعال شده است. لطفاً بعداً تلاش کنید.")
+        return
+
     await state.clear()
     
     markup = build_renewal_keyboard(callback_data.subscription_id)

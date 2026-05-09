@@ -41,6 +41,21 @@ async def healthz() -> dict[str, str]:
 logger.info("Looking for miniapp at: %s (exists=%s)", MINIAPP_DIR, MINIAPP_DIR.exists())
 
 if MINIAPP_DIR.exists():
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    class NoCacheMiniAppMiddleware(BaseHTTPMiddleware):
+        """Prevent Telegram WebApp from caching miniapp CSS/JS/HTML files."""
+        async def dispatch(self, request: Request, call_next):
+            response: Response = await call_next(request)
+            if request.url.path.startswith("/miniapp/"):
+                response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+                response.headers["Pragma"] = "no-cache"
+            return response
+
+    app.add_middleware(NoCacheMiniAppMiddleware)
+
     # Mount sub-directories for static assets
     for subdir in ("css", "js", "assets"):
         sub_path = MINIAPP_DIR / subdir
