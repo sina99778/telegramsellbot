@@ -8,6 +8,8 @@ const Pages = (() => {
     let supportTicketsCache = [];
     let adminUserSearchState = { q: '', page: 1 };
     let configsState = { page: 1, total: 0, pageSize: 20 };
+    let salesEnabled = true;
+    let renewalsEnabled = true;
 
     function getBotUsername() {
         return (
@@ -44,6 +46,8 @@ const Pages = (() => {
 
     function renderDashboard(data) {
         window.AppState = data;
+        salesEnabled = data.sales_enabled !== false;
+        renewalsEnabled = data.renewals_enabled !== false;
         const adminNav = document.getElementById('admin-nav-btn');
         if (adminNav) adminNav.classList.toggle('hidden', !data.is_admin);
         // Update header
@@ -57,6 +61,8 @@ const Pages = (() => {
         const strokeDash = circumference - (usagePct / 100) * circumference;
         const ringColor = usagePct >= 90 ? 'var(--coral)' : usagePct >= 70 ? 'var(--amber)' : 'var(--emerald)';
         document.getElementById('stats-grid').innerHTML = `
+            ${!salesEnabled ? '<div class="config-warning danger" style="grid-column:1/-1;text-align:center;font-size:13px;padding:14px">⛔ فروش سرویس موقتاً غیرفعال است</div>' : ''}
+            ${!renewalsEnabled ? '<div class="config-warning" style="grid-column:1/-1;text-align:center;font-size:13px;padding:14px">⏸ تمدید سرویس موقتاً غیرفعال است</div>' : ''}
             <div class="stat-card">
                 <div class="stat-icon">🌐</div>
                 <div class="stat-value">${data.active_config_count}</div>
@@ -140,7 +146,7 @@ const Pages = (() => {
         const safeSubLink = sub.sub_link ? encodeURIComponent(sub.sub_link) : '';
         const actionsHtml = `
             <div class="config-actions" onclick="event.stopPropagation()">
-                <button class="btn btn-primary btn-sm" onclick="Pages.showRenewal('${sub.id}')">تمدید</button>
+                ${renewalsEnabled ? `<button class="btn btn-primary btn-sm" onclick="Pages.showRenewal('${sub.id}')">تمدید</button>` : ''}
                 ${sub.sub_link ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${safeSubLink}'))">کپی لینک</button>` : ''}
                 <button class="btn btn-secondary btn-sm" onclick="Pages.showConfigDetail('${sub.id}')">جزئیات</button>
             </div>
@@ -250,7 +256,7 @@ const Pages = (() => {
                 </div>
             </div>
             ${linkSection}
-            <button class="btn btn-primary btn-block" style="margin-top:16px" onclick="Pages.showRenewal('${sub.id}')">تمدید سرویس</button>
+            ${renewalsEnabled ? `<button class="btn btn-primary btn-block" style="margin-top:16px" onclick="Pages.showRenewal('${sub.id}')">تمدید سرویس</button>` : '<div class="config-warning" style="margin-top:16px;text-align:center">⏸ تمدید موقتاً غیرفعال است</div>'}
             <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">بستن</button>
         `);
     }
@@ -400,6 +406,7 @@ const Pages = (() => {
         try {
             const data = await API.getPlans();
             plansCache = data.plans || [];
+            salesEnabled = data.sales_enabled !== false;
             renderPlans(data.plans || [], data.custom_purchase || null);
         } catch (e) {
             UI.toast('خطا: ' + e.message, 'error');
@@ -408,12 +415,22 @@ const Pages = (() => {
 
     function renderPlans(plans, customPurchase = null) {
         const container = document.getElementById('plans-list');
+
+        // Sales closed banner
+        const closedBanner = !salesEnabled ? `
+            <div class="empty-state" style="grid-column:1/-1;border-color:rgba(239,111,97,0.4);background:rgba(239,111,97,0.06)">
+                <div class="empty-icon" style="background:rgba(239,111,97,0.15);color:var(--coral)">${UI.icon('lock')}</div>
+                <p style="font-size:15px;font-weight:900;color:var(--coral);margin-bottom:6px">فروش موقتاً بسته شده است</p>
+                <p style="color:var(--text-muted);font-size:12px">در حال حاضر امکان خرید سرویس وجود ندارد. لطفاً بعداً مراجعه کنید.</p>
+            </div>
+        ` : '';
+
         if (!plans.length && !customPurchase?.can_purchase) {
-            container.innerHTML = `<div class="empty-state"><div class="empty-icon">${UI.icon('store')}</div><p>هیچ پلنی موجود نیست</p></div>`;
+            container.innerHTML = closedBanner || `<div class="empty-state"><div class="empty-icon">${UI.icon('store')}</div><p>هیچ پلنی موجود نیست</p></div>`;
             return;
         }
 
-        const customCard = customPurchase?.can_purchase ? `
+        const customCard = (customPurchase?.can_purchase && salesEnabled) ? `
             <div class="plan-card popular">
                 <div class="plan-name">حجم و زمان دلخواه</div>
                 <div class="plan-specs">
@@ -427,7 +444,7 @@ const Pages = (() => {
             </div>
         ` : '';
 
-        container.innerHTML = customCard + plans.map((plan, i) => `
+        container.innerHTML = closedBanner + customCard + plans.map((plan, i) => `
             <div class="plan-card ${i === 1 ? 'popular' : ''}">
                 <div class="plan-name">${plan.name}</div>
                 <div class="plan-specs">
@@ -437,9 +454,15 @@ const Pages = (() => {
                     ${plan.is_unlimited ? '' : `<span class="plan-spec">${UI.icon('package')} موجودی ${plan.stock_remaining}</span>`}
                 </div>
                 <div class="plan-price">$${UI.formatMoney(plan.price)} <small>/ ${plan.currency}</small></div>
-                <button class="btn btn-primary btn-block plan-buy-btn" onclick="Pages.buyPlan('${plan.id}')">
-                    ${UI.icon('store')} خرید
-                </button>
+                ${salesEnabled ? `
+                    <button class="btn btn-primary btn-block plan-buy-btn" onclick="Pages.buyPlan('${plan.id}')">
+                        ${UI.icon('store')} خرید
+                    </button>
+                ` : `
+                    <button class="btn btn-secondary btn-block plan-buy-btn" disabled style="opacity:0.5;cursor:not-allowed">
+                        ${UI.icon('lock')} فروش غیرفعال
+                    </button>
+                `}
             </div>
         `).join('');
     }

@@ -100,6 +100,8 @@ class MiniAppDashboardResponse(BaseModel):
     active_config_count: int
     total_volume_used: int
     total_volume: int
+    sales_enabled: bool = True
+    renewals_enabled: bool = True
 
 
 class SubscriptionListResponse(BaseModel):
@@ -112,6 +114,7 @@ class SubscriptionListResponse(BaseModel):
 class PlanListResponse(BaseModel):
     plans: list[PlanView]
     custom_purchase: CustomPurchaseView | None = None
+    sales_enabled: bool = True
 
 
 class TransactionListResponse(BaseModel):

@@ -194,6 +194,9 @@ async def get_dashboard(
     )
     subs = [_subscription_to_view(sub) for sub in result.scalars().all()]
 
+    # Fetch sales/renewal toggle state
+    user_actions = await AppSettingsRepository(session).get_user_actions_settings()
+
     return MiniAppDashboardResponse(
         user_id=user.id,
         telegram_id=user.telegram_id,
@@ -205,6 +208,8 @@ async def get_dashboard(
         active_config_count=active_count,
         total_volume_used=total_used,
         total_volume=total_vol,
+        sales_enabled=user_actions.sales_enabled,
+        renewals_enabled=user_actions.renewals_enabled,
     )
 
 
@@ -1648,6 +1653,7 @@ async def get_plans(
     settings_repo = AppSettingsRepository(session)
     custom_settings = await settings_repo.get_custom_purchase_settings()
     custom_template = await get_custom_purchase_template_plan(session)
+    user_actions = await settings_repo.get_user_actions_settings()
     return PlanListResponse(
         plans=[
             PlanView(
@@ -1676,6 +1682,7 @@ async def get_plans(
                 and custom_template is not None
             ),
         ),
+        sales_enabled=user_actions.sales_enabled,
     )
 
 
@@ -1688,6 +1695,15 @@ async def create_purchase(
 ) -> PurchaseResponse:
     user, session = auth
     await check_rate_limit(user.telegram_id, "purchase")
+
+    # Check if sales are enabled
+    user_actions = await AppSettingsRepository(session).get_user_actions_settings()
+    if not user_actions.sales_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="⛔ فروش سرویس توسط مدیر موقتاً غیرفعال شده است.",
+        )
+
     config_name = body.config_name.strip()
     payment_method = body.payment_method.strip().lower()
 
@@ -2252,6 +2268,15 @@ async def renew_subscription(
 ) -> RenewalResponse:
     user, session = auth
     await check_rate_limit(user.telegram_id, "renewal")
+
+    # Check if renewals are enabled
+    user_actions = await AppSettingsRepository(session).get_user_actions_settings()
+    if not user_actions.renewals_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="⛔ تمدید سرویس توسط مدیر موقتاً غیرفعال شده است.",
+        )
+
     subscription = await _get_user_subscription(session, user, body.subscription_id)
     _validate_renewal_request(subscription, body.renew_type, body.amount)
 
