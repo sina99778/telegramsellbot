@@ -54,7 +54,14 @@ const UI = (() => {
     function formatDate(dateStr) {
         if (!dateStr) return '-';
         const d = new Date(dateStr);
-        return d.toLocaleDateString('fa-IR');
+        const date = d.toLocaleDateString('fa-IR');
+        const time = d.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+        return `${date} ${time}`;
+    }
+
+    function formatDateShort(dateStr) {
+        if (!dateStr) return '-';
+        return new Date(dateStr).toLocaleDateString('fa-IR');
     }
 
     function formatMoney(amount) {
@@ -85,6 +92,47 @@ const UI = (() => {
             'closed': 'expired',
         };
         return map[status] || '';
+    }
+
+    function getPaymentStatusText(status) {
+        const map = {
+            'waiting': 'در انتظار پرداخت',
+            'pending': 'در حال بررسی',
+            'confirming': 'در حال تأیید',
+            'confirmed': 'تأیید شده',
+            'finished': 'موفق',
+            'completed': 'تکمیل شده',
+            'failed': 'ناموفق',
+            'expired': 'منقضی شده',
+            'refunded': 'بازگشت داده شده',
+        };
+        return map[status] || status;
+    }
+
+    function getPaymentStatusClass(status) {
+        if (['finished', 'confirmed', 'completed'].includes(status)) return 'active';
+        if (['waiting', 'pending', 'confirming'].includes(status)) return 'pending';
+        return 'expired';
+    }
+
+    function getProviderName(provider) {
+        const map = {
+            'nowpayments': 'NOWPayments',
+            'tetrapay': 'تتراپی',
+            'tronado': 'ترونادو',
+            'manual_crypto': 'دستی',
+            'wallet': 'کیف پول',
+        };
+        return map[provider] || provider;
+    }
+
+    function getKindText(kind) {
+        const map = {
+            'topup': 'شارژ',
+            'direct_purchase': 'خرید',
+            'direct_renewal': 'تمدید',
+        };
+        return map[kind] || kind;
     }
 
     function getUsagePercent(used, total) {
@@ -132,6 +180,8 @@ const UI = (() => {
             copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><rect x="2" y="2" width="13" height="13" rx="2"/>',
             plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
             sliders: '<path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M2 14h4"/><path d="M10 8h4"/><path d="M18 16h4"/>',
+            refresh: '<path d="M21 2v6h-6"/><path d="M3 12a9 9 0 1 0 2.13-5.88L21 8"/>',
+            zap: '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10"/>',
         };
         const body = icons[name] || icons.package;
         return `<svg class="${className}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
@@ -140,8 +190,9 @@ const UI = (() => {
     return {
         toast, showModal, closeModal, navigate,
         icon,
-        formatBytes, formatDate, formatMoney,
+        formatBytes, formatDate, formatDateShort, formatMoney,
         getStatusText, getStatusClass, getUsagePercent, getProgressClass,
+        getPaymentStatusText, getPaymentStatusClass, getProviderName, getKindText,
         daysLeft, copyToClipboard,
     };
 })();

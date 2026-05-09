@@ -55,6 +55,16 @@ const Pages = (() => {
         document.getElementById('user-balance').textContent = `$${UI.formatMoney(data.wallet.balance)}`;
         document.getElementById('user-avatar').textContent = (data.first_name || 'U')[0].toUpperCase();
 
+        // Dynamic quick actions based on state
+        const quickActionsEl = document.getElementById('quick-actions');
+        if (quickActionsEl) {
+            quickActionsEl.innerHTML = `
+                ${salesEnabled ? `<button class="quick-action" onclick="UI.navigate('store')"><span>🛒 خرید سرویس</span><strong>پلن‌ها</strong></button>` : `<button class="quick-action" onclick="UI.navigate('configs')"><span>📋 سرویس‌های من</span><strong>مدیریت</strong></button>`}
+                <button class="quick-action" onclick="UI.navigate('wallet')"><span>💳 شارژ حساب</span><strong>کیف پول</strong></button>
+                <button class="quick-action" onclick="UI.navigate('support')"><span>💬 درخواست کمک</span><strong>پشتیبانی</strong></button>
+            `;
+        }
+
         // Stats with circular progress ring
         const usagePct = UI.getUsagePercent(data.total_volume_used, data.total_volume);
         const circumference = 2 * Math.PI * 28;
@@ -673,10 +683,12 @@ const Pages = (() => {
 
     function renderWalletCard(wallet) {
         document.getElementById('wallet-card').innerHTML = `
-                <div class="wallet-label">${UI.icon('wallet')} موجودی کیف پول</div>
+            <div class="wallet-label">${UI.icon('wallet')} موجودی کیف پول</div>
             <div class="wallet-balance-display">$${UI.formatMoney(wallet.balance)}</div>
-            <div class="wallet-actions">
-                <button class="btn" onclick="Pages.topupWallet()">${UI.icon('plus')} شارژ</button>
+            ${wallet.hold_balance > 0 ? `<div style="color:var(--amber);font-size:12px;margin-bottom:12px">${UI.icon('clock')} موجودی بلوکه: $${UI.formatMoney(wallet.hold_balance)}</div>` : ''}
+            <div class="wallet-actions" style="grid-template-columns:1fr 1fr;gap:8px">
+                <button class="btn btn-primary" onclick="Pages.topupWallet()">${UI.icon('plus')} شارژ حساب</button>
+                <button class="btn btn-secondary" onclick="Pages.load_wallet()">${UI.icon('refresh')} بروزرسانی</button>
             </div>
         `;
     }
@@ -695,13 +707,20 @@ const Pages = (() => {
             const amount = payment.pay_amount
                 ? `${UI.formatMoney(payment.pay_amount)} ${payment.pay_currency || ''}`
                 : `${UI.formatMoney(payment.price_amount)} ${payment.price_currency}`;
+            const statusClass = UI.getPaymentStatusClass(payment.payment_status);
             return `
                 <div class="payment-item">
                     <div>
-                        <strong>${escapeHtml(payment.provider)} | ${escapeHtml(payment.kind)}</strong>
-                        <span>${escapeHtml(payment.payment_status)} | ${escapeHtml(amount)} | ${UI.formatDate(payment.created_at)}</span>
+                        <strong>${UI.getProviderName(payment.provider)} • ${UI.getKindText(payment.kind)}</strong>
+                        <span>
+                            <span class="config-status ${statusClass}" style="display:inline-block;margin-left:6px">${UI.getPaymentStatusText(payment.payment_status)}</span>
+                            ${amount} • ${UI.formatDate(payment.created_at)}
+                        </span>
                     </div>
-                    ${canRefresh ? `<button class="btn btn-secondary btn-sm" onclick="Pages.refreshPayment('${payment.id}')">بررسی</button>` : ''}
+                    <div style="display:flex;gap:6px;align-items:center">
+                        ${payment.invoice_url && canRefresh ? `<button class="btn btn-primary btn-sm" onclick="Pages.openInvoice(decodeURIComponent('${encodeURIComponent(payment.invoice_url)}'))">پرداخت</button>` : ''}
+                        ${canRefresh ? `<button class="btn btn-secondary btn-sm" onclick="Pages.refreshPayment('${payment.id}')">${UI.icon('refresh')} بررسی</button>` : ''}
+                    </div>
                 </div>
             `;
         }).join('');
@@ -735,29 +754,35 @@ const Pages = (() => {
             'renewal': 'تمدید',
         };
 
-        container.innerHTML = txs.map(tx => `
+        container.innerHTML = txs.map(tx => {
+            const desc = tx.description || '';
+            return `
             <div class="transaction-item">
                 <div class="tx-info">
                     <span class="tx-type">${typeMap[tx.type] || tx.type}</span>
-                    <span class="tx-date">${UI.formatDate(tx.created_at)}</span>
+                    <span class="tx-date">${desc ? escapeHtml(desc.substring(0, 40)) + ' • ' : ''}${UI.formatDate(tx.created_at)}</span>
                 </div>
                 <span class="tx-amount ${tx.direction === 'credit' ? 'credit' : 'debit'}">
                     ${tx.direction === 'credit' ? '+' : '-'}$${UI.formatMoney(tx.amount)}
                 </span>
             </div>
-        `).join('');
+        `}).join('');
     }
 
     function topupWallet() {
+        const presetAmounts = [3, 5, 10, 20, 50];
         UI.showModal(`
             <div class="modal-title">افزایش موجودی</div>
             <label class="form-label" for="topup-amount">مبلغ شارژ (دلار)</label>
+            <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+                ${presetAmounts.map(a => `<button class="btn btn-secondary btn-sm" onclick="document.getElementById('topup-amount').value='${a}'" style="flex:1;min-width:48px">$${a}</button>`).join('')}
+            </div>
             <input id="topup-amount" class="form-input" inputmode="decimal" dir="ltr" placeholder="5" value="5">
             <p class="form-hint">بعد از پرداخت موفق، موجودی کیف پول به صورت خودکار بروزرسانی می‌شود.</p>
             <div class="checkout-methods">
-                <button class="btn btn-secondary btn-block" onclick="Pages.submitTopup('tetrapay')">درگاه ریالی تتراپی</button>
-                <button class="btn btn-secondary btn-block" onclick="Pages.submitTopup('tronado')">درگاه ترونادو</button>
-                <button class="btn btn-secondary btn-block" onclick="Pages.submitTopup('nowpayments')">درگاه ارزی NOWPayments</button>
+                <button class="btn btn-primary btn-block" onclick="Pages.submitTopup('tetrapay')">💳 درگاه ریالی تتراپی</button>
+                <button class="btn btn-secondary btn-block" onclick="Pages.submitTopup('tronado')">💰 درگاه ترونادو</button>
+                <button class="btn btn-secondary btn-block" onclick="Pages.submitTopup('nowpayments')">💎 درگاه ارزی NOWPayments</button>
             </div>
             <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
         `);

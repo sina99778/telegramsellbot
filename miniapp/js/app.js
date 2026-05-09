@@ -50,6 +50,48 @@
         }
     });
 
+    // ─── Pull-to-refresh on dashboard ─────────────────────────────────────
+    let pullStartY = 0;
+    let isPulling = false;
+    const mainContent = document.getElementById('main-content');
+
+    mainContent?.addEventListener('touchstart', (e) => {
+        if (window.scrollY <= 0) {
+            pullStartY = e.touches[0].clientY;
+            isPulling = true;
+        }
+    }, { passive: true });
+
+    mainContent?.addEventListener('touchmove', (e) => {
+        if (!isPulling) return;
+        const pullDist = e.touches[0].clientY - pullStartY;
+        if (pullDist > 80 && window.scrollY <= 0) {
+            // Visual feedback
+            mainContent.style.transform = `translateY(${Math.min(pullDist * 0.3, 40)}px)`;
+            mainContent.style.transition = 'none';
+        }
+    }, { passive: true });
+
+    mainContent?.addEventListener('touchend', async () => {
+        if (!isPulling) return;
+        isPulling = false;
+        mainContent.style.transition = 'transform 0.3s ease';
+        mainContent.style.transform = '';
+
+        // Check if enough pull distance
+        if (mainContent.style.transform === '' || true) {
+            const activePage = document.querySelector('.page.active');
+            const pageId = activePage?.id?.replace('page-', '');
+            if (pageId && typeof Pages !== 'undefined' && Pages[`load_${pageId}`]) {
+                try { tg?.HapticFeedback?.impactOccurred('light'); } catch {}
+                UI.toast('بروزرسانی...');
+                try {
+                    await Pages[`load_${pageId}`]();
+                } catch {}
+            }
+        }
+    });
+
     // Show UI with staggered entrance
     document.getElementById('loading-screen').classList.add('hidden');
     document.getElementById('app-header').classList.remove('hidden');

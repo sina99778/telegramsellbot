@@ -1645,3 +1645,58 @@ button {
     font-size: 13px;
     font-weight: 600;
 }
+
+/* Payment items */
+.payment-item {
+    flex-wrap: wrap;
+}
+
+.payment-item > div:last-child {
+    flex-shrink: 0;
+}
+
+/* Pager row for configs */
+.pager-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 12px;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.pager-row .btn:disabled {
+    opacity: 0.3;
+    pointer-events: none;
+}
+
+/* Preset amount buttons */
+.checkout-methods {
+    display: grid;
+    gap: 8px;
+}
+
+/* Disabled buy button */
+.plan-buy-btn:disabled {
+    pointer-events: none;
+}
+
+/* Smooth page transitions */
+.page {
+    will-change: transform, opacity;
+}
+
+/* Better wallet card actions */
+.wallet-actions .btn {
+    font-size: 13px;
+    min-height: 44px;
+}
+
+/* Hold balance indicator */
+.wallet-card .hold-indicator {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
