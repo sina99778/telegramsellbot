@@ -5,12 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>V2rays Emergency</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Vazirmatn:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link rel="stylesheet" href="/miniapp/css/app.css?v=20260507-1">
 </head>
 <body>
     <div id="app">
+        <div class="ambient-bg"></div>
         <!-- Loading -->
         <div id="loading-screen" class="loading-screen">
             <div class="loading-spinner"></div>
@@ -28,6 +29,9 @@
                         <span class="user-balance" id="user-balance">$0.00</span>
                     </div>
                 </div>
+                <button class="nav-btn" style="min-width:36px;min-height:36px" onclick="UI.navigate('dashboard')">
+                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 1 0 2.13-5.88L21 8"/></svg>
+                </button>
             </div>
         </header>
 

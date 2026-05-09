@@ -148,8 +148,11 @@ const Pages = (() => {
 
         return `
             <div class="${cardClass}" onclick="Pages.showConfigDetail('${sub.id}')">
-                <div class="config-header">
-                    <span class="config-name">${escapeHtml(name)}</span>
+                <div class="config-header" style="display:flex; justify-content:space-between; align-items:center;">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="config-name">${escapeHtml(name)}</span>
+                        ${sub.sub_link ? `<button class="btn btn-secondary btn-sm" style="padding:4px;min-height:unset;border-radius:6px;opacity:0.7" onclick="event.stopPropagation(); UI.copyToClipboard(decodeURIComponent('${safeSubLink}'))">${UI.icon('copy')}</button>` : ''}
+                    </div>
                     <span class="config-status ${health.statusClass}">${health.statusText}</span>
                 </div>
                 <div class="progress-bar-container">
@@ -190,13 +193,18 @@ const Pages = (() => {
         let linkSection = '';
         if (sub.sub_link) {
             const safeSubLink = encodeURIComponent(sub.sub_link);
+            const rawLink = sub.sub_link;
             linkSection = `
-                <div style="margin-top:16px">
-                    <p style="font-size:12px;color:var(--text-muted);margin-bottom:6px">لینک اشتراک</p>
-                    <div class="copy-box" onclick="UI.copyToClipboard(decodeURIComponent('${safeSubLink}'))">${escapeHtml(sub.sub_link)}</div>
-                </div>
-                <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
-                    <button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${safeSubLink}'))">کپی</button>
+                <div style="margin-top:16px; display:flex; flex-direction:column; align-items:center; background:var(--bg-elevated); padding:16px; border-radius:var(--radius-md); border:1px solid var(--border);">
+                    <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${safeSubLink}" style="width:160px;height:160px;border-radius:12px;margin-bottom:16px;background:#fff;padding:8px;" alt="QR Code" />
+                    <p style="font-size:12px;color:var(--text-muted);margin-bottom:6px;width:100%;text-align:right">لینک اتصال مستقیم:</p>
+                    <div class="copy-box" style="width:100%;text-align:left;direction:ltr;margin-bottom:12px;font-size:11px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" onclick="UI.copyToClipboard('${rawLink}')">${escapeHtml(rawLink)}</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%">
+                        <button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard('${rawLink}')">${UI.icon('copy')} کپی لینک</button>
+                        <a href="v2rayng://install-sub/?url=${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">V2rayNG (اندروید)</a>
+                        <a href="v2box://install-sub/?url=${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">V2Box (آیفون)</a>
+                        <a href="streisand://import/${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">Streisand</a>
+                    </div>
                 </div>
             `;
         }
@@ -260,6 +268,11 @@ const Pages = (() => {
                 <button class="renewal-tab active" data-renew-type="time" onclick="Pages.setRenewalType('time')">زمان</button>
                 <button class="renewal-tab" data-renew-type="volume" onclick="Pages.setRenewalType('volume')">حجم</button>
             </div>
+            <div id="renewal-presets" style="display:grid;grid-template-columns:repeat(3, 1fr);gap:8px;margin:12px 0;">
+                <button class="btn btn-secondary btn-sm preset-btn" onclick="document.getElementById('renewal-amount').value='30'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))">+30 روز</button>
+                <button class="btn btn-secondary btn-sm preset-btn" onclick="document.getElementById('renewal-amount').value='60'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))">+60 روز</button>
+                <button class="btn btn-secondary btn-sm preset-btn" onclick="document.getElementById('renewal-amount').value='90'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))">+90 روز</button>
+            </div>
             <label class="form-label" id="renewal-amount-label" for="renewal-amount">تعداد روز</label>
             <input id="renewal-amount" class="form-input" inputmode="decimal" dir="ltr" placeholder="30" value="30">
             <p class="form-hint" id="renewal-hint">مدت موردنظر را به روز وارد کنید.</p>
@@ -285,14 +298,27 @@ const Pages = (() => {
         const input = document.getElementById('renewal-amount');
         const label = document.getElementById('renewal-amount-label');
         const hint = document.getElementById('renewal-hint');
+        const presets = document.querySelectorAll('.preset-btn');
         if (type === 'volume') {
             if (label) label.textContent = 'حجم اضافه';
             if (hint) hint.textContent = 'حجم موردنظر را به گیگابایت وارد کنید.';
             if (input) input.value = input.value || '10';
+            if (presets[0]) presets[0].textContent = '+10 گیگ';
+            if (presets[0]) presets[0].setAttribute('onclick', "document.getElementById('renewal-amount').value='10'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
+            if (presets[1]) presets[1].textContent = '+20 گیگ';
+            if (presets[1]) presets[1].setAttribute('onclick', "document.getElementById('renewal-amount').value='20'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
+            if (presets[2]) presets[2].textContent = '+50 گیگ';
+            if (presets[2]) presets[2].setAttribute('onclick', "document.getElementById('renewal-amount').value='50'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
         } else {
             if (label) label.textContent = 'تعداد روز';
             if (hint) hint.textContent = 'مدت موردنظر را به روز وارد کنید.';
             if (input) input.value = input.value || '30';
+            if (presets[0]) presets[0].textContent = '+30 روز';
+            if (presets[0]) presets[0].setAttribute('onclick', "document.getElementById('renewal-amount').value='30'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
+            if (presets[1]) presets[1].textContent = '+60 روز';
+            if (presets[1]) presets[1].setAttribute('onclick', "document.getElementById('renewal-amount').value='60'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
+            if (presets[2]) presets[2].textContent = '+90 روز';
+            if (presets[2]) presets[2].setAttribute('onclick', "document.getElementById('renewal-amount').value='90'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
         }
         const subId = document.querySelector('.btn.btn-primary.btn-block[onclick^="Pages.submitRenewal"]')
             ?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
@@ -860,24 +886,41 @@ const Pages = (() => {
         if (!overview || !modules) return;
 
         overview.innerHTML = `
+            <div style="grid-column: 1 / -1; margin-bottom: 8px;">
+                <h4 style="font-size:14px;color:var(--text-muted);font-weight:700;margin-bottom:12px">خلاصه وضعیت سیستم</h4>
+                <div style="background:var(--bg-elevated);border-radius:var(--radius-md);border:1px solid var(--border);padding:16px;display:flex;align-items:center;justify-content:space-between">
+                    <div>
+                        <span style="display:block;font-size:12px;color:var(--text-soft);margin-bottom:4px">سرویس‌های فعال</span>
+                        <strong style="font-size:32px;font-weight:900;color:var(--emerald)">${data.active_subscriptions_count}</strong>
+                    </div>
+                    <div style="width:120px;height:40px">
+                        <svg viewBox="0 0 120 40" style="width:100%;height:100%;overflow:visible">
+                            <polyline points="0,35 20,25 40,30 60,15 80,20 100,5 120,10" fill="none" stroke="var(--emerald)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+                            <polygon points="0,40 0,35 20,25 40,30 60,15 80,20 100,5 120,10 120,40" fill="rgba(16, 185, 129, 0.15)" stroke="none"/>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+            <div class="admin-stat"><span>تیکت باز</span><strong style="color:var(--amber)">${data.open_tickets_count}</strong></div>
             <div class="admin-stat"><span>کاربران</span><strong>${data.users_count}</strong></div>
             <div class="admin-stat"><span>مشتریان</span><strong>${data.customers_count}</strong></div>
-            <div class="admin-stat"><span>سرویس فعال</span><strong>${data.active_subscriptions_count}</strong></div>
-            <div class="admin-stat"><span>تیکت باز</span><strong>${data.open_tickets_count}</strong></div>
-            <div class="admin-stat"><span>پرداخت منتظر</span><strong>${data.waiting_payments_count}</strong></div>
             <div class="admin-stat"><span>سرور فعال</span><strong>${data.active_servers_count}</strong></div>
         `;
 
-        modules.innerHTML = data.modules.map(item => {
-            const section = escapeHtml(item.callback.replace('admin:', ''));
-            const iconName = ADMIN_MODULE_ICONS[section] || 'package';
-            return `
-            <button class="admin-module" onclick="Pages.openAdminModule('${section}')">
-                <div class="module-icon">${UI.icon(iconName)}</div>
-                <strong>${escapeHtml(item.title)}</strong>
-                <span>${escapeHtml(item.description)}</span>
-            </button>
-        `}).join('');
+        modules.innerHTML = `
+            <h4 style="font-size:14px;color:var(--text-muted);font-weight:700;margin:16px 0 12px; grid-column: 1 / -1;">بخش‌های مدیریت</h4>
+            <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:10px;width:100%">
+                ${data.modules.map(item => {
+                    const section = escapeHtml(item.callback.replace('admin:', ''));
+                    const iconName = ADMIN_MODULE_ICONS[section] || 'package';
+                    return \`
+                    <button class="admin-module" style="padding:12px;min-height:90px;justify-content:center;align-items:center;text-align:center" onclick="Pages.openAdminModule('\${section}')">
+                        <div class="module-icon" style="margin-bottom:8px">\${UI.icon(iconName)}</div>
+                        <strong style="font-size:12px">\${escapeHtml(item.title)}</strong>
+                    </button>
+                \`}).join('')}
+            </div>
+        `;
     }
 
     async function openAdminModule(section) {
@@ -984,21 +1027,28 @@ const Pages = (() => {
         const subs = user.subscriptions || [];
         const phoneText = user.phone || user.verified_phone || 'ثبت نشده';
         modules.innerHTML = `
-            <button class="btn btn-secondary btn-block" onclick="Pages.openAdminModule('users')">بازگشت به کاربران</button>
-            <div class="admin-profile">
-                <div>
-                    <strong>${escapeHtml(user.name || '-')}</strong>
-                    <span>${escapeHtml(user.telegram_id)} | @${escapeHtml(user.username || '-')}</span>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+                <button class="btn btn-secondary btn-sm" onclick="Pages.openAdminModule('users')">${UI.icon('home')} بازگشت</button>
+                <h3 class="section-title" style="margin:0;flex:1">پروفایل کاربر</h3>
+            </div>
+            <div class="admin-profile" style="background:var(--bg-elevated);border:1px solid var(--border-strong);box-shadow:var(--shadow-glow)">
+                <div style="display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);padding-bottom:12px;margin-bottom:12px">
+                    <div style="width:48px;height:48px;border-radius:50%;background:var(--accent-primary);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:900;color:#000">
+                        ${(user.name || 'U')[0].toUpperCase()}
+                    </div>
+                    <div>
+                        <strong style="font-size:18px">${escapeHtml(user.name || '-')}</strong>
+                        <span style="font-size:12px;opacity:0.7">${escapeHtml(user.telegram_id)} | @${escapeHtml(user.username || '-')}</span>
+                    </div>
                 </div>
                 <div class="admin-profile-grid">
-                    <div><span>نقش</span><strong>${escapeHtml(user.role)}</strong></div>
-                    <div><span>وضعیت</span><strong>${escapeHtml(user.status)}</strong></div>
-                    <div><span>شماره موبایل</span><strong>${escapeHtml(phoneText)}</strong></div>
-                    <div><span>موجودی</span><strong>$${UI.formatMoney(user.wallet_balance)}</strong></div>
-                    <div><span>تست گرفته</span><strong>${user.has_received_free_trial ? 'بله' : 'خیر'}</strong></div>
+                    <div style="background:rgba(255,255,255,0.02)"><span>نقش</span><strong style="color:var(--cyan)">${escapeHtml(user.role)}</strong></div>
+                    <div style="background:rgba(255,255,255,0.02)"><span>وضعیت</span><strong style="${user.status === 'active' ? 'color:var(--emerald)' : 'color:var(--coral)'}">${escapeHtml(user.status)}</strong></div>
+                    <div style="background:rgba(255,255,255,0.02)"><span>شماره موبایل</span><strong>${escapeHtml(phoneText)}</strong></div>
+                    <div style="background:rgba(255,255,255,0.02)"><span>موجودی</span><strong style="color:var(--emerald)">$${UI.formatMoney(user.wallet_balance)}</strong></div>
                 </div>
-                <div class="admin-actions wide">
-                    <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminUserAction('${user.id}', 'toggle_user_ban')">بن/رفع بن</button>
+                <div class="admin-actions wide" style="margin-top:12px">
+                    <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminUserAction('${user.id}', 'toggle_user_ban')">${user.status === 'banned' ? 'رفع بن' : 'مسدود کردن'}</button>
                     <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminUserAction('${user.id}', 'toggle_user_role')">تغییر نقش</button>
                     <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminUserAction('${user.id}', 'reset_trial')">ریست تست</button>
                 </div>

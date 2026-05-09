@@ -18,28 +18,28 @@ def get_main_menu_keyboard(is_admin: bool = False, telegram_id: int | None = Non
 
     keyboard = [
         [
-            KeyboardButton(text=Buttons.BUY_CONFIG),
-            KeyboardButton(text=Buttons.PROFILE_WALLET),
+            KeyboardButton(text="📱 ورود به مینی‌اپ (پیشنهادی)", web_app=WebAppInfo(url=miniapp_url)),
         ],
         [
-            KeyboardButton(text=Buttons.SUPPORT),
+            KeyboardButton(text=Buttons.BUY_CONFIG),
             KeyboardButton(text=Buttons.MY_CONFIGS),
         ],
         [
-            KeyboardButton(text=Buttons.REFERRAL),
+            KeyboardButton(text=Buttons.PROFILE_WALLET),
             KeyboardButton(text=Buttons.TEST_CONFIG),
         ],
         [
-            KeyboardButton(text="📱 پنل کاربری", web_app=WebAppInfo(url=miniapp_url)),
+            KeyboardButton(text=Buttons.REFERRAL),
+            KeyboardButton(text=Buttons.SUPPORT),
         ],
     ]
     if is_admin:
         admin_url = f"{miniapp_url}&page=admin" if "?" in miniapp_url else f"{miniapp_url}?page=admin"
-        keyboard.append([KeyboardButton(text="🛠 پنل مدیریت مینی‌اپ", web_app=WebAppInfo(url=admin_url))])
-        keyboard.append([KeyboardButton(text="پنل مدیریت ⚙️")])
+        keyboard.append([KeyboardButton(text="⚡ پنل مدیریت ادمین (مینی‌اپ)", web_app=WebAppInfo(url=admin_url))])
+        keyboard.append([KeyboardButton(text="⚙️ پنل مدیریت (ربات)")])
         
     return ReplyKeyboardMarkup(
         keyboard=keyboard,
         resize_keyboard=True,
-        input_field_placeholder=Messages.MENU_PLACEHOLDER,
+        input_field_placeholder="برای شروع وارد مینی‌اپ شوید...",
     )
