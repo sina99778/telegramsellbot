@@ -913,12 +913,12 @@ const Pages = (() => {
                 ${data.modules.map(item => {
                     const section = escapeHtml(item.callback.replace('admin:', ''));
                     const iconName = ADMIN_MODULE_ICONS[section] || 'package';
-                    return \`
-                    <button class="admin-module" style="padding:12px;min-height:90px;justify-content:center;align-items:center;text-align:center" onclick="Pages.openAdminModule('\${section}')">
-                        <div class="module-icon" style="margin-bottom:8px">\${UI.icon(iconName)}</div>
-                        <strong style="font-size:12px">\${escapeHtml(item.title)}</strong>
+                    return `
+                    <button class="admin-module" style="padding:12px;min-height:90px;justify-content:center;align-items:center;text-align:center" onclick="Pages.openAdminModule('${section}')">
+                        <div class="module-icon" style="margin-bottom:8px">${UI.icon(iconName)}</div>
+                        <strong style="font-size:12px">${escapeHtml(item.title)}</strong>
                     </button>
-                \`}).join('')}
+                `}).join('')}
             </div>
         `;
     }
