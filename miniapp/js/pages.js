@@ -10,6 +10,50 @@ const Pages = (() => {
     let configsState = { page: 1, total: 0, pageSize: 20 };
     let salesEnabled = true;
     let renewalsEnabled = true;
+    let gateways = { tetrapay: true, tronado: false, nowpayments: true, manual_crypto: false, card_to_card: false };
+
+    /**
+     * Generate gateway payment buttons based on active gateways.
+     * @param {string} callbackPrefix - JS function call prefix, e.g. "Pages.submitPurchase('plan-id',"
+     * @param {boolean} includeWallet - whether to include wallet button
+     */
+    function gatewayButtons(callbackPrefix, includeWallet = true) {
+        const buttons = [];
+        if (includeWallet) {
+            buttons.push(`<button class="btn btn-primary btn-block" onclick="${callbackPrefix} 'wallet')">💳 پرداخت با کیف پول</button>`);
+        }
+        if (gateways.tetrapay) {
+            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'tetrapay')">🏦 درگاه ریالی تتراپی</button>`);
+        }
+        if (gateways.tronado) {
+            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'tronado')">💰 درگاه ترونادو</button>`);
+        }
+        if (gateways.nowpayments) {
+            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'nowpayments')">💎 درگاه ارزی NOWPayments</button>`);
+        }
+        if (!buttons.length) {
+            buttons.push('<div class="empty-state compact"><p>هیچ درگاه پرداختی فعال نیست</p></div>');
+        }
+        return buttons.join('\n');
+    }
+
+    /** Topup-specific: no wallet option */
+    function topupGatewayButtons(callbackPrefix) {
+        const buttons = [];
+        if (gateways.tetrapay) {
+            buttons.push(`<button class="btn btn-primary btn-block" onclick="${callbackPrefix} 'tetrapay')">💳 درگاه ریالی تتراپی</button>`);
+        }
+        if (gateways.tronado) {
+            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'tronado')">💰 درگاه ترونادو</button>`);
+        }
+        if (gateways.nowpayments) {
+            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'nowpayments')">💎 درگاه ارزی NOWPayments</button>`);
+        }
+        if (!buttons.length) {
+            buttons.push('<div class="empty-state compact"><p>هیچ درگاه پرداختی فعال نیست</p></div>');
+        }
+        return buttons.join('\n');
+    }
 
     function getBotUsername() {
         return (
@@ -48,6 +92,15 @@ const Pages = (() => {
         window.AppState = data;
         salesEnabled = data.sales_enabled !== false;
         renewalsEnabled = data.renewals_enabled !== false;
+        if (data.gateways) {
+            gateways = {
+                tetrapay: !!data.gateways.tetrapay,
+                tronado: !!data.gateways.tronado,
+                nowpayments: !!data.gateways.nowpayments,
+                manual_crypto: !!data.gateways.manual_crypto,
+                card_to_card: !!data.gateways.card_to_card,
+            };
+        }
         const adminNav = document.getElementById('admin-nav-btn');
         if (adminNav) adminNav.classList.toggle('hidden', !data.is_admin);
         // Update header
@@ -294,10 +347,7 @@ const Pages = (() => {
             <p class="form-hint" id="renewal-hint">مدت موردنظر را به روز وارد کنید.</p>
             <div class="renewal-price-box" id="renewal-price-box">برای محاسبه قیمت، مقدار را وارد کنید.</div>
             <div class="checkout-methods">
-                <button class="btn btn-primary btn-block" id="renewal-wallet-btn" onclick="Pages.submitRenewal('${sub.id}', 'wallet')">تمدید با کیف پول</button>
-                <button class="btn btn-secondary btn-block" onclick="Pages.submitRenewal('${sub.id}', 'tetrapay')">درگاه ریالی تتراپی</button>
-                <button class="btn btn-secondary btn-block" onclick="Pages.submitRenewal('${sub.id}', 'tronado')">درگاه ترونادو</button>
-                <button class="btn btn-secondary btn-block" onclick="Pages.submitRenewal('${sub.id}', 'nowpayments')">درگاه ارزی NOWPayments</button>
+                ${gatewayButtons(`Pages.submitRenewal('${sub.id}',`)}
             </div>
             <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
         `);
@@ -488,10 +538,7 @@ const Pages = (() => {
             <input id="custom-config-name" class="form-input" dir="ltr" maxlength="32" placeholder="MyVPN" autocomplete="off">
             <p class="form-hint">بعد از پرداخت، کانفیگ با همین حجم و مدت ساخته می‌شود.</p>
             <div class="checkout-methods">
-                <button class="btn btn-primary btn-block" onclick="Pages.submitCustomPurchase('wallet')">پرداخت با کیف پول</button>
-                <button class="btn btn-secondary btn-block" onclick="Pages.submitCustomPurchase('tetrapay')">درگاه ریالی تتراپی</button>
-                <button class="btn btn-secondary btn-block" onclick="Pages.submitCustomPurchase('tronado')">درگاه ترونادو</button>
-                <button class="btn btn-secondary btn-block" onclick="Pages.submitCustomPurchase('nowpayments')">درگاه ارزی NOWPayments</button>
+                ${gatewayButtons("Pages.submitCustomPurchase(")}
             </div>
             <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
         `);
@@ -568,10 +615,7 @@ const Pages = (() => {
             <input id="checkout-config-name" class="form-input" dir="ltr" maxlength="32" placeholder="MyVPN" autocomplete="off">
             <p class="form-hint">فقط حروف انگلیسی، عدد، خط تیره و آندرلاین. ۳ تا ۳۲ کاراکتر.</p>
             <div class="checkout-methods">
-                <button class="btn btn-primary btn-block" onclick="Pages.submitPurchase('${plan.id}', 'wallet')">پرداخت با کیف پول</button>
-                <button class="btn btn-secondary btn-block" onclick="Pages.submitPurchase('${plan.id}', 'tetrapay')">درگاه ریالی تتراپی</button>
-                <button class="btn btn-secondary btn-block" onclick="Pages.submitPurchase('${plan.id}', 'tronado')">درگاه ترونادو</button>
-                <button class="btn btn-secondary btn-block" onclick="Pages.submitPurchase('${plan.id}', 'nowpayments')">درگاه ارزی NOWPayments</button>
+                ${gatewayButtons(`Pages.submitPurchase('${plan.id}',`)}
             </div>
             <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
         `);
@@ -780,9 +824,7 @@ const Pages = (() => {
             <input id="topup-amount" class="form-input" inputmode="decimal" dir="ltr" placeholder="5" value="5">
             <p class="form-hint">بعد از پرداخت موفق، موجودی کیف پول به صورت خودکار بروزرسانی می‌شود.</p>
             <div class="checkout-methods">
-                <button class="btn btn-primary btn-block" onclick="Pages.submitTopup('tetrapay')">💳 درگاه ریالی تتراپی</button>
-                <button class="btn btn-secondary btn-block" onclick="Pages.submitTopup('tronado')">💰 درگاه ترونادو</button>
-                <button class="btn btn-secondary btn-block" onclick="Pages.submitTopup('nowpayments')">💎 درگاه ارزی NOWPayments</button>
+                ${topupGatewayButtons("Pages.submitTopup(")}
             </div>
             <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">انصراف</button>
         `);

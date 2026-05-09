@@ -42,6 +42,7 @@ from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.settings import AppSettingsRepository
 from repositories.ticket import TicketRepository
 from schemas.api.miniapp import (
+    GatewaysView,
     MiniAppConfigResponse,
     MiniAppDashboardResponse,
     MiniAppAdminOverviewResponse,
@@ -195,7 +196,9 @@ async def get_dashboard(
     subs = [_subscription_to_view(sub) for sub in result.scalars().all()]
 
     # Fetch sales/renewal toggle state
-    user_actions = await AppSettingsRepository(session).get_user_actions_settings()
+    settings_repo = AppSettingsRepository(session)
+    user_actions = await settings_repo.get_user_actions_settings()
+    gw = await settings_repo.get_gateway_settings()
 
     return MiniAppDashboardResponse(
         user_id=user.id,
@@ -210,6 +213,13 @@ async def get_dashboard(
         total_volume=total_vol,
         sales_enabled=user_actions.sales_enabled,
         renewals_enabled=user_actions.renewals_enabled,
+        gateways=GatewaysView(
+            tetrapay=gw.tetrapay_enabled and bool(gw.tetrapay_api_key),
+            tronado=gw.tronado_enabled and bool(gw.tronado_api_key),
+            nowpayments=gw.nowpayments_enabled and bool(gw.nowpayments_api_key),
+            manual_crypto=gw.manual_crypto_enabled,
+            card_to_card=gw.card_to_card_enabled,
+        ),
     )
 
 

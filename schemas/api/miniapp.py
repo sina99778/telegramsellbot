@@ -89,6 +89,14 @@ class ReferralView(BaseModel):
     enabled: bool
 
 
+class GatewaysView(BaseModel):
+    tetrapay: bool = False
+    tronado: bool = False
+    nowpayments: bool = False
+    manual_crypto: bool = False
+    card_to_card: bool = False
+
+
 class MiniAppDashboardResponse(BaseModel):
     user_id: UUID
     telegram_id: int
@@ -102,6 +110,7 @@ class MiniAppDashboardResponse(BaseModel):
     total_volume: int
     sales_enabled: bool = True
     renewals_enabled: bool = True
+    gateways: GatewaysView = GatewaysView()
 
 
 class SubscriptionListResponse(BaseModel):
