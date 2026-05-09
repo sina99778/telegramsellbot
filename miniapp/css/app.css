@@ -841,37 +841,7 @@ button {
 .tx-amount.credit { color: var(--emerald); }
 .tx-amount.debit { color: var(--coral); }
 
-/* Support */
-
-.tickets-container {
-    display: grid;
-    gap: 10px;
-    margin-bottom: 14px;
-    max-height: 54vh;
-    overflow-y: auto;
-    scroll-behavior: smooth;
-}
-
-.ticket-toolbar {
-    padding: 12px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-}
-
-.ticket-toolbar span,
-.admin-ticket-head span {
-    color: var(--text-soft);
-    font-size: 12px;
-    line-height: 1.6;
-}
-
-.ticket-thread {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
+/* Support — see premium redesign at bottom of file */
 
 .modal-thread,
 .admin-ticket-thread {
@@ -880,49 +850,6 @@ button {
     padding: 4px;
 }
 
-.chat-bubble {
-    max-width: 84%;
-    padding: 10px 12px;
-    border-radius: var(--radius-md);
-    font-size: 13px;
-    line-height: 1.75;
-    word-break: break-word;
-}
-
-.chat-bubble.user {
-    align-self: flex-start;
-    color: #06251d;
-    background: #8fe6bf;
-}
-
-.chat-bubble.admin {
-    align-self: flex-end;
-    color: var(--text);
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-}
-
-.bubble-time {
-    display: block;
-    margin-top: 5px;
-    font-size: 10px;
-    opacity: 0.64;
-}
-
-.ticket-input-area {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px;
-    align-items: end;
-    position: sticky;
-    bottom: calc(var(--nav-height) + 8px);
-    background: rgba(11, 15, 20, 0.94);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    padding: 8px;
-}
-
-.ticket-input-area textarea,
 .admin-ticket-reply,
 .form-input {
     width: 100%;
@@ -935,13 +862,6 @@ button {
     resize: vertical;
 }
 
-.ticket-input-area textarea {
-    min-height: 48px;
-    max-height: 120px;
-    resize: none;
-}
-
-.ticket-input-area textarea:focus,
 .admin-ticket-reply:focus,
 .form-input:focus {
     border-color: var(--cyan);
@@ -1585,66 +1505,380 @@ button {
     color: var(--text);
 }
 
-/* Chat & Tickets (Premium UI) */
-.ticket-thread {
+/* ═══ Chat & Tickets — Premium Redesign ═══ */
+
+.tickets-container {
     display: flex;
     flex-direction: column;
     gap: 12px;
-    padding: 12px;
-    background: rgba(0, 0, 0, 0.2);
-    border-radius: var(--radius-md);
-    max-height: 400px;
+    margin-bottom: 14px;
+    max-height: 58vh;
     overflow-y: auto;
-    margin-bottom: 12px;
-}
-
-.chat-bubble {
-    max-width: 85%;
-    padding: 12px 14px;
-    border-radius: 18px;
-    font-size: 13px;
-    line-height: 1.5;
-    position: relative;
-    word-wrap: break-word;
-    animation: fadeIn 0.3s ease-out forwards;
-}
-
-.chat-bubble.user {
-    align-self: flex-start;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-bottom-right-radius: 4px;
-    color: var(--text);
-}
-
-.chat-bubble.admin {
-    align-self: flex-end;
-    background: linear-gradient(135deg, rgba(6, 182, 212, 0.2), rgba(16, 185, 129, 0.2));
-    border: 1px solid rgba(6, 182, 212, 0.3);
-    border-bottom-left-radius: 4px;
-    color: var(--text);
-}
-
-.bubble-time {
-    display: block;
-    font-size: 10px;
-    opacity: 0.6;
-    margin-top: 6px;
-    text-align: right;
+    scroll-behavior: smooth;
 }
 
 .ticket-toolbar {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background: var(--bg-elevated);
-    padding: 12px 16px;
-    border-radius: var(--radius-md);
-    margin-bottom: 12px;
-    border: 1px solid var(--border);
+    background: linear-gradient(135deg, rgba(6, 182, 212, 0.08), rgba(139, 92, 246, 0.06));
+    padding: 14px 18px;
+    border-radius: 18px;
+    border: 1px solid rgba(6, 182, 212, 0.15);
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 700;
+    backdrop-filter: blur(12px);
 }
+
+.ticket-toolbar .ticket-id {
+    color: var(--cyan);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 12px;
+    direction: ltr;
+}
+
+.ticket-toolbar .ticket-status-badge {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.3px;
+}
+
+.ticket-status-badge.open {
+    background: rgba(6, 182, 212, 0.15);
+    color: var(--cyan);
+    border: 1px solid rgba(6, 182, 212, 0.3);
+}
+
+.ticket-status-badge.answered {
+    background: rgba(16, 185, 129, 0.15);
+    color: var(--emerald);
+    border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.ticket-status-badge.closed {
+    background: rgba(113, 113, 122, 0.15);
+    color: var(--text-muted);
+    border: 1px solid rgba(113, 113, 122, 0.3);
+}
+
+.ticket-thread {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 16px 12px;
+    background: linear-gradient(180deg, rgba(0, 0, 0, 0.15) 0%, rgba(0, 0, 0, 0.25) 100%);
+    border-radius: 20px;
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    max-height: 50vh;
+    overflow-y: auto;
+    margin-bottom: 12px;
+    scroll-behavior: smooth;
+}
+
+.ticket-thread::-webkit-scrollbar {
+    width: 3px;
+}
+
+.ticket-thread::-webkit-scrollbar-thumb {
+    background: rgba(6, 182, 212, 0.2);
+    border-radius: 3px;
+}
+
+/* Date separator */
+.chat-date-sep {
+    text-align: center;
+    padding: 8px 0;
+}
+
+.chat-date-sep span {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 700;
+    padding: 4px 14px;
+    border-radius: 12px;
+    letter-spacing: 0.3px;
+}
+
+/* Chat bubbles */
+.chat-bubble {
+    max-width: 82%;
+    padding: 10px 14px;
+    font-size: 13px;
+    line-height: 1.65;
+    position: relative;
+    word-wrap: break-word;
+    animation: bubbleIn 0.35s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+    opacity: 0;
+}
+
+@keyframes bubbleIn {
+    from {
+        opacity: 0;
+        transform: translateY(8px) scale(0.96);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+.chat-bubble.user {
+    align-self: flex-start;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 18px 18px 18px 4px;
+    color: var(--text);
+}
+
+.chat-bubble.admin {
+    align-self: flex-end;
+    background: linear-gradient(135deg, rgba(6, 182, 212, 0.18), rgba(16, 185, 129, 0.14));
+    border: 1px solid rgba(6, 182, 212, 0.22);
+    border-radius: 18px 18px 4px 18px;
+    color: var(--text);
+    box-shadow: 0 4px 16px rgba(6, 182, 212, 0.06);
+}
+
+/* Sender label */
+.bubble-sender {
+    display: block;
+    font-size: 10px;
+    font-weight: 800;
+    margin-bottom: 3px;
+    letter-spacing: 0.3px;
+}
+
+.chat-bubble.user .bubble-sender {
+    color: var(--text-muted);
+}
+
+.chat-bubble.admin .bubble-sender {
+    color: var(--cyan);
+}
+
+.bubble-text {
+    white-space: pre-wrap;
+}
+
+.bubble-time {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    opacity: 0.5;
+    margin-top: 5px;
+    text-align: right;
+    justify-content: flex-end;
+}
+
+.bubble-time .read-indicator {
+    color: var(--cyan);
+    font-size: 12px;
+}
+
+/* Input area */
+.ticket-input-area {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: end;
+    position: sticky;
+    bottom: calc(var(--nav-height) + 8px);
+    background: rgba(11, 15, 20, 0.92);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 20px;
+    padding: 10px 12px;
+    backdrop-filter: blur(20px);
+    transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.ticket-input-area:focus-within {
+    border-color: rgba(6, 182, 212, 0.3);
+    box-shadow: 0 0 20px rgba(6, 182, 212, 0.06);
+}
+
+.ticket-input-area textarea {
+    width: 100%;
+    background: transparent;
+    color: var(--text);
+    border: none;
+    padding: 8px 4px;
+    outline: none;
+    resize: none;
+    min-height: 24px;
+    max-height: 100px;
+    font-size: 13px;
+    line-height: 1.5;
+    font-family: var(--font);
+}
+
+.ticket-input-area textarea::placeholder {
+    color: var(--text-muted);
+}
+
+#ticket-send-btn {
+    width: 42px;
+    height: 42px;
+    min-height: 42px;
+    padding: 0;
+    border-radius: 50%;
+    display: grid;
+    place-items: center;
+    background: linear-gradient(135deg, var(--cyan), var(--emerald));
+    border: none;
+    color: #05242a;
+    cursor: pointer;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+#ticket-send-btn:hover {
+    transform: scale(1.08);
+    box-shadow: 0 4px 16px rgba(6, 182, 212, 0.3);
+}
+
+#ticket-send-btn:active {
+    transform: scale(0.92);
+}
+
+/* Empty support state */
+.support-empty {
+    text-align: center;
+    padding: 40px 20px;
+}
+
+.support-empty-icon {
+    width: 64px;
+    height: 64px;
+    margin: 0 auto 16px;
+    display: grid;
+    place-items: center;
+    border-radius: 20px;
+    background: linear-gradient(135deg, rgba(6, 182, 212, 0.12), rgba(139, 92, 246, 0.1));
+    color: var(--cyan);
+}
+
+.support-empty-icon .icon {
+    width: 28px;
+    height: 28px;
+}
+
+.support-empty h4 {
+    font-size: 16px;
+    font-weight: 800;
+    color: var(--text);
+    margin-bottom: 8px;
+}
+
+.support-empty p {
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.7;
+    max-width: 280px;
+    margin: 0 auto;
+}
+
+/* Ticket history cards */
+.ticket-history {
+    display: grid;
+    gap: 8px;
+}
+
+.ticket-history-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 16px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 16px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-family: var(--font);
+    color: var(--text);
+    text-align: right;
+    width: 100%;
+}
+
+.ticket-history-card:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(6, 182, 212, 0.15);
+    transform: translateY(-1px);
+}
+
+.ticket-history-card:active {
+    transform: scale(0.98);
+}
+
+.ticket-history-icon {
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-items: center;
+    border-radius: 12px;
+    flex-shrink: 0;
+}
+
+.ticket-history-icon.open {
+    background: rgba(6, 182, 212, 0.12);
+    color: var(--cyan);
+}
+
+.ticket-history-icon.answered {
+    background: rgba(16, 185, 129, 0.12);
+    color: var(--emerald);
+}
+
+.ticket-history-icon.closed {
+    background: rgba(113, 113, 122, 0.12);
+    color: var(--text-muted);
+}
+
+.ticket-history-icon .icon {
+    width: 16px;
+    height: 16px;
+}
+
+.ticket-history-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.ticket-history-info strong {
+    display: block;
+    font-size: 13px;
+    font-weight: 800;
+    color: var(--text);
+}
+
+.ticket-history-info span {
+    display: block;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+.ticket-history-meta {
+    text-align: left;
+    flex-shrink: 0;
+}
+
+.ticket-history-meta .msg-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 22px;
+    height: 22px;
+    padding: 0 6px;
+    border-radius: 11px;
+    font-size: 10px;
+    font-weight: 900;
+    background: rgba(6, 182, 212, 0.15);
+    color: var(--cyan);
+}
+
 
 /* Payment items */
 .payment-item {

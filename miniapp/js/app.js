@@ -28,25 +28,40 @@
     });
 
     // Ticket send
-    document.getElementById('ticket-send-btn').addEventListener('click', async () => {
-        const input = document.getElementById('ticket-input');
-        const text = input.value.trim();
+    // Ticket send with animation
+    const sendBtn = document.getElementById('ticket-send-btn');
+    const ticketInput = document.getElementById('ticket-input');
+
+    sendBtn.addEventListener('click', async () => {
+        const text = ticketInput.value.trim();
         if (!text) return;
+        sendBtn.disabled = true;
+        sendBtn.style.transform = 'scale(0.85) rotate(45deg)';
         try {
             await API.sendTicket(text);
-            input.value = '';
-            UI.toast('پیام ارسال شد');
+            ticketInput.value = '';
+            ticketInput.style.height = 'auto';
             try { tg?.HapticFeedback?.notificationOccurred('success'); } catch {}
             Pages.load_support();
         } catch (e) {
             UI.toast('خطا: ' + e.message, 'error');
+        } finally {
+            sendBtn.disabled = false;
+            sendBtn.style.transform = '';
         }
     });
 
-    document.getElementById('ticket-input').addEventListener('keydown', (e) => {
+    // Auto-grow textarea
+    ticketInput.addEventListener('input', () => {
+        ticketInput.style.height = 'auto';
+        ticketInput.style.height = Math.min(ticketInput.scrollHeight, 100) + 'px';
+    });
+
+    // Enter to send (Shift+Enter for newline)
+    ticketInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
-            document.getElementById('ticket-send-btn').click();
+            sendBtn.click();
         }
     });
 

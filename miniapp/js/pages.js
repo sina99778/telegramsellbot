@@ -869,41 +869,89 @@ const Pages = (() => {
     function renderTickets(tickets) {
         const container = document.getElementById('tickets-container');
         if (!tickets.length) {
-            container.innerHTML = `<div class="empty-state"><div class="empty-icon">${UI.icon('support')}</div><p>پیامی وجود ندارد<br>اولین پیام خود را ارسال کنید</p></div>`;
+            container.innerHTML = `
+                <div class="support-empty">
+                    <div class="support-empty-icon">${UI.icon('support')}</div>
+                    <h4>به پشتیبانی خوش آمدید</h4>
+                    <p>سوالی دارید؟ پیام خود را در کادر پایین بنویسید و ما در اسرع وقت پاسخ می‌دهیم.</p>
+                </div>
+            `;
             return;
         }
 
         const ticket = tickets[0];
         const olderTickets = tickets.slice(1);
+        const statusBadgeClass = ticket.status === 'answered' ? 'answered' : ticket.status === 'closed' ? 'closed' : 'open';
+
         container.innerHTML = `
             <div class="ticket-toolbar">
-                <span>تیکت #${String(ticket.id).slice(0, 8)} | ${escapeHtml(UI.getStatusText(ticket.status))}</span>
-                ${ticket.status !== 'closed' ? `<button class="btn btn-secondary btn-sm" onclick="Pages.closeTicket('${ticket.id}')">بستن تیکت</button>` : ''}
+                <div>
+                    <span class="ticket-id">#${String(ticket.id).slice(0, 8)}</span>
+                    <span class="ticket-status-badge ${statusBadgeClass}">${escapeHtml(UI.getStatusText(ticket.status))}</span>
+                </div>
+                ${ticket.status !== 'closed' ? `<button class="btn btn-secondary btn-sm" onclick="Pages.closeTicket('${ticket.id}')">بستن تیکت</button>` : `<button class="btn btn-secondary btn-sm" onclick="Pages.load_support()">${UI.icon('refresh')} بروزرسانی</button>`}
             </div>
-            <div class="ticket-thread">
-                ${ticket.messages.length ? ticket.messages.map(m => renderTicketMessage(m)).join('') : '<div class="empty-state compact"><p>هنوز پیامی ثبت نشده</p></div>'}
+            <div class="ticket-thread" id="active-thread">
+                ${ticket.messages.length ? renderTicketMessages(ticket.messages) : '<div class="support-empty" style="padding:20px"><p>هنوز پیامی ثبت نشده</p></div>'}
             </div>
             ${olderTickets.length ? `
-                <h3 class="section-title compact-title">تیکت‌های قبلی</h3>
+                <h3 class="section-title compact-title">📋 تیکت‌های قبلی</h3>
                 <div class="ticket-history">
-                    ${olderTickets.map((t, index) => `
-                        <button class="ticket-history-item" onclick="Pages.showTicketHistory(${index + 1})">
-                            <strong>#${String(t.id).slice(0, 8)}</strong>
-                            <span>${escapeHtml(UI.getStatusText(t.status))} | ${UI.formatDate(t.created_at)}</span>
+                    ${olderTickets.map((t, index) => {
+                        const sBadge = t.status === 'answered' ? 'answered' : t.status === 'closed' ? 'closed' : 'open';
+                        const iconName = t.status === 'answered' ? 'support' : t.status === 'closed' ? 'lock' : 'clock';
+                        return `
+                        <button class="ticket-history-card" onclick="Pages.showTicketHistory(${index + 1})">
+                            <div class="ticket-history-icon ${sBadge}">${UI.icon(iconName)}</div>
+                            <div class="ticket-history-info">
+                                <strong>تیکت #${String(t.id).slice(0, 8)}</strong>
+                                <span>${escapeHtml(UI.getStatusText(t.status))} • ${UI.formatDateShort(t.created_at)}</span>
+                            </div>
+                            <div class="ticket-history-meta">
+                                <span class="msg-count">${t.messages?.length || 0}</span>
+                            </div>
                         </button>
-                    `).join('')}
+                    `}).join('')}
                 </div>
             ` : ''}
         `;
 
-        setTimeout(() => container.scrollTop = container.scrollHeight, 100);
+        // Auto-scroll to bottom of thread
+        setTimeout(() => {
+            const thread = document.getElementById('active-thread');
+            if (thread) thread.scrollTop = thread.scrollHeight;
+        }, 150);
     }
 
-    function renderTicketMessage(message) {
+    function renderTicketMessages(messages) {
+        let html = '';
+        let lastDate = '';
+        messages.forEach((m, i) => {
+            // Date separator
+            const msgDate = UI.formatDateShort(m.created_at);
+            if (msgDate !== lastDate) {
+                html += `<div class="chat-date-sep"><span>${msgDate}</span></div>`;
+                lastDate = msgDate;
+            }
+            html += renderTicketMessage(m, i);
+        });
+        return html;
+    }
+
+    function renderTicketMessage(message, index = 0) {
+        const isAdmin = message.sender_type === 'admin';
+        const senderLabel = isAdmin ? '🛡️ پشتیبانی' : '👤 شما';
+        const time = new Date(message.created_at);
+        const timeStr = time.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+        const delay = Math.min(index * 0.05, 0.5);
         return `
-            <div class="chat-bubble ${message.sender_type}">
-                ${escapeHtml(message.text || 'تصویر')}
-                <span class="bubble-time">${UI.formatDate(message.created_at)}</span>
+            <div class="chat-bubble ${message.sender_type}" style="animation-delay:${delay}s">
+                <span class="bubble-sender">${senderLabel}</span>
+                <span class="bubble-text">${escapeHtml(message.text || '📷 تصویر')}</span>
+                <span class="bubble-time">
+                    ${timeStr}
+                    ${!isAdmin ? '<span class="read-indicator">✓</span>' : ''}
+                </span>
             </div>
         `;
     }
@@ -911,10 +959,15 @@ const Pages = (() => {
     function showTicketHistory(index) {
         const ticket = supportTicketsCache[index];
         if (!ticket) return;
+        const sBadge = ticket.status === 'answered' ? 'answered' : ticket.status === 'closed' ? 'closed' : 'open';
         UI.showModal(`
             <div class="modal-title">تیکت #${String(ticket.id).slice(0, 8)}</div>
+            <div style="text-align:center;margin-bottom:12px">
+                <span class="ticket-status-badge ${sBadge}">${escapeHtml(UI.getStatusText(ticket.status))}</span>
+                <span style="color:var(--text-muted);font-size:11px;margin-right:8px">${UI.formatDateShort(ticket.created_at)}</span>
+            </div>
             <div class="ticket-thread modal-thread">
-                ${(ticket.messages || []).map(m => renderTicketMessage(m)).join('') || '<div class="empty-state compact"><p>پیامی ثبت نشده</p></div>'}
+                ${(ticket.messages || []).length ? renderTicketMessages(ticket.messages) : '<div class="support-empty" style="padding:20px"><p>پیامی ثبت نشده</p></div>'}
             </div>
             <button class="btn btn-secondary btn-block" style="margin-top:12px" onclick="UI.closeModal()">بستن</button>
         `);
