@@ -18,7 +18,7 @@ def get_main_menu_keyboard(is_admin: bool = False, telegram_id: int | None = Non
 
     keyboard = [
         [
-            KeyboardButton(text="📱 ورود به مینی‌اپ (پیشنهادی)", web_app=WebAppInfo(url=miniapp_url)),
+            KeyboardButton(text="📱 پنل کاربری", web_app=WebAppInfo(url=miniapp_url)),
         ],
         [
             KeyboardButton(text=Buttons.BUY_CONFIG),
@@ -35,8 +35,8 @@ def get_main_menu_keyboard(is_admin: bool = False, telegram_id: int | None = Non
     ]
     if is_admin:
         admin_url = f"{miniapp_url}&page=admin" if "?" in miniapp_url else f"{miniapp_url}?page=admin"
-        keyboard.append([KeyboardButton(text="⚡ پنل مدیریت ادمین (مینی‌اپ)", web_app=WebAppInfo(url=admin_url))])
-        keyboard.append([KeyboardButton(text="⚙️ پنل مدیریت (ربات)")])
+        keyboard.append([KeyboardButton(text="🛠 پنل مدیریت مینی‌اپ", web_app=WebAppInfo(url=admin_url))])
+        keyboard.append([KeyboardButton(text="پنل مدیریت ⚙️")])
         
     return ReplyKeyboardMarkup(
         keyboard=keyboard,
