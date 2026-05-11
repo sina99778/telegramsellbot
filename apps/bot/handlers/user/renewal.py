@@ -52,11 +52,19 @@ from apps.bot.utils.messaging import safe_edit_or_send
 async def renew_config_start(callback: CallbackQuery, callback_data: MyConfigCallback, state: FSMContext, session: AsyncSession) -> None:
     await callback.answer()
 
-    # Check if renewals are enabled by admin
+    # Check if renewals are enabled by admin (admins bypass)
     user_actions = await AppSettingsRepository(session).get_user_actions_settings()
     if not user_actions.renewals_enabled:
-        await safe_edit_or_send(callback, "⛔ تمدید سرویس توسط مدیر موقتاً غیرفعال شده است. لطفاً بعداً تلاش کنید.")
-        return
+        from core.config import settings as app_settings
+        from repositories.user import UserRepository
+        user_record = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+        is_admin = (
+            (user_record and user_record.role in {"admin", "owner"})
+            or callback.from_user.id == app_settings.owner_telegram_id
+        )
+        if not is_admin:
+            await safe_edit_or_send(callback, "⛔ تمدید سرویس توسط مدیر موقتاً غیرفعال شده است. لطفاً بعداً تلاش کنید.")
+            return
 
     await state.clear()
     

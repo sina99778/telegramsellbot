@@ -10,6 +10,7 @@ const Pages = (() => {
     let configsState = { page: 1, total: 0, pageSize: 20 };
     let salesEnabled = true;
     let renewalsEnabled = true;
+    let isAdmin = false;
     let gateways = { tetrapay: true, tronado: false, nowpayments: true, manual_crypto: false, card_to_card: false };
 
     /**
@@ -92,6 +93,7 @@ const Pages = (() => {
         window.AppState = data;
         salesEnabled = data.sales_enabled !== false;
         renewalsEnabled = data.renewals_enabled !== false;
+        isAdmin = !!data.is_admin;
         if (data.gateways) {
             gateways = {
                 tetrapay: !!data.gateways.tetrapay,
@@ -112,7 +114,7 @@ const Pages = (() => {
         const quickActionsEl = document.getElementById('quick-actions');
         if (quickActionsEl) {
             quickActionsEl.innerHTML = `
-                ${salesEnabled ? `<button class="quick-action" onclick="UI.navigate('store')"><span>🛒 خرید سرویس</span><strong>پلن‌ها</strong></button>` : `<button class="quick-action" onclick="UI.navigate('configs')"><span>📋 سرویس‌های من</span><strong>مدیریت</strong></button>`}
+                ${(salesEnabled || isAdmin) ? `<button class="quick-action" onclick="UI.navigate('store')"><span>🛒 خرید سرویس</span><strong>پلن‌ها</strong></button>` : `<button class="quick-action" onclick="UI.navigate('configs')"><span>📋 سرویس‌های من</span><strong>مدیریت</strong></button>`}
                 <button class="quick-action" onclick="UI.navigate('wallet')"><span>💳 شارژ حساب</span><strong>کیف پول</strong></button>
                 <button class="quick-action" onclick="UI.navigate('support')"><span>💬 درخواست کمک</span><strong>پشتیبانی</strong></button>
             `;
@@ -124,8 +126,8 @@ const Pages = (() => {
         const strokeDash = circumference - (usagePct / 100) * circumference;
         const ringColor = usagePct >= 90 ? 'var(--coral)' : usagePct >= 70 ? 'var(--amber)' : 'var(--emerald)';
         document.getElementById('stats-grid').innerHTML = `
-            ${!salesEnabled ? '<div class="config-warning danger" style="grid-column:1/-1;text-align:center;font-size:13px;padding:14px">⛔ فروش سرویس موقتاً غیرفعال است</div>' : ''}
-            ${!renewalsEnabled ? '<div class="config-warning" style="grid-column:1/-1;text-align:center;font-size:13px;padding:14px">⏸ تمدید سرویس موقتاً غیرفعال است</div>' : ''}
+            ${(!salesEnabled && !isAdmin) ? '<div class="config-warning danger" style="grid-column:1/-1;text-align:center;font-size:13px;padding:14px">⛔ فروش سرویس موقتاً غیرفعال است</div>' : ''}
+            ${(!renewalsEnabled && !isAdmin) ? '<div class="config-warning" style="grid-column:1/-1;text-align:center;font-size:13px;padding:14px">⏸ تمدید سرویس موقتاً غیرفعال است</div>' : ''}
             <div class="stat-card">
                 <div class="stat-icon">🌐</div>
                 <div class="stat-value">${data.active_config_count}</div>
@@ -319,7 +321,7 @@ const Pages = (() => {
                 </div>
             </div>
             ${linkSection}
-            ${renewalsEnabled ? `<button class="btn btn-primary btn-block" style="margin-top:16px" onclick="Pages.showRenewal('${sub.id}')">تمدید سرویس</button>` : '<div class="config-warning" style="margin-top:16px;text-align:center">⏸ تمدید موقتاً غیرفعال است</div>'}
+            ${(renewalsEnabled || isAdmin) ? `<button class="btn btn-primary btn-block" style="margin-top:16px" onclick="Pages.showRenewal('${sub.id}')">تمدید سرویس</button>` : '<div class="config-warning" style="margin-top:16px;text-align:center">⏸ تمدید موقتاً غیرفعال است</div>'}
             <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">بستن</button>
         `);
     }
@@ -477,7 +479,7 @@ const Pages = (() => {
         const container = document.getElementById('plans-list');
 
         // Sales closed banner
-        const closedBanner = !salesEnabled ? `
+        const closedBanner = (!salesEnabled && !isAdmin) ? `
             <div class="empty-state" style="grid-column:1/-1;border-color:rgba(239,111,97,0.4);background:rgba(239,111,97,0.06)">
                 <div class="empty-icon" style="background:rgba(239,111,97,0.15);color:var(--coral)">${UI.icon('lock')}</div>
                 <p style="font-size:15px;font-weight:900;color:var(--coral);margin-bottom:6px">فروش موقتاً بسته شده است</p>
@@ -490,7 +492,7 @@ const Pages = (() => {
             return;
         }
 
-        const customCard = (customPurchase?.can_purchase && salesEnabled) ? `
+        const customCard = (customPurchase?.can_purchase && (salesEnabled || isAdmin)) ? `
             <div class="plan-card popular">
                 <div class="plan-name">حجم و زمان دلخواه</div>
                 <div class="plan-specs">
@@ -514,7 +516,7 @@ const Pages = (() => {
                     ${plan.is_unlimited ? '' : `<span class="plan-spec">${UI.icon('package')} موجودی ${plan.stock_remaining}</span>`}
                 </div>
                 <div class="plan-price">$${UI.formatMoney(plan.price)} <small>/ ${plan.currency}</small></div>
-                ${salesEnabled ? `
+                ${(salesEnabled || isAdmin) ? `
                     <button class="btn btn-primary btn-block plan-buy-btn" onclick="Pages.buyPlan('${plan.id}')">
                         ${UI.icon('store')} خرید
                     </button>

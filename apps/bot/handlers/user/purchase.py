@@ -87,11 +87,18 @@ async def ignore_pagination_noop(callback: CallbackQuery) -> None:
 
 @router.message(F.text == Buttons.BUY_CONFIG)
 async def show_available_plans(message: Message, session: AsyncSession, state: FSMContext) -> None:
-    # Check if sales are enabled by admin
+    # Check if sales are enabled by admin (admins bypass)
     user_actions = await AppSettingsRepository(session).get_user_actions_settings()
     if not user_actions.sales_enabled:
-        await message.answer("⛔ فروش سرویس توسط مدیر موقتاً غیرفعال شده است. لطفاً بعداً تلاش کنید.")
-        return
+        from core.config import settings as app_settings
+        user_record = await UserRepository(session).get_by_telegram_id(message.from_user.id)
+        is_admin = (
+            (user_record and user_record.role in {"admin", "owner"})
+            or message.from_user.id == app_settings.owner_telegram_id
+        )
+        if not is_admin:
+            await message.answer("⛔ فروش سرویس توسط مدیر موقتاً غیرفعال شده است. لطفاً بعداً تلاش کنید.")
+            return
 
     if not await _ensure_phone_verified_for_purchase(message, session, state):
         return

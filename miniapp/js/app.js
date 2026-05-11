@@ -65,46 +65,61 @@
         }
     });
 
-    // ─── Pull-to-refresh on dashboard ─────────────────────────────────────
-    let pullStartY = 0;
-    let isPulling = false;
+    // ─── Pull-to-refresh (properly gated) ──────────────────────────────────
     const mainContent = document.getElementById('main-content');
+    let pullStartY = 0;
+    let pullTriggered = false;
+    let pullCooldown = false;
 
     mainContent?.addEventListener('touchstart', (e) => {
-        if (window.scrollY <= 0) {
+        // Only start pull tracking if we're at the very top of the active page-scroll
+        const activeScroll = document.querySelector('.page.active .page-scroll');
+        if (activeScroll && activeScroll.scrollTop <= 0 && !pullCooldown) {
             pullStartY = e.touches[0].clientY;
-            isPulling = true;
+            pullTriggered = false;
+        } else {
+            pullStartY = 0;
         }
     }, { passive: true });
 
     mainContent?.addEventListener('touchmove', (e) => {
-        if (!isPulling) return;
+        if (!pullStartY || pullCooldown) return;
+        const activeScroll = document.querySelector('.page.active .page-scroll');
+        if (!activeScroll || activeScroll.scrollTop > 0) {
+            pullStartY = 0;
+            return;
+        }
         const pullDist = e.touches[0].clientY - pullStartY;
-        if (pullDist > 80 && window.scrollY <= 0) {
-            // Visual feedback
-            mainContent.style.transform = `translateY(${Math.min(pullDist * 0.3, 40)}px)`;
+        if (pullDist > 40) {
+            mainContent.style.transform = `translateY(${Math.min(pullDist * 0.2, 30)}px)`;
             mainContent.style.transition = 'none';
+        }
+        if (pullDist > 120) {
+            pullTriggered = true;
         }
     }, { passive: true });
 
     mainContent?.addEventListener('touchend', async () => {
-        if (!isPulling) return;
-        isPulling = false;
         mainContent.style.transition = 'transform 0.3s ease';
         mainContent.style.transform = '';
 
-        // Check if enough pull distance
-        if (mainContent.style.transform === '' || true) {
-            const activePage = document.querySelector('.page.active');
-            const pageId = activePage?.id?.replace('page-', '');
-            if (pageId && typeof Pages !== 'undefined' && Pages[`load_${pageId}`]) {
-                try { tg?.HapticFeedback?.impactOccurred('light'); } catch {}
-                UI.toast('بروزرسانی...');
-                try {
-                    await Pages[`load_${pageId}`]();
-                } catch {}
-            }
+        if (!pullTriggered || pullCooldown) {
+            pullStartY = 0;
+            return;
         }
+        pullStartY = 0;
+        pullTriggered = false;
+        pullCooldown = true;
+
+        const activePage = document.querySelector('.page.active');
+        const pageId = activePage?.id?.replace('page-', '');
+        if (pageId && typeof Pages !== 'undefined' && Pages[`load_${pageId}`]) {
+            try { tg?.HapticFeedback?.impactOccurred('light'); } catch {}
+            UI.toast('بروزرسانی...');
+            try { await Pages[`load_${pageId}`](); } catch {}
+        }
+        // Cooldown to prevent double-trigger
+        setTimeout(() => { pullCooldown = false; }, 1500);
     });
 
     // Show UI with staggered entrance

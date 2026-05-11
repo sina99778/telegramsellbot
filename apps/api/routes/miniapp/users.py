@@ -1706,9 +1706,9 @@ async def create_purchase(
     user, session = auth
     await check_rate_limit(user.telegram_id, "purchase")
 
-    # Check if sales are enabled
+    # Check if sales are enabled (admins bypass)
     user_actions = await AppSettingsRepository(session).get_user_actions_settings()
-    if not user_actions.sales_enabled:
+    if not user_actions.sales_enabled and not _is_admin_user(user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="⛔ فروش سرویس توسط مدیر موقتاً غیرفعال شده است.",
@@ -1957,7 +1957,10 @@ async def _create_nowpayments_purchase(
     if not gw.nowpayments_enabled:
         raise HTTPException(status_code=400, detail="درگاه NOWPayments غیرفعال است.")
 
-    api_key = SecretStr(gw.nowpayments_api_key) if gw.nowpayments_api_key else settings.nowpayments_api_key
+    raw_key = gw.nowpayments_api_key or (settings.nowpayments_api_key.get_secret_value() if settings.nowpayments_api_key else None)
+    if not raw_key or raw_key == "CHANGE_ME":
+        raise HTTPException(status_code=400, detail="کلید API درگاه NOWPayments تنظیم نشده است.")
+    api_key = SecretStr(raw_key)
     local_order_id = str(uuid4())
     payload = NowPaymentsPaymentCreateRequest(
         price_amount=plan.price,
@@ -2279,9 +2282,9 @@ async def renew_subscription(
     user, session = auth
     await check_rate_limit(user.telegram_id, "renewal")
 
-    # Check if renewals are enabled
+    # Check if renewals are enabled (admins bypass)
     user_actions = await AppSettingsRepository(session).get_user_actions_settings()
-    if not user_actions.renewals_enabled:
+    if not user_actions.renewals_enabled and not _is_admin_user(user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="⛔ تمدید سرویس توسط مدیر موقتاً غیرفعال شده است.",
@@ -2313,7 +2316,10 @@ async def renew_subscription(
         if body.payment_method == "nowpayments":
             if not gw.nowpayments_enabled:
                 raise HTTPException(status_code=400, detail="درگاه ارزی فعال نیست.")
-            api_key = SecretStr(gw.nowpayments_api_key) if gw.nowpayments_api_key else settings.nowpayments_api_key
+            raw_key = gw.nowpayments_api_key or (settings.nowpayments_api_key.get_secret_value() if settings.nowpayments_api_key else None)
+            if not raw_key or raw_key == "CHANGE_ME":
+                raise HTTPException(status_code=400, detail="کلید API درگاه NOWPayments تنظیم نشده است.")
+            api_key = SecretStr(raw_key)
             try:
                 async with NowPaymentsClient(
                     NowPaymentsClientConfig(
