@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
-from repositories.settings import AppSettingsRepository, RenewalSettings
+from repositories.settings import AppSettingsRepository, RenewalSettings, ServiceSecuritySettings
 from services.xui.client import SanaeiXUIClient, XUIClient
 from services.xui.runtime import build_xui_client_config, ensure_inbound_server_loaded
 
@@ -62,6 +62,9 @@ async def apply_renewal(
     now_utc = datetime.now(timezone.utc)
     sub_id = subscription.id
 
+    # Fetch settings before any modifications to avoid auto-flush lazy load errors
+    security_settings = await AppSettingsRepository(session).get_service_security_settings()
+
     # ── Load xui_client via explicit query ───────────────────────────────
     # NEVER use subscription.xui_client — that triggers lazy loading!
     xui = await session.scalar(
@@ -72,31 +75,32 @@ async def apply_renewal(
 
     # ── Savepoint: if X-UI sync fails, all DB changes auto-rollback ─────
     async with session.begin_nested():
-        # Only modify COLUMN attributes — never touch relationships!
-        if renew_type == "volume":
-            subscription.volume_bytes += int(amount * 1024**3)
-            subscription.used_bytes = 0
-        elif renew_type == "time":
-            days_to_add = int(amount)
-            if subscription.ends_at is None:
-                base = subscription.activated_at or now_utc
-                subscription.ends_at = base + timedelta(days=days_to_add)
-            elif subscription.ends_at < now_utc:
-                subscription.ends_at = now_utc + timedelta(days=days_to_add)
+        with session.no_autoflush:
+            # Only modify COLUMN attributes — never touch relationships!
+            if renew_type == "volume":
+                subscription.volume_bytes += int(amount * 1024**3)
+                subscription.used_bytes = 0
+            elif renew_type == "time":
+                days_to_add = int(amount)
+                if subscription.ends_at is None:
+                    base = subscription.activated_at or now_utc
+                    subscription.ends_at = base + timedelta(days=days_to_add)
+                elif subscription.ends_at < now_utc:
+                    subscription.ends_at = now_utc + timedelta(days=days_to_add)
+                else:
+                    subscription.ends_at += timedelta(days=days_to_add)
             else:
-                subscription.ends_at += timedelta(days=days_to_add)
-        else:
-            raise ValueError("Invalid renewal type.")
+                raise ValueError("Invalid renewal type.")
 
-        if subscription.status == "expired":
-            subscription.status = "active"
+            if subscription.status == "expired":
+                subscription.status = "active"
 
-        # Sync with X-UI panel — if this fails, the SAVEPOINT rolls back
-        # all the DB changes above automatically.
-        if xui is not None:
-            await _sync_xui_limits(session, subscription, xui)
+            # Sync with X-UI panel — if this fails, the SAVEPOINT rolls back
+            # all the DB changes above automatically.
+            if xui is not None:
+                await _sync_xui_limits(session, subscription, xui, security_settings)
 
-        await session.flush()
+            await session.flush()
 
     # ── Clear alert dedup keys (outside savepoint) ───────────────────────
     try:
@@ -116,6 +120,7 @@ async def _sync_xui_limits(
     session: AsyncSession,
     subscription: Subscription,
     xui: XUIClientRecord,
+    security_settings: ServiceSecuritySettings,
 ) -> None:
     """Sync subscription limits to X-UI panel.
 
@@ -145,8 +150,6 @@ async def _sync_xui_limits(
             expiry_time = int(subscription.ends_at.timestamp() * 1000)
         else:
             expiry_time = 0
-
-        security_settings = await AppSettingsRepository(session).get_service_security_settings()
 
         # Extract sub_id from sub_link (column attributes only)
         sub_id_str = ""
