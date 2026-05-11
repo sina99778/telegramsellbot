@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -162,6 +162,7 @@ async def gift_confirm(
     state: FSMContext,
     session: AsyncSession,
     admin_user: User,
+    bot: Bot,
 ) -> None:
     await callback.answer()
     if callback_data.action != "apply":
@@ -178,6 +179,7 @@ async def gift_confirm(
 
     result = await grant_bulk_subscription_gift(
         session=session,
+        bot=bot,
         gift_type=gift_type,
         amount=amount,
         status_scope=status_scope,

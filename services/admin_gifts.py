@@ -7,6 +7,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from aiogram import Bot
+import asyncio
+from aiogram.exceptions import TelegramAPIError
+
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord
 from services.renewal import apply_renewal
@@ -35,6 +39,7 @@ def get_gift_statuses(status_scope: str) -> tuple[str, ...]:
 async def grant_bulk_subscription_gift(
     *,
     session: AsyncSession,
+    bot: Bot,
     gift_type: str,
     amount: float,
     status_scope: str,
@@ -53,6 +58,7 @@ async def grant_bulk_subscription_gift(
             .selectinload(XUIClientRecord.inbound)
             .selectinload(XUIInboundRecord.server),
             selectinload(Subscription.plan),
+            selectinload(Subscription.user),
         )
         .where(Subscription.status.in_(statuses))
     )
@@ -76,6 +82,17 @@ async def grant_bulk_subscription_gift(
                 amount=amount,
             )
             gift_result.updated_count += 1
+            
+            # Send notification
+            if subscription.user and subscription.user.telegram_id:
+                unit = "روز" if gift_type == "time" else "گیگابایت"
+                msg = f"🎁 هدیه جدید از طرف مدیریت!\n\n مقدار {amount:g} {unit} به سرویس شما اضافه شد.\n\nنام کانفیگ: {subscription.xui_client.username if subscription.xui_client else 'نامشخص'}"
+                try:
+                    await bot.send_message(subscription.user.telegram_id, msg)
+                except TelegramAPIError:
+                    pass  # Ignore if user blocked the bot
+                await asyncio.sleep(0.05)  # Avoid hitting rate limits
+                
         except Exception:
             gift_result.failed_count += 1
             gift_result.failed_ids.append(str(subscription.id))
