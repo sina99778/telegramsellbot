@@ -2442,7 +2442,7 @@ async def renew_subscription(
     )
     session.add(order)
     await session.flush()
-    subscription.order_id = order.id
+    subscription.order = order
 
     await WalletManager(session).process_transaction(
         user_id=user.id,

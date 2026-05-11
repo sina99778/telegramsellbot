@@ -310,11 +310,8 @@ async def renew_pay_wallet(
             session.add(order)
             await session.flush()
 
-            # Link order to subscription — use direct attribute set + flush
-            # instead of session.execute(update(...)) which would expire ALL
-            # Subscription instances in the identity map, causing subsequent
-            # column access on `sub` to trigger lazy refresh → greenlet_spawn!
-            sub.order_id = order.id
+            # Link order to subscription
+            sub.order = order
             await session.flush()
 
             # Deduct from wallet using WalletManager if price > 0
