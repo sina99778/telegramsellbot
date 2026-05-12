@@ -32,11 +32,11 @@ const Pages = (() => {
         if (gateways.nowpayments) {
             buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'nowpayments')">💎 درگاه ارزی NOWPayments</button>`);
         }
-        if (gateways.manual_crypto) {
-            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'manual_crypto')">🪙 پرداخت دستی کریپتو</button>`);
-        }
-        if (gateways.card_to_card) {
-            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'card_to_card')">💳 کارت به کارت (دستی)</button>`);
+        if (gateways.manual_crypto || gateways.card_to_card) {
+            const botUser = getBotUsername();
+            if (botUser) {
+                buttons.push(`<a class="btn btn-secondary btn-block" href="https://t.me/${botUser}" target="_blank" style="text-decoration:none;text-align:center">🤖 پرداخت دستی (از طریق ربات)</a>`);
+            }
         }
         if (!buttons.length) {
             buttons.push('<div class="empty-state compact"><p>هیچ درگاه پرداختی فعال نیست</p></div>');
@@ -56,11 +56,11 @@ const Pages = (() => {
         if (gateways.nowpayments) {
             buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'nowpayments')">💎 درگاه ارزی NOWPayments</button>`);
         }
-        if (gateways.manual_crypto) {
-            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'manual_crypto')">🪙 پرداخت دستی کریپتو</button>`);
-        }
-        if (gateways.card_to_card) {
-            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'card_to_card')">💳 کارت به کارت (دستی)</button>`);
+        if (gateways.manual_crypto || gateways.card_to_card) {
+            const botUser = getBotUsername();
+            if (botUser) {
+                buttons.push(`<a class="btn btn-secondary btn-block" href="https://t.me/${botUser}" target="_blank" style="text-decoration:none;text-align:center">🤖 پرداخت دستی (از طریق ربات)</a>`);
+            }
         }
         if (!buttons.length) {
             buttons.push('<div class="empty-state compact"><p>هیچ درگاه پرداختی فعال نیست</p></div>');
