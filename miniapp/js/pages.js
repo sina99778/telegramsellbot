@@ -32,6 +32,12 @@ const Pages = (() => {
         if (gateways.nowpayments) {
             buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'nowpayments')">💎 درگاه ارزی NOWPayments</button>`);
         }
+        if (gateways.manual_crypto) {
+            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'manual_crypto')">🪙 پرداخت دستی کریپتو</button>`);
+        }
+        if (gateways.card_to_card) {
+            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'card_to_card')">💳 کارت به کارت (دستی)</button>`);
+        }
         if (!buttons.length) {
             buttons.push('<div class="empty-state compact"><p>هیچ درگاه پرداختی فعال نیست</p></div>');
         }
@@ -49,6 +55,12 @@ const Pages = (() => {
         }
         if (gateways.nowpayments) {
             buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'nowpayments')">💎 درگاه ارزی NOWPayments</button>`);
+        }
+        if (gateways.manual_crypto) {
+            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'manual_crypto')">🪙 پرداخت دستی کریپتو</button>`);
+        }
+        if (gateways.card_to_card) {
+            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'card_to_card')">💳 کارت به کارت (دستی)</button>`);
         }
         if (!buttons.length) {
             buttons.push('<div class="empty-state compact"><p>هیچ درگاه پرداختی فعال نیست</p></div>');
