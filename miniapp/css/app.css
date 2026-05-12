@@ -2288,3 +2288,8 @@ button {
     padding: 0;
     margin-bottom: 0;
 }
+
+
+.chat-bubble {
+    opacity: 1 !important;
+}
