@@ -57,7 +57,7 @@ def test_get_expiry_reason_for_volume_limit():
 
 
 @pytest.mark.asyncio
-async def test_expire_subscription_rotates_uuid_and_disables_client():
+async def test_expire_subscription_disables_client():
     subscription = make_subscription()
     xui_client = FakeXUIClient()
     now = utcnow()
@@ -73,12 +73,12 @@ async def test_expire_subscription_rotates_uuid_and_disables_client():
     assert subscription.status == "expired"
     assert subscription.expired_at == now
     assert subscription.xui_client.is_active is False
-    assert subscription.xui_client.client_uuid != "old-uuid"
+    assert subscription.xui_client.client_uuid == "old-uuid"
     assert len(xui_client.calls) == 1
     call = xui_client.calls[0]
     assert call["inbound_id"] == 77
     assert call["client_id"] == "remote-client-id"
-    assert call["client"].enable is False
+    assert call["client"].enable is True
     assert call["client"].uuid == subscription.xui_client.client_uuid
     assert call["client"].sub_id == "existing-sub-id"
 

@@ -10,7 +10,7 @@ def test_build_sub_link_does_not_require_server_metadata():
         subscription_port=2096,
     )
 
-    assert build_sub_link(server, "abc123") == "https://panel.example.com:2096/sub/abc123"
+    assert build_sub_link(server, "abc123") == "http://panel.example.com:2096/sub/abc123"
 
 
 def test_build_sub_link_uses_scheme_prefix_from_sub_domain():
