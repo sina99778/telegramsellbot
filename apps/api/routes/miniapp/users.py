@@ -73,7 +73,6 @@ from schemas.api.miniapp import (
 )
 from schemas.internal.nowpayments import NowPaymentsPaymentCreateRequest
 from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
-from services.admin_gifts import grant_bulk_subscription_gift
 from services.custom_purchase import (
     CustomPurchaseError,
     calculate_custom_purchase_price,
