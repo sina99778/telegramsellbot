@@ -97,7 +97,10 @@ const UI = (() => {
     function getPaymentStatusText(status) {
         const map = {
             'waiting': 'در انتظار پرداخت',
+            'waiting_hash': 'در انتظار هش تراکنش',
+            'waiting_receipt': 'در انتظار رسید',
             'pending': 'در حال بررسی',
+            'pending_approval': 'در انتظار تأیید ادمین',
             'confirming': 'در حال تأیید',
             'confirmed': 'تأیید شده',
             'finished': 'موفق',
@@ -105,13 +108,14 @@ const UI = (() => {
             'failed': 'ناموفق',
             'expired': 'منقضی شده',
             'refunded': 'بازگشت داده شده',
+            'rejected': 'رد شده',
         };
         return map[status] || status;
     }
 
     function getPaymentStatusClass(status) {
         if (['finished', 'confirmed', 'completed'].includes(status)) return 'active';
-        if (['waiting', 'pending', 'confirming'].includes(status)) return 'pending';
+        if (['waiting', 'waiting_hash', 'waiting_receipt', 'pending', 'pending_approval', 'confirming'].includes(status)) return 'pending';
         return 'expired';
     }
 
@@ -120,7 +124,8 @@ const UI = (() => {
             'nowpayments': 'NOWPayments',
             'tetrapay': 'تتراپی',
             'tronado': 'ترونادو',
-            'manual_crypto': 'دستی',
+            'manual_crypto': 'کریپتو دستی',
+            'card_to_card': 'کارت به کارت',
             'wallet': 'کیف پول',
         };
         return map[provider] || provider;
@@ -129,6 +134,7 @@ const UI = (() => {
     function getKindText(kind) {
         const map = {
             'topup': 'شارژ',
+            'wallet_topup': 'شارژ کیف پول',
             'direct_purchase': 'خرید',
             'direct_renewal': 'تمدید',
         };

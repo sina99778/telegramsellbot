@@ -460,7 +460,6 @@ const Pages = (() => {
                 UI.closeModal();
                 dashboardData = await API.getDashboard();
                 renderDashboard(dashboardData);
-                renderAllConfigs(dashboardData.subscriptions);
             }
         } catch (e) {
             UI.toast(e.message, 'error');
@@ -762,6 +761,8 @@ const Pages = (() => {
         container.innerHTML = payments.map(payment => {
             const canRefresh = ['nowpayments', 'tetrapay', 'tronado'].includes(payment.provider)
                 && ['waiting', 'pending', 'confirming'].includes(payment.payment_status);
+            const isPendingManual = ['manual_crypto', 'card_to_card'].includes(payment.provider)
+                && ['waiting_hash', 'waiting_receipt', 'pending_approval'].includes(payment.payment_status);
             const amount = payment.pay_amount
                 ? `${UI.formatMoney(payment.pay_amount)} ${payment.pay_currency || ''}`
                 : `${UI.formatMoney(payment.price_amount)} ${payment.price_currency}`;

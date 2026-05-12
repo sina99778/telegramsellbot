@@ -1568,9 +1568,9 @@ button {
     flex-direction: column;
     gap: 6px;
     padding: 16px 12px;
-    background: linear-gradient(180deg, rgba(0, 0, 0, 0.15) 0%, rgba(0, 0, 0, 0.25) 100%);
+    background: rgba(15, 15, 20, 0.6);
     border-radius: 20px;
-    border: 1px solid rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
     max-height: 50vh;
     overflow-y: auto;
     margin-bottom: 12px;
@@ -1628,8 +1628,8 @@ button {
 
 .chat-bubble.user {
     align-self: flex-start;
-    background: rgba(255, 255, 255, 0.06);
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-radius: 18px 18px 18px 4px;
     color: var(--text);
 }
@@ -1936,3 +1936,22 @@ button {
     gap: 4px;
 }
 
+
+
+/* Support page layout - ensure input area stays visible */
+.support-page-scroll {
+    display: flex;
+    flex-direction: column;
+    min-height: calc(100vh - var(--header-height) - var(--nav-height) - 40px);
+}
+
+.support-page-scroll .tickets-container {
+    flex: 1;
+    min-height: 0;
+}
+
+.support-page-scroll .ticket-input-area {
+    position: sticky;
+    bottom: 0;
+    z-index: 10;
+}
