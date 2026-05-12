@@ -17,7 +17,8 @@ from core.texts import AdminButtons
 from models.user import User
 from models.xui import XUIServerRecord
 from repositories.audit import AuditLogRepository
-from services.admin_gifts import grant_bulk_subscription_gift
+import asyncio
+from services.admin_gifts import grant_bulk_subscription_gift_background
 
 
 router = Router(name="admin-gifts")
@@ -177,34 +178,19 @@ async def gift_confirm(
     status_scope = str(data["status_scope"])
     server_id = UUID(str(data["server_id"])) if data.get("server_id") else None
 
-    result = await grant_bulk_subscription_gift(
-        session=session,
-        bot=bot,
-        gift_type=gift_type,
-        amount=amount,
-        status_scope=status_scope,
-        server_id=server_id,
-    )
-    await AuditLogRepository(session).log_action(
-        actor_user_id=admin_user.id,
-        action="bulk_subscription_gift",
-        entity_type="subscription",
-        entity_id=admin_user.id,
-        payload={
-            "gift_type": gift_type,
-            "amount": amount,
-            "status_scope": status_scope,
-            "server_id": str(server_id) if server_id else None,
-            "matched": result.matched_count,
-            "updated": result.updated_count,
-            "failed": result.failed_count,
-        },
-    )
-    await session.flush()
-    await safe_edit_or_send(
-        callback,
-        "✅ هدیه اعمال شد.\n\n"
-        f"یافت‌شده: {result.matched_count}\n"
-        f"موفق: {result.updated_count}\n"
-        f"ناموفق: {result.failed_count}",
+    msg = await callback.message.edit_text("⏳ در حال آماده‌سازی و ارسال هدایا... لطفاً این پیام را پاک نکنید.")
+    if isinstance(msg, bool):
+        msg = callback.message
+    
+    asyncio.create_task(
+        grant_bulk_subscription_gift_background(
+            bot=bot,
+            admin_telegram_id=callback.from_user.id,
+            admin_user_id=admin_user.id,
+            progress_message_id=msg.message_id,
+            gift_type=gift_type,
+            amount=amount,
+            status_scope=status_scope,
+            server_id=server_id,
+        )
     )

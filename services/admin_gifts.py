@@ -1,31 +1,24 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
+import logging
 from uuid import UUID
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-
 from aiogram import Bot
-import asyncio
 from aiogram.exceptions import TelegramAPIError
 
+from core.database import AsyncSessionFactory
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord
+from repositories.audit import AuditLogRepository
 from services.renewal import apply_renewal
 
+logger = logging.getLogger(__name__)
 
 ACTIVE_GIFT_STATUSES = ("active", "pending_activation")
 ALL_GIFT_STATUSES = ("active", "pending_activation", "expired")
-
-
-@dataclass(slots=True)
-class BulkGiftResult:
-    matched_count: int = 0
-    updated_count: int = 0
-    failed_count: int = 0
-    failed_ids: list[str] | None = None
 
 
 def get_gift_statuses(status_scope: str) -> tuple[str, ...]:
@@ -36,66 +29,138 @@ def get_gift_statuses(status_scope: str) -> tuple[str, ...]:
     raise ValueError("Invalid gift status scope.")
 
 
-async def grant_bulk_subscription_gift(
-    *,
-    session: AsyncSession,
+async def grant_bulk_subscription_gift_background(
     bot: Bot,
+    admin_telegram_id: int,
+    admin_user_id: UUID,
+    progress_message_id: int,
     gift_type: str,
     amount: float,
     status_scope: str,
     server_id: UUID | None = None,
-) -> BulkGiftResult:
+) -> None:
+    """Run bulk gifting in background and report progress to admin."""
     if gift_type not in {"time", "volume"}:
-        raise ValueError("Invalid gift type.")
+        return
     if amount <= 0:
-        raise ValueError("Gift amount must be positive.")
+        return
 
-    statuses = get_gift_statuses(status_scope)
-    stmt = (
-        select(Subscription)
-        .options(
-            selectinload(Subscription.xui_client)
-            .selectinload(XUIClientRecord.inbound)
-            .selectinload(XUIInboundRecord.server),
-            selectinload(Subscription.plan),
-            selectinload(Subscription.user),
-        )
-        .where(Subscription.status.in_(statuses))
-    )
-    if server_id is not None:
-        stmt = (
-            stmt.join(XUIClientRecord, XUIClientRecord.subscription_id == Subscription.id)
-            .join(XUIInboundRecord, XUIClientRecord.inbound_id == XUIInboundRecord.id)
-            .where(XUIInboundRecord.server_id == server_id)
-        )
-
-    result = await session.execute(stmt)
-    subscriptions = list(result.scalars().unique().all())
-    gift_result = BulkGiftResult(matched_count=len(subscriptions), failed_ids=[])
-
-    for subscription in subscriptions:
-        try:
-            await apply_renewal(
-                session=session,
-                subscription=subscription,
-                renew_type=gift_type,
-                amount=amount,
+    try:
+        async with AsyncSessionFactory() as session:
+            statuses = get_gift_statuses(status_scope)
+            stmt = (
+                select(Subscription)
+                .options(
+                    selectinload(Subscription.xui_client)
+                    .selectinload(XUIClientRecord.inbound)
+                    .selectinload(XUIInboundRecord.server),
+                    selectinload(Subscription.plan),
+                    selectinload(Subscription.user),
+                )
+                .where(Subscription.status.in_(statuses))
             )
-            gift_result.updated_count += 1
-            
-            # Send notification
-            if subscription.user and subscription.user.telegram_id:
-                unit = "روز" if gift_type == "time" else "گیگابایت"
-                msg = f"🎁 هدیه جدید از طرف مدیریت!\n\n مقدار {amount:g} {unit} به سرویس شما اضافه شد.\n\nنام کانفیگ: {subscription.xui_client.username if subscription.xui_client else 'نامشخص'}"
-                try:
-                    await bot.send_message(subscription.user.telegram_id, msg)
-                except TelegramAPIError:
-                    pass  # Ignore if user blocked the bot
-                await asyncio.sleep(0.05)  # Avoid hitting rate limits
-                
-        except Exception:
-            gift_result.failed_count += 1
-            gift_result.failed_ids.append(str(subscription.id))
+            if server_id is not None:
+                stmt = (
+                    stmt.join(XUIClientRecord, XUIClientRecord.subscription_id == Subscription.id)
+                    .join(XUIInboundRecord, XUIClientRecord.inbound_id == XUIInboundRecord.id)
+                    .where(XUIInboundRecord.server_id == server_id)
+                )
 
-    await session.flush()
-    return gift_result
+            result = await session.execute(stmt)
+            subscriptions = list(result.scalars().unique().all())
+            total = len(subscriptions)
+
+            if total == 0:
+                await bot.edit_message_text(
+                    chat_id=admin_telegram_id,
+                    message_id=progress_message_id,
+                    text="❌ هیچ کانفیگی با این مشخصات یافت نشد."
+                )
+                return
+
+            await bot.edit_message_text(
+                chat_id=admin_telegram_id,
+                message_id=progress_message_id,
+                text=f"🔄 در حال پردازش {total} کانفیگ...\n\nلطفاً صبور باشید."
+            )
+
+            updated_count = 0
+            failed_count = 0
+
+            for i, subscription in enumerate(subscriptions):
+                try:
+                    await apply_renewal(
+                        session=session,
+                        subscription=subscription,
+                        renew_type=gift_type,
+                        amount=amount,
+                    )
+                    updated_count += 1
+                    
+                    # Send notification to user
+                    if subscription.user and subscription.user.telegram_id:
+                        unit = "روز" if gift_type == "time" else "گیگابایت"
+                        conf_name = subscription.xui_client.username if subscription.xui_client else "نامشخص"
+                        msg = f"🎁 هدیه جدید از طرف مدیریت!\n\n مقدار {amount:g} {unit} به سرویس شما اضافه شد.\n\nنام کانفیگ: {conf_name}"
+                        try:
+                            await bot.send_message(subscription.user.telegram_id, msg)
+                        except TelegramAPIError:
+                            pass
+                except Exception as e:
+                    logger.warning("Failed to gift sub %s: %s", subscription.id, e)
+                    failed_count += 1
+                    # Rollback the session to clear the failed transaction state
+                    await session.rollback()
+
+                # Commit every 10 subscriptions or at the end to prevent huge transactions
+                if (i + 1) % 10 == 0 or (i + 1) == total:
+                    await session.commit()
+                    await asyncio.sleep(0.5)  # Let event loop breathe
+                    try:
+                        await bot.edit_message_text(
+                            chat_id=admin_telegram_id,
+                            message_id=progress_message_id,
+                            text=f"🔄 در حال پردازش...\n\n"
+                                 f"📊 پیشرفت: {i + 1} از {total}\n"
+                                 f"✅ موفق: {updated_count}\n"
+                                 f"❌ ناموفق: {failed_count}"
+                        )
+                    except TelegramAPIError:
+                        pass
+            
+            # Log audit at the end
+            await AuditLogRepository(session).log_action(
+                actor_user_id=admin_user_id,
+                action="bulk_subscription_gift",
+                entity_type="subscription",
+                entity_id=admin_user_id,
+                payload={
+                    "gift_type": gift_type,
+                    "amount": amount,
+                    "status_scope": status_scope,
+                    "server_id": str(server_id) if server_id else None,
+                    "matched": total,
+                    "updated": updated_count,
+                    "failed": failed_count,
+                },
+            )
+            await session.commit()
+
+            await bot.edit_message_text(
+                chat_id=admin_telegram_id,
+                message_id=progress_message_id,
+                text="✅ هدیه گروهی با موفقیت پایان یافت.\n\n"
+                     f"کل کانفیگ‌ها: {total}\n"
+                     f"موفق: {updated_count}\n"
+                     f"ناموفق: {failed_count}"
+            )
+    except Exception as exc:
+        logger.error("Background bulk gift failed: %s", exc, exc_info=True)
+        try:
+            await bot.edit_message_text(
+                chat_id=admin_telegram_id,
+                message_id=progress_message_id,
+                text="❌ خطای غیرمنتظره در حین پردازش هدایا رخ داد."
+            )
+        except Exception:
+            pass
