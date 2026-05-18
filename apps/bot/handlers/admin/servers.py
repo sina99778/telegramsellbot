@@ -436,12 +436,14 @@ async def restart_xray_core_handler(
         await safe_edit_or_send(callback, "اطلاعات ورود سرور موجود نیست.")
         return
 
+    from core.config import settings as _app_settings
     try:
         async with SanaeiXUIClient(
             XUIClientConfig(
                 base_url=server.base_url,
                 username=server.credentials.username,
                 password=SecretStr(decrypt_secret(server.credentials.password_encrypted)),
+                verify_ssl=_app_settings.xui_verify_ssl,
             )
         ) as client:
             await client.login()
@@ -1100,12 +1102,14 @@ def _build_inbound_metadata(remote) -> dict:
 
 
 async def _fetch_remote_inbounds(*, base_url: str, username: str, password: str):
+    from core.config import settings as _app_settings
     async with SanaeiXUIClient(
         XUIClientConfig(
             base_url=base_url,
             username=username,
             password=SecretStr(password),
             timeout_seconds=15.0,
+            verify_ssl=_app_settings.xui_verify_ssl,
         )
     ) as xui_client:
         await xui_client.login()
