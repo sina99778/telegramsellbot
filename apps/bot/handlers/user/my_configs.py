@@ -1176,10 +1176,17 @@ async def _list_available_inbounds(
     *,
     exclude_inbound_id: UUID | None,
 ) -> list[XUIInboundRecord]:
-    """Inbounds the user can migrate TO: active inbound + active server,
-    minus the user's current one. We deliberately don't restrict by plan
-    inbound mapping — the whole point is that the user's normal inbound is
-    broken and they need any working alternative."""
+    """Inbounds the user can migrate TO.
+
+    Selection rules:
+      * inbound is active + its server is active
+      * not the user's current inbound
+      * if `MIGRATION_TARGET_INBOUND_IDS` is configured in .env, only
+        those specific inbounds are eligible (most deployments want a
+        single fallback inbound, not "every active one").
+    """
+    from core.config import settings as _app_settings
+
     stmt = (
         select(XUIInboundRecord)
         .options(selectinload(XUIInboundRecord.server))
@@ -1192,6 +1199,16 @@ async def _list_available_inbounds(
     )
     if exclude_inbound_id is not None:
         stmt = stmt.where(XUIInboundRecord.id != exclude_inbound_id)
+
+    allowed_ids: list[UUID] = []
+    for raw in _app_settings.migration_target_inbound_id_list:
+        try:
+            allowed_ids.append(UUID(raw))
+        except ValueError:
+            logger.warning("Ignoring invalid MIGRATION_TARGET_INBOUND_IDS entry: %r", raw)
+    if allowed_ids:
+        stmt = stmt.where(XUIInboundRecord.id.in_(allowed_ids))
+
     result = await session.execute(stmt)
     return list(result.scalars().unique().all())
 
