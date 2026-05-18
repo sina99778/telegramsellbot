@@ -38,6 +38,31 @@ class RenewTypeCallback(CallbackData, prefix="renew"):
     sub_id: UUID
 
 
+class RenewPresetCallback(CallbackData, prefix="renewpre"):
+    type: str  # 'volume' or 'time'
+    sub_id: UUID
+    value: int  # GB for volume, days for time
+
+# Default presets — chosen to cover the common shape of buyer behaviour.
+_VOLUME_PRESETS_GB = (10, 30, 50, 100)
+_TIME_PRESETS_DAYS = (30, 60, 90)
+
+
+def _build_renew_preset_keyboard(sub_id: UUID, renew_type: str) -> InlineKeyboardBuilder:
+    builder = InlineKeyboardBuilder()
+    presets = _VOLUME_PRESETS_GB if renew_type == "volume" else _TIME_PRESETS_DAYS
+    unit = "GB" if renew_type == "volume" else "روز"
+    for v in presets:
+        builder.button(
+            text=f"➕ {v} {unit}",
+            callback_data=RenewPresetCallback(type=renew_type, sub_id=sub_id, value=v).pack(),
+        )
+    builder.button(text="✏️ مقدار دلخواه", callback_data=f"renew:custom:{renew_type}:{sub_id.hex}")
+    builder.button(text=Buttons.BACK, callback_data=MyConfigCallback(action="view", subscription_id=sub_id).pack())
+    builder.adjust(2, 2, 1, 1)
+    return builder
+
+
 # Simple callback for payment method — data stored in callback
 class RenewPayCallback(CallbackData, prefix="rp"):
     m: str  # method: 'w', 'n', 't', 'm', 'tr'
@@ -66,8 +91,33 @@ async def renew_config_start(callback: CallbackQuery, callback_data: MyConfigCal
             await safe_edit_or_send(callback, "⛔ تمدید سرویس توسط مدیر موقتاً غیرفعال شده است. لطفاً بعداً تلاش کنید.")
             return
 
+    # Ownership + status gate: load the sub here so suspended/revoked configs
+    # can't be quietly re-activated via renewal flow, and IDs from a forged
+    # callback can't reach a subscription owned by a different user.
+    from repositories.user import UserRepository
+    from sqlalchemy import select as _sel
+    requester = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if requester is None:
+        await safe_edit_or_send(callback, "حساب شما پیدا نشد.")
+        return
+    sub = await session.scalar(
+        _sel(Subscription).where(
+            Subscription.id == callback_data.subscription_id,
+            Subscription.user_id == requester.id,
+        )
+    )
+    if sub is None:
+        await safe_edit_or_send(callback, "سرویس نامعتبر است.")
+        return
+    if sub.status not in ("active", "pending_activation", "expired"):
+        await safe_edit_or_send(
+            callback,
+            "⛔ این سرویس قابل تمدید نیست. لطفاً برای رفع مشکل با پشتیبانی تماس بگیرید.",
+        )
+        return
+
     await state.clear()
-    
+
     markup = build_renewal_keyboard(callback_data.subscription_id)
     await safe_edit_or_send(callback, Messages.RENEWAL_OPTIONS, reply_markup=markup)
 
@@ -75,19 +125,78 @@ async def renew_config_start(callback: CallbackQuery, callback_data: MyConfigCal
 @router.callback_query(RenewTypeCallback.filter())
 async def renew_type_selected(callback: CallbackQuery, callback_data: RenewTypeCallback, state: FSMContext) -> None:
     await callback.answer()
-    
+
     await state.update_data(sub_id=str(callback_data.sub_id), renew_type=callback_data.type)
-    
-    builder = InlineKeyboardBuilder()
-    builder.button(text=Buttons.BACK, callback_data=MyConfigCallback(action="view", subscription_id=callback_data.sub_id).pack())
-    builder.adjust(1)
-    
+    # Don't lock the FSM into "waiting_for_X" yet — give the user preset
+    # buttons first. Only when they tap "custom" do we go into waiting state.
+
+    kb = _build_renew_preset_keyboard(callback_data.sub_id, callback_data.type)
     if callback_data.type == "volume":
+        text = (
+            "🔋 <b>تمدید حجم</b>\n\n"
+            "حجم اضافی را انتخاب کنید یا «مقدار دلخواه» را بزنید."
+        )
+    else:
+        text = (
+            "📅 <b>تمدید زمان</b>\n\n"
+            "مدت اضافی را انتخاب کنید یا «مقدار دلخواه» را بزنید."
+        )
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data.startswith("renew:custom:"))
+async def renew_custom_amount(callback: CallbackQuery, state: FSMContext) -> None:
+    """User picked 'custom amount' on the preset keyboard."""
+    await callback.answer()
+    parts = callback.data.split(":")
+    # parts = ["renew", "custom", "<volume|time>", "<sub_hex>"]
+    if len(parts) != 4:
+        return
+    renew_type = parts[2]
+    sub_id = UUID(parts[3])
+    await state.update_data(sub_id=str(sub_id), renew_type=renew_type)
+    builder = InlineKeyboardBuilder()
+    builder.button(text=Buttons.BACK, callback_data=MyConfigCallback(action="view", subscription_id=sub_id).pack())
+    builder.adjust(1)
+    if renew_type == "volume":
         await state.set_state(RenewStates.waiting_for_volume)
         await callback.message.edit_text(Messages.RENEWAL_ENTER_VOLUME, reply_markup=builder.as_markup())
     else:
         await state.set_state(RenewStates.waiting_for_time)
         await callback.message.edit_text(Messages.RENEWAL_ENTER_TIME, reply_markup=builder.as_markup())
+
+
+@router.callback_query(RenewPresetCallback.filter())
+async def renew_preset_selected(
+    callback: CallbackQuery,
+    callback_data: RenewPresetCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """User picked a preset value — feed it directly to the existing flow."""
+    await callback.answer()
+    await state.update_data(
+        sub_id=str(callback_data.sub_id),
+        renew_type=callback_data.type,
+    )
+    # Match the state the message-based path expects, then synthesize a
+    # message-like object that carries just the .text attribute.
+    if callback_data.type == "volume":
+        await state.set_state(RenewStates.waiting_for_volume)
+    else:
+        await state.set_state(RenewStates.waiting_for_time)
+
+    # Reuse the existing message handler by faking a minimal Message-like
+    # adapter. It uses .text and .answer / .from_user — provide them.
+    class _Pseudo:
+        text = str(callback_data.value)
+        from_user = callback.from_user
+
+        async def answer(self, *a, **kw):
+            if callback.message:
+                return await callback.message.answer(*a, **kw)
+
+    await renew_value_entered(_Pseudo(), state, session)
 
 
 @router.message(RenewStates.waiting_for_volume)

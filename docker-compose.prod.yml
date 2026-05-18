@@ -73,11 +73,14 @@ services:
         condition: service_started
     command: ["python", "-m", "apps.bot.main"]
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import sys; sys.exit(0)'"]
+      # Bot is healthy only if its background heartbeat file was updated in
+      # the last 60s. Catches dispatcher hangs, deadlocks, and silent crashes
+      # that the previous `python -c sys.exit(0)` check missed.
+      test: ["CMD-SHELL", "test -f /tmp/bot_heartbeat && test $(( $(date +%s) - $(stat -c %Y /tmp/bot_heartbeat) )) -lt 60"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 30s
 
   worker:
     image: telegramsellbot:latest
@@ -94,11 +97,11 @@ services:
         condition: service_started
     command: ["python", "-m", "apps.worker.main"]
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import sys; sys.exit(0)'"]
+      test: ["CMD-SHELL", "test -f /tmp/worker_heartbeat && test $(( $(date +%s) - $(stat -c %Y /tmp/worker_heartbeat) )) -lt 120"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 30s
 
 volumes:
   postgres_data:

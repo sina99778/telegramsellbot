@@ -35,6 +35,13 @@ async def inline_query_handler(inline_query: InlineQuery, session: AsyncSession)
         await inline_query.answer([], cache_time=1)
         return
 
+    # Ensure the user has an opaque ref_code so we never leak the raw UUID
+    # in shared messages. Older accounts may have been created without one.
+    if not user.ref_code:
+        import secrets as _secrets
+        user.ref_code = _secrets.token_hex(4)
+        await session.flush()
+
     # Fetch user active configs
     result = await session.execute(
         select(Subscription)
@@ -69,7 +76,7 @@ async def inline_query_handler(inline_query: InlineQuery, session: AsyncSession)
         )
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📱 دریافت کانفیگ مشابه", url=f"https://t.me/telegramsellbot?start=ref_{user.id}")]
+            [InlineKeyboardButton(text="📱 دریافت کانفیگ مشابه", url=f"https://t.me/telegramsellbot?start=ref_{user.ref_code}")]
         ])
 
         results.append(
@@ -95,7 +102,7 @@ async def inline_query_handler(inline_query: InlineQuery, session: AsyncSession)
                 message_text=(
                     f"🎁 **سرویس‌های پرسرعت و پایدار V2Ray**\n\n"
                     f"با استفاده از لینک زیر وارد ربات شوید و تست رایگان دریافت کنید:\n"
-                    f"👉 https://t.me/telegramsellbot?start=ref_{user.id}"
+                    f"👉 https://t.me/telegramsellbot?start=ref_{user.ref_code}"
                 ),
                 parse_mode="Markdown"
             ),

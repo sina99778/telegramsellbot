@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies.db import get_db_session
 from core.config import settings
+from core.miniapp_auth import verify_payment_callback
 from models.payment import Payment
 from repositories.settings import AppSettingsRepository
 from schemas.internal.tetrapay import TetraPayCallbackPayload
@@ -64,6 +65,34 @@ async def tetrapay_webhook_handler(
     if not payload_hash_id:
         logger.warning("TetraPay IPN: missing hash_id in payload")
         return {"status": "ignored"}
+
+    # Authenticate the callback using the per-payment signature embedded
+    # in the callback URL when the order was created. TetraPay does not
+    # offer a native HMAC scheme, so the URL signature is our shared secret.
+    #
+    # Compatibility: invoices created before the signature rollout were
+    # registered with TetraPay using callback URLs that lack `?t=`. While
+    # `settings.tetrapay_legacy_unsigned_callback` is True we accept
+    # unsigned callbacks (the API re-verification at /verify below still
+    # protects us against pure forgery), with a warning log so operators
+    # can see when it's safe to flip strict mode on.
+    incoming_signature = request.query_params.get("t")
+    if not verify_payment_callback(payload_hash_id, incoming_signature):
+        if settings.tetrapay_legacy_unsigned_callback:
+            logger.warning(
+                "TetraPay IPN: legacy unsigned callback for hash_id=%s "
+                "(enable strict mode after pending invoices drain)",
+                payload_hash_id,
+            )
+        else:
+            logger.warning(
+                "TetraPay IPN: invalid callback signature for hash_id=%s",
+                payload_hash_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid callback signature",
+            )
 
     payment = await session.scalar(
         select(Payment).where(Payment.order_id == payload_hash_id).with_for_update()
@@ -182,10 +211,12 @@ async def tetrapay_webhook_handler(
         )
         logger.info("TetraPay IPN: Payment %s processed SUCCESSFULLY", payment.id)
     except Exception as exc:
-        logger.error("TetraPay IPN: FAILED to process payment %s: %s", payment.id, exc, exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Payment processing failed: {exc}",
-        ) from exc
+        # Return 200 so TetraPay considers the callback delivered. The
+        # payment row is persisted; reconciliation will retry provisioning.
+        logger.error("TetraPay IPN: deferred provisioning for payment %s: %s", payment.id, exc, exc_info=True)
+        payload_dict = dict(payment.callback_payload or {})
+        payload_dict["deferred_error"] = str(exc)[:500]
+        payment.callback_payload = payload_dict
+        return {"status": "accepted_deferred"}
 
     return {"status": "processed"}

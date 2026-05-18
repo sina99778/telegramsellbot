@@ -8,6 +8,7 @@ Provides:
 from __future__ import annotations
 
 import logging
+import urllib.parse
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
@@ -94,24 +95,33 @@ async def _show_referral_menu(
     )
 
     text = (
-        "🔗 سیستم معرفی دوستان\n\n"
-        f"📎 لینک دعوت شما:\n<code>{ref_link}</code>\n\n"
-        f"👥 تعداد افراد دعوت‌شده: {total_referrals} نفر\n"
-        f"💰 پاداش هر معرفی: {ref_settings.referrer_bonus_usd:.2f} دلار\n"
+        "🎁 <b>دعوت دوستان</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "👇 لینک دعوت شما (روی متن بزنید تا کپی شود):\n"
+        f"<code>{ref_link}</code>\n\n"
+        f"👥 افراد دعوت‌شده: <b>{total_referrals}</b> نفر\n"
+        f"💰 پاداش هر معرفی: <b>{ref_settings.referrer_bonus_usd:.2f} $</b>\n"
     )
-
     if ref_settings.referee_bonus_usd > 0:
-        text += f"🎁 پاداش دعوت‌شده: {ref_settings.referee_bonus_usd:.2f} دلار\n"
+        text += f"🎁 هدیه دعوت‌شده: <b>{ref_settings.referee_bonus_usd:.2f} $</b>\n"
 
     text += (
-        "\n📢 لینک بالا را برای دوستانتان ارسال کنید.\n"
-        "بعد از اولین خرید هر دعوت‌شده، پاداش شما به کیف پول واریز می‌شود."
+        "\n📢 لینک بالا را با دوستانتان به اشتراک بگذارید.\n"
+        "پس از اولین خرید هر دعوت‌شده، پاداش به کیف پول شما واریز می‌شود."
     )
 
+    # Build a share-friendly message that includes a value proposition,
+    # not just the bare URL.
+    share_text = urllib.parse.quote(
+        f"🎁 با لینک من ثبت‌نام کن و کانفیگ رایگان بگیر:\n{ref_link}"
+    )
+    share_url = f"https://t.me/share/url?url={urllib.parse.quote(ref_link)}&text={share_text}"
+
     builder = InlineKeyboardBuilder()
-    builder.button(text="📋 کپی لینک", url=ref_link)
+    builder.button(text="📤 اشتراک‌گذاری در تلگرام", url=share_url)
+    builder.button(text="📋 باز کردن لینک", url=ref_link)
     builder.button(text="❌ بستن", callback_data="purchase:cancel")
-    builder.adjust(1)
+    builder.adjust(1, 1, 1)
 
     if isinstance(event, CallbackQuery):
         await safe_edit_or_send(event, text, reply_markup=builder.as_markup())

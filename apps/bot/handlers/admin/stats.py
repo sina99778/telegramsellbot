@@ -42,8 +42,8 @@ async def admin_stats_dashboard(callback: CallbackQuery, session: AsyncSession) 
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
     builder.adjust(1)
 
-    from datetime import datetime
-    current_time = datetime.utcnow().strftime("%H:%M:%S (UTC)")
+    from datetime import datetime, timezone
+    current_time = datetime.now(timezone.utc).strftime("%H:%M:%S (UTC)")
     
     text = AdminMessages.STATS_DASHBOARD.format(
         total_users=total_users,
@@ -198,7 +198,7 @@ async def admin_export_weekly_sales_csv(callback: CallbackQuery, session: AsyncS
     await callback.answer("⏳ در حال تولید گزارش...")
     
     from sqlalchemy import select, desc
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     from models.order import Order
     from models.payment import Payment
     from models.subscription import Subscription
@@ -206,8 +206,8 @@ async def admin_export_weekly_sales_csv(callback: CallbackQuery, session: AsyncS
     import io
     import csv
     from aiogram.types import BufferedInputFile
-    
-    one_week_ago = datetime.utcnow() - timedelta(days=7)
+
+    one_week_ago = datetime.now(timezone.utc) - timedelta(days=7)
     
     stmt = (
         select(Order)
@@ -261,7 +261,7 @@ async def admin_export_weekly_sales_csv(callback: CallbackQuery, session: AsyncS
         ])
         
     csv_bytes = output.getvalue().encode("utf-8-sig")  # BOM for Excel
-    doc = BufferedInputFile(csv_bytes, filename=f"weekly_sales_{datetime.utcnow().strftime('%Y%m%d')}.csv")
+    doc = BufferedInputFile(csv_bytes, filename=f"weekly_sales_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv")
     
     await callback.message.answer_document(
         document=doc,

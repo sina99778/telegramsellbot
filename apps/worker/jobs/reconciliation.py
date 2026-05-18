@@ -46,10 +46,24 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
     stuck_purchases = list(stuck_purchase_result.scalars().all())
 
     retried_purchase = 0
+    escalated_purchase: list[Payment] = []
     for payment in stuck_purchases:
         retry_count = (payment.callback_payload or {}).get("retry_count", 0)
         if retry_count >= MAX_RETRY_COUNT:
-            logger.warning("[RECONCILIATION] Skipping payment %s — max retries (%d) exceeded", payment.id, retry_count)
+            # Stop silently retrying — flip to manual_review so an admin sees
+            # this payment in Recovery and the worker stops burning cycles.
+            payload = dict(payment.callback_payload or {})
+            if not payload.get("escalated"):
+                payload["escalated"] = True
+                payload["escalated_at"] = datetime.now(timezone.utc).isoformat()
+                payment.callback_payload = payload
+                payment.payment_status = "manual_review"
+                await session.flush()
+                escalated_purchase.append(payment)
+                logger.error(
+                    "[RECONCILIATION] Payment %s escalated to manual_review after %d failed retries",
+                    payment.id, retry_count,
+                )
             continue
         logger.info("[RECONCILIATION] Auto-retrying provisioning for payment %s (attempt %d)", payment.id, retry_count + 1)
         try:
@@ -64,6 +78,7 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
             # Increment retry count
             payload = dict(payment.callback_payload or {})
             payload["retry_count"] = retry_count + 1
+            payload["last_error"] = str(exc)[:500]
             payment.callback_payload = payload
             await session.flush()
             logger.error("[RECONCILIATION] Provisioning retry FAILED for payment %s: %s", payment.id, exc)
@@ -83,10 +98,22 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
     stuck_renewals = list(stuck_renewal_result.scalars().all())
 
     retried_renewal = 0
+    escalated_renewal: list[Payment] = []
     for payment in stuck_renewals:
         retry_count = (payment.callback_payload or {}).get("retry_count", 0)
         if retry_count >= MAX_RETRY_COUNT:
-            logger.warning("[RECONCILIATION] Skipping renewal %s — max retries (%d) exceeded", payment.id, retry_count)
+            payload = dict(payment.callback_payload or {})
+            if not payload.get("escalated"):
+                payload["escalated"] = True
+                payload["escalated_at"] = datetime.now(timezone.utc).isoformat()
+                payment.callback_payload = payload
+                payment.payment_status = "manual_review"
+                await session.flush()
+                escalated_renewal.append(payment)
+                logger.error(
+                    "[RECONCILIATION] Renewal %s escalated to manual_review after %d failed retries",
+                    payment.id, retry_count,
+                )
             continue
         logger.info("[RECONCILIATION] Auto-retrying renewal for payment %s (attempt %d)", payment.id, retry_count + 1)
         try:
@@ -100,6 +127,7 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
         except Exception as exc:
             payload = dict(payment.callback_payload or {})
             payload["retry_count"] = retry_count + 1
+            payload["last_error"] = str(exc)[:500]
             payment.callback_payload = payload
             await session.flush()
             logger.error("[RECONCILIATION] Renewal retry FAILED for payment %s: %s", payment.id, exc)
@@ -148,13 +176,24 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
 
     # Build alert
     retried_total = retried_purchase + retried_renewal
-    if retried_total == 0 and stuck_count == 0 and stale_waiting == 0 and recent_failed == 0 and stale_manual == 0:
+    escalations_now = len(escalated_purchase) + len(escalated_renewal)
+    if (
+        retried_total == 0
+        and escalations_now == 0
+        and stuck_count == 0
+        and stale_waiting == 0
+        and recent_failed == 0
+        and stale_manual == 0
+    ):
         logger.info("Reconciliation: no issues found")
         return
 
+    escalated_total = len(escalated_purchase) + len(escalated_renewal)
     lines = ["🔔 گزارش Reconciliation خودکار\n"]
     if retried_total > 0:
         lines.append(f"🔄 Retry خودکار: {retried_purchase} provisioning + {retried_renewal} renewal")
+    if escalated_total > 0:
+        lines.append(f"🚨 ارسال به بررسی دستی پس از حداکثر retry: {escalated_total}")
     if stuck_count > 0:
         lines.append(f"⚠️ پرداخت موفق بدون تحویل (باقی‌مانده): {stuck_count}")
     if stale_waiting > 0:

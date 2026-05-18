@@ -157,11 +157,15 @@ async def handle_nowpayments_ipn(
         )
         logger.info("IPN: Payment %s processed SUCCESSFULLY", payment.id)
     except Exception as exc:
-        logger.error("IPN: FAILED to process payment %s: %s", payment.id, exc, exc_info=True)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Payment processing failed: {exc}",
-        ) from exc
+        # We deliberately return 200 OK here. The payment record is already
+        # persisted and the reconciliation worker will retry provisioning.
+        # Returning 500 would make NowPayments retry the IPN endlessly while
+        # our DB and the provider drift apart.
+        logger.error("IPN: deferred provisioning for payment %s: %s", payment.id, exc, exc_info=True)
+        payload_dict = dict(payment.callback_payload or {})
+        payload_dict["deferred_error"] = str(exc)[:500]
+        payment.callback_payload = payload_dict
+        return {"status": "accepted_deferred"}
 
     return {"status": "processed"}
 

@@ -723,6 +723,53 @@ async def edit_plan_stock_submit(
 
 
 @router.callback_query(PlanActionCallback.filter(F.action == "delete"))
+async def delete_plan_confirm(
+    callback: CallbackQuery,
+    callback_data: PlanActionCallback,
+    session: AsyncSession,
+) -> None:
+    """Show a confirmation prompt with a sales-count diff before deletion."""
+    await callback.answer()
+    plan = await session.get(Plan, callback_data.plan_id)
+    if plan is None:
+        await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
+        return
+
+    from sqlalchemy import func as _func
+    from models.order import Order
+    sold_count = int(
+        await session.scalar(
+            select(_func.count()).select_from(Order).where(
+                Order.plan_id == plan.id,
+                Order.status.in_(("provisioned", "paid", "completed")),
+            )
+        ) or 0
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="❗️ بله، حذف کن",
+        callback_data=PlanActionCallback(action="del_ok", plan_id=plan.id, page=callback_data.page).pack(),
+    )
+    builder.button(
+        text="↩️ انصراف",
+        callback_data=ViewPlanCallback(plan_id=plan.id, page=callback_data.page).pack(),
+    )
+    builder.adjust(1)
+
+    warning = (
+        f"⚠️ <b>تأیید حذف پلن</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"نام پلن: <b>{plan.name}</b>\n"
+        f"تعداد فروش انجام‌شده: <b>{sold_count}</b>\n"
+        f"━━━━━━━━━━━━━━\n"
+        "این عمل غیرقابل بازگشت است.\n"
+        "اگر پلن دارای کاربر فعال باشد، به جای حذف، غیرفعال خواهد شد."
+    )
+    await safe_edit_or_send(callback, warning, reply_markup=builder.as_markup())
+
+
+@router.callback_query(PlanActionCallback.filter(F.action == "del_ok"))
 async def delete_plan(
     callback: CallbackQuery,
     callback_data: PlanActionCallback,

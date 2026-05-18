@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,11 @@ from models.user import User, UserProfile
 
 PHONE_META_KEY = "phone_verification"
 IRAN_PHONE_RE = re.compile(r"^(?:\+98|0098|98|0)?9\d{9}$")
+
+# Verified phones are trusted for this long before we ask the user to
+# verify again. Without an expiry, a stolen-then-recovered Telegram
+# account stays "verified" forever.
+PHONE_VERIFICATION_TTL = timedelta(days=180)
 
 
 def normalize_phone_number(phone: str) -> str:
@@ -37,6 +42,12 @@ def _load_profile_payload(profile: UserProfile) -> dict[str, object]:
 
 
 def get_verified_phone(user: User) -> str | None:
+    """Return the user's verified phone or None.
+
+    A phone is considered verified only if the verification is still within
+    PHONE_VERIFICATION_TTL — older verifications are treated as expired and
+    callers should re-prompt the user.
+    """
     profile = user.profile
     if profile is None:
         return None
@@ -45,7 +56,21 @@ def get_verified_phone(user: User) -> str | None:
     if not isinstance(phone_meta, dict):
         return None
     phone = phone_meta.get("phone")
-    return str(phone) if phone else None
+    if not phone:
+        return None
+    verified_at_raw = phone_meta.get("verified_at")
+    if isinstance(verified_at_raw, str):
+        try:
+            verified_at = datetime.fromisoformat(verified_at_raw)
+            if verified_at.tzinfo is None:
+                verified_at = verified_at.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - verified_at > PHONE_VERIFICATION_TTL:
+                return None
+        except ValueError:
+            # Bad timestamp on disk — treat as unverified rather than
+            # crashing the caller.
+            return None
+    return str(phone)
 
 
 async def set_verified_phone(session: AsyncSession, user: User, phone: str) -> None:
@@ -57,7 +82,7 @@ async def set_verified_phone(session: AsyncSession, user: User, phone: str) -> N
         user.profile = profile
 
     payload = _load_profile_payload(profile)
-    now = utcnow().astimezone(timezone.utc).isoformat()
+    now = utcnow().isoformat()
     payload[PHONE_META_KEY] = {
         "phone": normalize_phone_number(phone),
         "verified_at": now,

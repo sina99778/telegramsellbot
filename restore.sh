@@ -1,7 +1,7 @@
 #!/bin/bash
 # restore.sh - Restores the database from a backup
 
-set -e
+set -euo pipefail
 
 echo "============================================="
 echo "   TelegramSellBot Restore Utility"
@@ -13,7 +13,7 @@ if [ "$#" -ne 1 ]; then
     exit 1
 fi
 
-BACKUP_FILE=$1
+BACKUP_FILE="$1"
 
 if [ ! -f "$BACKUP_FILE" ]; then
     echo "Error: File $BACKUP_FILE not found!"
@@ -22,11 +22,25 @@ fi
 
 # Load environment variables if .env exists
 if [ -f .env ]; then
-    export $(grep -v '^#' .env | xargs)
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env
+    set +a
 fi
 
-DB_USER=${POSTGRES_USER:-telegramsellbot}
-DB_NAME=${POSTGRES_DB:-telegramsellbot}
+DB_USER="${POSTGRES_USER:-telegramsellbot}"
+DB_NAME="${POSTGRES_DB:-telegramsellbot}"
+
+# Refuse to operate on names that contain shell or SQL metacharacters — these
+# values come from .env and are otherwise interpolated straight into psql -c.
+if [[ ! "$DB_NAME" =~ ^[A-Za-z0-9_]+$ ]]; then
+    echo "Error: POSTGRES_DB contains unsafe characters: $DB_NAME" >&2
+    exit 1
+fi
+if [[ ! "$DB_USER" =~ ^[A-Za-z0-9_]+$ ]]; then
+    echo "Error: POSTGRES_USER contains unsafe characters: $DB_USER" >&2
+    exit 1
+fi
 
 echo "WARNING: This will drop and recreate the '$DB_NAME' database."
 echo "         All current data will be LOST and replaced with the backup."
@@ -38,20 +52,25 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
 fi
 
 echo "[1/3] Terminating active database connections..."
-docker exec telegramsellbot-postgres psql -U "$DB_USER" -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$DB_NAME';" > /dev/null 2>&1 || true
+docker exec telegramsellbot-postgres psql -U "$DB_USER" -d postgres \
+    -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$DB_NAME';" \
+    > /dev/null 2>&1 || true
 
 echo "[2/3] Dropping and recreating database..."
-docker exec telegramsellbot-postgres psql -U "$DB_USER" -d postgres -c "DROP DATABASE IF EXISTS $DB_NAME;" > /dev/null
-docker exec telegramsellbot-postgres psql -U "$DB_USER" -d postgres -c "CREATE DATABASE $DB_NAME;" > /dev/null
+docker exec telegramsellbot-postgres psql -U "$DB_USER" -d postgres \
+    -c "DROP DATABASE IF EXISTS \"$DB_NAME\";" > /dev/null
+docker exec telegramsellbot-postgres psql -U "$DB_USER" -d postgres \
+    -c "CREATE DATABASE \"$DB_NAME\";" > /dev/null
 
 echo "[3/3] Restoring database from $BACKUP_FILE..."
-gunzip -c "$BACKUP_FILE" | docker exec -i telegramsellbot-postgres psql -U "$DB_USER" -d "$DB_NAME" > /dev/null
+gunzip -c "$BACKUP_FILE" | docker exec -i telegramsellbot-postgres \
+    psql -U "$DB_USER" -d "$DB_NAME" > /dev/null
 
 echo "============================================="
-echo " Database restored successfully! ✅"
+echo " Database restored successfully."
 echo ""
 echo " Note: Make sure your .env file matches the one from the backup"
 echo " (especially the APP_SECRET_KEY, BOT_TOKEN, and DATABASE settings)."
 echo " Restart your containers to apply changes:"
-echo " docker compose -f docker-compose.prod.yml restart"
+echo "   docker compose -f docker-compose.prod.yml restart"
 echo "============================================="

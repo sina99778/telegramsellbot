@@ -5,8 +5,10 @@ Uses sliding window counter pattern.
 from __future__ import annotations
 
 import logging
+import time
+from collections import defaultdict, deque
 from functools import wraps
-from typing import Any, Callable
+from typing import Any, Callable, Deque
 
 from fastapi import HTTPException, Request, status
 
@@ -24,6 +26,27 @@ RATE_LIMITS: dict[str, tuple[int, int]] = {
     "admin_action": (30, 60),   # 30 admin actions per minute
     "default": (60, 60),        # 60 requests per minute default
 }
+
+
+# In-memory fallback used only when Redis is unreachable. Limits are tightened
+# (halved) on this path so a flapping Redis cannot be exploited as an
+# amplifier — but the endpoint stays available for legitimate users.
+_FALLBACK_HITS: dict[str, Deque[float]] = defaultdict(deque)
+
+
+def _fallback_allow(key: str, max_req: int, window: int) -> tuple[bool, int]:
+    now = time.monotonic()
+    bucket = _FALLBACK_HITS[key]
+    cutoff = now - window
+    while bucket and bucket[0] < cutoff:
+        bucket.popleft()
+    # Tighter limit on the degraded path.
+    degraded_max = max(1, max_req // 2)
+    if len(bucket) >= degraded_max:
+        ttl = max(1, int(window - (now - bucket[0])))
+        return False, ttl
+    bucket.append(now)
+    return True, 0
 
 
 async def check_rate_limit(
@@ -59,5 +82,12 @@ async def check_rate_limit(
     except HTTPException:
         raise
     except Exception as exc:
-        # If Redis is down, allow the request (fail-open)
-        logger.warning("Rate limit check failed (allowing request): %s", exc)
+        # Redis is down — degrade to a tight in-memory limiter rather than
+        # failing open. Spikes still get rejected; legitimate traffic survives.
+        logger.error("Rate limit check failed for user=%s action=%s: %s", user_id, action, exc)
+        allowed, ttl = _fallback_allow(key, max_req, window)
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"تعداد درخواست‌ها بیش از حد مجاز است. لطفاً {ttl} ثانیه صبر کنید.",
+            )

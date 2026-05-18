@@ -564,30 +564,32 @@ button {
 
 .config-status {
     flex: 0 0 auto;
-    padding: 4px 8px;
+    padding: 5px 10px;
     border-radius: var(--radius-sm);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 900;
+    letter-spacing: 0.2px;
     border: 1px solid transparent;
+    white-space: nowrap;
 }
 
 .config-status.active {
-    color: var(--emerald);
-    background: rgba(41, 196, 122, 0.12);
-    border-color: rgba(41, 196, 122, 0.28);
+    color: #b6f4d0;
+    background: rgba(41, 196, 122, 0.18);
+    border-color: rgba(41, 196, 122, 0.42);
     animation: pulseGlow 2s ease-in-out infinite;
 }
 
 .config-status.pending {
-    color: var(--amber);
-    background: rgba(244, 183, 64, 0.12);
-    border-color: rgba(244, 183, 64, 0.28);
+    color: #ffe1a8;
+    background: rgba(244, 183, 64, 0.20);
+    border-color: rgba(244, 183, 64, 0.45);
 }
 
 .config-status.expired {
-    color: var(--coral);
-    background: rgba(239, 111, 97, 0.12);
-    border-color: rgba(239, 111, 97, 0.28);
+    color: #ffd0c8;
+    background: rgba(239, 111, 97, 0.18);
+    border-color: rgba(239, 111, 97, 0.42);
 }
 
 .progress-bar-container {
@@ -787,10 +789,11 @@ button {
 .wallet-balance-display {
     margin: 6px 0 16px;
     color: var(--text);
-    font-size: 34px;
+    font-size: clamp(22px, 7vw, 34px);
     font-weight: 900;
     direction: ltr;
     text-align: right;
+    word-break: break-word;
 }
 
 .wallet-actions {
@@ -840,6 +843,11 @@ button {
 
 .tx-amount.credit { color: var(--emerald); }
 .tx-amount.debit { color: var(--coral); }
+
+/* Sign prefix so the direction is readable without relying on color
+   (colorblindness, low-contrast displays, screenshots). */
+.tx-amount.credit::before { content: "+"; margin-inline-end: 2px; }
+.tx-amount.debit::before  { content: "−"; margin-inline-end: 2px; }
 
 /* Support — see premium redesign at bottom of file */
 
@@ -1205,18 +1213,25 @@ button {
 }
 
 .renewal-tab {
-    color: var(--text-soft);
-    background: var(--bg-surface);
+    color: var(--text-muted);
+    background: transparent;
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     padding: 11px;
-    font-weight: 900;
+    font-weight: 700;
+    transition: background 0.15s ease, color 0.15s ease, transform 0.1s ease;
+}
+
+.renewal-tab:active {
+    transform: scale(0.98);
 }
 
 .renewal-tab.active {
     color: #05242a;
-    background: var(--cyan);
+    background: linear-gradient(135deg, var(--cyan), var(--emerald));
     border-color: var(--cyan);
+    font-weight: 900;
+    box-shadow: 0 4px 14px rgba(54, 209, 224, 0.32);
 }
 
 /* Buttons */
@@ -1245,6 +1260,41 @@ button {
 
 .btn:hover {
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+/* Centralized disabled state so pages don't need to set opacity inline. */
+.btn:disabled,
+.btn[disabled],
+.btn.is-disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    pointer-events: none;
+    transform: none;
+    box-shadow: none;
+}
+
+/* Loading state: spinner + locked interaction. Toggle with .is-loading. */
+.btn.is-loading {
+    position: relative;
+    color: transparent !important;
+    pointer-events: none;
+    cursor: progress;
+}
+.btn.is-loading::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 18px;
+    height: 18px;
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    border-top-color: rgba(255, 255, 255, 0.95);
+    border-radius: 50%;
+    animation: btn-spin 0.7s linear infinite;
+}
+@keyframes btn-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+    .btn.is-loading::after { animation-duration: 1.6s; }
 }
 
 .btn-primary {
@@ -1389,8 +1439,21 @@ button {
     transform: translate(-50%, 0);
 }
 
-.toast.success { border-color: rgba(41, 196, 122, 0.5); }
-.toast.error { border-color: rgba(239, 111, 97, 0.6); color: #ffb2aa; }
+.toast.success {
+    border-color: rgba(41, 196, 122, 0.6);
+    background: rgba(20, 80, 50, 0.92);
+    color: #d4f7e6;
+}
+.toast.error {
+    border-color: rgba(239, 111, 97, 0.7);
+    background: rgba(90, 30, 25, 0.95);
+    color: #ffd7d2;
+}
+.toast.info {
+    border-color: rgba(99, 162, 255, 0.6);
+    background: rgba(25, 50, 90, 0.92);
+    color: #d8e6ff;
+}
 
 .modal-overlay {
     position: fixed;
@@ -1447,8 +1510,25 @@ button {
     border-radius: var(--radius-md);
 }
 
+.empty-state .empty-hint {
+    margin: 6px auto 16px;
+    max-width: 28ch;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.7;
+}
+
+.empty-state .btn {
+    margin: 0 auto;
+    max-width: 240px;
+}
+
 .empty-state.compact {
     padding: 14px;
+}
+
+.empty-state.compact .btn {
+    margin-top: 8px;
 }
 
 .empty-icon {
@@ -1938,20 +2018,30 @@ button {
 
 
 
-/* Support page layout - ensure input area stays visible */
+/* Support page layout — keep input area visible while the message history
+   scrolls independently. Using `height` (not min-height) and a real flex
+   container so very long ticket threads don't push the input off-screen. */
 .support-page-scroll {
     display: flex;
     flex-direction: column;
-    min-height: calc(100vh - var(--header-height) - var(--nav-height) - 40px);
+    height: calc(100dvh - var(--header-height) - var(--nav-height) - 40px);
+    max-height: calc(100dvh - var(--header-height) - var(--nav-height) - 40px);
 }
 
 .support-page-scroll .tickets-container {
-    flex: 1;
+    flex: 1 1 auto;
     min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
 }
 
 .support-page-scroll .ticket-input-area {
+    flex-shrink: 0;
     position: sticky;
     bottom: 0;
+    background: var(--bg);
+    padding-block-start: 8px;
+    padding-block-end: env(safe-area-inset-bottom, 0);
     z-index: 10;
 }

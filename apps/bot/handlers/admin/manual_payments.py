@@ -6,9 +6,13 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
+from datetime import datetime, timezone
+
 from aiogram import F, Router
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import CallbackQuery
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
@@ -23,7 +27,109 @@ router = Router(name="admin-manual-payments")
 router.callback_query.middleware(AdminOnlyMiddleware())
 
 
-@router.callback_query(F.data.startswith("mp:ok:"))
+async def _build_payment_context(session: AsyncSession, payment: Payment) -> str:
+    """Build a context string with red flags for the admin reviewing a manual
+    payment: how old the account is, how many recent rejections, the user's
+    current wallet balance. Helps spot bot-spam / fraud-pattern accounts."""
+    user = await session.get(User, payment.user_id)
+    if user is None:
+        return ""
+
+    # Account age
+    created = user.created_at
+    if created and created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    age_days = (datetime.now(timezone.utc) - created).days if created else None
+
+    # Recent rejections (last 30 days)
+    from datetime import timedelta
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    rejected = int(
+        await session.scalar(
+            select(func.count()).select_from(Payment).where(
+                Payment.user_id == user.id,
+                Payment.payment_status.in_(("rejected", "failed", "expired")),
+                Payment.created_at >= cutoff,
+            )
+        ) or 0
+    )
+
+    # Successful payments lifetime
+    paid_total = int(
+        await session.scalar(
+            select(func.count()).select_from(Payment).where(
+                Payment.user_id == user.id,
+                Payment.payment_status == "finished",
+            )
+        ) or 0
+    )
+
+    balance_str = "—"
+    if user.wallet is not None:
+        balance_str = f"{float(user.wallet.balance):.2f}$"
+
+    flags: list[str] = []
+    if age_days is not None and age_days < 3:
+        flags.append("🆕 اکانت تازه‌ساز")
+    if rejected >= 3:
+        flags.append(f"🚩 {rejected} رد در ۳۰ روز اخیر")
+    if paid_total == 0:
+        flags.append("👶 اولین پرداخت موفق")
+
+    flag_line = ("\n⚠️ " + " | ".join(flags)) if flags else ""
+    return (
+        "\n━━━━━━━━━━\n"
+        "<b>سابقه کاربر:</b>\n"
+        f"• سن اکانت: <b>{age_days if age_days is not None else '—'}</b> روز\n"
+        f"• موجودی کیف پول: <b>{balance_str}</b>\n"
+        f"• پرداخت‌های موفق: <b>{paid_total}</b>\n"
+        f"• رد در ۳۰ روز اخیر: <b>{rejected}</b>"
+        f"{flag_line}"
+    )
+
+
+@router.callback_query(F.data.startswith("mp:ok:") & ~F.data.contains(":final:"))
+async def approve_manual_payment_preview(
+    callback: CallbackQuery,
+    session: AsyncSession,
+) -> None:
+    """First click: show context (red flags, history) and require a second
+    confirming click. This catches misclicks and gives the admin the data
+    they need to spot bot-spam patterns before crediting the wallet."""
+    await callback.answer()
+
+    payment_id_str = callback.data.split(":")[-1]
+    try:
+        payment_id = UUID(payment_id_str)
+    except ValueError:
+        await safe_edit_or_send(callback, "❌ شناسه پرداخت نامعتبر.")
+        return
+
+    payment = await session.get(Payment, payment_id)
+    if payment is None:
+        await safe_edit_or_send(callback, "❌ پرداخت یافت نشد.")
+        return
+    if payment.payment_status not in {"pending_approval", "waiting_hash"}:
+        await safe_edit_or_send(callback, f"⚠️ این پرداخت قبلاً پردازش شده.\nوضعیت: {payment.payment_status}")
+        return
+
+    context = await _build_payment_context(session, payment)
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ تأیید نهایی و واریز", callback_data=f"mp:ok:final:{payment.id}")
+    builder.button(text="❌ رد پرداخت", callback_data=f"mp:no:{payment.id}")
+    builder.adjust(1)
+    await safe_edit_or_send(
+        callback,
+        f"🔎 <b>پیش از تأیید نهایی</b>\n"
+        f"شناسه پرداخت: <code>{payment.id}</code>\n"
+        f"مبلغ: <b>{payment.price_amount:.2f}$</b>"
+        f"{context}\n\n"
+        "برای تأیید نهایی، دکمه پایین را بزنید.",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("mp:ok:final:"))
 async def approve_manual_payment(
     callback: CallbackQuery,
     session: AsyncSession,
@@ -37,7 +143,11 @@ async def approve_manual_payment(
         await safe_edit_or_send(callback, "❌ شناسه پرداخت نامعتبر.")
         return
 
-    payment = await session.get(Payment, payment_id)
+    # Row-lock the payment so a double-click cannot credit twice. The lock is
+    # held until the transaction commits at the end of this handler.
+    payment = await session.scalar(
+        select(Payment).where(Payment.id == payment_id).with_for_update()
+    )
     if payment is None:
         await safe_edit_or_send(callback, "❌ پرداخت یافت نشد.")
         return
@@ -135,7 +245,11 @@ async def reject_manual_payment(
         await safe_edit_or_send(callback, "❌ شناسه پرداخت نامعتبر.")
         return
 
-    payment = await session.get(Payment, payment_id)
+    # Row-lock the payment so a double-click cannot credit twice. The lock is
+    # held until the transaction commits at the end of this handler.
+    payment = await session.scalar(
+        select(Payment).where(Payment.id == payment_id).with_for_update()
+    )
     if payment is None:
         await safe_edit_or_send(callback, "❌ پرداخت یافت نشد.")
         return

@@ -55,6 +55,21 @@ class TimestampMixin:
     )
 
 
+def _build_connect_args(database_url: str, timeout_s: int) -> dict[str, object]:
+    """Driver-specific connect args. asyncpg uses 'timeout', psycopg uses 'connect_timeout'.
+
+    A bounded connect timeout prevents handlers from blocking forever when
+    Postgres is unreachable — important on the request path where the
+    aiogram dispatcher would otherwise stall the whole worker.
+    """
+    url_lower = database_url.lower()
+    if "asyncpg" in url_lower:
+        return {"timeout": timeout_s}
+    if "psycopg" in url_lower:
+        return {"connect_timeout": timeout_s}
+    return {}
+
+
 engine: AsyncEngine = create_async_engine(
     settings.database_url,
     echo=settings.database_echo,
@@ -64,6 +79,7 @@ engine: AsyncEngine = create_async_engine(
     max_overflow=settings.database_max_overflow,
     pool_timeout=settings.database_pool_timeout,
     pool_recycle=settings.database_pool_recycle,
+    connect_args=_build_connect_args(settings.database_url, settings.database_connect_timeout),
 )
 
 AsyncSessionFactory = async_sessionmaker(

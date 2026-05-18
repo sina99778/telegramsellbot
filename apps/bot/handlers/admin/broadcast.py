@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import html as _html
+
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
@@ -26,7 +29,7 @@ async def broadcast_start(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.message(BroadcastStates.waiting_for_message)
-async def broadcast_capture(message: Message, state: FSMContext) -> None:
+async def broadcast_capture(message: Message, state: FSMContext, session: AsyncSession) -> None:
     payload: dict[str, str | None] = {
         "message_type": "text",
         "text": message.text,
@@ -45,7 +48,34 @@ async def broadcast_capture(message: Message, state: FSMContext) -> None:
 
     await state.update_data(broadcast_payload=payload)
     await state.set_state(BroadcastStates.waiting_for_confirmation)
-    await message.answer(AdminMessages.BROADCAST_CONFIRM)
+
+    # Compute the recipient count up-front so the admin doesn't blind-fire.
+    recipient_count = int(
+        await session.scalar(
+            select(func.count()).select_from(User).where(
+                User.status == "active",
+                User.is_bot_blocked.is_(False),
+            )
+        ) or 0
+    )
+    preview = (
+        payload.get("text") or payload.get("media_caption") or "(بدون متن)"
+    )
+    preview_clip = preview if len(preview) <= 200 else preview[:200] + "…"
+    # Escape — admin-controlled but `</blockquote>` in the middle of the
+    # template would break the parser and could let an admin paste content
+    # that renders as something else.
+    preview_html = _html.escape(preview_clip)
+    await message.answer(
+        "📢 <b>پیش‌نمایش پیام همگانی</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        f"👥 تعداد گیرنده‌ها: <b>{recipient_count:,}</b> کاربر فعال\n"
+        f"📝 نوع پیام: <b>{payload['message_type']}</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "<i>محتوای پیام:</i>\n"
+        f"<blockquote>{preview_html}</blockquote>\n\n"
+        + AdminMessages.BROADCAST_CONFIRM
+    )
 
 
 @router.message(BroadcastStates.waiting_for_confirmation)

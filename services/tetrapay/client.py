@@ -7,12 +7,20 @@ from typing import Any
 import httpx
 
 from core.config import settings
+from core.miniapp_auth import sign_payment_callback
 from schemas.internal.tetrapay import (
     TetraPayCreateOrderRequest,
     TetraPayCreateOrderResponse,
     TetraPayVerifyRequest,
     TetraPayVerifyResponse,
 )
+
+
+def _callback_url_with_signature(base_callback_url: str, hash_id: str) -> str:
+    """Append a per-payment HMAC signature so the webhook can authenticate itself."""
+    token = sign_payment_callback(hash_id)
+    sep = "&" if "?" in base_callback_url else "?"
+    return f"{base_callback_url}{sep}t={token}"
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +81,8 @@ class TetraPayClient:
         session = self._get_session()
         url = "/create_order"
         
+        base_callback = callback_url or settings.tetrapay_callback_url
+        signed_callback = _callback_url_with_signature(base_callback, hash_id)
         request_obj = TetraPayCreateOrderRequest(
             ApiKey=self.config.api_key,
             Hash_id=hash_id,
@@ -80,7 +90,7 @@ class TetraPayClient:
             Description=description,
             Email=email,
             Mobile=mobile,
-            CallbackURL=callback_url or settings.tetrapay_callback_url,
+            CallbackURL=signed_callback,
         )
 
         try:

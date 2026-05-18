@@ -47,6 +47,11 @@ pause() {
 }
 
 require_root() {
+  # We currently need root for the wider install (system packages, firewall
+  # rules, systemd unit installation). The Docker operations themselves
+  # would be fine as a regular user in the docker group, but the rest of
+  # the installer still needs apt/yum, so we don't try to split the modes.
+  # Track that decision here so a future contributor can revisit it.
   if [[ "${EUID}" -ne 0 ]]; then
     if command -v sudo >/dev/null 2>&1; then
       exec sudo -E bash "$0" "$@"

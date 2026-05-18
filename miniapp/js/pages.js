@@ -279,7 +279,7 @@ const Pages = (() => {
             const rawLink = sub.sub_link;
             linkSection = `
                 <div style="margin-top:16px; display:flex; flex-direction:column; align-items:center; background:var(--bg-elevated); padding:16px; border-radius:var(--radius-md); border:1px solid var(--border);">
-                    <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${safeSubLink}" style="width:160px;height:160px;border-radius:12px;margin-bottom:16px;background:#fff;padding:8px;" alt="QR Code" />
+                    <img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${safeSubLink}" style="width:min(200px,55vw);height:min(200px,55vw);border-radius:12px;margin-bottom:16px;background:#fff;padding:8px;" alt="QR Code" />
                     <p style="font-size:12px;color:var(--text-muted);margin-bottom:6px;width:100%;text-align:right">لینک اتصال مستقیم:</p>
                     <div class="copy-box" style="width:100%;text-align:left;direction:ltr;margin-bottom:12px;font-size:11px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" onclick="UI.copyToClipboard('${rawLink}')">${escapeHtml(rawLink)}</div>
                     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%">
@@ -708,7 +708,13 @@ const Pages = (() => {
     function renderAllConfigs(subs) {
         const container = document.getElementById('all-configs-list');
         if (!subs.length) {
-            container.innerHTML = `<div class="empty-state"><div class="empty-icon">${UI.icon('package')}</div><p>هنوز سرویسی ندارید</p></div>`;
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-icon">${UI.icon('package')}</div>
+                    <p>هنوز سرویسی ندارید</p>
+                    <p class="empty-hint">برای شروع، اولین کانفیگ خود را خریداری کنید.</p>
+                    <button class="btn btn-primary" onclick="UI.navigate('shop')">${UI.icon('plus')} خرید اولین سرویس</button>
+                </div>`;
             return;
         }
         const totalPages = Math.max(1, Math.ceil(configsState.total / configsState.pageSize));
@@ -754,7 +760,11 @@ const Pages = (() => {
         const container = document.getElementById('payments-list');
         if (!container) return;
         if (!payments.length) {
-            container.innerHTML = '<div class="empty-state compact"><p>پرداختی ثبت نشده</p></div>';
+            container.innerHTML = `
+                <div class="empty-state compact">
+                    <p>هنوز پرداختی ثبت نشده است.</p>
+                    <button class="btn btn-primary btn-sm" onclick="Pages.topupWallet()">${UI.icon('plus')} شارژ کیف پول</button>
+                </div>`;
             return;
         }
 
@@ -800,7 +810,12 @@ const Pages = (() => {
     function renderTransactions(txs) {
         const container = document.getElementById('transactions-list');
         if (!txs.length) {
-            container.innerHTML = `<div class="empty-state"><div class="empty-icon">${UI.icon('chart')}</div><p>تراکنشی ثبت نشده</p></div>`;
+            container.innerHTML = `
+                <div class="empty-state">
+                    <div class="empty-icon">${UI.icon('chart')}</div>
+                    <p>هنوز تراکنشی ثبت نشده است</p>
+                    <p class="empty-hint">با اولین شارژ یا خرید، تاریخچه‌ی شما اینجا نمایش داده می‌شود.</p>
+                </div>`;
             return;
         }
 
@@ -822,7 +837,7 @@ const Pages = (() => {
                     <span class="tx-date">${desc ? escapeHtml(desc.substring(0, 40)) + ' • ' : ''}${UI.formatDate(tx.created_at)}</span>
                 </div>
                 <span class="tx-amount ${tx.direction === 'credit' ? 'credit' : 'debit'}">
-                    ${tx.direction === 'credit' ? '+' : '-'}$${UI.formatMoney(tx.amount)}
+                    $${UI.formatMoney(tx.amount)}
                 </span>
             </div>
         `}).join('');

@@ -115,6 +115,7 @@ async def grant_bulk_subscription_gift_background(
             )
             return
 
+        import time as _time
         await bot.edit_message_text(
             chat_id=admin_telegram_id,
             message_id=progress_message_id,
@@ -123,6 +124,7 @@ async def grant_bulk_subscription_gift_background(
 
         updated_count = 0
         failed_count = 0
+        started_at = _time.monotonic()
 
         # Step 2: Process each subscription in its own session
         for i, sub_id in enumerate(subscription_ids):
@@ -149,15 +151,27 @@ async def grant_bulk_subscription_gift_background(
 
             # Update progress every 5 subscriptions
             if (i + 1) % 5 == 0 or (i + 1) == total:
+                pct = (i + 1) / max(1, total)
+                filled = int(pct * 14)
+                bar = "▰" * filled + "▱" * (14 - filled)
+                elapsed = _time.monotonic() - started_at
+                rate = (i + 1) / elapsed if elapsed > 0 else 0
+                remaining = max(0, (total - (i + 1)) / rate) if rate > 0 else 0
+                eta_text = ""
+                if remaining > 0:
+                    if remaining < 60:
+                        eta_text = f" • زمان باقی‌مانده: ~{int(remaining)} ث"
+                    else:
+                        eta_text = f" • زمان باقی‌مانده: ~{int(remaining // 60)} دقیقه"
                 try:
                     await bot.edit_message_text(
                         chat_id=admin_telegram_id,
                         message_id=progress_message_id,
                         text=(
-                            f"🔄 در حال پردازش...\n\n"
-                            f"📊 پیشرفت: {i + 1} از {total}\n"
-                            f"✅ موفق: {updated_count}\n"
-                            f"❌ ناموفق: {failed_count}"
+                            f"🎁 <b>هدیه گروهی</b>\n"
+                            f"<code>{bar}</code> {int(pct * 100)}%\n"
+                            f"📊 پیشرفت: <b>{i + 1}/{total}</b>{eta_text}\n"
+                            f"✅ موفق: <b>{updated_count}</b> | ❌ ناموفق: <b>{failed_count}</b>"
                         ),
                     )
                 except TelegramAPIError:

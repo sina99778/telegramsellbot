@@ -1,9 +1,12 @@
 import io
+import logging
 import math
 from pathlib import Path
 from typing import Optional
 
 from PIL import Image, ImageDraw, ImageFont
+
+logger = logging.getLogger(__name__)
 
 ASSETS_DIR = Path(__file__).parent.parent / "core" / "assets"
 FONTS_DIR = ASSETS_DIR / "fonts"
@@ -62,9 +65,15 @@ def create_traffic_banner(
     draw.ellipse((-100, -100, 200, 200), fill="#1f2937")
     draw.ellipse((width - 150, height - 150, width + 50, height + 50), fill="#1f2937")
 
-    # Header section
-    draw.text((40, 30), reshape_text(f"Config: {config_name}"), fill="#f3f4f6", font=font_large)
-    
+    # Header section — truncate long config names so they don't bleed off
+    # the canvas. Persian wider chars take more pixels than Latin, so we
+    # cap aggressively.
+    display_name = config_name or "(بدون نام)"
+    max_name_len = 22
+    if len(display_name) > max_name_len:
+        display_name = display_name[:max_name_len - 1] + "…"
+    draw.text((40, 30), reshape_text(f"Config: {display_name}"), fill="#f3f4f6", font=font_large)
+
     status_text = "🟢 ACTIVE" if is_active else ("🔴 " + status.upper())
     status_color = "#34d399" if is_active else "#f87171"
     # Place status text before QR area
@@ -154,11 +163,9 @@ def create_traffic_banner(
                 font=font_small,
             )
         except ImportError:
-            # segno not installed — skip QR
-            pass
-        except Exception:
-            # Any other QR failure — skip silently
-            pass
+            logger.warning("banner: segno not installed, skipping QR code")
+        except Exception as exc:
+            logger.warning("banner: QR generation failed: %s", exc)
 
     # Footer
     draw.text((40, height - 40), reshape_text(f"User ID: {user_id}"), fill="#6b7280", font=font_small)
