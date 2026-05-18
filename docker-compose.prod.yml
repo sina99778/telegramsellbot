@@ -76,7 +76,9 @@ services:
       # Bot is healthy only if its background heartbeat file was updated in
       # the last 60s. Catches dispatcher hangs, deadlocks, and silent crashes
       # that the previous `python -c sys.exit(0)` check missed.
-      test: ["CMD-SHELL", "test -f /tmp/bot_heartbeat && test $(( $(date +%s) - $(stat -c %Y /tmp/bot_heartbeat) )) -lt 60"]
+      # `$$` keeps the dollar sign for the in-container shell — docker-compose
+      # treats single `$` as YAML interpolation and refuses to parse it.
+      test: ["CMD-SHELL", "test -f /tmp/bot_heartbeat && test $$(( $$(date +%s) - $$(stat -c %Y /tmp/bot_heartbeat) )) -lt 60"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -97,7 +99,7 @@ services:
         condition: service_started
     command: ["python", "-m", "apps.worker.main"]
     healthcheck:
-      test: ["CMD-SHELL", "test -f /tmp/worker_heartbeat && test $(( $(date +%s) - $(stat -c %Y /tmp/worker_heartbeat) )) -lt 120"]
+      test: ["CMD-SHELL", "test -f /tmp/worker_heartbeat && test $$(( $$(date +%s) - $$(stat -c %Y /tmp/worker_heartbeat) )) -lt 120"]
       interval: 30s
       timeout: 5s
       retries: 3
