@@ -21,14 +21,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from apps.bot.utils.messaging import safe_edit_or_send
-from apps.bot.states.my_configs import UserConfigSearchStates
+from apps.bot.states.my_configs import InboundChangeStates, UserConfigSearchStates
 from core.formatting import escape_markdown, format_usage_bar, format_volume_bytes
 from core.texts import Buttons
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
+from repositories.audit import AuditLogRepository
 from repositories.settings import AppSettingsRepository
 from repositories.user import UserRepository
 from services.banner import create_traffic_banner
+from services.provisioning.manager import (
+    MigrationError,
+    MigrationResult,
+    ProvisioningManager,
+)
 from services.xui.runtime import build_vless_uri
 
 
@@ -48,6 +54,20 @@ class MyConfigCallback(CallbackData, prefix="myconfig"):
 class MyConfigListCallback(CallbackData, prefix="myconfigs"):
     action: str
     page: int = 0
+
+
+class InboundPickCallback(CallbackData, prefix="ibpick"):
+    """Pick a target inbound during the 'change inbound' flow.
+
+    The subscription_id is held in FSM state — only the inbound is in
+    callback_data so we stay safely under Telegram's 64-byte limit.
+    """
+    inbound_id: UUID
+
+
+class InboundConfirmCallback(CallbackData, prefix="ibok"):
+    """Final confirm to actually perform the migration to ``inbound_id``."""
+    inbound_id: UUID
 
 
 @router.message(F.text == Buttons.MY_CONFIGS)
@@ -544,7 +564,13 @@ async def my_config_detail_handler(
     if sub.status in ("active", "pending_activation") and not server_deleted:
         # New Feature: Change Link / Reset UUID
         builder.button(text="🔄 تغییر لینک", callback_data=MyConfigCallback(action="reset_uuid", subscription_id=sub.id).pack())
-        
+
+        # New Feature: Move to another inbound (works around DPI / dead-server issues).
+        builder.button(
+            text="🛠 تغییر سرور (رفع اتصال)",
+            callback_data=MyConfigCallback(action="change_inbound", subscription_id=sub.id).pack(),
+        )
+
         # New Feature: Toggle enable status
         is_enabled = xui.is_active if xui else False
         toggle_text = "🔴 خاموش کردن" if is_enabled else "🟢 روشن کردن"
@@ -1103,3 +1129,370 @@ async def delete_expired_config(
     await session.flush()
 
     await safe_edit_or_send(callback, "✅ کانفیگ حذف شد.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Change-Inbound Flow
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# When the user taps "🛠 تغییر سرور (رفع اتصال)" on a config's detail page we
+# walk them through three steps:
+#   1) show the list of available inbounds (= active, server active, not the
+#      one their config is already on)
+#   2) confirm the destination
+#   3) run migrate_subscription_to_inbound() and report the new sub_link.
+#
+# Everything that touches X-UI is wrapped in a savepoint inside the service
+# layer — see services/provisioning/manager.py::migrate_subscription_to_inbound.
+
+_INBOUND_PICK_PAGE_SIZE = 8
+
+
+def _format_inbound_label(inbound: XUIInboundRecord) -> str:
+    """Human label for the picker keyboard."""
+    parts: list[str] = []
+    if inbound.server is not None and inbound.server.name:
+        parts.append(inbound.server.name)
+    if inbound.remark:
+        parts.append(inbound.remark)
+    elif inbound.tag:
+        parts.append(inbound.tag)
+    elif inbound.xui_inbound_remote_id is not None:
+        parts.append(f"#{inbound.xui_inbound_remote_id}")
+    proto_port: list[str] = []
+    if inbound.protocol:
+        proto_port.append(str(inbound.protocol))
+    if inbound.port:
+        proto_port.append(str(inbound.port))
+    label = " · ".join(parts) if parts else "اینباند"
+    if proto_port:
+        label = f"{label} ({':'.join(proto_port)})"
+    # Cap so the final button text doesn't blow past 48 visible chars.
+    return label[:48]
+
+
+async def _list_available_inbounds(
+    session: AsyncSession,
+    *,
+    exclude_inbound_id: UUID | None,
+) -> list[XUIInboundRecord]:
+    """Inbounds the user can migrate TO: active inbound + active server,
+    minus the user's current one. We deliberately don't restrict by plan
+    inbound mapping — the whole point is that the user's normal inbound is
+    broken and they need any working alternative."""
+    stmt = (
+        select(XUIInboundRecord)
+        .options(selectinload(XUIInboundRecord.server))
+        .join(XUIServerRecord, XUIInboundRecord.server_id == XUIServerRecord.id)
+        .where(
+            XUIInboundRecord.is_active.is_(True),
+            XUIServerRecord.is_active.is_(True),
+        )
+        .order_by(XUIServerRecord.priority.asc(), XUIInboundRecord.created_at.asc())
+    )
+    if exclude_inbound_id is not None:
+        stmt = stmt.where(XUIInboundRecord.id != exclude_inbound_id)
+    result = await session.execute(stmt)
+    return list(result.scalars().unique().all())
+
+
+@router.callback_query(MyConfigCallback.filter(F.action == "change_inbound"))
+async def change_inbound_start(
+    callback: CallbackQuery,
+    callback_data: MyConfigCallback,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    """Step 1 — show the inbound picker."""
+    await callback.answer()
+    if callback.from_user is None:
+        return
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        await safe_edit_or_send(callback, "حساب شما پیدا نشد.")
+        return
+
+    sub = await session.scalar(
+        select(Subscription)
+        .options(
+            selectinload(Subscription.xui_client).selectinload(XUIClientRecord.inbound),
+        )
+        .where(
+            Subscription.id == callback_data.subscription_id,
+            Subscription.user_id == user.id,
+        )
+    )
+    if sub is None:
+        await safe_edit_or_send(callback, "کانفیگ پیدا نشد یا متعلق به شما نیست.")
+        return
+    if sub.status not in ("active", "pending_activation"):
+        await safe_edit_or_send(
+            callback,
+            "این سرویس قابل انتقال نیست. فقط کانفیگ‌های فعال یا منتظر فعال‌سازی منتقل می‌شوند.",
+        )
+        return
+    if sub.xui_client is None:
+        await safe_edit_or_send(callback, "این کانفیگ روی پنل X-UI ثبت نشده است.")
+        return
+
+    current_inbound_id = sub.xui_client.inbound_id
+    inbounds = await _list_available_inbounds(session, exclude_inbound_id=current_inbound_id)
+    if not inbounds:
+        await safe_edit_or_send(
+            callback,
+            "❌ هیچ اینباند دیگری برای انتقال وجود ندارد.\n\n"
+            "لطفاً با پشتیبانی تماس بگیرید.",
+        )
+        return
+
+    await state.clear()
+    await state.set_state(InboundChangeStates.picking_inbound)
+    await state.update_data(migrate_sub_id=str(sub.id))
+
+    builder = InlineKeyboardBuilder()
+    for inbound in inbounds[:_INBOUND_PICK_PAGE_SIZE]:
+        builder.button(
+            text=_format_inbound_label(inbound),
+            callback_data=InboundPickCallback(inbound_id=inbound.id).pack(),
+        )
+    builder.button(
+        text="❌ انصراف",
+        callback_data=MyConfigCallback(action="view", subscription_id=sub.id).pack(),
+    )
+    builder.adjust(1)
+
+    remaining = max(sub.volume_bytes - sub.used_bytes, 0)
+    await safe_edit_or_send(
+        callback,
+        "🛠 <b>انتقال کانفیگ به اینباند دیگر</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "اگر کانفیگ شما متصل نمی‌شود می‌توانید آن را به یک اینباند سالم منتقل کنید.\n"
+        f"💾 حجم باقی‌مانده‌ی شما: <b>{format_volume_bytes(remaining)}</b>\n"
+        "⏱ تاریخ انقضا تغییری نمی‌کند.\n\n"
+        "👇 اینباند مقصد را انتخاب کنید:",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.callback_query(InboundPickCallback.filter())
+async def change_inbound_pick(
+    callback: CallbackQuery,
+    callback_data: InboundPickCallback,
+    session: AsyncSession,
+    state: FSMContext,
+) -> None:
+    """Step 2 — user picked an inbound. Show a confirm prompt."""
+    await callback.answer()
+    if callback.from_user is None:
+        return
+
+    current_state = await state.get_state()
+    if current_state != InboundChangeStates.picking_inbound.state:
+        await safe_edit_or_send(
+            callback,
+            "این عملیات منقضی شده است. لطفاً از منوی سرویس‌های من دوباره شروع کنید.",
+        )
+        return
+
+    data = await state.get_data()
+    sub_id_raw = data.get("migrate_sub_id")
+    if not sub_id_raw:
+        await safe_edit_or_send(callback, "خطای داخلی. لطفاً دوباره تلاش کنید.")
+        await state.clear()
+        return
+    try:
+        sub_id = UUID(sub_id_raw)
+    except ValueError:
+        await safe_edit_or_send(callback, "خطای داخلی. لطفاً دوباره تلاش کنید.")
+        await state.clear()
+        return
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        await safe_edit_or_send(callback, "حساب شما پیدا نشد.")
+        await state.clear()
+        return
+
+    sub = await session.scalar(
+        select(Subscription)
+        .options(
+            selectinload(Subscription.xui_client).selectinload(XUIClientRecord.inbound),
+        )
+        .where(Subscription.id == sub_id, Subscription.user_id == user.id)
+    )
+    if sub is None or sub.xui_client is None:
+        await safe_edit_or_send(callback, "کانفیگ پیدا نشد.")
+        await state.clear()
+        return
+
+    inbound = await session.scalar(
+        select(XUIInboundRecord)
+        .options(selectinload(XUIInboundRecord.server))
+        .where(XUIInboundRecord.id == callback_data.inbound_id)
+    )
+    if inbound is None or not inbound.is_active:
+        await safe_edit_or_send(callback, "اینباند انتخاب‌شده فعال نیست.")
+        return
+    if inbound.id == sub.xui_client.inbound_id:
+        await safe_edit_or_send(callback, "این سرویس از قبل روی همین اینباند است.")
+        return
+
+    await state.set_state(InboundChangeStates.confirming)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="✅ بله، انتقال بده",
+        callback_data=InboundConfirmCallback(inbound_id=inbound.id).pack(),
+    )
+    builder.button(
+        text="↩️ بازگشت",
+        callback_data=MyConfigCallback(action="change_inbound", subscription_id=sub.id).pack(),
+    )
+    builder.adjust(1)
+
+    remaining = max(sub.volume_bytes - sub.used_bytes, 0)
+    old_label = (
+        _format_inbound_label(sub.xui_client.inbound)
+        if sub.xui_client.inbound is not None else "نامشخص"
+    )
+    new_label = _format_inbound_label(inbound)
+
+    await safe_edit_or_send(
+        callback,
+        "⚠️ <b>تأیید انتقال کانفیگ</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        f"از: <code>{old_label}</code>\n"
+        f"به: <code>{new_label}</code>\n"
+        f"💾 حجم منتقل‌شونده: <b>{format_volume_bytes(remaining)}</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "<i>⚡ بعد از انتقال یک لینک جدید دریافت می‌کنید و باید آن را در اپ "
+        "خود وارد کنید. لینک قبلی غیرفعال می‌شود.</i>",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.callback_query(InboundConfirmCallback.filter())
+async def change_inbound_execute(
+    callback: CallbackQuery,
+    callback_data: InboundConfirmCallback,
+    session: AsyncSession,
+    state: FSMContext,
+    bot: Bot,
+) -> None:
+    """Step 3 — run the migration."""
+    await callback.answer("⏳ در حال انتقال…")
+    if callback.from_user is None:
+        return
+
+    current_state = await state.get_state()
+    if current_state != InboundChangeStates.confirming.state:
+        await safe_edit_or_send(
+            callback,
+            "این عملیات منقضی شده است. لطفاً دوباره از سرویس‌های من شروع کنید.",
+        )
+        return
+
+    data = await state.get_data()
+    sub_id_raw = data.get("migrate_sub_id")
+    if not sub_id_raw:
+        await safe_edit_or_send(callback, "خطای داخلی. لطفاً دوباره تلاش کنید.")
+        await state.clear()
+        return
+    try:
+        sub_id = UUID(sub_id_raw)
+    except ValueError:
+        await safe_edit_or_send(callback, "خطای داخلی.")
+        await state.clear()
+        return
+
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        await safe_edit_or_send(callback, "حساب شما پیدا نشد.")
+        await state.clear()
+        return
+
+    # Ownership guard — the migration service doesn't know which telegram
+    # user is asking; we enforce that here.
+    owned = await session.scalar(
+        select(Subscription.id).where(
+            Subscription.id == sub_id,
+            Subscription.user_id == user.id,
+        )
+    )
+    if owned is None:
+        await safe_edit_or_send(callback, "کانفیگ متعلق به شما نیست.")
+        await state.clear()
+        return
+
+    try:
+        result: MigrationResult = await ProvisioningManager(session).migrate_subscription_to_inbound(
+            subscription_id=sub_id,
+            target_inbound_id=callback_data.inbound_id,
+        )
+    except MigrationError as exc:
+        await safe_edit_or_send(callback, f"❌ {exc}")
+        await state.clear()
+        return
+    except Exception as exc:
+        logger.error("Unexpected migration error for sub %s: %s", sub_id, exc, exc_info=True)
+        await safe_edit_or_send(
+            callback,
+            "❌ خطای ناشناخته‌ای رخ داد. لطفاً با پشتیبانی تماس بگیرید.",
+        )
+        await state.clear()
+        return
+
+    await state.clear()
+
+    # Audit log so admins can trace which user migrated which sub and when.
+    try:
+        await AuditLogRepository(session).log_action(
+            actor_user_id=user.id,
+            action="user_inbound_migration",
+            entity_type="subscription",
+            entity_id=sub_id,
+            payload={
+                "old_inbound": result.old_inbound_label,
+                "new_inbound": result.new_inbound_label,
+                "remaining_bytes": result.remaining_bytes,
+            },
+        )
+    except Exception as exc:
+        logger.warning("Audit log failed for migration %s: %s", sub_id, exc)
+
+    # Build the success message + import buttons.
+    import html as _html
+    from core.config import settings as _settings
+    base = _settings.web_base_url.rstrip("/")
+    encoded_uri = urllib.parse.quote(result.new_vless_uri, safe="")
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🤖 v2rayNG (اندروید)", url=f"{base}/api/dl/v2rayng?url={encoded_uri}")
+    builder.button(text="🍎 Shadowrocket (آیفون)", url=f"{base}/api/dl/shadowrocket?url={encoded_uri}")
+    builder.button(text="📦 V2Box (هر دو)", url=f"{base}/api/dl/v2box?url={encoded_uri}")
+    share_text = urllib.parse.quote(f"کانفیگ من:\n{result.new_sub_link}")
+    builder.button(
+        text="📤 اشتراک‌گذاری",
+        url=f"https://t.me/share/url?url={urllib.parse.quote(result.new_sub_link)}&text={share_text}",
+    )
+    builder.button(
+        text="📦 بازگشت به سرویس",
+        callback_data=MyConfigCallback(action="view", subscription_id=sub_id).pack(),
+    )
+    builder.adjust(2, 2, 1)
+
+    text = (
+        "✅ <b>انتقال کانفیگ موفق بود!</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        f"🚀 اینباند جدید: <b>{_html.escape(result.new_inbound_label)}</b>\n"
+        f"💾 حجم باقی‌مانده: <b>{format_volume_bytes(result.remaining_bytes)}</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "🔗 <b>لینک جدید (روی متن بزنید تا کپی شود):</b>\n"
+        f"<code>{_html.escape(result.new_sub_link)}</code>\n\n"
+        "📋 <b>کانفیگ مستقیم:</b>\n"
+        f"<code>{_html.escape(result.new_vless_uri)}</code>\n\n"
+        "⚠️ <i>لینک قبلی دیگر کار نمی‌کند — حتماً لینک جدید را در اپ خود "
+        "جایگزین کنید.</i>"
+    )
+
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())

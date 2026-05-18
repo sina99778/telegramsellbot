@@ -38,12 +38,27 @@ class ZeroUsageRefundError(ProvisioningError):
     """Raised when a zero-usage refund request is invalid."""
 
 
+class MigrationError(ProvisioningError):
+    """Raised when migrating a subscription to a different inbound fails."""
+
+
 @dataclass(slots=True, frozen=True)
 class ProvisioningResult:
     subscription: Subscription
     xui_client: XUIClientRecord | None
     vless_uri: str
     sub_link: str
+
+
+@dataclass(slots=True, frozen=True)
+class MigrationResult:
+    subscription: Subscription
+    xui_client: XUIClientRecord
+    new_vless_uri: str
+    new_sub_link: str
+    old_inbound_label: str
+    new_inbound_label: str
+    remaining_bytes: int
 
 
 class ProvisioningManager:
@@ -413,6 +428,234 @@ class ProvisioningManager:
                 return client_uuid, username, email, sub_id
 
         raise ProvisioningConflictError("Could not generate a unique X-UI client identity.")
+
+    # ── Migration: move a subscription's X-UI client to a different inbound ──
+    #
+    # The user-facing case: their config stopped routing on the original
+    # inbound (DPI block, server overloaded, etc.) and the admin has set up
+    # a fresh inbound they can switch to without losing remaining volume.
+    #
+    # Strategy: do every DB write inside a SAVEPOINT and call X-UI on the
+    # target inbound last. If the X-UI call fails, the savepoint rolls back
+    # and the DB is untouched. After the savepoint commits we issue a
+    # best-effort delete on the OLD panel — if that fails the orphan can be
+    # cleaned up by the admin later, but it never makes the user's record
+    # inconsistent.
+    async def migrate_subscription_to_inbound(
+        self,
+        *,
+        subscription_id: UUID,
+        target_inbound_id: UUID,
+    ) -> MigrationResult:
+        sub = await self.session.scalar(
+            select(Subscription)
+            .options(
+                selectinload(Subscription.plan),
+                selectinload(Subscription.xui_client)
+                .selectinload(XUIClientRecord.inbound)
+                .selectinload(XUIInboundRecord.server)
+                .selectinload(XUIServerRecord.credentials),
+            )
+            .where(Subscription.id == subscription_id)
+            .with_for_update()
+        )
+        if sub is None:
+            raise MigrationError("سرویس یافت نشد.")
+        if sub.status not in ("active", "pending_activation"):
+            raise MigrationError(
+                "فقط سرویس‌های فعال یا منتظر فعال‌سازی قابل انتقال هستند."
+            )
+
+        xui = sub.xui_client
+        if xui is None:
+            raise MigrationError("این سرویس کانفیگ X-UI ندارد و قابل انتقال نیست.")
+        if xui.inbound_id == target_inbound_id:
+            raise MigrationError("این سرویس از قبل روی همین اینباند است.")
+
+        # Load target inbound + server with credentials
+        target_inbound = await self.session.scalar(
+            select(XUIInboundRecord)
+            .options(
+                selectinload(XUIInboundRecord.server).selectinload(XUIServerRecord.credentials),
+            )
+            .where(XUIInboundRecord.id == target_inbound_id)
+        )
+        if target_inbound is None or not target_inbound.is_active:
+            raise MigrationError("اینباند هدف موجود یا فعال نیست.")
+
+        target_server = ensure_inbound_server_loaded(target_inbound)
+        if not target_server.is_active:
+            raise MigrationError("سرور اینباند هدف فعال نیست.")
+
+        # Capacity check for the target server (same rule as provisioning).
+        if target_server.max_clients is not None:
+            active_count = await self.session.scalar(
+                select(func.count())
+                .select_from(XUIClientRecord)
+                .join(XUIInboundRecord, XUIClientRecord.inbound_id == XUIInboundRecord.id)
+                .where(
+                    XUIClientRecord.is_active.is_(True),
+                    XUIInboundRecord.server_id == target_server.id,
+                )
+            ) or 0
+            if active_count >= target_server.max_clients:
+                raise MigrationError("ظرفیت سرور هدف تکمیل شده است.")
+
+        remaining_bytes = max(sub.volume_bytes - sub.used_bytes, 0)
+        _MIN_USABLE_BYTES = 100 * 1024 * 1024  # 100 MB
+        if remaining_bytes < _MIN_USABLE_BYTES:
+            raise MigrationError(
+                "حجم باقی‌مانده‌ی این سرویس خیلی کم است (کمتر از ۱۰۰ مگابایت). "
+                "ابتدا سرویس را تمدید کنید."
+            )
+
+        # Generate fresh identity. We must NOT reuse the old uuid/email —
+        # the old client still exists on the old panel until cleanup, and
+        # X-UI rejects duplicates by uuid within a single panel; even across
+        # panels we want a fresh tracking row.
+        client_uuid, username, email, sub_id = await self._generate_unique_client_identity()
+        new_sub_link = build_sub_link(target_server, sub_id)
+        security_settings = await AppSettingsRepository(self.session).get_service_security_settings()
+
+        # Try to preserve the user's preferred display name as the remark
+        # on the new client. Fall back to plan name or "config".
+        remark = (
+            (xui.username.split("_")[0] if xui.username else None)
+            or (sub.plan.name if sub.plan else None)
+            or "config"
+        )
+        new_vless_uri = build_vless_uri(
+            client_uuid=client_uuid,
+            server=target_server,
+            inbound=target_inbound,
+            sub_id=sub_id,
+            remark=remark,
+        )
+
+        # Expiry: if the sub has a concrete ends_at, propagate it. Otherwise
+        # leave at 0 so the panel inherits "first-use" semantics from the
+        # plan settings.
+        expiry_ms = int(sub.ends_at.timestamp() * 1000) if sub.ends_at is not None else 0
+
+        xui_payload = XUIClient(
+            id=client_uuid,
+            uuid=client_uuid,
+            email=email,
+            limitIp=security_settings.xui_limit_ip,
+            totalGB=remaining_bytes,
+            expiryTime=expiry_ms,
+            enable=True,
+            subId=sub_id,
+            comment=f"migrated:sub={sub.id}",
+        )
+
+        # Snapshot OLD inbound info BEFORE we mutate the row, so we can do
+        # the cleanup delete after the savepoint commits.
+        old_inbound = xui.inbound
+        old_server = ensure_inbound_server_loaded(old_inbound) if old_inbound else None
+        old_inbound_remote_id = old_inbound.xui_inbound_remote_id if old_inbound else None
+        old_remote_client_id = xui.xui_client_remote_id or xui.client_uuid
+        old_inbound_label = (
+            (old_inbound.remark or f"اینباند {old_inbound.xui_inbound_remote_id}")
+            if old_inbound else "نامشخص"
+        )
+        new_inbound_label = (
+            target_inbound.remark or f"اینباند {target_inbound.xui_inbound_remote_id}"
+        )
+
+        logger.info(
+            "Migrating subscription %s: %s -> %s (remaining=%d bytes)",
+            sub.id, old_inbound_label, new_inbound_label, remaining_bytes,
+        )
+
+        xui_call_succeeded = False
+        savepoint_committed = False
+        try:
+            async with self.session.begin_nested():
+                # Apply DB changes first. If the X-UI call fails, savepoint
+                # rolls these back automatically.
+                xui.inbound_id = target_inbound.id
+                xui.client_uuid = client_uuid
+                xui.xui_client_remote_id = client_uuid
+                xui.email = email
+                xui.username = username
+                xui.sub_link = new_sub_link
+                xui.usage_bytes = 0
+                xui.is_active = True
+
+                sub.sub_link = new_sub_link
+                # Effectively start a fresh quota on the new panel: the new
+                # X-UI client is provisioned with `remaining_bytes`. Keep
+                # the DB record consistent so the bot reports the correct
+                # numbers until the sync job pulls real usage.
+                sub.volume_bytes = remaining_bytes
+                sub.used_bytes = 0
+
+                await self.session.flush()
+
+                async with self._get_xui_client_for_server(target_server) as xui_api:
+                    await xui_api.add_client_to_inbound(
+                        target_inbound.xui_inbound_remote_id, xui_payload,
+                    )
+                xui_call_succeeded = True
+            # Exiting the `begin_nested` block commits the savepoint. Past
+            # this line we MUST NOT compensate-delete on the target panel,
+            # because the DB is now the source of truth pointing at it.
+            savepoint_committed = True
+
+            await self.session.refresh(sub)
+            await self.session.refresh(xui)
+        except MigrationError:
+            raise
+        except Exception as exc:
+            # Compensate ONLY if the new panel client was created AND the
+            # savepoint did not commit (i.e. we are about to rollback the
+            # DB to its previous state). Otherwise the DB is already
+            # pointing at the new client and deleting it would orphan the
+            # user.
+            if xui_call_succeeded and not savepoint_committed:
+                try:
+                    async with self._get_xui_client_for_server(target_server) as xui_api:
+                        await xui_api.delete_client(
+                            inbound_id=target_inbound.xui_inbound_remote_id,
+                            client_id=client_uuid,
+                        )
+                except Exception as cleanup_exc:
+                    logger.error(
+                        "Migration cleanup failed for client %s on inbound %s: %s",
+                        client_uuid, target_inbound.xui_inbound_remote_id, cleanup_exc,
+                    )
+            raise MigrationError(f"انتقال ناموفق بود: {exc}") from exc
+
+        # Best-effort: remove the old client from the old panel. Failures
+        # here are non-fatal — the user already has the new client and a
+        # working sub_link.
+        if old_server is not None and old_inbound_remote_id is not None:
+            try:
+                async with self._get_xui_client_for_server(old_server) as xui_api:
+                    await xui_api.delete_client(
+                        inbound_id=old_inbound_remote_id,
+                        client_id=old_remote_client_id,
+                    )
+                logger.info(
+                    "Removed orphan client %s from old inbound %s",
+                    old_remote_client_id, old_inbound_remote_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not delete old client %s on inbound %s: %s",
+                    old_remote_client_id, old_inbound_remote_id, exc,
+                )
+
+        return MigrationResult(
+            subscription=sub,
+            xui_client=xui,
+            new_vless_uri=new_vless_uri,
+            new_sub_link=new_sub_link,
+            old_inbound_label=old_inbound_label,
+            new_inbound_label=new_inbound_label,
+            remaining_bytes=remaining_bytes,
+        )
 
     async def _disable_xui_client(
         self,
