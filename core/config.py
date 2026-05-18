@@ -85,22 +85,11 @@ class Settings(BaseSettings):
     # set False to enforce HMAC strictly.
     tetrapay_legacy_unsigned_callback: bool = True
 
-    # Comma-separated UUIDs of inbounds that users are allowed to migrate
-    # TO via the "🛠 تغییر سرور (رفع اتصال)" flow. If empty/None, the
-    # picker falls back to "every active inbound" (which is too noisy for
-    # most deployments). Set in .env, e.g.:
-    #   MIGRATION_TARGET_INBOUND_IDS=550e8400-e29b-41d4-a716-446655440000
-    migration_target_inbound_ids: str | None = None
-
-    @property
-    def migration_target_inbound_id_list(self) -> list[str]:
-        if not self.migration_target_inbound_ids:
-            return []
-        return [
-            piece.strip()
-            for piece in self.migration_target_inbound_ids.split(",")
-            if piece.strip()
-        ]
+    # NOTE: the list of inbounds users can migrate TO via the
+    # "🛠 تغییر سرور" flow used to live here as an .env list. It now lives
+    # in the AppSettings DB table under "service.migration_targets" and
+    # is managed through the admin bot UI:
+    #   🖥 مدیریت سرورها → ⚙️ اینباندهای fallback
 
     @model_validator(mode="after")
     def _validate_secrets(self) -> "Settings":

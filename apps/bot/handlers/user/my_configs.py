@@ -1181,11 +1181,19 @@ async def _list_available_inbounds(
     Selection rules:
       * inbound is active + its server is active
       * not the user's current inbound
-      * if `MIGRATION_TARGET_INBOUND_IDS` is configured in .env, only
-        those specific inbounds are eligible (most deployments want a
-        single fallback inbound, not "every active one").
+      * if the admin has marked specific inbounds as "migration targets"
+        (via the admin panel: 🖥 مدیریت سرورها → ⚙️ اینباندهای fallback),
+        only those are eligible. Otherwise every active inbound is
+        offered — the safe fallback for fresh installs.
     """
-    from core.config import settings as _app_settings
+    settings_repo = AppSettingsRepository(session)
+    allowed_raw = await settings_repo.get_migration_target_inbound_ids()
+    allowed_ids: list[UUID] = []
+    for raw in allowed_raw:
+        try:
+            allowed_ids.append(UUID(raw))
+        except ValueError:
+            logger.warning("Ignoring invalid migration-target inbound id: %r", raw)
 
     stmt = (
         select(XUIInboundRecord)
@@ -1199,13 +1207,6 @@ async def _list_available_inbounds(
     )
     if exclude_inbound_id is not None:
         stmt = stmt.where(XUIInboundRecord.id != exclude_inbound_id)
-
-    allowed_ids: list[UUID] = []
-    for raw in _app_settings.migration_target_inbound_id_list:
-        try:
-            allowed_ids.append(UUID(raw))
-        except ValueError:
-            logger.warning("Ignoring invalid MIGRATION_TARGET_INBOUND_IDS entry: %r", raw)
     if allowed_ids:
         stmt = stmt.where(XUIInboundRecord.id.in_(allowed_ids))
 

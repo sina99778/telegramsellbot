@@ -24,6 +24,7 @@ from core.texts import AdminButtons, AdminMessages, Common
 from models.user import User
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerCredential, XUIServerRecord
 from repositories.audit import AuditLogRepository
+from repositories.settings import AppSettingsRepository
 from services.xui.client import SanaeiXUIClient, XUIAuthenticationError, XUIClientConfig, XUIRequestError
 from apps.bot.utils.messaging import safe_edit_or_send
 from apps.bot.utils.panels import admin_panel, status_label
@@ -123,8 +124,9 @@ async def admin_servers_menu(callback: CallbackQuery) -> None:
     builder = InlineKeyboardBuilder()
     builder.button(text=AdminButtons.ADD_SERVER, callback_data="admin:servers:add")
     builder.button(text=AdminButtons.LIST_SERVERS, callback_data=ServerListPageCallback(page=1).pack())
+    builder.button(text="🎯 اینباندهای fallback", callback_data="admin:fallback_inbounds")
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
-    builder.adjust(2, 1)
+    builder.adjust(2, 1, 1)
     
     if callback.message:
         try:
@@ -1119,3 +1121,143 @@ async def _fetch_remote_inbounds(*, base_url: str, username: str, password: str)
         except Exception:
             settings = {}
         return inbounds, settings
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Migration target inbounds (admin UI)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Admin toggles which inbounds appear in the user-facing "🛠 تغییر سرور"
+# picker. State lives in AppSettings under service.migration_targets — see
+# repositories/settings.py::get_migration_target_inbound_ids.
+
+class FallbackToggleCallback(CallbackData, prefix="fbtog"):
+    inbound_id: UUID
+
+
+def _fallback_inbound_label(inbound: XUIInboundRecord, is_selected: bool) -> str:
+    prefix = "✅ " if is_selected else "⬜️ "
+    parts: list[str] = []
+    if inbound.server is not None and inbound.server.name:
+        parts.append(inbound.server.name)
+    if inbound.remark:
+        parts.append(inbound.remark)
+    elif inbound.tag:
+        parts.append(inbound.tag)
+    elif inbound.xui_inbound_remote_id is not None:
+        parts.append(f"#{inbound.xui_inbound_remote_id}")
+    proto_port: list[str] = []
+    if inbound.protocol:
+        proto_port.append(str(inbound.protocol))
+    if inbound.port:
+        proto_port.append(str(inbound.port))
+    body = " · ".join(parts) if parts else "اینباند"
+    if proto_port:
+        body = f"{body} ({':'.join(proto_port)})"
+    return (prefix + body)[:60]
+
+
+@router.callback_query(F.data == "admin:fallback_inbounds")
+async def admin_fallback_inbounds(
+    callback: CallbackQuery,
+    session: AsyncSession,
+) -> None:
+    """List every active inbound with a ✅/⬜️ toggle for migration eligibility."""
+    await callback.answer()
+
+    inbounds_result = await session.execute(
+        select(XUIInboundRecord)
+        .options(selectinload(XUIInboundRecord.server))
+        .join(XUIServerRecord, XUIInboundRecord.server_id == XUIServerRecord.id)
+        .where(
+            XUIInboundRecord.is_active.is_(True),
+            XUIServerRecord.is_active.is_(True),
+        )
+        .order_by(XUIServerRecord.name.asc(), XUIInboundRecord.xui_inbound_remote_id.asc())
+    )
+    inbounds = list(inbounds_result.scalars().unique().all())
+
+    settings_repo = AppSettingsRepository(session)
+    selected_raw = await settings_repo.get_migration_target_inbound_ids()
+    selected: set[str] = set(selected_raw)
+
+    builder = InlineKeyboardBuilder()
+
+    if not inbounds:
+        text = (
+            "🎯 <b>اینباندهای fallback (تغییر سرور)</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "❌ هیچ اینباند فعالی پیدا نشد.\n\n"
+            "ابتدا یک سرور و اینباند از منوی «🖥 مدیریت سرورها» اضافه کنید."
+        )
+    else:
+        for inbound in inbounds:
+            sid = str(inbound.id)
+            builder.button(
+                text=_fallback_inbound_label(inbound, sid in selected),
+                callback_data=FallbackToggleCallback(inbound_id=inbound.id).pack(),
+            )
+        count = len(selected.intersection({str(i.id) for i in inbounds}))
+        if count == 0:
+            scope_line = (
+                "⚠️ هیچ اینباندی انتخاب نشده — کاربران الان <b>همه‌ی</b> "
+                "اینباندهای فعال را در لیست انتقال می‌بینند."
+            )
+        else:
+            scope_line = (
+                f"✅ <b>{count}</b> اینباند به‌عنوان fallback انتخاب شده — "
+                "کاربران فقط همین‌ها را در لیست انتقال می‌بینند."
+            )
+        text = (
+            "🎯 <b>اینباندهای fallback (تغییر سرور)</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "روی هر اینباند بزنید تا انتخاب/لغو شود.\n"
+            "ـ ✅ یعنی کاربران می‌توانند کانفیگ خود را به این اینباند منتقل کنند.\n"
+            "ـ ⬜️ یعنی این اینباند در لیست کاربر دیده نمی‌شود.\n"
+            f"\n{scope_line}"
+        )
+
+    builder.button(text=AdminButtons.BACK, callback_data="admin:servers")
+    # 1 button per row for readability
+    builder.adjust(1)
+
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(FallbackToggleCallback.filter())
+async def admin_fallback_toggle(
+    callback: CallbackQuery,
+    callback_data: FallbackToggleCallback,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    """Flip a single inbound's membership in the migration target list."""
+    settings_repo = AppSettingsRepository(session)
+    sid = str(callback_data.inbound_id)
+    # Validate that the inbound still exists + is active before toggling
+    inbound = await session.scalar(
+        select(XUIInboundRecord)
+        .options(selectinload(XUIInboundRecord.server))
+        .where(XUIInboundRecord.id == callback_data.inbound_id)
+    )
+    if inbound is None:
+        await callback.answer("این اینباند یافت نشد.", show_alert=True)
+        return
+
+    now_enabled = await settings_repo.toggle_migration_target_inbound(sid)
+    try:
+        await AuditLogRepository(session).log_action(
+            actor_user_id=admin_user.id,
+            action="toggle_fallback_inbound",
+            entity_type="inbound",
+            entity_id=callback_data.inbound_id,
+            payload={"enabled": now_enabled},
+        )
+    except Exception as exc:
+        logger.warning("Audit log failed for fallback toggle: %s", exc)
+
+    await callback.answer(
+        "✅ به‌عنوان fallback تنظیم شد." if now_enabled else "⬜️ از لیست fallback خارج شد.",
+    )
+    # Re-render the list so the user sees the new ✅/⬜️ state.
+    await admin_fallback_inbounds(callback, session)
