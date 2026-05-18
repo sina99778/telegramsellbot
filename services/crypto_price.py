@@ -32,6 +32,25 @@ _COINGECKO_IDS: dict[str, str] = {
 # Simple in-memory cache: {coingecko_id: (price_usd, timestamp)}
 _price_cache: dict[str, tuple[Decimal, float]] = {}
 _CACHE_TTL_SECONDS = 120  # 2 minutes
+# Hard upper bound on how long we'll serve a stale cached price before refusing
+# to quote one. Without this an extended CoinGecko outage could leave us
+# converting against a 6-hour-old BTC price.
+_MAX_STALE_SECONDS = 30 * 60  # 30 minutes
+
+# Sanity floors: a price below this for a given asset is almost certainly a
+# corrupted upstream response — we refuse it rather than mis-pricing a topup.
+_PRICE_FLOORS: dict[str, Decimal] = {
+    "bitcoin": Decimal("1000"),
+    "ethereum": Decimal("50"),
+    "litecoin": Decimal("5"),
+    "the-open-network": Decimal("0.5"),
+    "binancecoin": Decimal("20"),
+    "solana": Decimal("5"),
+    "dogecoin": Decimal("0.01"),
+    "ripple": Decimal("0.05"),
+    "tron": Decimal("0.01"),
+    "tether": Decimal("0.95"),  # USDT depegs more than this are an emergency
+}
 
 
 async def get_crypto_price_usd(currency: str) -> Decimal | None:
@@ -71,22 +90,53 @@ async def get_crypto_price_usd(currency: str) -> Decimal | None:
             )
             resp.raise_for_status()
             data = resp.json()
-            
+
         price_raw = data.get(coin_id, {}).get("usd")
         if price_raw is None:
             logger.warning("CoinGecko returned no price for %s", coin_id)
-            return None
-            
+            return _serve_stale_if_recent(coin_id, cached)
+
         price = Decimal(str(price_raw))
+        if not _price_passes_sanity(coin_id, price):
+            logger.error(
+                "Rejected suspicious price for %s: %s (below sanity floor)",
+                coin_id, price,
+            )
+            return _serve_stale_if_recent(coin_id, cached)
+
         _price_cache[coin_id] = (price, time.time())
         return price
-        
+
     except (httpx.HTTPError, InvalidOperation, KeyError, TypeError) as exc:
         logger.warning("Failed to fetch crypto price for %s: %s", currency, exc)
-        # Return cached value even if stale
-        if cached is not None:
-            return cached[0]
+        return _serve_stale_if_recent(coin_id, cached)
+
+
+def _price_passes_sanity(coin_id: str, price: Decimal) -> bool:
+    if price <= 0:
+        return False
+    floor = _PRICE_FLOORS.get(coin_id)
+    if floor is not None and price < floor:
+        return False
+    return True
+
+
+def _serve_stale_if_recent(
+    coin_id: str,
+    cached: tuple[Decimal, float] | None,
+) -> Decimal | None:
+    if cached is None:
         return None
+    price, ts = cached
+    if time.time() - ts > _MAX_STALE_SECONDS:
+        logger.error(
+            "Refusing to serve stale price for %s (age %ds > %ds)",
+            coin_id, int(time.time() - ts), _MAX_STALE_SECONDS,
+        )
+        return None
+    if not _price_passes_sanity(coin_id, price):
+        return None
+    return price
 
 
 async def convert_usd_to_crypto(usd_amount: Decimal, currency: str) -> tuple[Decimal | None, Decimal | None]:

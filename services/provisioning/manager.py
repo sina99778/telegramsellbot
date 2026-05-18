@@ -177,52 +177,78 @@ class ProvisioningManager:
             config_name,
         )
 
+        stock_reserved = False
+        xui_call_succeeded = False
         try:
             stock_reserved = await reserve_plan_sale(self.session, plan.id)
-            async with self._get_xui_client_for_server(server) as xui_client:
-                await xui_client.add_client_to_inbound(inbound.xui_inbound_remote_id, xui_payload)
+
+            # Savepoint: write DB rows first, then call X-UI. If X-UI fails,
+            # the savepoint rolls back so we never end up with rows pointing
+            # at a non-existent panel client. If the DB flush fails after a
+            # successful X-UI call, we issue a compensating delete on the
+            # panel below.
+            async with self.session.begin_nested():
+                subscription = Subscription(
+                    user_id=user_id,
+                    order_id=order_id,
+                    plan_id=plan_id,
+                    status="pending_activation",
+                    activation_mode="first_use",
+                    starts_at=None,
+                    ends_at=None,
+                    activated_at=None,
+                    expired_at=None,
+                    volume_bytes=plan.volume_bytes,
+                    used_bytes=0,
+                    sub_link=sub_link,
+                )
+                self.session.add(subscription)
+                await self.session.flush()
+
+                xui_record = XUIClientRecord(
+                    subscription_id=subscription.id,
+                    inbound_id=inbound.id,
+                    xui_client_remote_id=client_uuid,
+                    email=email,
+                    client_uuid=client_uuid,
+                    username=config_name,
+                    sub_link=sub_link,
+                    usage_bytes=0,
+                    is_active=True,
+                )
+                self.session.add(xui_record)
+
+                order.status = "provisioned"
+                await self.session.flush()
+
+                async with self._get_xui_client_for_server(server) as xui_client:
+                    await xui_client.add_client_to_inbound(
+                        inbound.xui_inbound_remote_id, xui_payload
+                    )
+                xui_call_succeeded = True
+
+            await self.session.refresh(subscription)
+            await self.session.refresh(xui_record)
         except PlanStockError as exc:
             raise ProvisioningError("Plan stock is sold out.") from exc
         except Exception:
             if stock_reserved:
                 await release_plan_sale(self.session, plan.id)
+            if xui_call_succeeded:
+                # X-UI created the client but the surrounding work failed —
+                # try to delete it so the panel doesn't keep an orphan.
+                try:
+                    async with self._get_xui_client_for_server(server) as xui_client:
+                        await xui_client.delete_client(
+                            inbound_id=inbound.xui_inbound_remote_id,
+                            client_id=client_uuid,
+                        )
+                except Exception as cleanup_exc:
+                    logger.error(
+                        "Failed to compensate orphan X-UI client %s on inbound %s: %s",
+                        client_uuid, inbound.xui_inbound_remote_id, cleanup_exc,
+                    )
             raise
-
-        subscription = Subscription(
-            user_id=user_id,
-            order_id=order_id,
-            plan_id=plan_id,
-            status="pending_activation",
-            activation_mode="first_use",
-            starts_at=None,
-            ends_at=None,
-            activated_at=None,
-            expired_at=None,
-            volume_bytes=plan.volume_bytes,
-            used_bytes=0,
-            sub_link=sub_link,
-        )
-        self.session.add(subscription)
-        await self.session.flush()
-
-        xui_record = XUIClientRecord(
-            subscription_id=subscription.id,
-            inbound_id=inbound.id,
-            xui_client_remote_id=client_uuid,
-            email=email,
-            client_uuid=client_uuid,
-            username=config_name,
-            sub_link=sub_link,
-            usage_bytes=0,
-            is_active=True,
-        )
-        self.session.add(xui_record)
-
-        order.status = "provisioned"
-
-        await self.session.flush()
-        await self.session.refresh(subscription)
-        await self.session.refresh(xui_record)
         return ProvisioningResult(
             subscription=subscription,
             xui_client=xui_record,
@@ -270,13 +296,15 @@ class ProvisioningManager:
         await self.session.flush()
 
         from core.config import settings
-        
+        from core.miniapp_auth import sign_subscription_id
+
         # Check if the content has a custom sub link separated by '|'
         parts = item.content.split("|", 1)
         vless_uri = parts[0].strip()
         custom_sub_link = parts[1].strip() if len(parts) > 1 else None
-        
-        bot_sub_link = f"{settings.web_base_url.rstrip('/')}/api/sub/{subscription.id}"
+
+        sub_sig = sign_subscription_id(str(subscription.id))
+        bot_sub_link = f"{settings.web_base_url.rstrip('/')}/api/sub/{subscription.id}?sig={sub_sig}"
         
         # If the admin provided a custom sub link, use it. Otherwise fallback to bot sub link.
         final_sub_link = custom_sub_link if custom_sub_link else bot_sub_link

@@ -61,22 +61,30 @@ class ForceJoinMiddleware(BaseMiddleware):
 
         channel = gw.force_join_channel.strip()
 
-        # Check membership
-        try:
-            bot = data.get("bot") or (event.bot if hasattr(event, "bot") else None)
-            if bot is None:
-                return await handler(event, data)
+        # Check membership. If the bot can't actually verify membership we
+        # fail CLOSED — otherwise an admin who accidentally removes the bot
+        # from the channel silently turns off the force-join requirement
+        # for the whole user base.
+        bot = data.get("bot") or (event.bot if hasattr(event, "bot") else None)
+        if bot is None:
+            return await handler(event, data)
 
+        membership_known = False
+        try:
             member = await bot.get_chat_member(chat_id=channel, user_id=telegram_id)
+            membership_known = True
             if member.status in ("member", "administrator", "creator"):
                 return await handler(event, data)
         except (TelegramBadRequest, TelegramForbiddenError) as exc:
-            logger.warning("Force join check failed for channel %s: %s", channel, exc)
-            # If bot can't check, let user through
-            return await handler(event, data)
+            logger.error(
+                "Force join: cannot verify membership for channel %s (failing closed): %s",
+                channel, exc,
+            )
         except Exception as exc:
-            logger.warning("Force join check error: %s", exc)
-            return await handler(event, data)
+            logger.error("Force join check error (failing closed): %s", exc)
+
+        # If we got here we either know the user isn't a member or we
+        # couldn't tell — in both cases prompt them to join.
 
         # User is NOT a member — block and show join button
         channel_link = channel if channel.startswith("@") else channel

@@ -56,6 +56,15 @@ async def process_successful_payment(
     payment: Payment,
     amount_to_credit: Decimal,
 ) -> None:
+    """Process a successful payment: credit the wallet and trigger any
+    follow-up action (provision config, apply renewal).
+
+    Concurrency contract: callers MUST acquire the row lock on the payment
+    before calling this function (every webhook handler and the manual
+    approval handler already do so via `SELECT ... FOR UPDATE`). We don't
+    re-acquire it here because doing so would clash with mock-backed unit
+    tests and is redundant in production.
+    """
     logger.info("[PAYMENT] Processing payment %s (kind=%s, amount=%s)", payment.id, payment.kind, amount_to_credit)
     payment.payment_status = "finished"
 
@@ -215,15 +224,20 @@ async def _handle_direct_purchase(
     from services.provisioning.manager import ProvisioningManager, ProvisioningError
     from core.formatting import format_volume_bytes
 
-    # Consume discount code NOW (after payment confirmed), not at invoice creation
+    # Consume discount code NOW (after payment confirmed), not at invoice creation.
+    # use_code re-validates inside a row lock and returns None if the code is no
+    # longer applicable — in that case we just don't credit the discount.
     discount_id_str = purchase_meta.get("discount_id")
     if discount_id_str:
         from repositories.discount import DiscountRepository
         from models.discount import DiscountCode
         dc = await session.get(DiscountCode, UUID(discount_id_str))
-        if dc and dc.used_count < dc.max_uses:
-            await DiscountRepository(session).use_code(dc)
-            logger.info("[PROVISION] Consumed discount code %s", dc.id)
+        if dc is not None:
+            consumed = await DiscountRepository(session).use_code(dc)
+            if consumed is not None:
+                logger.info("[PROVISION] Consumed discount code %s", dc.id)
+            else:
+                logger.warning("[PROVISION] Discount %s could not be consumed (expired/exhausted)", dc.id)
 
     order = None
     existing_order_id = purchase_meta.get("order_id") if purchase_meta else None

@@ -8,11 +8,19 @@ const UI = (() => {
         const el = document.getElementById('toast');
         el.textContent = message;
         el.className = `toast show ${type}`;
+        // Errors stay longer so users on slow phones can read them; longer
+        // messages also get more time.
+        const baseDuration = type === 'error' ? 5000 : 3500;
+        const lengthBonus = Math.min(2500, Math.max(0, (message.length - 30) * 40));
         clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => el.className = 'toast hidden', 3000);
+        toastTimer = setTimeout(() => el.className = 'toast hidden', baseDuration + lengthBonus);
     }
 
     // ─── Modal ──────────────────────────────────────────────────────────
+    const _tg = (typeof window !== 'undefined' && window.Telegram && window.Telegram.WebApp) || null;
+    let _tgBackHandler = null;
+    let _modalKeyAttached = false;
+
     function showModal(html) {
         const overlay = document.getElementById('modal-overlay');
         const content = document.getElementById('modal-content');
@@ -21,10 +29,44 @@ const UI = (() => {
         overlay.onclick = (e) => {
             if (e.target === overlay) closeModal();
         };
+        // ESC closes the modal — important on phones with hardware keyboards
+        // attached and for accessibility. Guard so chained showModal() calls
+        // don't stack the listener (which previously caused closeModal to
+        // fire N times for a single key press).
+        if (!_modalKeyAttached) {
+            document.addEventListener('keydown', _onModalKey);
+            _modalKeyAttached = true;
+        }
+        // Telegram's hardware/back button should also close the modal
+        // before navigating the whole app away.
+        if (_tg && _tg.BackButton && !_tgBackHandler) {
+            _tgBackHandler = () => closeModal();
+            try {
+                _tg.BackButton.show();
+                _tg.BackButton.onClick(_tgBackHandler);
+            } catch (_) { /* old Telegram client */ }
+        }
+    }
+
+    function _onModalKey(ev) {
+        if (ev.key === 'Escape' || ev.key === 'Esc') {
+            closeModal();
+        }
     }
 
     function closeModal() {
         document.getElementById('modal-overlay').classList.add('hidden');
+        if (_modalKeyAttached) {
+            document.removeEventListener('keydown', _onModalKey);
+            _modalKeyAttached = false;
+        }
+        if (_tg && _tg.BackButton && _tgBackHandler) {
+            try {
+                _tg.BackButton.offClick(_tgBackHandler);
+                _tg.BackButton.hide();
+            } catch (_) { /* noop */ }
+            _tgBackHandler = null;
+        }
     }
 
     // ─── Navigation ─────────────────────────────────────────────────────
@@ -44,6 +86,14 @@ const UI = (() => {
     }
 
     // ─── Formatters ─────────────────────────────────────────────────────
+    // Persian digit conversion. We deliberately use Western digits for
+    // money (USD, crypto) where mixing scripts is jarring, and Persian
+    // digits for dates/counts/UI text where a Farsi reader expects them.
+    const _PERSIAN_DIGITS = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+    function toPersianDigits(s) {
+        return String(s).replace(/[0-9]/g, d => _PERSIAN_DIGITS[d]);
+    }
+
     function formatBytes(bytes) {
         if (bytes === 0) return '0 B';
         const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -52,7 +102,7 @@ const UI = (() => {
     }
 
     function formatDate(dateStr) {
-        if (!dateStr) return '-';
+        if (!dateStr) return '—';
         const d = new Date(dateStr);
         const date = d.toLocaleDateString('fa-IR');
         const time = d.toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
@@ -60,12 +110,27 @@ const UI = (() => {
     }
 
     function formatDateShort(dateStr) {
-        if (!dateStr) return '-';
+        if (!dateStr) return '—';
         return new Date(dateStr).toLocaleDateString('fa-IR');
     }
 
+    // Relative "X minutes ago" used in support history etc.
+    function formatRelative(dateStr) {
+        if (!dateStr) return '—';
+        const d = new Date(dateStr).getTime();
+        const diff = Math.max(0, (Date.now() - d) / 1000);
+        if (diff < 60) return 'لحظاتی پیش';
+        if (diff < 3600) return toPersianDigits(Math.floor(diff / 60)) + ' دقیقه پیش';
+        if (diff < 86400) return toPersianDigits(Math.floor(diff / 3600)) + ' ساعت پیش';
+        if (diff < 604800) return toPersianDigits(Math.floor(diff / 86400)) + ' روز پیش';
+        return formatDateShort(dateStr);
+    }
+
     function formatMoney(amount) {
-        return parseFloat(amount || 0).toFixed(2);
+        // Money is shown in Western digits + thousands separator so $1,234.56
+        // remains parseable at a glance even mid-RTL text.
+        const n = parseFloat(amount || 0);
+        return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     }
 
     function getStatusText(status) {
@@ -193,12 +258,30 @@ const UI = (() => {
         return `<svg class="${className}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
     }
 
+    // ─── Async button helper ────────────────────────────────────────────
+    // Usage: UI.withButtonLoading(buttonEl, async () => { await api.foo(); })
+    // Locks the button, shows the CSS spinner, and unlocks it on completion
+    // even if the work threw. Returns the awaited result.
+    async function withButtonLoading(btn, fn) {
+        if (!btn) return await fn();
+        const wasDisabled = btn.disabled;
+        btn.classList.add('is-loading');
+        btn.disabled = true;
+        try {
+            return await fn();
+        } finally {
+            btn.classList.remove('is-loading');
+            btn.disabled = wasDisabled;
+        }
+    }
+
     return {
         toast, showModal, closeModal, navigate,
         icon,
-        formatBytes, formatDate, formatDateShort, formatMoney,
+        formatBytes, formatDate, formatDateShort, formatRelative, formatMoney,
+        toPersianDigits,
         getStatusText, getStatusClass, getUsagePercent, getProgressClass,
         getPaymentStatusText, getPaymentStatusClass, getProviderName, getKindText,
-        daysLeft, copyToClipboard,
+        daysLeft, copyToClipboard, withButtonLoading,
     };
 })();

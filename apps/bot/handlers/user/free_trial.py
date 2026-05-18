@@ -4,17 +4,37 @@ from decimal import Decimal
 
 from aiogram import Bot, F, Router
 from aiogram.types import Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from core.texts import Buttons
 from models.order import Order
 from models.plan import Plan
+from models.user import User, UserProfile
 from repositories.settings import AppSettingsRepository
 from repositories.user import UserRepository
+from services.phone_verification import get_verified_phone, normalize_phone_number
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
 
 router = Router(name="user-free-trial")
+
+
+@router.callback_query(F.data == "user:free_trial")
+async def free_trial_from_callback(callback, session: AsyncSession, bot: Bot) -> None:
+    """Adapter for empty-state CTAs that point at the free-trial flow."""
+    await callback.answer()
+    if callback.from_user is None or callback.message is None:
+        return
+
+    class _Pseudo:
+        from_user = callback.from_user
+
+        async def answer(self, *args, **kwargs):
+            return await callback.message.answer(*args, **kwargs)
+
+    await free_trial_handler(_Pseudo(), session, bot)
 
 
 @router.message(F.text == Buttons.TEST_CONFIG)
@@ -33,8 +53,35 @@ async def free_trial_handler(message: Message, session: AsyncSession, bot: Bot) 
         return
 
     if user.has_received_free_trial:
-        await message.answer("شما قبلا کانفیگ تست دریافت کرده‌اید.")
+        kb = InlineKeyboardBuilder()
+        kb.button(text="🛒 خرید سرویس جدید", callback_data="user:buy")
+        kb.button(text="📦 سرویس‌های من", callback_data="user:my_configs")
+        kb.adjust(1)
+        await message.answer(
+            "❌ شما قبلاً یک کانفیگ تست دریافت کرده‌اید.\n\n"
+            "برای دسترسی پایدار و پرسرعت، یک سرویس عادی تهیه کنید.",
+            reply_markup=kb.as_markup(),
+        )
         return
+
+    # Dedup by verified phone — a user who deletes and recreates their
+    # Telegram account would otherwise be able to claim unlimited trials.
+    verified_phone = get_verified_phone(user)
+    if verified_phone is not None:
+        normalized = normalize_phone_number(verified_phone)
+        sibling = await session.scalar(
+            select(User)
+            .join(UserProfile, UserProfile.user_id == User.id)
+            .where(
+                User.id != user.id,
+                User.has_received_free_trial.is_(True),
+                UserProfile.notes.contains(f'"phone": "{normalized}"'),
+            )
+            .limit(1)
+        )
+        if sibling is not None:
+            await message.answer("کانفیگ تست برای این شماره قبلا صادر شده است.")
+            return
 
     plan = await session.scalar(
         select(Plan)

@@ -460,6 +460,61 @@ async def restart_xray_core_handler(
 
 
 @router.callback_query(ServerActionCallback.filter(F.action == "delete"))
+async def delete_server_confirm(
+    callback: CallbackQuery,
+    callback_data: ServerActionCallback,
+    session: AsyncSession,
+) -> None:
+    """Show a confirmation prompt with active-client count before deleting."""
+    await callback.answer()
+    server = await session.scalar(
+        select(XUIServerRecord)
+        .options(selectinload(XUIServerRecord.inbounds))
+        .where(XUIServerRecord.id == callback_data.server_id)
+    )
+    if server is None:
+        await safe_edit_or_send(callback, AdminMessages.SERVER_NOT_FOUND)
+        return
+
+    active_client_count = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(XUIClientRecord)
+            .join(XUIInboundRecord, XUIClientRecord.inbound_id == XUIInboundRecord.id)
+            .where(
+                XUIClientRecord.is_active.is_(True),
+                XUIInboundRecord.server_id == server.id,
+            )
+        ) or 0
+    )
+
+    mode_line = (
+        f"⚠️ این سرور <b>{active_client_count}</b> کاربر فعال دارد. "
+        "حذف به‌صورت <b>بایگانی</b> انجام می‌شود (سرور غیرفعال می‌ماند)."
+        if active_client_count > 0
+        else "ℹ️ هیچ کاربر فعالی روی این سرور نیست. حذف کامل خواهد بود."
+    )
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="❗️ تأیید حذف",
+        callback_data=ServerActionCallback(action="del_ok", server_id=server.id, page=callback_data.page).pack(),
+    )
+    builder.button(
+        text="↩️ انصراف",
+        callback_data=ServerListPageCallback(page=callback_data.page).pack(),
+    )
+    builder.adjust(1)
+    await safe_edit_or_send(
+        callback,
+        f"⚠️ <b>تأیید حذف سرور</b>\n━━━━━━━━━━━━━━\n"
+        f"نام سرور: <b>{server.name}</b>\n"
+        f"{mode_line}\n━━━━━━━━━━━━━━\n"
+        "این عمل قابل بازگشت نیست.",
+        reply_markup=builder.as_markup(),
+    )
+
+
+@router.callback_query(ServerActionCallback.filter(F.action == "del_ok"))
 async def delete_server(
     callback: CallbackQuery,
     callback_data: ServerActionCallback,

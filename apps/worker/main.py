@@ -2,9 +2,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
+from pathlib import Path
 
 from aiogram.client.default import DefaultBotProperties
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+
+HEARTBEAT_PATH = Path(os.environ.get("WORKER_HEARTBEAT_FILE", "/tmp/worker_heartbeat"))
+
+
+async def _heartbeat_loop() -> None:
+    while True:
+        try:
+            HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            HEARTBEAT_PATH.write_text(str(time.time()))
+        except OSError as exc:
+            logging.getLogger(__name__).warning("worker heartbeat write failed: %s", exc)
+        await asyncio.sleep(30)
 
 from apps.bot.premium_bot import PremiumEmojiBot
 from apps.worker.jobs.broadcast import process_broadcast_queue
@@ -23,6 +39,14 @@ logger = logging.getLogger(__name__)
 
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
+
+    # Bootstrap heartbeat — see apps/bot/main.py for rationale.
+    try:
+        HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        HEARTBEAT_PATH.write_text(str(time.time()))
+    except OSError as exc:
+        logging.getLogger(__name__).warning("bootstrap heartbeat write failed: %s", exc)
+
     bot = PremiumEmojiBot(
         token=settings.bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
@@ -86,9 +110,15 @@ async def main() -> None:
     )
     scheduler.start()
 
+    heartbeat_task = asyncio.create_task(_heartbeat_loop(), name="worker-heartbeat")
     try:
         await asyncio.Event().wait()
     finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
         await bot.session.close()
 
 

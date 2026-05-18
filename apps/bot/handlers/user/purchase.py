@@ -85,6 +85,29 @@ async def ignore_pagination_noop(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data == "user:buy")
+async def show_available_plans_from_callback(
+    callback: CallbackQuery, session: AsyncSession, state: FSMContext,
+) -> None:
+    """Adapter so empty-state buttons (e.g. on my_configs, free_trial)
+    can take the user straight into the purchase flow without forcing
+    them to dig the keyboard 'خرید کانفیگ' button."""
+    await callback.answer()
+    if callback.from_user is None or callback.message is None:
+        return
+
+    class _Pseudo:
+        # Re-using the same pseudo-Message technique as the renewal
+        # presets — show_available_plans only reads .from_user and uses
+        # .answer to send the menu.
+        from_user = callback.from_user
+
+        async def answer(self, *args, **kwargs):
+            return await callback.message.answer(*args, **kwargs)
+
+    await show_available_plans(_Pseudo(), session, state)
+
+
 @router.message(F.text == Buttons.BUY_CONFIG)
 async def show_available_plans(message: Message, session: AsyncSession, state: FSMContext) -> None:
     # Check if sales are enabled by admin (admins bypass)
@@ -389,12 +412,21 @@ async def discount_code_entered(
     plan_id = UUID(data["plan_id"])
 
     repo = DiscountRepository(session)
-    discount = await repo.validate_code(code, plan_id=plan_id)
+    discount, reason = await repo.validate_code_with_reason(code, plan_id=plan_id)
 
     if discount is None:
+        reason_map = {
+            "not_found": "این کد در سیستم وجود ندارد.",
+            "inactive": "این کد توسط مدیر غیرفعال شده است.",
+            "exhausted": "سقف استفاده‌ی این کد تکمیل شده است.",
+            "expired": "این کد منقضی شده است.",
+            "plan_mismatch": "این کد فقط برای یک پلن دیگر فعال است.",
+        }
+        explanation = reason_map.get(reason or "", "کد وارد شده قابل استفاده نیست.")
         await message.answer(
-            "❌ کد تخفیف نامعتبر، منقضی شده یا قابل استفاده نیست.\n"
-            "لطفاً کد دیگری وارد کنید یا بدون تخفیف ادامه دهید."
+            f"❌ <b>کد تخفیف اعمال نشد</b>\n"
+            f"دلیل: {explanation}\n\n"
+            "می‌توانید کد دیگری وارد کنید یا بدون تخفیف ادامه دهید."
         )
         return
 
@@ -507,25 +539,41 @@ async def _show_payment_method_choice_msg(
         discount_line = f"🏷 تخفیف: {discount_percent}% (قیمت اصلی: {orig_display})\n"
 
     text = (
-        "💳 روش پرداخت را انتخاب کنید:\n\n"
-        f"📦 پلن: {plan.name}\n"
-        f"💰 مبلغ قابل پرداخت: {price_display}\n"
+        "💳 <b>روش پرداخت</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        f"📦 پلن: <b>{plan.name}</b>\n"
+        f"💰 مبلغ قابل پرداخت: <b>{price_display}</b>\n"
         f"{discount_line}\n"
-        "از کدام روش پرداخت می‌خواهید استفاده کنید؟"
+        "روش پرداخت دلخواه را انتخاب کنید:\n"
+        "🚀 <i>کیف پول</i> سریع‌ترین گزینه است."
     )
 
+    # Group the payment options by category — instant wallet first,
+    # then Iranian rial gateways, then international/crypto. Reduces the
+    # cognitive load of staring at 5+ unsorted buttons.
     builder = InlineKeyboardBuilder()
-    builder.button(text="👛 کیف پول", callback_data="purchase:pay:wallet")
+    builder.button(text="🚀 کیف پول (فوری)", callback_data="purchase:pay:wallet")
+
+    # Rial gateways
+    rial_buttons = []
     if gw.tetrapay_enabled:
-        builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="purchase:pay:tetrapay")
-    if gw.tronado_enabled:
-        builder.button(text="درگاه ترونادو", callback_data="purchase:pay:tronado")
-    if gw.nowpayments_enabled:
-        builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
-    if gw.manual_crypto_enabled and (gw.manual_crypto_wallets or gw.manual_crypto_address):
-        builder.button(text="💰 پرداخت به ولت (دستی)", callback_data="purchase:pay:manual")
+        rial_buttons.append(("💳 درگاه ریالی (تتراپی)", "purchase:pay:tetrapay"))
     if gw.card_to_card_enabled and gw.card_number and gw.card_holder:
-        builder.button(text="کارت به کارت", callback_data="purchase:pay:card")
+        rial_buttons.append(("💵 کارت به کارت", "purchase:pay:card"))
+    for label, cb in rial_buttons:
+        builder.button(text=label, callback_data=cb)
+
+    # Crypto / international
+    crypto_buttons = []
+    if gw.nowpayments_enabled:
+        crypto_buttons.append(("💎 درگاه ارزی (NOWPayments)", "purchase:pay:gateway"))
+    if gw.tronado_enabled:
+        crypto_buttons.append(("🔶 ترونادو (TRX)", "purchase:pay:tronado"))
+    if gw.manual_crypto_enabled and (gw.manual_crypto_wallets or gw.manual_crypto_address):
+        crypto_buttons.append(("🪙 ولت دستی (با هش تراکنش)", "purchase:pay:manual"))
+    for label, cb in crypto_buttons:
+        builder.button(text=label, callback_data=cb)
+
     builder.button(text=Buttons.BACK, callback_data="purchase:cancel")
     builder.adjust(1)
 
@@ -728,6 +776,9 @@ async def pay_with_card_to_card(
         return
 
     discount_percent = int(data.get("discount_percent", 0) or 0)
+    # Defensive clamp — DB CHECK + repository validators enforce 0..100, but
+    # state coming from FSM is untrusted enough that we re-bound it here too.
+    discount_percent = max(0, min(100, discount_percent))
     original_price = plan.price
     final_price = (
         original_price * (Decimal(100 - discount_percent) / Decimal(100))
@@ -923,13 +974,32 @@ async def _process_wallet_purchase(
         )
         return
 
-    # Use the discount code
+    # Atomically consume the discount slot. If it's no longer valid (expired,
+    # exhausted by concurrent buyers, deactivated by admin between gate and
+    # checkout), fall back to the original price rather than silently giving
+    # the customer a discount they no longer earned.
     if discount_id:
         repo = DiscountRepository(session)
         from models.discount import DiscountCode
         dc = await session.get(DiscountCode, UUID(discount_id))
+        consumed = None
         if dc:
-            await repo.use_code(dc)
+            consumed = await repo.use_code(dc, plan_id=plan.id)
+        if consumed is None:
+            final_price = original_price
+            discount_percent = 0
+            # Re-check affordability against the un-discounted price.
+            if user.wallet.balance < final_price:
+                await safe_edit_or_send(
+                    callback,
+                    Messages.INSUFFICIENT_BALANCE.format(
+                        balance=f"{user.wallet.balance:.2f}",
+                        price=f"{final_price:.2f}",
+                        currency=plan.currency,
+                    ),
+                    reply_markup=build_wallet_topup_keyboard(),
+                )
+                return
 
     await _finalize_purchase(
         chat_id=callback.from_user.id,
@@ -1067,6 +1137,7 @@ async def _process_tronado_purchase(
     plan_id = UUID(data["plan_id"])
     config_name = data["config_name"]
     discount_percent = int(data.get("discount_percent", 0))
+    discount_percent = max(0, min(100, discount_percent))
     discount_id = data.get("discount_id")
 
     plan = await session.get(Plan, plan_id)
@@ -1373,12 +1444,13 @@ async def _finalize_purchase(
         f"{discount_line}"
         f"🕐 فعال‌سازی: <b>از اولین اتصال</b>\n\n"
         "━━━━━━━━━━━━━━━━\n"
-        "🔗 <b>ساب لینک (برای وارد کردن در اپ):</b>\n"
+        "🔗 <b>لینک اشتراک (برای وارد کردن در اپ):</b>\n"
+        "👆 روی متن زیر بزنید تا کپی شود:\n"
         f"<code>{esc(sub_link)}</code>\n\n"
         "📋 <b>کانفیگ مستقیم:</b>\n"
         f"<code>{esc(vless_uri)}</code>\n\n"
         "━━━━━━━━━━━━━━━━\n"
-        "⚡ برای اتصال سریع روی دکمه‌های زیر کلیک کنید"
+        "⚡ برای اتصال سریع روی دکمه‌های زیر بزنید 👇"
     )
 
     builder = InlineKeyboardBuilder()
@@ -1386,10 +1458,13 @@ async def _finalize_purchase(
         from core.config import settings
         base = settings.web_base_url.rstrip("/")
         encoded_uri = urllib.parse.quote(vless_uri, safe="")
-        builder.button(text="🟢 اتصال v2rayNG", url=f"{base}/api/dl/v2rayng?url={encoded_uri}")
-        builder.button(text="🍎 اتصال Shadowrocket", url=f"{base}/api/dl/shadowrocket?url={encoded_uri}")
-        builder.button(text="🍎 اتصال V2Box", url=f"{base}/api/dl/v2box?url={encoded_uri}")
-        builder.adjust(2)
+        builder.button(text="🤖 v2rayNG (اندروید)", url=f"{base}/api/dl/v2rayng?url={encoded_uri}")
+        builder.button(text="🍎 Shadowrocket (آیفون)", url=f"{base}/api/dl/shadowrocket?url={encoded_uri}")
+        builder.button(text="📦 V2Box (هر دو)", url=f"{base}/api/dl/v2box?url={encoded_uri}")
+        # Native Telegram share — propagates the config link with a preview
+        share_text = urllib.parse.quote(f"کانفیگ من:\n{sub_link}")
+        builder.button(text="📤 اشتراک‌گذاری لینک", url=f"https://t.me/share/url?url={urllib.parse.quote(sub_link)}&text={share_text}")
+        builder.adjust(2, 2)
 
     # Generate Banner
     banner_bytes = create_traffic_banner(
@@ -1445,10 +1520,17 @@ async def _finalize_purchase(
 
 
 async def _process_referral_bonus(session, bot, user) -> None:
-    """Credit referral bonus to both referrer and referee on first purchase."""
+    """Credit referral bonus to both referrer and referee on first purchase.
+
+    Idempotency: this function may be re-entered (concurrent purchases by a
+    fresh referee, retries inside the same logical request). We guard against
+    double-credit by checking the wallet_transactions ledger for an existing
+    referral row keyed on (reference_type='referral', reference_id=user.id).
+    """
     from sqlalchemy import func, select as sel
     from repositories.settings import AppSettingsRepository
     from services.wallet.manager import WalletManager
+    from models.wallet import WalletTransaction
 
     settings_repo = AppSettingsRepository(session)
     ref_settings = await settings_repo.get_referral_settings()
@@ -1471,6 +1553,18 @@ async def _process_referral_bonus(session, bot, user) -> None:
     )
     if order_count != 1:
         # Only give bonus on the very first purchase
+        return
+
+    # Idempotency guard against concurrent first-purchase paths.
+    already_paid = await session.scalar(
+        sel(func.count()).select_from(WalletTransaction).where(
+            WalletTransaction.user_id == user.referred_by_user_id,
+            WalletTransaction.type == "referral_bonus",
+            WalletTransaction.reference_type == "referral",
+            WalletTransaction.reference_id == user.id,
+        )
+    )
+    if already_paid:
         return
 
     wallet_manager = WalletManager(session)

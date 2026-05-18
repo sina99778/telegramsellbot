@@ -26,11 +26,30 @@ def build_plan_selection_keyboard(
             callback_data="purchase:custom",
         )
 
-    for plan in plans:
+    # Pick a "Recommended" plan: lowest price-per-day. Helps first-time buyers
+    # who have nothing to anchor to and would otherwise default to the cheapest
+    # (often least valuable) option.
+    plan_list = list(plans)
+    best_plan_id = None
+    if plan_list:
+        def _ppd(p: Plan) -> float:
+            try:
+                return float(p.price) / max(1, int(getattr(p, "duration_days", 1) or 1))
+            except Exception:
+                return float("inf")
+        best_plan_id = min(plan_list, key=_ppd).id
+
+    for plan in plan_list:
         stock = stock_by_plan_id.get(plan.id) if stock_by_plan_id else None
         stock_label = _format_stock_label(stock)
+        recommended = plan.id == best_plan_id
         builder.button(
-            text=_format_plan_button_text(plan.name, plan.price, plan.currency, stock_label),
+            text=_format_plan_button_text(
+                plan.name, plan.price, plan.currency, stock_label,
+                volume_bytes=getattr(plan, "volume_bytes", 0),
+                duration_days=getattr(plan, "duration_days", 0),
+                recommended=recommended,
+            ),
             callback_data=f"plan:select:{plan.id}",
         )
     builder.button(text="❌ انصراف", callback_data="purchase:cancel")
@@ -38,9 +57,20 @@ def build_plan_selection_keyboard(
     return builder.as_markup()
 
 
-def build_wallet_topup_keyboard() -> InlineKeyboardMarkup:
+def build_wallet_topup_keyboard(presets: list[int] | tuple[int, ...] | None = None) -> InlineKeyboardMarkup:
+    """Wallet topup keyboard.
+
+    ``presets`` lets the caller pass admin-configured topup amounts so each
+    deployment can match its local market (a $5 preset is useless in a
+    region where the typical topup is $50). Falls back to a sane default.
+    """
     builder = InlineKeyboardBuilder()
-    for amount in (5, 10, 20):
+    amounts = list(presets) if presets else [5, 10, 20, 50]
+    # Filter, dedupe and clamp; keep at most 6 buttons to avoid scrolling.
+    amounts = sorted({int(a) for a in amounts if isinstance(a, (int, float)) and a > 0})[:6]
+    if not amounts:
+        amounts = [5, 10, 20]
+    for amount in amounts:
         builder.button(
             text=f"${amount}",
             callback_data=f"wallet:topup:preset:{amount}",
@@ -51,7 +81,12 @@ def build_wallet_topup_keyboard() -> InlineKeyboardMarkup:
         callback_data="wallet:topup:custom",
     )
     builder.button(text=Buttons.BACK, callback_data="wallet:profile")
-    builder.adjust(3, 1, 1)
+    # Layout: 3 amount buttons per row, then custom, then back.
+    rows = [3] * (len(amounts) // 3)
+    if len(amounts) % 3:
+        rows.append(len(amounts) % 3)
+    rows += [1, 1]
+    builder.adjust(*rows)
     return builder.as_markup()
 
 
@@ -131,9 +166,34 @@ def build_renewal_keyboard(sub_id: UUID) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def _format_plan_button_text(name: str, price: Decimal, currency: str, stock_label: str = "") -> str:
-    suffix = f" | {stock_label}" if stock_label else ""
-    return f"{name} - {price:.2f} {currency}{suffix}"
+def _format_plan_button_text(
+    name: str,
+    price: Decimal,
+    currency: str,
+    stock_label: str = "",
+    *,
+    volume_bytes: int = 0,
+    duration_days: int = 0,
+    recommended: bool = False,
+) -> str:
+    """Plan button text: includes volume + duration so the user doesn't
+    have to open the plan just to see what they're getting."""
+    bits: list[str] = []
+    if volume_bytes:
+        gb = volume_bytes / (1024 ** 3)
+        bits.append(f"{gb:.0f}GB" if gb >= 1 else f"{volume_bytes // (1024 ** 2)}MB")
+    if duration_days:
+        # Show months when it makes sense, otherwise days.
+        if duration_days >= 30 and duration_days % 30 == 0:
+            months = duration_days // 30
+            bits.append(f"{months} ماه")
+        else:
+            bits.append(f"{duration_days} روز")
+    bits.append(f"{price:.2f} {currency}")
+    summary = " • ".join(bits)
+    prefix = "⭐ " if recommended else ""
+    suffix = f" • {stock_label}" if stock_label else ""
+    return f"{prefix}{name} — {summary}{suffix}"
 
 
 def _format_stock_label(stock: object | None) -> str:

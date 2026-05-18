@@ -70,9 +70,14 @@ async def my_configs_handler(message: Message, state: FSMContext, session: Async
     )
 
     if not subscriptions:
+        empty_kb = InlineKeyboardBuilder()
+        empty_kb.button(text="🛒 خرید اولین سرویس", callback_data="user:buy")
+        empty_kb.button(text="🎁 دریافت کانفیگ تست", callback_data="user:free_trial")
+        empty_kb.adjust(1)
         await message.answer(
-            "📭 شما هیچ کانفیگ فعالی ندارید.\n\n"
-            "از دکمه «خرید کانفیگ» می‌توانید یک پلن تهیه کنید."
+            "📭 هنوز هیچ سرویس فعالی ندارید.\n\n"
+            "برای شروع، یک پلن تهیه کنید یا کانفیگ تست رایگان دریافت کنید.",
+            reply_markup=empty_kb.as_markup(),
         )
         return
 

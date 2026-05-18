@@ -85,29 +85,58 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     sales_label = "🔴 خاموش کردن فروش" if user_actions.sales_enabled else "🟢 روشن کردن فروش"
     renewal_label = "🔴 خاموش کردن تمدید" if user_actions.renewals_enabled else "🟢 روشن کردن تمدید"
 
+    # Settings menu is grouped by area + visual section headers so admins
+    # can scan to the relevant block instead of hunting through a flat list.
     builder = InlineKeyboardBuilder()
+
+    # ── Section: Master switches (most-used toggles)
+    builder.button(text="━━ 🚦 وضعیت فروش ━━", callback_data="admin:settings:noop")
     builder.button(text=sales_label, callback_data="admin:settings:toggle_sales")
     builder.button(text=renewal_label, callback_data="admin:settings:toggle_renewals")
-    builder.button(text="قیمت گیگ", callback_data="admin:settings:edit_gb")
-    builder.button(text="قیمت روز", callback_data="admin:settings:edit_days")
-    builder.button(text="خرید دلخواه", callback_data="admin:settings:custom_toggle")
+
+    # ── Section: Pricing
+    builder.button(text="━━ 💰 قیمت‌ها ━━", callback_data="admin:settings:noop")
+    builder.button(text="قیمت گیگ تمدید", callback_data="admin:settings:edit_gb")
+    builder.button(text="قیمت ۱۰ روز تمدید", callback_data="admin:settings:edit_days")
+    builder.button(text="نرخ دلار", callback_data="admin:settings:edit_toman")
+
+    # ── Section: Custom plans
+    builder.button(text="━━ 🧩 خرید دلخواه ━━", callback_data="admin:settings:noop")
+    builder.button(text="فعال/غیرفعال خرید دلخواه", callback_data="admin:settings:custom_toggle")
     builder.button(text="قیمت گیگ دلخواه", callback_data="admin:settings:custom_gb")
     builder.button(text="قیمت روز دلخواه", callback_data="admin:settings:custom_day")
-    builder.button(text="limitIp", callback_data="admin:settings:xui_limit_ip")
-    builder.button(text="سقف IP", callback_data="admin:settings:max_ips")
+
+    # ── Section: Service security
+    builder.button(text="━━ 🔒 امنیت سرویس ━━", callback_data="admin:settings:noop")
+    builder.button(text="limitIp پنل", callback_data="admin:settings:xui_limit_ip")
+    builder.button(text="سقف IP مجاز", callback_data="admin:settings:max_ips")
     builder.button(text="ضد اشتراک‌گذاری", callback_data="admin:settings:ip_guard_toggle")
-    builder.button(text="اموجی پریمیم", callback_data="admin:settings:premium_emoji_toggle")
-    builder.button(text="مپ اموجی", callback_data="admin:settings:premium_emoji_map")
-    builder.button(text="نرخ دلار", callback_data="admin:settings:edit_toman")
+
+    # ── Section: Gateways & onboarding
+    builder.button(text="━━ 💳 درگاه و آن‌بوردینگ ━━", callback_data="admin:settings:noop")
     builder.button(text="درگاه‌ها", callback_data="admin:settings:gateways")
     builder.button(text="تایید موبایل", callback_data="admin:settings:phone_verification")
     builder.button(text="کانفیگ تست", callback_data="admin:settings:trial_toggle")
-    builder.button(text="رفرال", callback_data="admin:settings:referral")
     builder.button(text="جوین اجباری", callback_data="admin:settings:force_join")
+    builder.button(text="رفرال", callback_data="admin:settings:referral")
+
+    # ── Section: Appearance
+    builder.button(text="━━ 🎨 ظاهر ━━", callback_data="admin:settings:noop")
+    builder.button(text="اموجی پریمیم", callback_data="admin:settings:premium_emoji_toggle")
+    builder.button(text="مپ اموجی", callback_data="admin:settings:premium_emoji_map")
+
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
-    builder.adjust(1, 1, 2, 1, 2, 3, 2, 3, 1)
+    # 1 header, 2 toggles, 1 header, 3 prices, 1 header, 3 custom, 1 header, 3 security,
+    # 1 header, 5 gateways, 1 header, 2 appearance, 1 back
+    builder.adjust(1, 2, 1, 3, 1, 3, 1, 3, 1, 5, 1, 2, 1)
 
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "admin:settings:noop")
+async def settings_noop(callback: CallbackQuery) -> None:
+    """Section-header buttons do nothing on click."""
+    await callback.answer()
 
 
 @router.callback_query(F.data == "admin:settings:toggle_sales")

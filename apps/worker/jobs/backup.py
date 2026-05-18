@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from aiogram import Bot
 from aiogram.types import BufferedInputFile
+from cryptography.fernet import Fernet
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -22,6 +23,17 @@ from models.user import User
 from models.xui import XUIServerRecord
 from services.xui.client import XUIClientError
 from services.xui.runtime import create_xui_client_for_server
+
+
+def _encrypt_backup_blob(blob: bytes) -> bytes:
+    """Encrypt a backup payload with the app's Fernet key before transit.
+
+    The Telegram channel between us and the admin's device is end-to-end
+    cloud-stored — encrypting at rest before upload means a leak there
+    doesn't immediately yield a plaintext DB dump.
+    """
+    key = settings.app_secret_key.get_secret_value().encode("utf-8")
+    return Fernet(key).encrypt(blob)
 
 logger = logging.getLogger(__name__)
 
@@ -122,13 +134,17 @@ async def run_backup(session: AsyncSession, bot: Bot, manual_requester_id: int |
 
     pg_data = await _dump_postgres()
     if pg_data:
-        files_to_send.append(BufferedInputFile(pg_data, filename=f"telegramsellbot_{timestamp}.dump"))
+        encrypted = _encrypt_backup_blob(pg_data)
+        files_to_send.append(BufferedInputFile(encrypted, filename=f"telegramsellbot_{timestamp}.dump.enc"))
 
     xui_backups = await _dump_xui_databases(session)
     for server_name, db_bytes in xui_backups:
         safe_name = server_name.replace(" ", "_").replace("/", "_")[:30]
-        ext = "txt" if server_name.endswith("_ERROR") else "db"
-        files_to_send.append(BufferedInputFile(db_bytes, filename=f"xui_{safe_name}_{timestamp}.{ext}"))
+        if server_name.endswith("_ERROR"):
+            files_to_send.append(BufferedInputFile(db_bytes, filename=f"xui_{safe_name}_{timestamp}.txt"))
+        else:
+            encrypted = _encrypt_backup_blob(db_bytes)
+            files_to_send.append(BufferedInputFile(encrypted, filename=f"xui_{safe_name}_{timestamp}.db.enc"))
 
     if not files_to_send:
         for tg_id in admin_ids:
@@ -139,7 +155,12 @@ async def run_backup(session: AsyncSession, bot: Bot, manual_requester_id: int |
         return
 
     type_str = "دستی" if manual_requester_id else "اتوماتیک"
-    caption = f"🗄 بکاپ {type_str}\n📅 {now.strftime('%Y-%m-%d %H:%M UTC')}\n📦 {len(files_to_send)} فایل"
+    caption = (
+        f"🗄 بکاپ {type_str}\n📅 {now.strftime('%Y-%m-%d %H:%M UTC')}\n"
+        f"📦 {len(files_to_send)} فایل\n"
+        "🔒 فایل‌های .enc با کلید APP_SECRET_KEY رمزگذاری شده‌اند. "
+        "برای بازگردانی به Fernet نیاز است."
+    )
     for tg_id in admin_ids:
         try:
             await bot.send_message(tg_id, caption)

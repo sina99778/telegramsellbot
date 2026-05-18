@@ -36,7 +36,7 @@ class XUIClientConfig:
     username: str
     password: SecretStr
     timeout_seconds: float = 20.0
-    verify_ssl: bool = False  # Default False for self-signed X-UI certs
+    verify_ssl: bool = True  # Default True; set XUI_VERIFY_SSL=false explicitly for self-signed panels
 
 
 class SanaeiXUIClient:

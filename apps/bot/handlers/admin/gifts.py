@@ -18,6 +18,10 @@ from models.user import User
 from models.xui import XUIServerRecord
 from repositories.audit import AuditLogRepository
 import asyncio
+
+# Strong references for fire-and-forget background tasks. Without holding a
+# reference the asyncio event loop is free to GC them mid-execution.
+_BG_TASKS: set[asyncio.Task] = set()
 from services.admin_gifts import grant_bulk_subscription_gift_background
 
 
@@ -182,7 +186,7 @@ async def gift_confirm(
     if isinstance(msg, bool):
         msg = callback.message
     
-    asyncio.create_task(
+    task = asyncio.create_task(
         grant_bulk_subscription_gift_background(
             bot=bot,
             admin_telegram_id=callback.from_user.id,
@@ -192,5 +196,8 @@ async def gift_confirm(
             amount=amount,
             status_scope=status_scope,
             server_id=server_id,
-        )
+        ),
+        name=f"bulk-gift-{admin_user.id}",
     )
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.filters import Command
@@ -16,6 +18,8 @@ from models.user import User
 from repositories.ticket import TicketRepository
 from repositories.user import UserRepository
 
+
+logger = logging.getLogger(__name__)
 
 router = Router(name="user-support")
 
@@ -54,14 +58,38 @@ async def support_start(message: Message, state: FSMContext, session: AsyncSessi
     reply_markup = builder.as_markup()
 
     if ticket:
-        messages = ticket.messages[-5:]  # Last 5 messages
+        from datetime import datetime, timezone
+        messages = ticket.messages[-5:]
+
+        # Show ticket status + last-activity timer so the user knows where
+        # they stand at a glance instead of just seeing a bare history.
+        last_msg = ticket.messages[-1] if ticket.messages else None
+        status_badge = "⏳ منتظر پاسخ پشتیبانی"
+        if last_msg and last_msg.sender_id != user.id:
+            status_badge = "🛠 پاسخ پشتیبانی رسیده — منتظر شماست"
+        if ticket.status == "closed":
+            status_badge = "🔒 این تیکت بسته شده"
+
+        def _ago(dt):
+            if dt is None:
+                return ""
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            secs = max(0, (datetime.now(timezone.utc) - dt).total_seconds())
+            if secs < 60: return "لحظاتی پیش"
+            if secs < 3600: return f"{int(secs // 60)} دقیقه پیش"
+            if secs < 86400: return f"{int(secs // 3600)} ساعت پیش"
+            return f"{int(secs // 86400)} روز پیش"
+
         history_text = SupportTexts.HISTORY_TITLE.format(ticket_id=str(ticket.id)[:8])
+        history_text += f"\n{status_badge}\n━━━━━━━━━━\n"
         for msg in messages:
             sender = "👤 شما" if msg.sender_id == user.id else "🛠 پشتیبانی"
             content = msg.text or SupportTexts.PHOTO_MARKER
-            history_text += f"{sender}: {content}\n"
-        
-        history_text += f"\n{SupportTexts.START}"
+            when = _ago(getattr(msg, "created_at", None))
+            history_text += f"{sender} <i>({when})</i>:\n{content}\n\n"
+
+        history_text += SupportTexts.START
         await message.answer(history_text, reply_markup=reply_markup)
     else:
         await message.answer(SupportTexts.START, reply_markup=reply_markup)

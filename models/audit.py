@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import ForeignKey, String
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -30,5 +30,10 @@ class AuditLog(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         default=dict,
         server_default="{}",
     )
+    ip_address: Mapped[str | None] = mapped_column(INET, nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    request_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    before_state: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
+    after_state: Mapped[dict[str, object] | None] = mapped_column(JSONB, nullable=True)
 
     actor: Mapped[User | None] = relationship("User")

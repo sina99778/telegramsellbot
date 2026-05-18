@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import time
 from contextlib import suppress
+from pathlib import Path
 
 from aiogram import Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -14,6 +17,26 @@ from apps.bot.middlewares.error_handler import GlobalErrorMiddleware
 from apps.bot.premium_bot import PremiumEmojiBot
 from core.config import settings
 from core.database import dispose_database
+
+
+HEARTBEAT_PATH = Path(os.environ.get("BOT_HEARTBEAT_FILE", "/tmp/bot_heartbeat"))
+HEARTBEAT_INTERVAL_S = 15
+
+
+async def _heartbeat_loop() -> None:
+    """Touch the heartbeat file periodically.
+
+    The container healthcheck reads this file and reports unhealthy if it
+    hasn't been updated recently — a real liveness signal instead of the
+    previous always-true probe.
+    """
+    while True:
+        try:
+            HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            HEARTBEAT_PATH.write_text(str(time.time()))
+        except OSError as exc:
+            logging.getLogger(__name__).warning("heartbeat write failed: %s", exc)
+        await asyncio.sleep(HEARTBEAT_INTERVAL_S)
 
 
 def configure_logging() -> None:
@@ -36,6 +59,15 @@ async def on_shutdown(bot: PremiumEmojiBot) -> None:
 async def main() -> None:
     configure_logging()
 
+    # Write a heartbeat synchronously BEFORE starting the dispatcher so the
+    # container healthcheck has something to read during the slow first
+    # bring-up (DB pool warmup, initial Telegram polling handshake).
+    try:
+        HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        HEARTBEAT_PATH.write_text(str(time.time()))
+    except OSError as exc:
+        logging.getLogger(__name__).warning("bootstrap heartbeat write failed: %s", exc)
+
     bot = PremiumEmojiBot(
         token=settings.bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
@@ -52,10 +84,16 @@ async def main() -> None:
     dispatcher.startup.register(on_startup)
     dispatcher.shutdown.register(on_shutdown)
 
-    await dispatcher.start_polling(
-        bot,
-        drop_pending_updates=settings.bot_drop_pending_updates,
-    )
+    heartbeat_task = asyncio.create_task(_heartbeat_loop(), name="bot-heartbeat")
+    try:
+        await dispatcher.start_polling(
+            bot,
+            drop_pending_updates=settings.bot_drop_pending_updates,
+        )
+    finally:
+        heartbeat_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await heartbeat_task
 
 
 if __name__ == "__main__":

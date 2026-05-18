@@ -37,3 +37,32 @@ def verify_miniapp_session_token(token: str) -> int | None:
 def _sign(payload: str) -> str:
     secret = settings.app_secret_key.get_secret_value().encode("utf-8")
     return hmac.new(secret, payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def sign_subscription_id(sub_id: str) -> str:
+    """Create an unguessable signature bound to a subscription UUID."""
+    return _sign(f"sub:{sub_id}")[:32]
+
+
+def verify_subscription_signature(sub_id: str, signature: str | None) -> bool:
+    if not signature:
+        return False
+    expected = sign_subscription_id(sub_id)
+    return hmac.compare_digest(expected, signature)
+
+
+def sign_payment_callback(hash_id: str) -> str:
+    """Per-payment shared secret embedded in the provider callback URL.
+
+    Used to authenticate webhook requests from providers (e.g. TetraPay) that
+    do not offer their own HMAC scheme. The signature is bound to the payment's
+    hash_id so an attacker who learns one token cannot forge others.
+    """
+    return _sign(f"cb:{hash_id}")[:32]
+
+
+def verify_payment_callback(hash_id: str, signature: str | None) -> bool:
+    if not signature:
+        return False
+    expected = sign_payment_callback(hash_id)
+    return hmac.compare_digest(expected, signature)
