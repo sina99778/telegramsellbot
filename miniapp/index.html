@@ -2,63 +2,87 @@
 <html lang="fa" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0b0d12">
+    <meta name="color-scheme" content="dark">
     <title>V2rays Emergency</title>
+
+    <!-- Preconnect cuts ~120ms off the font request on mobile -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="preconnect" href="https://telegram.org">
+
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Vazirmatn:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="/miniapp/css/app.css?v=20260519-1">
+    <link rel="stylesheet" href="/miniapp/css/app.css?v=v3-20260520">
 </head>
 <body>
     <div id="app">
-        <div class="ambient-bg"></div>
-        <!-- Loading -->
-        <div id="loading-screen" class="loading-screen">
-            <div class="loading-spinner"></div>
-            <p>در حال بارگذاری...</p>
+        <div class="ambient-bg" aria-hidden="true"></div>
+
+        <!-- Loading screen — shown until app.js finishes hydration -->
+        <div id="loading-screen" class="loading-screen" role="status" aria-live="polite">
+            <div class="loading-spinner" aria-hidden="true"></div>
+            <p>در حال بارگذاری…</p>
         </div>
 
         <!-- Header -->
         <header id="app-header" class="app-header hidden">
             <div class="header-content">
                 <div class="user-info">
-                    <div class="user-avatar" id="user-avatar">U</div>
+                    <div class="user-avatar" id="user-avatar" aria-hidden="true">U</div>
                     <div class="user-details">
                         <span class="app-kicker">V2rays Emergency</span>
                         <span class="user-name" id="user-name">کاربر</span>
                         <span class="user-balance" id="user-balance">$0.00</span>
                     </div>
                 </div>
-                <button class="nav-btn" style="min-width:36px;min-height:36px" onclick="UI.navigate('dashboard')">
-                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 1 0 2.13-5.88L21 8"/></svg>
+                <button class="btn btn-ghost btn-icon-only"
+                        id="header-refresh"
+                        aria-label="بروزرسانی"
+                        onclick="UI.navigate(document.querySelector('.nav-btn.active')?.dataset.page || 'dashboard')">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M21 2v6h-6"/><path d="M3 12a9 9 0 1 0 2.13-5.88L21 8"/>
+                    </svg>
                 </button>
             </div>
         </header>
 
         <!-- Pages -->
         <main id="main-content" class="main-content hidden">
-            <!-- Dashboard Page -->
+
+            <!-- ── Dashboard ────────────────────────────────────────────── -->
             <section id="page-dashboard" class="page active">
                 <div class="page-scroll">
                     <div class="home-hero">
                         <div>
                             <span class="home-eyebrow">پنل کاربری</span>
                             <h1>مدیریت سریع سرویس‌ها</h1>
-                            <p>خرید، تمدید، کیف پول و پشتیبانی در یک تجربه یکپارچه.</p>
+                            <p>خرید، تمدید، کیف پول و پشتیبانی در یک تجربه‌ی یکپارچه و سریع.</p>
                         </div>
                     </div>
+
                     <div class="quick-actions" id="quick-actions">
-                        <button class="quick-action" onclick="UI.navigate('store')"><span>🛒 خرید سرویس</span><strong>پلن‌ها</strong></button>
-                        <button class="quick-action" onclick="UI.navigate('wallet')"><span>💳 شارژ حساب</span><strong>کیف پول</strong></button>
-                        <button class="quick-action" onclick="UI.navigate('support')"><span>💬 درخواست کمک</span><strong>پشتیبانی</strong></button>
+                        <button class="quick-action" onclick="UI.navigate('store')">
+                            <span>🛒</span><strong>خرید سرویس</strong>
+                        </button>
+                        <button class="quick-action" onclick="UI.navigate('wallet')">
+                            <span>💳</span><strong>شارژ حساب</strong>
+                        </button>
+                        <button class="quick-action" onclick="UI.navigate('support')">
+                            <span>💬</span><strong>پشتیبانی</strong>
+                        </button>
                     </div>
+
                     <div class="stats-grid" id="stats-grid"></div>
+
                     <h3 class="section-title"><span data-icon="configs"></span> سرویس‌های فعال</h3>
                     <div id="configs-list" class="configs-list"></div>
                 </div>
             </section>
 
-            <!-- Store Page -->
+            <!-- ── Store ─────────────────────────────────────────────────── -->
             <section id="page-store" class="page">
                 <div class="page-scroll">
                     <h3 class="section-title"><span data-icon="store"></span> فروشگاه پلن‌ها</h3>
@@ -66,7 +90,7 @@
                 </div>
             </section>
 
-            <!-- Configs Page -->
+            <!-- ── My Configs ────────────────────────────────────────────── -->
             <section id="page-configs" class="page">
                 <div class="page-scroll">
                     <h3 class="section-title"><span data-icon="configs"></span> سرویس‌های من</h3>
@@ -74,7 +98,7 @@
                 </div>
             </section>
 
-            <!-- Wallet Page -->
+            <!-- ── Wallet ────────────────────────────────────────────────── -->
             <section id="page-wallet" class="page">
                 <div class="page-scroll">
                     <div class="wallet-card" id="wallet-card"></div>
@@ -85,30 +109,36 @@
                 </div>
             </section>
 
-            <!-- Support Page -->
+            <!-- ── Support ───────────────────────────────────────────────── -->
             <section id="page-support" class="page">
                 <div class="page-scroll support-page-scroll">
                     <h3 class="section-title"><span data-icon="support"></span> پشتیبانی</h3>
                     <div id="tickets-container" class="tickets-container"></div>
                     <div class="ticket-input-area">
-                        <textarea id="ticket-input" placeholder="پیام خود را اینجا بنویسید..." rows="1"></textarea>
-                        <button id="ticket-send-btn" class="btn btn-primary" title="ارسال">
-                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                        <textarea id="ticket-input" placeholder="پیام خود را اینجا بنویسید…" rows="1" aria-label="متن پیام"></textarea>
+                        <button id="ticket-send-btn" class="btn btn-primary" title="ارسال" aria-label="ارسال پیام">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+                                 stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                <line x1="22" y1="2" x2="11" y2="13"/>
+                                <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                            </svg>
                         </button>
                     </div>
                 </div>
             </section>
 
-            <!-- Referral Page -->
+            <!-- ── Referral ─────────────────────────────────────────────── -->
             <section id="page-referral" class="page">
                 <div class="page-scroll">
                     <h3 class="section-title"><span data-icon="users"></span> دعوت دوستان</h3>
                     <div id="referral-container"></div>
                 </div>
             </section>
+
+            <!-- ── Admin ─────────────────────────────────────────────────── -->
             <section id="page-admin" class="page">
                 <div class="page-scroll">
-                    <h3 class="section-title">پنل مدیریت</h3>
+                    <h3 class="section-title"><span data-icon="admin"></span> پنل مدیریت</h3>
                     <div id="admin-overview" class="admin-overview"></div>
                     <div id="admin-modules" class="admin-modules"></div>
                 </div>
@@ -116,46 +146,46 @@
         </main>
 
         <!-- Bottom Navigation -->
-        <nav id="bottom-nav" class="bottom-nav hidden">
-            <button class="nav-btn active" data-page="dashboard">
+        <nav id="bottom-nav" class="bottom-nav hidden" aria-label="منوی اصلی">
+            <button class="nav-btn active" data-page="dashboard" aria-label="خانه">
                 <span class="nav-icon" data-icon="home"></span>
                 <span class="nav-label">خانه</span>
             </button>
-            <button class="nav-btn" data-page="store">
+            <button class="nav-btn" data-page="store" aria-label="فروشگاه">
                 <span class="nav-icon" data-icon="store"></span>
                 <span class="nav-label">فروشگاه</span>
             </button>
-            <button class="nav-btn" data-page="configs">
+            <button class="nav-btn" data-page="configs" aria-label="سرویس‌ها">
                 <span class="nav-icon" data-icon="configs"></span>
                 <span class="nav-label">سرویس‌ها</span>
             </button>
-            <button class="nav-btn" data-page="wallet">
+            <button class="nav-btn" data-page="wallet" aria-label="کیف پول">
                 <span class="nav-icon" data-icon="wallet"></span>
                 <span class="nav-label">کیف پول</span>
             </button>
-            <button class="nav-btn" data-page="support">
+            <button class="nav-btn" data-page="support" aria-label="پشتیبانی">
                 <span class="nav-icon" data-icon="support"></span>
                 <span class="nav-label">پشتیبانی</span>
             </button>
-            <button class="nav-btn" data-page="referral">
+            <button class="nav-btn" data-page="referral" aria-label="دعوت دوستان">
                 <span class="nav-icon" data-icon="users"></span>
                 <span class="nav-label">دعوت</span>
             </button>
-            <button id="admin-nav-btn" class="nav-btn hidden" data-page="admin">
+            <button id="admin-nav-btn" class="nav-btn hidden" data-page="admin" aria-label="مدیریت">
                 <span class="nav-icon" data-icon="admin"></span>
                 <span class="nav-label">مدیریت</span>
             </button>
         </nav>
     </div>
 
-    <div id="toast" class="toast hidden"></div>
-    <div id="modal-overlay" class="modal-overlay hidden">
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <div id="modal-overlay" class="modal-overlay hidden" role="dialog" aria-modal="true">
         <div class="modal-content" id="modal-content"></div>
     </div>
 
-    <script src="/miniapp/js/api.js?v=20260519-1"></script>
-    <script src="/miniapp/js/ui.js?v=20260519-1"></script>
-    <script src="/miniapp/js/pages.js?v=20260519-1"></script>
-    <script src="/miniapp/js/app.js?v=20260519-1"></script>
+    <script src="/miniapp/js/api.js?v=v3-20260520"></script>
+    <script src="/miniapp/js/ui.js?v=v3-20260520"></script>
+    <script src="/miniapp/js/pages.js?v=v3-20260520"></script>
+    <script src="/miniapp/js/app.js?v=v3-20260520"></script>
 </body>
 </html>
