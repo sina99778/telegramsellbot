@@ -46,6 +46,27 @@ router = Router(name="user-purchase")
 CONFIG_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]{3,32}$")
 
 
+# Friendly Persian message when FSM state has expired or never carried plan_id.
+# Caused by: bot restart, FSM cleared by another flow, user clicked a stale
+# callback after /cancel, etc. Naked `data["plan_id"]` raised KeyError and
+# bubbled up as "خطا در انجام خرید: 'plan_id'" — useless to the end user.
+_STATE_EXPIRED_MSG = (
+    "⛔ این مرحله از خرید منقضی شده است.\n"
+    "لطفاً از منوی اصلی روی «🛒 خرید کانفیگ» بزنید و دوباره شروع کنید."
+)
+
+
+def _get_state_plan_id(data: dict) -> "UUID | None":
+    """Read plan_id from FSM state safely. Returns None if missing/invalid."""
+    raw = data.get("plan_id") if isinstance(data, dict) else None
+    if not raw:
+        return None
+    try:
+        return UUID(str(raw))
+    except (ValueError, TypeError):
+        return None
+
+
 def _phone_request_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="ارسال شماره موبایل", request_contact=True)]],
@@ -409,7 +430,11 @@ async def discount_code_entered(
 
     code = message.text.strip().upper()
     data = await state.get_data()
-    plan_id = UUID(data["plan_id"])
+    plan_id = _get_state_plan_id(data)
+    if plan_id is None:
+        await state.clear()
+        await message.answer(_STATE_EXPIRED_MSG)
+        return
 
     repo = DiscountRepository(session)
     discount, reason = await repo.validate_code_with_reason(code, plan_id=plan_id)
@@ -455,7 +480,12 @@ async def _show_payment_method_choice(
 ) -> None:
     """Show wallet vs gateway payment options (from callback)."""
     data = await state.get_data()
-    plan = await session.get(Plan, UUID(data["plan_id"]))
+    plan_id = _get_state_plan_id(data)
+    if plan_id is None:
+        await state.clear()
+        await safe_edit_or_send(callback, _STATE_EXPIRED_MSG)
+        return
+    plan = await session.get(Plan, plan_id)
     if plan is None:
         await state.clear()
         await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
@@ -513,7 +543,12 @@ async def _show_payment_method_choice_msg(
 ) -> None:
     """Show wallet vs gateway payment options (from message)."""
     data = await state.get_data()
-    plan = await session.get(Plan, UUID(data["plan_id"]))
+    plan_id = _get_state_plan_id(data)
+    if plan_id is None:
+        await state.clear()
+        await message.answer(_STATE_EXPIRED_MSG)
+        return
+    plan = await session.get(Plan, plan_id)
     if plan is None:
         await state.clear()
         await message.answer(Messages.PLAN_NOT_AVAILABLE)
@@ -939,7 +974,10 @@ async def _process_wallet_purchase(
     data = await state.get_data()
     await state.clear()
 
-    plan_id = UUID(data["plan_id"])
+    plan_id = _get_state_plan_id(data)
+    if plan_id is None:
+        await safe_edit_or_send(callback, _STATE_EXPIRED_MSG)
+        return
     config_name = data.get("config_name", "VPN")
     discount_percent = data.get("discount_percent", 0)
     discount_id = data.get("discount_id")
@@ -1027,7 +1065,11 @@ async def _process_gateway_purchase(
     data = await state.get_data()
     # DON'T clear state yet — we need it after payment confirmation via IPN
 
-    plan_id = UUID(data["plan_id"])
+    plan_id = _get_state_plan_id(data)
+    if plan_id is None:
+        await state.clear()
+        await safe_edit_or_send(callback, _STATE_EXPIRED_MSG)
+        return
     config_name = data.get("config_name", "VPN")
     discount_percent = data.get("discount_percent", 0)
 
@@ -1134,8 +1176,12 @@ async def _process_tronado_purchase(
         return
 
     data = await state.get_data()
-    plan_id = UUID(data["plan_id"])
-    config_name = data["config_name"]
+    plan_id = _get_state_plan_id(data)
+    if plan_id is None:
+        await state.clear()
+        await safe_edit_or_send(callback, _STATE_EXPIRED_MSG)
+        return
+    config_name = data.get("config_name") or "VPN"
     discount_percent = int(data.get("discount_percent", 0))
     discount_percent = max(0, min(100, discount_percent))
     discount_id = data.get("discount_id")
@@ -1198,8 +1244,12 @@ async def _process_tetrapay_purchase(
 
     data = await state.get_data()
     # DON'T clear state yet
-    
-    plan_id = UUID(data["plan_id"])
+
+    plan_id = _get_state_plan_id(data)
+    if plan_id is None:
+        await state.clear()
+        await safe_edit_or_send(callback, _STATE_EXPIRED_MSG)
+        return
     config_name = data.get("config_name", "VPN")
     discount_percent = data.get("discount_percent", 0)
 
