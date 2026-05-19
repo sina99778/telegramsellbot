@@ -21,6 +21,7 @@ from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.states.admin import AddServerStates, ServerManageStates
 from core.security import decrypt_secret, encrypt_secret
 from core.texts import AdminButtons, AdminMessages, Common
+from models.plan import Plan
 from models.user import User
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerCredential, XUIServerRecord
 from repositories.audit import AuditLogRepository
@@ -1135,6 +1136,16 @@ class FallbackToggleCallback(CallbackData, prefix="fbtog"):
     inbound_id: UUID
 
 
+class PivotPlansCallback(CallbackData, prefix="fbpiv"):
+    """Confirm/execute the "point every active plan at this inbound" action.
+
+    Two-stage: action='ask' shows a confirmation prompt with affected plan
+    count. action='do' actually performs the bulk UPDATE.
+    """
+    action: str  # 'ask' | 'do'
+    inbound_id: UUID
+
+
 def _fallback_inbound_label(inbound: XUIInboundRecord, is_selected: bool) -> str:
     prefix = "✅ " if is_selected else "⬜️ "
     parts: list[str] = []
@@ -1162,7 +1173,11 @@ async def admin_fallback_inbounds(
     callback: CallbackQuery,
     session: AsyncSession,
 ) -> None:
-    """List every active inbound with a ✅/⬜️ toggle for migration eligibility."""
+    """List every active inbound with two controls per row:
+      • ✅/⬜️ toggle — user-side "switch server" picker eligibility
+      • 🔄 pivot — point every active plan at this inbound (= every
+        new purchase from now on goes here, existing configs stay).
+    """
     await callback.answer()
 
     inbounds_result = await session.execute(
@@ -1181,45 +1196,76 @@ async def admin_fallback_inbounds(
     selected_raw = await settings_repo.get_migration_target_inbound_ids()
     selected: set[str] = set(selected_raw)
 
+    # Count how many active plans currently point at each inbound, so the
+    # admin can tell which one is the "production" inbound at a glance.
+    from sqlalchemy import func as _func
+    plan_counts_raw = await session.execute(
+        select(Plan.inbound_id, _func.count())
+        .where(Plan.is_active.is_(True), Plan.inbound_id.isnot(None))
+        .group_by(Plan.inbound_id)
+    )
+    plan_counts: dict[str, int] = {str(pid): int(c) for pid, c in plan_counts_raw.all() if pid is not None}
+
     builder = InlineKeyboardBuilder()
 
     if not inbounds:
         text = (
-            "🎯 <b>اینباندهای fallback (تغییر سرور)</b>\n"
+            "🎯 <b>اینباندهای fallback</b>\n"
             "━━━━━━━━━━━━━━\n"
             "❌ هیچ اینباند فعالی پیدا نشد.\n\n"
             "ابتدا یک سرور و اینباند از منوی «🖥 مدیریت سرورها» اضافه کنید."
         )
-    else:
-        for inbound in inbounds:
-            sid = str(inbound.id)
-            builder.button(
-                text=_fallback_inbound_label(inbound, sid in selected),
-                callback_data=FallbackToggleCallback(inbound_id=inbound.id).pack(),
-            )
-        count = len(selected.intersection({str(i.id) for i in inbounds}))
-        if count == 0:
-            scope_line = (
-                "⚠️ هیچ اینباندی انتخاب نشده — کاربران الان <b>همه‌ی</b> "
-                "اینباندهای فعال را در لیست انتقال می‌بینند."
-            )
-        else:
-            scope_line = (
-                f"✅ <b>{count}</b> اینباند به‌عنوان fallback انتخاب شده — "
-                "کاربران فقط همین‌ها را در لیست انتقال می‌بینند."
-            )
-        text = (
-            "🎯 <b>اینباندهای fallback (تغییر سرور)</b>\n"
-            "━━━━━━━━━━━━━━\n"
-            "روی هر اینباند بزنید تا انتخاب/لغو شود.\n"
-            "ـ ✅ یعنی کاربران می‌توانند کانفیگ خود را به این اینباند منتقل کنند.\n"
-            "ـ ⬜️ یعنی این اینباند در لیست کاربر دیده نمی‌شود.\n"
-            f"\n{scope_line}"
+        builder.button(text=AdminButtons.BACK, callback_data="admin:servers")
+        builder.adjust(1)
+        await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        return
+
+    # Two rows per inbound: toggle + pivot
+    layout: list[int] = []
+    for inbound in inbounds:
+        sid = str(inbound.id)
+        builder.button(
+            text=_fallback_inbound_label(inbound, sid in selected),
+            callback_data=FallbackToggleCallback(inbound_id=inbound.id).pack(),
         )
+        pc = plan_counts.get(sid, 0)
+        pivot_label = (
+            f"🔄 همه‌ی پلن‌ها به این اینباند"
+            if pc == 0
+            else f"🔄 پلن‌های فعلی این اینباند: {pc} — انتقال همه پلن‌ها"
+        )
+        builder.button(
+            text=pivot_label,
+            callback_data=PivotPlansCallback(action="ask", inbound_id=inbound.id).pack(),
+        )
+        layout.extend([1, 1])
 
     builder.button(text=AdminButtons.BACK, callback_data="admin:servers")
-    # 1 button per row for readability
-    builder.adjust(1)
+    layout.append(1)
+    builder.adjust(*layout)
+
+    count = len(selected.intersection({str(i.id) for i in inbounds}))
+    if count == 0:
+        scope_line = (
+            "⚠️ هیچ اینباندی به‌عنوان fallback انتخاب نشده — کاربران الان "
+            "<b>همه‌ی</b> اینباندها را در لیست انتقال می‌بینند."
+        )
+    else:
+        scope_line = (
+            f"✅ <b>{count}</b> اینباند به‌عنوان fallback انتخاب شده — کاربران "
+            "فقط همین‌ها را در لیست انتقال می‌بینند."
+        )
+
+    text = (
+        "🎯 <b>اینباندهای fallback</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "<b>دو کنترل برای هر اینباند:</b>\n"
+        "▫️ <b>✅/⬜️ ردیف اول</b> — فعال‌بودن در لیست «🛠 تغییر سرور» کاربرها.\n"
+        "▫️ <b>🔄 ردیف دوم</b> — همه پلن‌های فعال را به این اینباند منتقل می‌کند "
+        "(یعنی <b>خریدهای جدید از این به بعد</b> روی این اینباند می‌روند). "
+        "کانفیگ‌های موجود دست‌نخورده می‌مانند.\n"
+        f"\n{scope_line}"
+    )
 
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -1261,3 +1307,156 @@ async def admin_fallback_toggle(
     )
     # Re-render the list so the user sees the new ✅/⬜️ state.
     await admin_fallback_inbounds(callback, session)
+
+
+# ─── Pivot all active plans to a single inbound ───────────────────────────
+#
+# Phase A migration helper. Use case: admin builds a fresh inbound on the
+# new server and wants every new purchase from now on to go to it,
+# without touching the configs that already exist on the old inbound.
+# Implementation is a single bulk UPDATE on plans.inbound_id; existing
+# Subscription rows + their XUIClientRecord rows stay untouched.
+
+@router.callback_query(PivotPlansCallback.filter(F.action == "ask"))
+async def admin_pivot_plans_ask(
+    callback: CallbackQuery,
+    callback_data: PivotPlansCallback,
+    session: AsyncSession,
+) -> None:
+    """Stage 1: show what's about to change and ask for explicit confirmation."""
+    await callback.answer()
+
+    inbound = await session.scalar(
+        select(XUIInboundRecord)
+        .options(selectinload(XUIInboundRecord.server))
+        .where(XUIInboundRecord.id == callback_data.inbound_id)
+    )
+    if inbound is None or inbound.server is None:
+        await safe_edit_or_send(callback, AdminMessages.SERVER_NOT_FOUND)
+        return
+
+    # How many active plans currently point somewhere ELSE and would move?
+    from sqlalchemy import func as _func
+    total_active_plans = int(
+        await session.scalar(
+            select(_func.count()).select_from(Plan).where(Plan.is_active.is_(True))
+        ) or 0
+    )
+    moving_count = int(
+        await session.scalar(
+            select(_func.count()).select_from(Plan).where(
+                Plan.is_active.is_(True),
+                (Plan.inbound_id != callback_data.inbound_id) | (Plan.inbound_id.is_(None)),
+            )
+        ) or 0
+    )
+    already_count = total_active_plans - moving_count
+
+    target_label = _fallback_inbound_label(inbound, False).lstrip("✅ ⬜️").strip()
+
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="✅ تأیید — همه‌ی پلن‌ها روی این اینباند",
+        callback_data=PivotPlansCallback(action="do", inbound_id=callback_data.inbound_id).pack(),
+    )
+    builder.button(text="❌ انصراف", callback_data="admin:fallback_inbounds")
+    builder.adjust(1)
+
+    text = (
+        "🔄 <b>تأیید انتقال همه‌ی پلن‌ها</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        f"🎯 اینباند مقصد: <code>{target_label}</code>\n"
+        f"📦 پلن‌های فعال کل: <b>{total_active_plans}</b>\n"
+        f"➡️ منتقل می‌شوند: <b>{moving_count}</b>\n"
+        f"✓ از قبل روی این اینباند: <b>{already_count}</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "<b>اثرها:</b>\n"
+        "• <b>هر خرید جدید</b> از این به بعد روی این اینباند انجام می‌شود.\n"
+        "• <b>کانفیگ‌های موجود</b> دست‌نخورده می‌مانند (روی اینباند فعلی خود).\n"
+        "• کاربران می‌توانند خودشان از منوی «🛠 تغییر سرور» کانفیگ‌های قبلی را منتقل کنند.\n\n"
+        "آیا تأیید می‌کنید؟"
+    )
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(PivotPlansCallback.filter(F.action == "do"))
+async def admin_pivot_plans_do(
+    callback: CallbackQuery,
+    callback_data: PivotPlansCallback,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    """Stage 2: actually perform the bulk update."""
+    await callback.answer("⏳ در حال انتقال…")
+
+    inbound = await session.scalar(
+        select(XUIInboundRecord)
+        .options(selectinload(XUIInboundRecord.server))
+        .where(XUIInboundRecord.id == callback_data.inbound_id)
+    )
+    if inbound is None or not inbound.is_active:
+        await safe_edit_or_send(callback, "❌ اینباند مقصد فعال نیست.")
+        return
+    if inbound.server is None or not inbound.server.is_active:
+        await safe_edit_or_send(callback, "❌ سرور اینباند مقصد فعال نیست.")
+        return
+
+    from sqlalchemy import update as _update, func as _func
+
+    # Snapshot what we're about to change for the audit log + UI message.
+    affected_rows = await session.execute(
+        select(Plan.id, Plan.name, Plan.inbound_id).where(
+            Plan.is_active.is_(True),
+            (Plan.inbound_id != callback_data.inbound_id) | (Plan.inbound_id.is_(None)),
+        )
+    )
+    affected = list(affected_rows.all())
+    affected_ids = [row.id for row in affected]
+
+    if not affected_ids:
+        await safe_edit_or_send(
+            callback,
+            "ℹ️ همه‌ی پلن‌های فعال از قبل روی این اینباند هستند. تغییری اعمال نشد.",
+        )
+        return
+
+    # Bulk update — single SQL statement, transactional.
+    await session.execute(
+        _update(Plan)
+        .where(Plan.id.in_(affected_ids))
+        .values(inbound_id=callback_data.inbound_id)
+    )
+    await session.flush()
+
+    try:
+        await AuditLogRepository(session).log_action(
+            actor_user_id=admin_user.id,
+            action="pivot_plans_to_inbound",
+            entity_type="inbound",
+            entity_id=callback_data.inbound_id,
+            payload={
+                "moved_plan_count": len(affected_ids),
+                "moved_plan_ids": [str(pid) for pid in affected_ids],
+                # truncate to keep payload sane
+                "plan_names_preview": [row.name for row in affected[:20]],
+            },
+        )
+    except Exception as exc:
+        logger.warning("Audit log failed for pivot_plans_to_inbound: %s", exc)
+
+    target_label = _fallback_inbound_label(inbound, False).lstrip("✅ ⬜️").strip()
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="↩️ بازگشت به لیست اینباندها", callback_data="admin:fallback_inbounds")
+    builder.adjust(1)
+
+    text = (
+        "✅ <b>انتقال انجام شد!</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        f"🎯 اینباند مقصد: <code>{target_label}</code>\n"
+        f"📦 پلن‌های منتقل‌شده: <b>{len(affected_ids)}</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "از این پس، هر خرید جدید روی این اینباند ساخته می‌شود.\n"
+        "کانفیگ‌های موجود تغییری نکرده‌اند."
+    )
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
