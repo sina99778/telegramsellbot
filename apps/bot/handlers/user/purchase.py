@@ -1359,6 +1359,20 @@ async def _finalize_purchase(
 ) -> None:
     """Shared purchase finalization: wallet debit, provisioning, sending config."""
     wallet_manager = WalletManager(session)
+
+    # ── Pre-flight: probe X-UI panel BEFORE we touch the wallet ──
+    # If the panel is unreachable, the user gets a polite "try again
+    # later" and not a single coin moves. This is the cheapest way to
+    # avoid the "debited but configless" failure mode.
+    provisioning_manager = ProvisioningManager(session)
+    ok, reason = await provisioning_manager.preflight_check_plan(plan.id)
+    if not ok:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ {reason or 'سرور در دسترس نیست.'}",
+        )
+        return
+
     order = Order(
         user_id=user.id,
         plan_id=plan.id,
@@ -1395,8 +1409,17 @@ async def _finalize_purchase(
             order_id=order.id,
             config_name=config_name,
         )
-    except ProvisioningError as exc:
-        logger.error("Provisioning failed for order %s: %s", order.id, exc)
+    except Exception as exc:
+        # CRITICAL: catch EVERY exception — not just ProvisioningError. The
+        # X-UI panel can also raise ConnectError, TimeoutError,
+        # XUIAuthenticationError, etc., and a narrow catch would leave the
+        # user debited and configless. Always refund + tell the user.
+        is_provisioning_err = isinstance(exc, ProvisioningError)
+        log_fn = logger.error if is_provisioning_err else logger.critical
+        log_fn(
+            "Provisioning failed for order %s (%s): %s",
+            order.id, type(exc).__name__, exc, exc_info=not is_provisioning_err,
+        )
         try:
             await wallet_manager.process_transaction(
                 user_id=user.id,
@@ -1407,15 +1430,39 @@ async def _finalize_purchase(
                 reference_type="order",
                 reference_id=order.id,
                 description="Automatic refund after provisioning failure",
-                metadata={"plan_id": str(plan.id)},
+                metadata={
+                    "plan_id": str(plan.id),
+                    "failure_reason": type(exc).__name__,
+                },
             )
             order.status = "refunded"
+            await bot.send_message(chat_id=chat_id, text=Messages.PROVISIONING_FAILED_REFUNDED)
         except Exception as refund_exc:
             logger.critical(
-                "CRITICAL: Refund also failed for order %s: %s", order.id, refund_exc
+                "CRITICAL: Refund also failed for order %s: %s",
+                order.id, refund_exc, exc_info=True,
             )
             order.status = "failed_needs_manual_refund"
-        await bot.send_message(chat_id=chat_id, text=Messages.PROVISIONING_FAILED_REFUNDED)
+            # Tell the user we couldn't auto-refund + ping support / admins.
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=Messages.PROVISIONING_FAILED_MANUAL_REFUND,
+                )
+            except Exception:
+                pass
+            # Alert admins so they can refund manually before the user complains.
+            try:
+                from services.notifications import notify_admins
+                await notify_admins(
+                    session, bot,
+                    f"🚨 خرید ناموفق + refund هم شکست خورد!\n"
+                    f"order={order.id}\nuser={user.telegram_id}\n"
+                    f"amount={final_price} {plan.currency}\n"
+                    f"reason: {type(exc).__name__}: {str(exc)[:160]}",
+                )
+            except Exception:
+                pass
         return
 
     order.status = "provisioned"

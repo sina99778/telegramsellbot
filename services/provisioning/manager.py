@@ -67,6 +67,113 @@ class ProvisioningManager:
         self.xui_client = xui_client
         self.wallet_manager = WalletManager(session)
 
+    async def preflight_check_plan(self, plan_id: UUID) -> tuple[bool, str | None]:
+        """Quick health probe for the plan's X-UI inbound BEFORE we debit
+        the user's wallet.
+
+        Returns (ok, reason). When ok is False, ``reason`` is a Persian
+        string suitable for showing the user — caller should refuse the
+        purchase and NOT debit anything.
+
+        Implementation: load the plan's inbound + server + credentials,
+        then attempt a fast login() against the panel. We deliberately
+        keep the timeout small; a healthy panel responds in well under a
+        second.
+        """
+        plan = await self.session.scalar(
+            select(Plan)
+            .options(
+                selectinload(Plan.inbound)
+                .selectinload(XUIInboundRecord.server)
+                .selectinload(XUIServerRecord.credentials)
+            )
+            .where(Plan.id == plan_id)
+        )
+        if plan is None or not plan.is_active:
+            return False, "این پلن در حال حاضر فعال نیست."
+
+        # Ready-config pools don't need an X-UI panel at purchase time —
+        # the configs live in a static pool. Skip the panel probe.
+        ready_pool = await self.session.scalar(
+            select(ReadyConfigPool).where(
+                ReadyConfigPool.plan_id == plan.id,
+                ReadyConfigPool.is_active.is_(True),
+            )
+        )
+        if ready_pool is not None:
+            return True, None
+
+        inbound = plan.inbound
+        if inbound is None:
+            # Same fallback the provisioning path uses.
+            inbound = await self.session.scalar(
+                select(XUIInboundRecord)
+                .options(selectinload(XUIInboundRecord.server).selectinload(XUIServerRecord.credentials))
+                .where(XUIInboundRecord.is_active.is_(True))
+                .order_by(XUIInboundRecord.created_at.asc())
+                .limit(1)
+            )
+        if inbound is None or not inbound.is_active:
+            return False, "هیچ سرور فعالی برای این پلن در دسترس نیست."
+        try:
+            server = ensure_inbound_server_loaded(inbound)
+        except Exception:
+            return False, "اطلاعات سرور این پلن ناقص است."
+        if not server.is_active:
+            return False, "سرور این پلن غیرفعال شده است."
+        if server.credentials is None:
+            return False, "اطلاعات ورود به سرور موجود نیست."
+
+        try:
+            async with self._get_xui_client_for_server(server) as xui_client:
+                await xui_client.login()
+            return True, None
+        except Exception as exc:
+            logger.warning(
+                "preflight_check_plan: panel %s unreachable (%s): %s",
+                server.name, type(exc).__name__, exc,
+            )
+            return False, (
+                "اتصال به سرور موقتاً برقرار نشد. لطفاً چند دقیقه‌ی دیگر "
+                "دوباره تلاش کنید — وجهی از حساب شما کم نشد."
+            )
+
+    async def preflight_check_subscription(self, subscription_id: UUID) -> tuple[bool, str | None]:
+        """Same probe but for an existing subscription (renewal path)."""
+        sub = await self.session.scalar(
+            select(Subscription)
+            .options(
+                selectinload(Subscription.xui_client)
+                .selectinload(XUIClientRecord.inbound)
+                .selectinload(XUIInboundRecord.server)
+                .selectinload(XUIServerRecord.credentials)
+            )
+            .where(Subscription.id == subscription_id)
+        )
+        if sub is None:
+            return False, "سرویس یافت نشد."
+        if sub.xui_client is None or sub.xui_client.inbound is None:
+            return True, None  # ready-config — no panel involved
+        try:
+            server = ensure_inbound_server_loaded(sub.xui_client.inbound)
+        except Exception:
+            return False, "اطلاعات سرور این سرویس ناقص است."
+        if not server.is_active or server.credentials is None:
+            return False, "سرور این سرویس در حال حاضر در دسترس نیست."
+        try:
+            async with self._get_xui_client_for_server(server) as xui_client:
+                await xui_client.login()
+            return True, None
+        except Exception as exc:
+            logger.warning(
+                "preflight_check_subscription: panel %s unreachable (%s): %s",
+                server.name, type(exc).__name__, exc,
+            )
+            return False, (
+                "اتصال به سرور موقتاً برقرار نشد. لطفاً چند دقیقه‌ی دیگر "
+                "دوباره تلاش کنید — وجهی از حساب شما کم نشد."
+            )
+
     async def provision_subscription(
         self,
         *,

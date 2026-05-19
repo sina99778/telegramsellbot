@@ -394,6 +394,21 @@ async def renew_pay_wallet(
 
         await state.clear()
 
+        # Pre-flight: probe the panel BEFORE we debit. Saves the user
+        # from a "debited then refunded" round-trip when the server is
+        # already known to be down.
+        try:
+            from services.provisioning.manager import ProvisioningManager as _PM
+            preflight_ok, preflight_reason = await _PM(session).preflight_check_subscription(sub.id)
+        except Exception:
+            preflight_ok, preflight_reason = True, None  # don't block the user on a broken probe
+        if not preflight_ok:
+            try:
+                await callback.message.answer(f"⚠️ {preflight_reason or 'سرور در دسترس نیست.'}")
+            except Exception:
+                pass
+            return
+
         # Send loading message as a NEW message so we can edit it with the result
         try:
             loading_msg = await callback.message.answer("⏳ در حال تمدید...")
