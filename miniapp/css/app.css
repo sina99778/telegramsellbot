@@ -1426,14 +1426,18 @@ input:focus, textarea:focus, select:focus {
     padding: var(--space-4);
     margin-block-end: var(--space-4);
 }
+/* Admin home container — we treat it as a vertical block. The two
+   internal sections (.admin-tile-grid for modules, and any inline
+   subpage content like .admin-list / .admin-form) handle their own
+   layout. Earlier this was a 2-column grid, which made every direct
+   child take only half the width — including the .admin-tile-grid,
+   which is itself a grid. The visual symptom was tiles clipped at
+   the edge and a horizontal scroll bar. */
 .admin-modules {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: var(--space-2);
+    display: block;
 }
-@media (min-width: 480px) {
-    .admin-modules { grid-template-columns: repeat(3, 1fr); }
-}
+.admin-modules > * + * { margin-block-start: var(--space-3); }
+
 .admin-module {
     background: var(--bg-elevated);
     border: 1px solid var(--border);
@@ -1736,6 +1740,44 @@ input:focus, textarea:focus, select:focus {
     flex: 1 1 0;
     min-width: 86px;
 }
+
+/* ─── 25g. Config detail modal — QR + link blocks ────────────────────── */
+.config-detail-links {
+    margin-block-start: var(--space-4);
+    padding: var(--space-4);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+}
+.config-detail-qr {
+    align-self: center;
+    width: min(220px, 55vw);
+    height: min(220px, 55vw);
+    border-radius: var(--radius-md);
+    background: #fff;
+    padding: 8px;
+}
+.config-detail-link-block .form-label {
+    margin-block-end: 6px;
+}
+.config-detail-link-block .copy-box {
+    font-size: 11.5px;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+    white-space: pre-wrap;
+    line-height: 1.55;
+    max-height: 5em;
+    overflow-y: auto;
+}
+.config-detail-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-2);
+}
+.config-detail-actions .btn { width: 100%; }
 
 /* ─── 25e. Admin home — hero + tile grid (new v5 design) ─────────────── */
 .admin-hero {

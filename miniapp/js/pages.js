@@ -33,13 +33,16 @@ const Pages = (() => {
             buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'nowpayments')">💎 درگاه ارزی NOWPayments</button>`);
         }
         if (gateways.manual_crypto || gateways.card_to_card) {
-            const botUser = getBotUsername();
-            if (botUser) {
-                buttons.push(`<a class="btn btn-secondary btn-block" href="https://t.me/${botUser}" target="_blank" style="text-decoration:none;text-align:center">🤖 پرداخت دستی (از طریق ربات)</a>`);
-            }
+            buttons.push(`<button class="btn btn-secondary btn-block" onclick="Pages.openBotChat()">🤖 پرداخت دستی (از طریق ربات)</button>`);
         }
         if (!buttons.length) {
-            buttons.push('<div class="empty-state compact"><p>هیچ درگاه پرداختی فعال نیست</p></div>');
+            buttons.push(`
+                <div class="empty-state compact">
+                    <p>هیچ درگاه پرداختی فعال نیست</p>
+                    <p class="empty-hint">ادمین باید حداقل یکی از درگاه‌ها را فعال کند.</p>
+                    <button class="btn btn-secondary btn-sm" onclick="Pages.openBotChat()">${UI.icon('share')} رفتن به ربات</button>
+                </div>
+            `);
         }
         return buttons.join('\n');
     }
@@ -57,13 +60,19 @@ const Pages = (() => {
             buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'nowpayments')">💎 درگاه ارزی NOWPayments</button>`);
         }
         if (gateways.manual_crypto || gateways.card_to_card) {
-            const botUser = getBotUsername();
-            if (botUser) {
-                buttons.push(`<a class="btn btn-secondary btn-block" href="https://t.me/${botUser}" target="_blank" style="text-decoration:none;text-align:center">🤖 پرداخت دستی (از طریق ربات)</a>`);
-            }
+            // `<a target="_blank">` is silently dropped inside Telegram's
+            // WebApp iframe. We need openTelegramLink() to actually leave
+            // the miniapp. Wrap it in a button that calls openBotChat().
+            buttons.push(`<button class="btn btn-secondary btn-block" onclick="Pages.openBotChat()">🤖 پرداخت دستی (از طریق ربات)</button>`);
         }
         if (!buttons.length) {
-            buttons.push('<div class="empty-state compact"><p>هیچ درگاه پرداختی فعال نیست</p></div>');
+            buttons.push(`
+                <div class="empty-state compact">
+                    <p>هیچ درگاه پرداختی فعال نیست</p>
+                    <p class="empty-hint">ادمین باید حداقل یکی از درگاه‌ها (تتراپی / NOWPayments / دستی) را فعال کند.</p>
+                    <button class="btn btn-secondary btn-sm" onclick="Pages.openBotChat()">${UI.icon('share')} رفتن به ربات</button>
+                </div>
+            `);
         }
         return buttons.join('\n');
     }
@@ -284,19 +293,39 @@ const Pages = (() => {
         const name = sub.config_name || sub.plan_name || 'سرویس';
 
         let linkSection = '';
-        if (sub.sub_link) {
-            const safeSubLink = encodeURIComponent(sub.sub_link);
-            const rawLink = sub.sub_link;
+        if (sub.sub_link || sub.vless_uri) {
+            const rawSub = sub.sub_link || '';
+            const safeSubLink = encodeURIComponent(rawSub);
+            const rawVless = sub.vless_uri || '';
+            const safeVless = encodeURIComponent(rawVless);
+            // QR points at the most useful payload: prefer the vless URI
+            // (works directly in apps) and fall back to sub_link.
+            const qrPayload = rawVless || rawSub;
+            const safeQr = encodeURIComponent(qrPayload);
+
             linkSection = `
-                <div style="margin-top:16px; display:flex; flex-direction:column; align-items:center; background:var(--bg-elevated); padding:16px; border-radius:var(--radius-md); border:1px solid var(--border);">
-                    <img src="https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${safeSubLink}" style="width:min(200px,55vw);height:min(200px,55vw);border-radius:12px;margin-bottom:16px;background:#fff;padding:8px;" alt="QR Code" />
-                    <p style="font-size:12px;color:var(--text-muted);margin-bottom:6px;width:100%;text-align:right">لینک اتصال مستقیم:</p>
-                    <div class="copy-box" style="width:100%;text-align:left;direction:ltr;margin-bottom:12px;font-size:11px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" onclick="UI.copyToClipboard('${rawLink}')">${escapeHtml(rawLink)}</div>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%">
-                        <button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard('${rawLink}')">${UI.icon('copy')} کپی لینک</button>
-                        <a href="v2rayng://install-sub/?url=${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">V2rayNG (اندروید)</a>
-                        <a href="v2box://install-sub/?url=${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">V2Box (آیفون)</a>
-                        <a href="streisand://import/${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">Streisand</a>
+                <div class="config-detail-links">
+                    <img src="https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${safeQr}"
+                         class="config-detail-qr" alt="QR Code" />
+
+                    ${rawSub ? `
+                    <div class="config-detail-link-block">
+                        <p class="form-label">🔗 لینک اشتراک (Sub-Link)</p>
+                        <div class="copy-box" onclick="UI.copyToClipboard('${rawSub.replace(/'/g, "\\'")}')">${escapeHtml(rawSub)}</div>
+                    </div>` : ''}
+
+                    ${rawVless ? `
+                    <div class="config-detail-link-block">
+                        <p class="form-label">📋 کانفیگ مستقیم (VLESS)</p>
+                        <div class="copy-box" onclick="UI.copyToClipboard('${rawVless.replace(/'/g, "\\'")}')">${escapeHtml(rawVless)}</div>
+                    </div>` : ''}
+
+                    <div class="config-detail-actions">
+                        ${rawSub ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard('${rawSub.replace(/'/g, "\\'")}')">${UI.icon('copy')} کپی ساب</button>` : ''}
+                        ${rawVless ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard('${rawVless.replace(/'/g, "\\'")}')">${UI.icon('copy')} کپی VLESS</button>` : ''}
+                        ${rawSub ? `<a href="v2rayng://install-sub/?url=${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">V2rayNG</a>` : ''}
+                        ${rawSub ? `<a href="v2box://install-sub/?url=${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">V2Box</a>` : ''}
+                        ${rawSub ? `<a href="streisand://import/${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">Streisand</a>` : ''}
                     </div>
                 </div>
             `;
@@ -1788,6 +1817,23 @@ const Pages = (() => {
         }
     }
 
+    function openBotChat(startParam = '') {
+        const botUsername = getBotUsername();
+        if (!botUsername) {
+            UI.toast('یوزرنیم ربات پیدا نشد', 'error');
+            return;
+        }
+        const url = startParam
+            ? `https://t.me/${botUsername}?start=${encodeURIComponent(startParam)}`
+            : `https://t.me/${botUsername}`;
+        const tg = window.Telegram?.WebApp;
+        if (tg && tg.openTelegramLink) {
+            tg.openTelegramLink(url);
+        } else {
+            window.open(url, '_blank');
+        }
+    }
+
     function renderReferral(data) {
         const container = document.getElementById('referral-container');
         const botUsername = getBotUsername() || 'bot';
@@ -1850,7 +1896,7 @@ const Pages = (() => {
         showPlanDurationEditor, submitPlanDuration, showPlanPriceEditor, submitPlanPrice, showPlanStockEditor, submitPlanStock,
         toggleCustomPurchase, showCustomPurchasePriceEditor, submitCustomPurchasePrice,
         searchAdminUsers, openAdminUser, runAdminUserAction, adjustAdminUserBalance, sendAdminUserMessage,
-        createReadyConfigPlan, addReadyConfigItems, submitAdminGift, openBotAdmin,
+        createReadyConfigPlan, addReadyConfigItems, submitAdminGift, openBotAdmin, openBotChat,
     };
 })();
 
