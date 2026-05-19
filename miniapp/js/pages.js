@@ -1162,15 +1162,33 @@ const Pages = (() => {
             renderAdminUsers(section, items);
             return;
         }
+        const meta = ADMIN_MODULE_META[section] || { icon: 'package', accent: 'cyan' };
         const extra = section === 'ready_configs'
             ? renderReadyConfigTools(items)
             : (section === 'gifts' ? renderGiftTools(items) : (section === 'stats' ? renderCustomerReportTools() : ''));
         modules.innerHTML = `
-            <button class="btn btn-secondary btn-block" onclick="Pages.load_admin()">بازگشت به مدیریت</button>
-            <h3 class="section-title" style="margin-top:16px">${escapeHtml(data.title || 'مدیریت')}</h3>
+            ${renderAdminSubpageHeader(data.title || 'مدیریت', meta)}
             ${extra}
             <div class="admin-list">
-                ${items.length ? items.map(item => renderAdminItem(section, item)).join('') : '<div class="empty-state"><p>موردی برای نمایش نیست</p></div>'}
+                ${items.length
+                    ? items.map(item => renderAdminItem(section, item, meta)).join('')
+                    : `<div class="empty-state"><div class="empty-icon">${UI.icon(meta.icon)}</div><p>موردی برای نمایش نیست</p></div>`}
+            </div>
+        `;
+    }
+
+    function renderAdminSubpageHeader(title, meta) {
+        const accent = (meta && meta.accent) || 'cyan';
+        const iconName = (meta && meta.icon) || 'admin';
+        return `
+            <div class="admin-subpage-head">
+                <button class="admin-back-btn" onclick="Pages.load_admin()" aria-label="بازگشت">
+                    <span class="admin-back-chev" aria-hidden="true">›</span>
+                </button>
+                <div class="admin-subpage-title">
+                    <div class="admin-subpage-icon" data-accent="${escapeHtml(accent)}">${UI.icon(iconName)}</div>
+                    <h2>${escapeHtml(title)}</h2>
+                </div>
             </div>
         `;
     }
@@ -1178,18 +1196,21 @@ const Pages = (() => {
     function renderAdminUsers(section, items) {
         const modules = document.getElementById('admin-modules');
         if (!modules) return;
+        const meta = ADMIN_MODULE_META[section] || { icon: 'users', accent: 'violet' };
+        const title = section === 'customers' ? 'مشتریان' : 'مدیریت کاربران';
         modules.innerHTML = `
-            <button class="btn btn-secondary btn-block" onclick="Pages.load_admin()">بازگشت به مدیریت</button>
-            <h3 class="section-title" style="margin-top:16px">${section === 'customers' ? 'مشتریان' : 'مدیریت کاربران'}</h3>
+            ${renderAdminSubpageHeader(title, meta)}
             <div class="admin-form">
-                <strong>جستجوی کاربر</strong>
+                <label class="form-label">جستجوی کاربر</label>
                 <div class="admin-search-row">
                     <input id="admin-user-search" class="form-input" placeholder="آیدی تلگرام، یوزرنیم یا نام" value="${escapeHtml(adminUserSearchState.q)}">
-                    <button class="btn btn-primary" onclick="Pages.searchAdminUsers(1)">جستجو</button>
+                    <button class="btn btn-primary" onclick="Pages.searchAdminUsers(1)">${UI.icon('zap')} جستجو</button>
                 </div>
             </div>
             <div id="admin-users-results" class="admin-list">
-                ${items.length ? items.map(item => renderAdminUserSummary(item)).join('') : '<div class="empty-state"><p>کاربری برای نمایش نیست</p></div>'}
+                ${items.length
+                    ? items.map(item => renderAdminUserSummary(item)).join('')
+                    : `<div class="empty-state"><div class="empty-icon">${UI.icon('users')}</div><p>کاربری برای نمایش نیست</p></div>`}
             </div>
         `;
         document.getElementById('admin-user-search')?.addEventListener('keydown', (event) => {
@@ -1198,16 +1219,22 @@ const Pages = (() => {
     }
 
     function renderAdminUserSummary(item) {
+        const name = item.title ?? item.name ?? '-';
+        const initial = (name && typeof name === 'string') ? name.trim().charAt(0).toUpperCase() : '?';
+        const subtitle = item.subtitle ?? `${item.telegram_id || '-'} | ${item.role || '-'} | ${item.status || '-'}`;
         return `
             <div class="admin-item">
-                <div>
-                    <strong>${escapeHtml(item.title ?? item.name ?? '-')}</strong>
-                    <span>${escapeHtml(item.subtitle ?? `${item.telegram_id || '-'} | ${item.role || '-'} | ${item.status || '-'}`)}</span>
+                <div class="admin-item-body">
+                    <div class="admin-item-avatar">${escapeHtml(initial)}</div>
+                    <div class="admin-item-text">
+                        <strong>${escapeHtml(name)}</strong>
+                        <span>${escapeHtml(subtitle)}</span>
+                    </div>
                 </div>
                 <div class="admin-actions">
-                    <button class="btn btn-primary btn-sm" onclick="Pages.openAdminUser('${escapeHtml(item.id)}')">پروفایل</button>
-                    <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminAction('users', 'toggle_user_ban', '${escapeHtml(item.id)}')">بن/رفع بن</button>
-                    <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminAction('users', 'reset_trial', '${escapeHtml(item.id)}')">ریست تست</button>
+                    <button class="btn btn-primary btn-sm" onclick="Pages.openAdminUser('${escapeHtml(item.id)}')">${UI.icon('info')} پروفایل</button>
+                    <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminAction('users', 'toggle_user_ban', '${escapeHtml(item.id)}')">${UI.icon('lock')} بن/رفع بن</button>
+                    <button class="btn btn-ghost btn-sm" onclick="Pages.runAdminAction('users', 'reset_trial', '${escapeHtml(item.id)}')">${UI.icon('refresh')} ریست تست</button>
                 </div>
             </div>
         `;
@@ -1349,13 +1376,20 @@ const Pages = (() => {
         `;
     }
 
-    function renderAdminItem(section, item) {
+    function renderAdminItem(section, item, meta = null) {
         const actions = item.actions || [];
+        const accent = (meta && meta.accent) || ADMIN_MODULE_META[section]?.accent || 'cyan';
+        const iconName = (meta && meta.icon) || ADMIN_MODULE_META[section]?.icon || 'package';
+        const title = item.title ?? item.value ?? '-';
+        const subtitle = item.subtitle ?? (item.value !== undefined ? item.value : '');
         return `
             <div class="admin-item">
-                <div>
-                    <strong>${escapeHtml(item.title ?? item.value ?? '-')}</strong>
-                    <span>${escapeHtml(item.subtitle ?? (item.value !== undefined ? item.value : ''))}</span>
+                <div class="admin-item-body">
+                    <div class="admin-item-icon" data-accent="${escapeHtml(accent)}">${UI.icon(iconName)}</div>
+                    <div class="admin-item-text">
+                        <strong>${escapeHtml(title)}</strong>
+                        ${subtitle ? `<span>${escapeHtml(subtitle)}</span>` : ''}
+                    </div>
                 </div>
                 ${actions.length ? `<div class="admin-actions">
                     ${actions.map(action => `

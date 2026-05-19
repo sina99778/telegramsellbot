@@ -1594,6 +1594,149 @@ input:focus, textarea:focus, select:focus {
     border-radius: var(--radius-md);
 }
 
+/* ─── 25f. Admin subpage header + polished item rows ────────────────── */
+.admin-subpage-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    margin-block-end: var(--space-4);
+    padding-block: var(--space-2);
+}
+
+.admin-back-btn {
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-strong);
+    background: var(--bg-elevated);
+    color: var(--text);
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    transition: background var(--dur-fast) var(--ease-out),
+                transform 80ms var(--ease-out);
+}
+.admin-back-btn:active { transform: scale(0.95); }
+.admin-back-btn:hover { background: var(--bg-surface); }
+.admin-back-chev {
+    font-size: 24px;
+    line-height: 1;
+    color: var(--text-soft);
+}
+/* In RTL, the chevron should point to the right (toward where the user
+   came from on the start side). The font character `›` already points
+   right; flip when explicitly LTR. */
+[dir="ltr"] .admin-back-chev { transform: scaleX(-1); }
+
+.admin-subpage-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex: 1;
+    min-width: 0;
+}
+.admin-subpage-icon {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+    border-radius: var(--radius-md);
+    display: grid;
+    place-items: center;
+    background: var(--accent-soft);
+    color: var(--cyan);
+}
+.admin-subpage-icon svg { width: 18px; height: 18px; }
+.admin-subpage-icon[data-accent="cyan"]    { background: rgba(54,209,224,0.14);  color: var(--cyan); }
+.admin-subpage-icon[data-accent="emerald"] { background: rgba(41,196,122,0.14);  color: var(--emerald); }
+.admin-subpage-icon[data-accent="violet"]  { background: rgba(139,111,255,0.14); color: var(--violet); }
+.admin-subpage-icon[data-accent="amber"]   { background: rgba(244,183,64,0.14);  color: var(--amber); }
+.admin-subpage-icon[data-accent="rose"]    { background: rgba(242,94,136,0.14);  color: var(--rose); }
+.admin-subpage-title h2 {
+    font-size: 18px;
+    line-height: 1.25;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Polished admin item rows — body (icon + text) above, actions below */
+.admin-item {
+    flex-direction: column;
+    align-items: stretch;
+}
+.admin-item-body {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    width: 100%;
+}
+.admin-item-icon {
+    width: 38px;
+    height: 38px;
+    flex-shrink: 0;
+    border-radius: var(--radius-md);
+    background: var(--accent-soft);
+    color: var(--cyan);
+    display: grid;
+    place-items: center;
+}
+.admin-item-icon svg { width: 18px; height: 18px; }
+.admin-item-icon[data-accent="cyan"]    { background: rgba(54,209,224,0.14);  color: var(--cyan); }
+.admin-item-icon[data-accent="emerald"] { background: rgba(41,196,122,0.14);  color: var(--emerald); }
+.admin-item-icon[data-accent="violet"]  { background: rgba(139,111,255,0.14); color: var(--violet); }
+.admin-item-icon[data-accent="amber"]   { background: rgba(244,183,64,0.14);  color: var(--amber); }
+.admin-item-icon[data-accent="rose"]    { background: rgba(242,94,136,0.14);  color: var(--rose); }
+
+.admin-item-avatar {
+    width: 38px;
+    height: 38px;
+    flex-shrink: 0;
+    border-radius: var(--radius-pill);
+    background: var(--grad-violet);
+    color: #fff;
+    font-weight: 700;
+    font-size: 15px;
+    display: grid;
+    place-items: center;
+    box-shadow: var(--shadow-sm);
+}
+.admin-item-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.admin-item-text strong {
+    font-size: 14px;
+    color: var(--text);
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.admin-item-text span {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.admin-item .admin-actions {
+    width: 100%;
+    margin-block-start: var(--space-2);
+    padding-block-start: var(--space-2);
+    border-block-start: 1px dashed var(--border);
+}
+.admin-item .admin-actions .btn {
+    flex: 1 1 0;
+    min-width: 86px;
+}
+
 /* ─── 25e. Admin home — hero + tile grid (new v5 design) ─────────────── */
 .admin-hero {
     background: linear-gradient(135deg, var(--bg-elevated), rgba(54, 209, 224, 0.08));
