@@ -117,58 +117,70 @@ const Pages = (() => {
         }
         const adminNav = document.getElementById('admin-nav-btn');
         if (adminNav) adminNav.classList.toggle('hidden', !data.is_admin);
-        // Update header
+
+        // ── Header ──
         document.getElementById('user-name').textContent = data.first_name || 'کاربر';
         document.getElementById('user-balance').textContent = `$${UI.formatMoney(data.wallet.balance)}`;
         document.getElementById('user-avatar').textContent = (data.first_name || 'U')[0].toUpperCase();
 
-        // Dynamic quick actions based on state
+        // ── Quick actions (3 columns, icon + label) ──
         const quickActionsEl = document.getElementById('quick-actions');
         if (quickActionsEl) {
+            const buyOrManage = (salesEnabled || isAdmin)
+                ? `<button class="quick-action" onclick="UI.navigate('store')"><span>🛒</span><strong>خرید سرویس</strong></button>`
+                : `<button class="quick-action" onclick="UI.navigate('configs')"><span>📋</span><strong>سرویس‌های من</strong></button>`;
             quickActionsEl.innerHTML = `
-                ${(salesEnabled || isAdmin) ? `<button class="quick-action" onclick="UI.navigate('store')"><span>🛒 خرید سرویس</span><strong>پلن‌ها</strong></button>` : `<button class="quick-action" onclick="UI.navigate('configs')"><span>📋 سرویس‌های من</span><strong>مدیریت</strong></button>`}
-                <button class="quick-action" onclick="UI.navigate('wallet')"><span>💳 شارژ حساب</span><strong>کیف پول</strong></button>
-                <button class="quick-action" onclick="UI.navigate('support')"><span>💬 درخواست کمک</span><strong>پشتیبانی</strong></button>
+                ${buyOrManage}
+                <button class="quick-action" onclick="UI.navigate('wallet')"><span>💳</span><strong>شارژ حساب</strong></button>
+                <button class="quick-action" onclick="UI.navigate('support')"><span>💬</span><strong>پشتیبانی</strong></button>
             `;
         }
 
-        // Stats with circular progress ring
+        // ── Stats grid ──
+        // Layout: row 1 → [active count] [balance]
+        //         row 2 → [usage card spanning both columns]
         const usagePct = UI.getUsagePercent(data.total_volume_used, data.total_volume);
-        const circumference = 2 * Math.PI * 28;
-        const strokeDash = circumference - (usagePct / 100) * circumference;
-        const ringColor = usagePct >= 90 ? 'var(--coral)' : usagePct >= 70 ? 'var(--amber)' : 'var(--emerald)';
+        const usageClass = usagePct >= 90 ? 'danger' : usagePct >= 75 ? 'warn' : '';
+        const banners = [
+            (!salesEnabled && !isAdmin)
+                ? '<div class="config-warning danger wide">⛔ فروش سرویس موقتاً غیرفعال است.</div>'
+                : '',
+            (!renewalsEnabled && !isAdmin)
+                ? '<div class="config-warning wide">⏸ تمدید سرویس موقتاً غیرفعال است.</div>'
+                : '',
+        ].filter(Boolean).join('');
+
         document.getElementById('stats-grid').innerHTML = `
-            ${(!salesEnabled && !isAdmin) ? '<div class="config-warning danger" style="grid-column:1/-1;text-align:center;font-size:13px;padding:14px">⛔ فروش سرویس موقتاً غیرفعال است</div>' : ''}
-            ${(!renewalsEnabled && !isAdmin) ? '<div class="config-warning" style="grid-column:1/-1;text-align:center;font-size:13px;padding:14px">⏸ تمدید سرویس موقتاً غیرفعال است</div>' : ''}
+            ${banners}
             <div class="stat-card">
-                <div class="stat-icon">🌐</div>
-                <div class="stat-value">${data.active_config_count}</div>
                 <div class="stat-label">سرویس فعال</div>
+                <div class="stat-value">${UI.toPersianDigits(data.active_config_count || 0)}</div>
+                <div class="stat-hint">از مجموع سرویس‌های شما</div>
             </div>
             <div class="stat-card">
-                <div class="stat-icon">💰</div>
-                <div class="stat-value">$${UI.formatMoney(data.wallet.balance)}</div>
                 <div class="stat-label">موجودی کیف پول</div>
+                <div class="stat-value">$${UI.formatMoney(data.wallet.balance)}</div>
+                <div class="stat-hint">قابل خرج برای خرید/تمدید</div>
             </div>
-            <div class="stat-card" style="grid-column: span 2; display:flex; align-items:center; gap:16px">
-                <svg viewBox="0 0 64 64" width="72" height="72" style="flex:0 0 72px">
-                    <circle cx="32" cy="32" r="28" fill="none" stroke="var(--border)" stroke-width="5"/>
-                    <circle cx="32" cy="32" r="28" fill="none" stroke="${ringColor}" stroke-width="5"
-                        stroke-linecap="round" stroke-dasharray="${circumference}"
-                        stroke-dashoffset="${strokeDash}"
-                        transform="rotate(-90 32 32)"
-                        style="transition: stroke-dashoffset 1s cubic-bezier(0.22,1,0.36,1)"/>
-                    <text x="32" y="35" text-anchor="middle" fill="var(--text)" font-size="14" font-weight="900" font-family="var(--font)">${usagePct}%</text>
-                </svg>
-                <div style="min-width:0">
-                    <div class="stat-value" style="font-size:16px">${UI.formatBytes(data.total_volume_used)}</div>
-                    <div class="stat-label">مصرف از ${UI.formatBytes(data.total_volume)}</div>
+            <div class="stat-card wide">
+                <div class="row-between">
+                    <div>
+                        <div class="stat-label">مصرف کلی</div>
+                        <div class="stat-value" style="font-size:17px">${UI.formatBytes(data.total_volume_used)}</div>
+                        <div class="stat-hint">از ${UI.formatBytes(data.total_volume)}</div>
+                    </div>
+                    <div style="font-size:26px;font-weight:900;direction:ltr;color:${usagePct >= 90 ? 'var(--coral)' : usagePct >= 75 ? 'var(--amber)' : 'var(--cyan)'}">${usagePct}%</div>
+                </div>
+                <div class="progress-bar-container" style="margin-block-start:12px">
+                    <div class="progress-bar ${usageClass}" style="width:${usagePct}%"></div>
                 </div>
             </div>
         `;
 
-        // Active configs
-        const activeSubs = data.subscriptions.filter(s => s.status === 'active' || s.status === 'pending_activation');
+        // ── Active configs (max 5 on dashboard; full list lives on /configs) ──
+        const activeSubs = (data.subscriptions || [])
+            .filter(s => s.status === 'active' || s.status === 'pending_activation')
+            .slice(0, 5);
         const container = document.getElementById('configs-list');
 
         if (activeSubs.length === 0) {
@@ -176,9 +188,9 @@ const Pages = (() => {
                 <div class="empty-state">
                     <div class="empty-icon">${UI.icon('package')}</div>
                     <p>هنوز سرویسی ندارید</p>
-                    <button class="btn btn-primary" style="margin-top:12px" onclick="UI.navigate('store')">${UI.icon('store')} خرید سرویس</button>
-                </div>
-            `;
+                    <p class="empty-hint">برای شروع، اولین کانفیگ خود را خریداری کنید.</p>
+                    <button class="btn btn-primary" onclick="UI.navigate('store')">${UI.icon('plus')} خرید اولین سرویس</button>
+                </div>`;
             return;
         }
 
@@ -221,30 +233,22 @@ const Pages = (() => {
             health.isNearLimit ? 'near-limit' : '',
         ].filter(Boolean).join(' ');
         const safeSubLink = sub.sub_link ? encodeURIComponent(sub.sub_link) : '';
-        const actionsHtml = `
-            <div class="config-actions" onclick="event.stopPropagation()">
-                ${renewalsEnabled ? `<button class="btn btn-primary btn-sm" onclick="Pages.showRenewal('${sub.id}')">تمدید</button>` : ''}
-                ${sub.sub_link ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${safeSubLink}'))">کپی لینک</button>` : ''}
-                <button class="btn btn-secondary btn-sm" onclick="Pages.showConfigDetail('${sub.id}')">جزئیات</button>
-            </div>
-        `;
 
         return `
             <div class="${cardClass}" onclick="Pages.showConfigDetail('${sub.id}')">
-                <div class="config-header" style="display:flex; justify-content:space-between; align-items:center;">
-                    <div style="display:flex; align-items:center; gap:8px;">
-                        <span class="config-name">${escapeHtml(name)}</span>
-                        ${sub.sub_link ? `<button class="btn btn-secondary btn-sm" style="padding:4px;min-height:unset;border-radius:6px;opacity:0.7" onclick="event.stopPropagation(); UI.copyToClipboard(decodeURIComponent('${safeSubLink}'))">${UI.icon('copy')}</button>` : ''}
-                    </div>
+                <div class="config-header">
+                    <span class="config-name">${escapeHtml(name)}</span>
                     <span class="config-status ${health.statusClass}">${health.statusText}</span>
                 </div>
+
                 <div class="progress-bar-container">
-                    <div class="progress-bar-fill ${health.pctClass}" style="width: ${health.pct}%"></div>
+                    <div class="progress-bar ${health.pctClass}" style="width:${health.pct}%"></div>
                 </div>
                 <div class="config-stats">
                     <span>${UI.formatBytes(sub.used_bytes)} / ${UI.formatBytes(sub.volume_bytes)}</span>
-                    <span>${health.pct}%</span>
+                    <span>${UI.toPersianDigits(health.pct)}%</span>
                 </div>
+
                 <div class="config-meta-grid">
                     <div class="config-metric">
                         <span>باقی‌مانده حجم</span>
@@ -252,11 +256,17 @@ const Pages = (() => {
                     </div>
                     <div class="config-metric">
                         <span>زمان</span>
-                        <strong>${health.daysLabel}</strong>
+                        <strong>${escapeHtml(health.daysLabel)}</strong>
                     </div>
                 </div>
+
                 ${health.warning ? `<div class="config-warning ${health.isExpired ? 'danger' : ''}">${health.warning}</div>` : ''}
-                ${actionsHtml}
+
+                <div class="config-actions" onclick="event.stopPropagation()">
+                    ${(renewalsEnabled && !health.isExpired) ? `<button class="btn btn-primary btn-sm" onclick="Pages.showRenewal('${sub.id}')">${UI.icon('refresh')} تمدید</button>` : ''}
+                    ${sub.sub_link ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${safeSubLink}'))">${UI.icon('copy')} کپی لینک</button>` : ''}
+                    <button class="btn btn-ghost btn-sm" onclick="Pages.showConfigDetail('${sub.id}')">${UI.icon('info')} جزئیات</button>
+                </div>
             </div>
         `;
     }
@@ -489,55 +499,74 @@ const Pages = (() => {
     function renderPlans(plans, customPurchase = null) {
         const container = document.getElementById('plans-list');
 
-        // Sales closed banner
+        // Sales-closed banner spans the whole grid
         const closedBanner = (!salesEnabled && !isAdmin) ? `
-            <div class="empty-state" style="grid-column:1/-1;border-color:rgba(239,111,97,0.4);background:rgba(239,111,97,0.06)">
-                <div class="empty-icon" style="background:rgba(239,111,97,0.15);color:var(--coral)">${UI.icon('lock')}</div>
-                <p style="font-size:15px;font-weight:900;color:var(--coral);margin-bottom:6px">فروش موقتاً بسته شده است</p>
-                <p style="color:var(--text-muted);font-size:12px">در حال حاضر امکان خرید سرویس وجود ندارد. لطفاً بعداً مراجعه کنید.</p>
-            </div>
-        ` : '';
+            <div class="empty-state wide" style="border-color:rgba(239,111,97,0.4);background:rgba(239,111,97,0.06)">
+                <div class="empty-icon" style="background:rgba(239,111,97,0.18);color:var(--coral)">${UI.icon('lock')}</div>
+                <p style="color:var(--coral);font-weight:900;font-size:15px">فروش موقتاً بسته شده است</p>
+                <p class="empty-hint">در حال حاضر امکان خرید سرویس وجود ندارد. کمی بعد دوباره تلاش کنید.</p>
+            </div>` : '';
 
         if (!plans.length && !customPurchase?.can_purchase) {
-            container.innerHTML = closedBanner || `<div class="empty-state"><div class="empty-icon">${UI.icon('store')}</div><p>هیچ پلنی موجود نیست</p></div>`;
+            container.innerHTML = closedBanner || `
+                <div class="empty-state wide">
+                    <div class="empty-icon">${UI.icon('store')}</div>
+                    <p>هیچ پلنی موجود نیست</p>
+                    <p class="empty-hint">ادمین هنوز پلنی تعریف نکرده است.</p>
+                </div>`;
             return;
         }
 
+        // Pick the cheapest-per-day plan as ⭐ "recommended"
+        let recommendedIndex = -1;
+        if (plans.length > 1) {
+            let bestPpd = Infinity;
+            plans.forEach((p, i) => {
+                const days = Math.max(1, Number(p.duration_days) || 1);
+                const ppd = Number(p.price) / days;
+                if (ppd < bestPpd) { bestPpd = ppd; recommendedIndex = i; }
+            });
+        } else if (plans.length === 1) {
+            recommendedIndex = 0;
+        }
+
         const customCard = (customPurchase?.can_purchase && (salesEnabled || isAdmin)) ? `
-            <div class="plan-card popular">
-                <div class="plan-name">حجم و زمان دلخواه</div>
+            <div class="plan-card">
+                <div class="plan-name">${UI.icon('sliders')} حجم و زمان دلخواه</div>
                 <div class="plan-specs">
-                    <span class="plan-spec">${UI.icon('database')} هر GB: $${UI.formatMoney(customPurchase.price_per_gb)}</span>
+                    <span class="plan-spec">${UI.icon('database')} هر گیگ: $${UI.formatMoney(customPurchase.price_per_gb)}</span>
                     <span class="plan-spec">${UI.icon('clock')} هر روز: $${UI.formatMoney(customPurchase.price_per_day)}</span>
                 </div>
-                <div class="plan-price">دلخواه <small>/ USD</small></div>
-                <button class="btn btn-primary btn-block plan-buy-btn" onclick="Pages.buyCustomPlan()">
-                    ${UI.icon('sliders')} ساخت پلن دلخواه
-                </button>
-            </div>
-        ` : '';
-
-        container.innerHTML = closedBanner + customCard + plans.map((plan, i) => `
-            <div class="plan-card ${i === 1 ? 'popular' : ''}">
-                <div class="plan-name">${plan.name}</div>
-                <div class="plan-specs">
-                    <span class="plan-spec">${UI.icon('database')} ${plan.volume_gb} GB</span>
-                    <span class="plan-spec">${UI.icon('clock')} ${plan.duration_days} روز</span>
-                    <span class="plan-spec">${UI.icon('lock')} ${plan.protocol}</span>
-                    ${plan.is_unlimited ? '' : `<span class="plan-spec">${UI.icon('package')} موجودی ${plan.stock_remaining}</span>`}
+                <div class="plan-price">
+                    <span class="plan-price-value">دلخواه</span>
+                    <span class="plan-price-currency">/ USD</span>
                 </div>
-                <div class="plan-price">$${UI.formatMoney(plan.price)} <small>/ ${plan.currency}</small></div>
-                ${(salesEnabled || isAdmin) ? `
-                    <button class="btn btn-primary btn-block plan-buy-btn" onclick="Pages.buyPlan('${plan.id}')">
-                        ${UI.icon('store')} خرید
-                    </button>
-                ` : `
-                    <button class="btn btn-secondary btn-block plan-buy-btn" disabled style="opacity:0.5;cursor:not-allowed">
-                        ${UI.icon('lock')} فروش غیرفعال
-                    </button>
-                `}
-            </div>
-        `).join('');
+                <button class="btn btn-primary plan-buy-btn" onclick="Pages.buyCustomPlan()">
+                    ${UI.icon('plus')} ساخت پلن دلخواه
+                </button>
+            </div>` : '';
+
+        container.innerHTML = closedBanner + customCard + plans.map((plan, i) => {
+            const recommended = i === recommendedIndex;
+            const buyDisabled = !(salesEnabled || isAdmin);
+            return `
+                <div class="plan-card ${recommended ? 'popular' : ''}">
+                    <div class="plan-name">${escapeHtml(plan.name)}</div>
+                    <div class="plan-specs">
+                        <span class="plan-spec">${UI.icon('database')} ${UI.toPersianDigits(plan.volume_gb)} گیگ</span>
+                        <span class="plan-spec">${UI.icon('clock')} ${UI.toPersianDigits(plan.duration_days)} روز</span>
+                        ${plan.protocol ? `<span class="plan-spec">${UI.icon('lock')} ${escapeHtml(plan.protocol)}</span>` : ''}
+                        ${plan.is_unlimited ? '' : `<span class="plan-spec">${UI.icon('package')} ${UI.toPersianDigits(plan.stock_remaining)} موجودی</span>`}
+                    </div>
+                    <div class="plan-price">
+                        <span class="plan-price-value">$${UI.formatMoney(plan.price)}</span>
+                        <span class="plan-price-currency">/ ${escapeHtml(plan.currency || 'USD')}</span>
+                    </div>
+                    ${buyDisabled
+                        ? `<button class="btn btn-secondary plan-buy-btn" disabled>${UI.icon('lock')} فروش غیرفعال</button>`
+                        : `<button class="btn btn-primary plan-buy-btn" onclick="Pages.buyPlan('${plan.id}')">${UI.icon('store')} خرید این پلن</button>`}
+                </div>`;
+        }).join('');
     }
 
     function buyCustomPlan() {
@@ -745,11 +774,14 @@ const Pages = (() => {
     }
 
     function renderWalletCard(wallet) {
+        const credit = parseFloat(wallet.credit_limit || 0);
+        const hold = parseFloat(wallet.hold_balance || 0);
         document.getElementById('wallet-card').innerHTML = `
             <div class="wallet-label">${UI.icon('wallet')} موجودی کیف پول</div>
             <div class="wallet-balance-display">$${UI.formatMoney(wallet.balance)}</div>
-            ${wallet.hold_balance > 0 ? `<div style="color:var(--amber);font-size:12px;margin-bottom:12px">${UI.icon('clock')} موجودی بلوکه: $${UI.formatMoney(wallet.hold_balance)}</div>` : ''}
-            <div class="wallet-actions" style="grid-template-columns:1fr 1fr;gap:8px">
+            ${hold > 0 ? `<div class="row gap-1" style="color:var(--amber);font-size:12px;margin-block-end:var(--space-3)">${UI.icon('clock')} <span>موجودی بلوکه: <strong style="direction:ltr">$${UI.formatMoney(hold)}</strong></span></div>` : ''}
+            ${credit > 0 ? `<div class="row gap-1" style="color:var(--text-muted);font-size:11px;margin-block-end:var(--space-3)">${UI.icon('info')} <span>سقف اعتبار: $${UI.formatMoney(credit)}</span></div>` : ''}
+            <div class="wallet-actions">
                 <button class="btn btn-primary" onclick="Pages.topupWallet()">${UI.icon('plus')} شارژ حساب</button>
                 <button class="btn btn-secondary" onclick="Pages.load_wallet()">${UI.icon('refresh')} بروزرسانی</button>
             </div>
@@ -771,24 +803,22 @@ const Pages = (() => {
         container.innerHTML = payments.map(payment => {
             const canRefresh = ['nowpayments', 'tetrapay', 'tronado'].includes(payment.provider)
                 && ['waiting', 'pending', 'confirming'].includes(payment.payment_status);
-            const isPendingManual = ['manual_crypto', 'card_to_card'].includes(payment.provider)
-                && ['waiting_hash', 'waiting_receipt', 'pending_approval'].includes(payment.payment_status);
             const amount = payment.pay_amount
-                ? `${UI.formatMoney(payment.pay_amount)} ${payment.pay_currency || ''}`
-                : `${UI.formatMoney(payment.price_amount)} ${payment.price_currency}`;
+                ? `${UI.formatMoney(payment.pay_amount)} ${escapeHtml(payment.pay_currency || '')}`
+                : `${UI.formatMoney(payment.price_amount)} ${escapeHtml(payment.price_currency || '')}`;
             const statusClass = UI.getPaymentStatusClass(payment.payment_status);
             return `
                 <div class="payment-item">
-                    <div>
-                        <strong>${UI.getProviderName(payment.provider)} • ${UI.getKindText(payment.kind)}</strong>
-                        <span>
-                            <span class="config-status ${statusClass}" style="display:inline-block;margin-left:6px">${UI.getPaymentStatusText(payment.payment_status)}</span>
-                            ${amount} • ${UI.formatDate(payment.created_at)}
+                    <div class="tx-info">
+                        <span class="tx-type">${escapeHtml(UI.getProviderName(payment.provider))} • ${escapeHtml(UI.getKindText(payment.kind))}</span>
+                        <span class="tx-date">
+                            <span class="config-status ${statusClass}" style="margin-inline-end:6px">${escapeHtml(UI.getPaymentStatusText(payment.payment_status))}</span>
+                            <span dir="ltr">${amount}</span> · ${escapeHtml(UI.formatRelative(payment.created_at))}
                         </span>
                     </div>
-                    <div style="display:flex;gap:6px;align-items:center">
+                    <div>
                         ${payment.invoice_url && canRefresh ? `<button class="btn btn-primary btn-sm" onclick="Pages.openInvoice(decodeURIComponent('${encodeURIComponent(payment.invoice_url)}'))">پرداخت</button>` : ''}
-                        ${canRefresh ? `<button class="btn btn-secondary btn-sm" onclick="Pages.refreshPayment('${payment.id}')">${UI.icon('refresh')} بررسی</button>` : ''}
+                        ${canRefresh ? `<button class="btn btn-secondary btn-sm" onclick="Pages.refreshPayment('${payment.id}')">${UI.icon('refresh')}</button>` : ''}
                     </div>
                 </div>
             `;
@@ -829,18 +859,18 @@ const Pages = (() => {
         };
 
         container.innerHTML = txs.map(tx => {
-            const desc = tx.description || '';
+            const desc = (tx.description || '').trim();
             return `
             <div class="transaction-item">
                 <div class="tx-info">
-                    <span class="tx-type">${typeMap[tx.type] || tx.type}</span>
-                    <span class="tx-date">${desc ? escapeHtml(desc.substring(0, 40)) + ' • ' : ''}${UI.formatDate(tx.created_at)}</span>
+                    <span class="tx-type">${escapeHtml(typeMap[tx.type] || tx.type || '—')}</span>
+                    <span class="tx-date">${desc ? escapeHtml(desc.substring(0, 48)) + ' · ' : ''}${escapeHtml(UI.formatRelative(tx.created_at))}</span>
                 </div>
                 <span class="tx-amount ${tx.direction === 'credit' ? 'credit' : 'debit'}">
                     $${UI.formatMoney(tx.amount)}
                 </span>
-            </div>
-        `}).join('');
+            </div>`;
+        }).join('');
     }
 
     function topupWallet() {
@@ -1717,32 +1747,42 @@ const Pages = (() => {
         const refLink = data.ref_code ? `https://t.me/${botUsername}?start=ref_${data.ref_code}` : '';
 
         container.innerHTML = `
-            <div class="referral-card">
-                <div style="text-align:center;margin-bottom:8px">
-                    <span class="empty-icon">${UI.icon('users')}</span>
-                </div>
-                <p style="text-align:center;font-size:14px;color:var(--text-secondary);margin-bottom:12px">
-                    لینک دعوت خود را با دوستانتان به اشتراک بگذارید
-                </p>
-                ${data.ref_code ? `
-                    <div class="ref-code-box" onclick="UI.copyToClipboard('${refLink}')">
-                        ${data.ref_code}
-                        <div style="font-size:10px;color:var(--text-muted);margin-top:4px">برای کپی لمس کنید</div>
-                    </div>
-                    <button class="btn btn-primary btn-block" onclick="shareRefLink('${refLink}')">${UI.icon('share')} اشتراک‌گذاری</button>
-                ` : '<p style="text-align:center;color:var(--text-muted)">کد رفرال شما هنوز ایجاد نشده</p>'}
+            <div class="referral-hero text-center">
+                <div class="empty-icon" style="margin:0 auto var(--space-3)">${UI.icon('users')}</div>
+                <h2 style="margin-block-end:6px">دعوت دوستان</h2>
+                <p class="empty-hint">با هر دوستی که از طریق لینک شما عضو شود و خرید کند، پاداش می‌گیرید.</p>
+            </div>
 
-                <div class="ref-stats">
-                    <div class="stat-card">
-                        <div class="stat-value">${data.referral_count}</div>
-                        <div class="stat-label">دعوت شده</div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-value">$${UI.formatMoney(data.total_earned)}</div>
-                        <div class="stat-label">درآمد کل</div>
-                    </div>
+            <div class="ref-stats">
+                <div class="stat-card">
+                    <div class="stat-label">دعوت شده</div>
+                    <div class="stat-value">${UI.toPersianDigits(data.referral_count || 0)}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">درآمد کل</div>
+                    <div class="stat-value">$${UI.formatMoney(data.total_earned)}</div>
                 </div>
             </div>
+
+            ${data.ref_code ? `
+                <div class="referral-card">
+                    <div class="form-label">لینک دعوت اختصاصی شما</div>
+                    <div class="ref-code-box" onclick="UI.copyToClipboard('${refLink}')" title="برای کپی، بزنید">
+                        <span>${escapeHtml(refLink)}</span>
+                        <span class="btn btn-ghost btn-sm">${UI.icon('copy')}</span>
+                    </div>
+                    <p class="form-hint">برای کپی روی متن بزنید.</p>
+                    <button class="btn btn-primary btn-block" style="margin-block-start:var(--space-3)" onclick="shareRefLink('${refLink}')">
+                        ${UI.icon('share')} اشتراک‌گذاری در تلگرام
+                    </button>
+                </div>
+            ` : `
+                <div class="empty-state">
+                    <div class="empty-icon">${UI.icon('info')}</div>
+                    <p>کد دعوت شما هنوز ایجاد نشده</p>
+                    <p class="empty-hint">برای فعال‌سازی، یک‌بار از پنل ربات /start را بزنید.</p>
+                </div>
+            `}
         `;
     }
 
