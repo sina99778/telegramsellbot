@@ -172,9 +172,9 @@ const UI = (() => {
         if (isNaN(ts)) return '—';
         const diff = Math.max(0, (Date.now() - ts) / 1000);
         if (diff < 60)    return 'لحظاتی پیش';
-        if (diff < 3600)  return toPersianDigits(Math.floor(diff / 60)) + ' دقیقه پیش';
-        if (diff < 86400) return toPersianDigits(Math.floor(diff / 3600)) + ' ساعت پیش';
-        if (diff < 604800) return toPersianDigits(Math.floor(diff / 86400)) + ' روز پیش';
+        if (diff < 3600)  return Math.floor(diff / 60) + ' دقیقه پیش';
+        if (diff < 86400) return Math.floor(diff / 3600) + ' ساعت پیش';
+        if (diff < 604800) return Math.floor(diff / 86400) + ' روز پیش';
         return formatDateShort(dateStr);
     }
     function formatMoney(amount) {

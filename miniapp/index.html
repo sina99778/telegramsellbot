@@ -7,14 +7,15 @@
     <meta name="color-scheme" content="dark">
     <title>V2rays Emergency</title>
 
-    <!-- Preconnect cuts ~120ms off the font request on mobile -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <!-- Vazirmatn from jsDelivr (reachable in Iran without a VPN).
+         Google Fonts is filtered in Iran, which is why the previous build
+         silently fell back to system fonts and looked unstyled. -->
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
     <link rel="preconnect" href="https://telegram.org">
 
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Vazirmatn:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="/miniapp/css/app.css?v=v5-20260521">
+    <link rel="stylesheet" href="/miniapp/css/app.css?v=v6-20260521">
 </head>
 <body>
     <div id="app">
@@ -183,9 +184,9 @@
         <div class="modal-content" id="modal-content"></div>
     </div>
 
-    <script src="/miniapp/js/api.js?v=v5-20260521"></script>
-    <script src="/miniapp/js/ui.js?v=v5-20260521"></script>
-    <script src="/miniapp/js/pages.js?v=v5-20260521"></script>
-    <script src="/miniapp/js/app.js?v=v5-20260521"></script>
+    <script src="/miniapp/js/api.js?v=v6-20260521"></script>
+    <script src="/miniapp/js/ui.js?v=v6-20260521"></script>
+    <script src="/miniapp/js/pages.js?v=v6-20260521"></script>
+    <script src="/miniapp/js/app.js?v=v6-20260521"></script>
 </body>
 </html>

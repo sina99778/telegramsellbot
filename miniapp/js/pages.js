@@ -154,7 +154,7 @@ const Pages = (() => {
             ${banners}
             <div class="stat-card">
                 <div class="stat-label">سرویس فعال</div>
-                <div class="stat-value">${UI.toPersianDigits(data.active_config_count || 0)}</div>
+                <div class="stat-value">${(data.active_config_count || 0)}</div>
                 <div class="stat-hint">از مجموع سرویس‌های شما</div>
             </div>
             <div class="stat-card">
@@ -165,7 +165,7 @@ const Pages = (() => {
             <div class="stat-card wide">
                 <div class="row-between">
                     <div>
-                        <div class="stat-label">مصرف مجموع ${UI.toPersianDigits(data.active_config_count || 0)} سرویس</div>
+                        <div class="stat-label">مصرف مجموع ${(data.active_config_count || 0)} سرویس</div>
                         <div class="stat-value" style="font-size:18px;direction:ltr;text-align:start">${UI.formatBytes(data.total_volume_used)}</div>
                         <div class="stat-hint" style="direction:ltr;text-align:start">از ${UI.formatBytes(data.total_volume)} مجموع</div>
                     </div>
@@ -246,7 +246,7 @@ const Pages = (() => {
                 </div>
                 <div class="config-stats">
                     <span>${UI.formatBytes(sub.used_bytes)} / ${UI.formatBytes(sub.volume_bytes)}</span>
-                    <span>${UI.toPersianDigits(health.pct)}%</span>
+                    <span>${(health.pct)}%</span>
                 </div>
 
                 <div class="config-meta-grid">
@@ -553,10 +553,10 @@ const Pages = (() => {
                 <div class="plan-card ${recommended ? 'popular' : ''}">
                     <div class="plan-name">${escapeHtml(plan.name)}</div>
                     <div class="plan-specs">
-                        <span class="plan-spec">${UI.icon('database')} ${UI.toPersianDigits(plan.volume_gb)} گیگ</span>
-                        <span class="plan-spec">${UI.icon('clock')} ${UI.toPersianDigits(plan.duration_days)} روز</span>
+                        <span class="plan-spec">${UI.icon('database')} ${(plan.volume_gb)} گیگ</span>
+                        <span class="plan-spec">${UI.icon('clock')} ${(plan.duration_days)} روز</span>
                         ${plan.protocol ? `<span class="plan-spec">${UI.icon('lock')} ${escapeHtml(plan.protocol)}</span>` : ''}
-                        ${plan.is_unlimited ? '' : `<span class="plan-spec">${UI.icon('package')} ${UI.toPersianDigits(plan.stock_remaining)} موجودی</span>`}
+                        ${plan.is_unlimited ? '' : `<span class="plan-spec">${UI.icon('package')} ${(plan.stock_remaining)} موجودی</span>`}
                     </div>
                     <div class="plan-price">
                         <span class="plan-price-value">$${UI.formatMoney(plan.price)}</span>
@@ -1097,25 +1097,25 @@ const Pages = (() => {
                 </div>
                 <div class="admin-hero-stat">
                     <span class="stat-label">سرویس فعال</span>
-                    <span class="stat-value" style="color:var(--emerald)">${UI.toPersianDigits(data.active_subscriptions_count || 0)}</span>
+                    <span class="stat-value" style="color:var(--emerald)">${(data.active_subscriptions_count || 0)}</span>
                 </div>
             </div>
             <div class="admin-stats-grid">
                 <div class="admin-stat-card amber">
                     <span class="stat-label">تیکت باز</span>
-                    <span class="stat-value">${UI.toPersianDigits(data.open_tickets_count || 0)}</span>
+                    <span class="stat-value">${(data.open_tickets_count || 0)}</span>
                 </div>
                 <div class="admin-stat-card cyan">
                     <span class="stat-label">کاربران</span>
-                    <span class="stat-value">${UI.toPersianDigits(data.users_count || 0)}</span>
+                    <span class="stat-value">${(data.users_count || 0)}</span>
                 </div>
                 <div class="admin-stat-card violet">
                     <span class="stat-label">مشتریان</span>
-                    <span class="stat-value">${UI.toPersianDigits(data.customers_count || 0)}</span>
+                    <span class="stat-value">${(data.customers_count || 0)}</span>
                 </div>
                 <div class="admin-stat-card emerald">
                     <span class="stat-label">سرور فعال</span>
-                    <span class="stat-value">${UI.toPersianDigits(data.active_servers_count || 0)}</span>
+                    <span class="stat-value">${(data.active_servers_count || 0)}</span>
                 </div>
             </div>
         `;
@@ -1775,7 +1775,7 @@ const Pages = (() => {
             <div class="ref-stats">
                 <div class="stat-card">
                     <div class="stat-label">دعوت شده</div>
-                    <div class="stat-value">${UI.toPersianDigits(data.referral_count || 0)}</div>
+                    <div class="stat-value">${(data.referral_count || 0)}</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-label">درآمد کل</div>
