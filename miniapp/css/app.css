@@ -111,6 +111,19 @@
     --z-nav:    80;
     --z-modal:  200;
     --z-toast:  300;
+
+    /* Typography stack — Vazirmatn ships great Persian + numerics. iOS/macOS
+       Telegram never has it locally, so we always pull it from Google Fonts
+       in index.html. The system fallback chain catches the case where the
+       network is unreachable. SF Pro / system-ui at 16px + 1.6 line-height
+       reads well in both LTR (English numbers) and RTL contexts. */
+    --font-sans: 'Vazirmatn', 'IRANSans', 'IRANSansX', 'Inter',
+                 system-ui, -apple-system, BlinkMacSystemFont,
+                 'Segoe UI', Roboto, sans-serif;
+    --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    --leading-tight: 1.35;
+    --leading-normal: 1.6;
+    --leading-relaxed: 1.75;
 }
 
 /* ─── 2. Reset + typography ────────────────────────────────────────────── */
@@ -121,9 +134,11 @@ html, body {
     padding: 0;
     background: var(--bg-app);
     color: var(--text);
-    font-family: 'Vazirmatn', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: var(--font-sans);
     font-size: 15px;
-    line-height: 1.55;
+    line-height: var(--leading-normal);
+    font-feature-settings: 'ss01', 'cv01', 'kern';
+    font-variant-ligatures: common-ligatures;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
@@ -135,17 +150,29 @@ body {
     min-height: 100dvh;
 }
 
+/* Numbers always Latin-shaped (Persian text body, LTR numerals — works
+   well for prices, percentages, timestamps where Persian digits look
+   off mid-RTL). Override per-element by setting font-feature-settings
+   on a wrapper if you ever want Persian digits. */
+input, button, select, textarea {
+    font-family: inherit;
+    font-feature-settings: inherit;
+}
+
 h1, h2, h3, h4 {
     margin: 0;
     color: var(--text);
     font-weight: 800;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.012em;
+    line-height: var(--leading-tight);
 }
-h1 { font-size: 22px; line-height: 1.3; }
-h2 { font-size: 19px; line-height: 1.35; }
-h3 { font-size: 16px; line-height: 1.4; }
-h4 { font-size: 14px; line-height: 1.45; font-weight: 700; }
-p  { margin: 0; color: var(--text-soft); }
+h1 { font-size: 22px; }
+h2 { font-size: 19px; }
+h3 { font-size: 16px; }
+h4 { font-size: 14px; font-weight: 700; }
+p  { margin: 0; color: var(--text-soft); line-height: var(--leading-normal); }
+strong, b { font-weight: 800; }
+code, .mono { font-family: var(--font-mono); }
 
 a { color: var(--cyan); text-decoration: none; }
 button { font: inherit; color: inherit; }
@@ -1566,6 +1593,152 @@ input:focus, textarea:focus, select:focus {
     background: var(--bg-canvas);
     border-radius: var(--radius-md);
 }
+
+/* ─── 25e. Admin home — hero + tile grid (new v5 design) ─────────────── */
+.admin-hero {
+    background: linear-gradient(135deg, var(--bg-elevated), rgba(54, 209, 224, 0.08));
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-xl);
+    padding: var(--space-5);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-4);
+    margin-block-end: var(--space-3);
+    position: relative;
+    overflow: hidden;
+}
+.admin-hero::before {
+    content: "";
+    position: absolute;
+    inset-block-start: -50%;
+    inset-inline-end: -20%;
+    width: 240px;
+    height: 240px;
+    background: var(--grad-accent);
+    filter: blur(70px);
+    opacity: 0.22;
+    pointer-events: none;
+}
+.admin-hero-text { position: relative; z-index: 1; }
+.admin-hero-text h2 { margin-block-start: 6px; font-size: 18px; }
+.admin-hero-stat {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+}
+.admin-hero-stat .stat-value { font-size: 36px; line-height: 1; }
+
+.admin-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-2);
+    margin-block-end: var(--space-3);
+}
+.admin-stat-card {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    position: relative;
+    overflow: hidden;
+}
+.admin-stat-card::before {
+    content: "";
+    position: absolute;
+    inset-inline-start: 0;
+    inset-block: 0;
+    width: 3px;
+}
+.admin-stat-card.cyan::before    { background: var(--cyan); }
+.admin-stat-card.emerald::before { background: var(--emerald); }
+.admin-stat-card.violet::before  { background: var(--violet); }
+.admin-stat-card.amber::before   { background: var(--amber); }
+.admin-stat-card.rose::before    { background: var(--rose); }
+.admin-stat-card .stat-value { font-size: 22px; }
+
+/* Tile grid: 2 cols phone, 3 cols tablet */
+.admin-tile-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-2);
+}
+@media (min-width: 480px) {
+    .admin-tile-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.admin-tile {
+    appearance: none;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-3);
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    text-align: start;
+    cursor: pointer;
+    min-height: 76px;
+    color: var(--text);
+    transition: background var(--dur-fast) var(--ease-out),
+                border-color var(--dur-fast) var(--ease-out),
+                transform 90ms var(--ease-out),
+                box-shadow var(--dur-fast) var(--ease-out);
+    position: relative;
+}
+.admin-tile:active { transform: scale(0.97); }
+.admin-tile:hover {
+    background: var(--bg-surface);
+    border-color: var(--border-strong);
+    box-shadow: var(--shadow-md);
+}
+.admin-tile-icon {
+    width: 38px; height: 38px;
+    flex-shrink: 0;
+    border-radius: var(--radius-md);
+    display: grid; place-items: center;
+    background: var(--accent-soft);
+    color: var(--cyan);
+}
+.admin-tile-icon svg { width: 20px; height: 20px; }
+.admin-tile-body { flex: 1; min-width: 0; }
+.admin-tile-title {
+    font-size: 13.5px;
+    font-weight: 800;
+    color: var(--text);
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.admin-tile-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.5;
+    margin-block-start: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.admin-tile-chev {
+    color: var(--text-faint);
+    font-size: 22px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+[dir="rtl"] .admin-tile-chev { transform: scaleX(-1); }
+
+.admin-tile[data-accent="cyan"]    .admin-tile-icon { background: rgba(54,209,224,0.14);  color: var(--cyan); }
+.admin-tile[data-accent="emerald"] .admin-tile-icon { background: rgba(41,196,122,0.14);  color: var(--emerald); }
+.admin-tile[data-accent="violet"]  .admin-tile-icon { background: rgba(139,111,255,0.14); color: var(--violet); }
+.admin-tile[data-accent="amber"]   .admin-tile-icon { background: rgba(244,183,64,0.14);  color: var(--amber); }
+.admin-tile[data-accent="rose"]    .admin-tile-icon { background: rgba(242,94,136,0.14);  color: var(--rose); }
 
 /* ─── 25d. Admin section extras ──────────────────────────────────────── */
 .admin-stat {

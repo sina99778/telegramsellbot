@@ -165,11 +165,11 @@ const Pages = (() => {
             <div class="stat-card wide">
                 <div class="row-between">
                     <div>
-                        <div class="stat-label">مصرف کلی</div>
-                        <div class="stat-value" style="font-size:17px">${UI.formatBytes(data.total_volume_used)}</div>
-                        <div class="stat-hint">از ${UI.formatBytes(data.total_volume)}</div>
+                        <div class="stat-label">مصرف مجموع ${UI.toPersianDigits(data.active_config_count || 0)} سرویس</div>
+                        <div class="stat-value" style="font-size:18px;direction:ltr;text-align:start">${UI.formatBytes(data.total_volume_used)}</div>
+                        <div class="stat-hint" style="direction:ltr;text-align:start">از ${UI.formatBytes(data.total_volume)} مجموع</div>
                     </div>
-                    <div style="font-size:26px;font-weight:900;direction:ltr;color:${usagePct >= 90 ? 'var(--coral)' : usagePct >= 75 ? 'var(--amber)' : 'var(--cyan)'}">${usagePct}%</div>
+                    <div style="font-size:30px;font-weight:900;direction:ltr;color:${usagePct >= 90 ? 'var(--coral)' : usagePct >= 75 ? 'var(--amber)' : 'var(--cyan)'};letter-spacing:-0.02em">${usagePct}<span style="font-size:18px">%</span></div>
                 </div>
                 <div class="progress-bar-container" style="margin-block-start:12px">
                     <div class="progress-bar ${usageClass}" style="width:${usagePct}%"></div>
@@ -1064,23 +1064,23 @@ const Pages = (() => {
         }
     }
 
-    const ADMIN_MODULE_ICONS = {
-        'stats': 'chart',
-        'finance': 'wallet',
-        'users': 'users',
-        'customers': 'users',
-        'subs': 'configs',
-        'gifts': 'package',
-        'plans': 'store',
-        'ready_configs': 'store',
-        'servers': 'server',
-        'tickets': 'support',
-        'discounts': 'package',
-        'settings': 'sliders',
-        'audit': 'database',
-        'broadcast': 'share',
-        'retargeting': 'clock',
-        'backup': 'database'
+    const ADMIN_MODULE_META = {
+        stats:         { icon: 'chart',   accent: 'cyan',    desc: 'آمار فروش و گزارش‌ها' },
+        finance:       { icon: 'wallet',  accent: 'emerald', desc: 'مدیریت مالی و درآمد' },
+        users:         { icon: 'users',   accent: 'violet',  desc: 'مدیریت کاربران ربات' },
+        customers:     { icon: 'users',   accent: 'cyan',    desc: 'مشتریان فعال' },
+        subs:          { icon: 'configs', accent: 'emerald', desc: 'مدیریت سرویس‌ها' },
+        gifts:         { icon: 'package', accent: 'amber',   desc: 'هدیه گروهی' },
+        plans:         { icon: 'store',   accent: 'cyan',    desc: 'پلن‌های فروش' },
+        ready_configs: { icon: 'package', accent: 'violet',  desc: 'کانفیگ‌های آماده' },
+        servers:       { icon: 'server',  accent: 'emerald', desc: 'سرورهای X-UI' },
+        tickets:       { icon: 'support', accent: 'amber',   desc: 'پاسخ به پشتیبانی' },
+        discounts:     { icon: 'zap',     accent: 'rose',    desc: 'کدهای تخفیف' },
+        settings:      { icon: 'sliders', accent: 'cyan',    desc: 'تنظیمات ربات' },
+        audit:         { icon: 'database', accent: 'violet', desc: 'لاگ عملیات‌ها' },
+        broadcast:     { icon: 'share',   accent: 'rose',    desc: 'پیام همگانی' },
+        retargeting:   { icon: 'clock',   accent: 'amber',   desc: 'بازاریابی مجدد' },
+        backup:        { icon: 'database', accent: 'emerald', desc: 'بکاپ دیتابیس' },
     };
 
     function renderAdminPanel(data) {
@@ -1089,41 +1089,60 @@ const Pages = (() => {
         if (!overview || !modules) return;
 
         overview.innerHTML = `
-            <div style="grid-column: 1 / -1; margin-bottom: 8px;">
-                <h4 style="font-size:14px;color:var(--text-muted);font-weight:700;margin-bottom:12px">خلاصه وضعیت سیستم</h4>
-                <div style="background:var(--bg-elevated);border-radius:var(--radius-md);border:1px solid var(--border);padding:16px;display:flex;align-items:center;justify-content:space-between">
-                    <div>
-                        <span style="display:block;font-size:12px;color:var(--text-soft);margin-bottom:4px">سرویس‌های فعال</span>
-                        <strong style="font-size:32px;font-weight:900;color:var(--emerald)">${data.active_subscriptions_count}</strong>
-                    </div>
-                    <div style="width:120px;height:40px">
-                        <svg viewBox="0 0 120 40" style="width:100%;height:100%;overflow:visible">
-                            <polyline points="0,35 20,25 40,30 60,15 80,20 100,5 120,10" fill="none" stroke="var(--emerald)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-                            <polygon points="0,40 0,35 20,25 40,30 60,15 80,20 100,5 120,10 120,40" fill="rgba(16, 185, 129, 0.15)" stroke="none"/>
-                        </svg>
-                    </div>
+            <div class="admin-hero">
+                <div class="admin-hero-text">
+                    <span class="home-eyebrow">پنل مدیریت</span>
+                    <h2>خلاصه‌ی وضعیت سیستم</h2>
+                    <p class="text-muted" style="font-size:12.5px;margin-block-start:6px">یک نگاه به سلامت ربات و کاربران فعال.</p>
+                </div>
+                <div class="admin-hero-stat">
+                    <span class="stat-label">سرویس فعال</span>
+                    <span class="stat-value" style="color:var(--emerald)">${UI.toPersianDigits(data.active_subscriptions_count || 0)}</span>
                 </div>
             </div>
-            <div class="admin-stat"><span>تیکت باز</span><strong style="color:var(--amber)">${data.open_tickets_count}</strong></div>
-            <div class="admin-stat"><span>کاربران</span><strong>${data.users_count}</strong></div>
-            <div class="admin-stat"><span>مشتریان</span><strong>${data.customers_count}</strong></div>
-            <div class="admin-stat"><span>سرور فعال</span><strong>${data.active_servers_count}</strong></div>
+            <div class="admin-stats-grid">
+                <div class="admin-stat-card amber">
+                    <span class="stat-label">تیکت باز</span>
+                    <span class="stat-value">${UI.toPersianDigits(data.open_tickets_count || 0)}</span>
+                </div>
+                <div class="admin-stat-card cyan">
+                    <span class="stat-label">کاربران</span>
+                    <span class="stat-value">${UI.toPersianDigits(data.users_count || 0)}</span>
+                </div>
+                <div class="admin-stat-card violet">
+                    <span class="stat-label">مشتریان</span>
+                    <span class="stat-value">${UI.toPersianDigits(data.customers_count || 0)}</span>
+                </div>
+                <div class="admin-stat-card emerald">
+                    <span class="stat-label">سرور فعال</span>
+                    <span class="stat-value">${UI.toPersianDigits(data.active_servers_count || 0)}</span>
+                </div>
+            </div>
         `;
 
         modules.innerHTML = `
-            <h4 style="font-size:14px;color:var(--text-muted);font-weight:700;margin:16px 0 12px; grid-column: 1 / -1;">بخش‌های مدیریت</h4>
-            <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:10px;width:100%">
+            <h3 class="section-title"><span data-icon="admin"></span> بخش‌های مدیریت</h3>
+            <div class="admin-tile-grid">
                 ${data.modules.map(item => {
-                    const section = escapeHtml(item.callback.replace('admin:', ''));
-                    const iconName = ADMIN_MODULE_ICONS[section] || 'package';
+                    const section = item.callback.replace('admin:', '');
+                    const meta = ADMIN_MODULE_META[section] || { icon: 'package', accent: 'cyan', desc: '' };
+                    const safeSection = escapeHtml(section);
                     return `
-                    <button class="admin-module" style="padding:12px;min-height:90px;justify-content:center;align-items:center;text-align:center" onclick="Pages.openAdminModule('${section}')">
-                        <div class="module-icon" style="margin-bottom:8px">${UI.icon(iconName)}</div>
-                        <strong style="font-size:12px">${escapeHtml(item.title)}</strong>
-                    </button>
-                `}).join('')}
+                    <button class="admin-tile" data-accent="${meta.accent}" onclick="Pages.openAdminModule('${safeSection}')">
+                        <div class="admin-tile-icon">${UI.icon(meta.icon)}</div>
+                        <div class="admin-tile-body">
+                            <div class="admin-tile-title">${escapeHtml(item.title)}</div>
+                            <div class="admin-tile-desc">${escapeHtml(meta.desc)}</div>
+                        </div>
+                        <div class="admin-tile-chev" aria-hidden="true">›</div>
+                    </button>`;
+                }).join('')}
             </div>
         `;
+        // Re-decorate header icon after the new section title hits the DOM.
+        modules.querySelectorAll('[data-icon]').forEach(el => {
+            el.innerHTML = UI.icon(el.dataset.icon, 'inline-icon');
+        });
     }
 
     async function openAdminModule(section) {
