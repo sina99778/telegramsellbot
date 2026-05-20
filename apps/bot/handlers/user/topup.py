@@ -693,7 +693,22 @@ async def topup_pay_manual(
 
     # Convert USD to crypto amount in real-time
     from services.crypto_price import convert_usd_to_crypto
+    from services.crypto_autoconfirm import (
+        generate_unique_pay_amount,
+        is_autoconfirmable,
+        pending_amounts_for,
+        quantize_for_currency,
+    )
     crypto_amount, unit_price = await convert_usd_to_crypto(amount, currency)
+
+    # If this currency is on a chain we can poll, add a unique cents-suffix
+    # so the autoconfirm worker can match the incoming TX deterministically.
+    autoconfirm = is_autoconfirmable(currency) and crypto_amount is not None
+    if autoconfirm:
+        existing = await pending_amounts_for(session, currency=currency, address=address)
+        crypto_amount = generate_unique_pay_amount(Decimal(crypto_amount), currency, existing)
+    elif crypto_amount is not None:
+        crypto_amount = quantize_for_currency(Decimal(crypto_amount), currency)
 
     # Currency emoji map
     _cur_emoji = {
@@ -710,18 +725,28 @@ async def topup_pay_manual(
     )
 
     if crypto_amount is not None and unit_price is not None:
-        # Format based on currency precision
+        # Show the unique amount in full precision so the user copies it
+        # exactly. The autoconfirm watcher matches at this precision too.
         if currency in {"BTC"}:
             crypto_display = f"{crypto_amount:.8f}"
-        elif currency in {"ETH", "LTC", "TON"}:
+        elif currency in {"TON"}:
+            crypto_display = f"{crypto_amount:.9f}"
+        elif currency in {"ETH", "LTC"}:
             crypto_display = f"{crypto_amount:.6f}"
         else:
-            crypto_display = f"{crypto_amount:.4f}"
+            crypto_display = f"{crypto_amount:.6f}"
 
         text += (
-            f"{cur_icon} معادل:  <b>{crypto_display} {currency}</b>\n"
+            f"{cur_icon} مقدار <b>دقیق</b>:  <code>{crypto_display}</code> {currency}\n"
             f"📊 نرخ لحظه‌ای:  1 {currency} = {unit_price:,.2f} USD\n"
         )
+        if autoconfirm:
+            text += (
+                "\n✨ <b>تأیید خودکار:</b> پس از واریز این مبلغ <b>دقیق</b>، "
+                "موجودی شارژ شما تا چند دقیقه به صورت خودکار شارژ می‌شود.\n"
+                "⚠️ اگر مبلغ متفاوتی واریز کنید سیستم نمی‌تواند پرداخت شما را "
+                "تشخیص دهد — پشتیبانی به صورت دستی بررسی می‌کند.\n"
+            )
     else:
         text += f"⚠️ نرخ لحظه‌ای در دسترس نیست.\n"
 
@@ -755,13 +780,20 @@ async def topup_pay_manual(
         order_id=local_order_id,
         payment_status="waiting_hash",
         pay_currency=currency,
+        # store the exact crypto figure the user has to send — this is what
+        # the autoconfirm watcher matches against.
+        pay_amount=Decimal(str(crypto_amount)) if crypto_amount is not None else None,
         price_currency="USD",
         price_amount=amount,
         callback_payload={
             "manual": True,
             "currency": currency,
+            "address": address,
             "crypto_amount": str(crypto_amount) if crypto_amount else None,
             "unit_price": str(unit_price) if unit_price else None,
+            # Autoconfirm metadata — the worker uses these.
+            "autoconfirm_enabled": bool(autoconfirm),
+            "autoconfirm_processed_hashes": [],
         },
     )
     session.add(payment)

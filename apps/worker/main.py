@@ -30,6 +30,7 @@ from apps.worker.jobs.subscriptions import sync_all_subscription_states
 from apps.worker.jobs.expiry_notifications import send_expiry_notifications
 from apps.worker.jobs.server_health import check_server_health
 from apps.worker.jobs.backup import run_backup
+from apps.worker.jobs.crypto_autoconfirm import run_crypto_autoconfirm
 from apps.worker.jobs.reconciliation import run_reconciliation
 from core.config import settings
 from core.database import AsyncSessionFactory
@@ -55,6 +56,15 @@ async def main() -> None:
     scheduler = AsyncIOScheduler()
     scheduler.add_job(sync_pending_payments, "interval", minutes=3)
     scheduler.add_job(run_sync_subscriptions, "interval", minutes=1, max_instances=1, coalesce=True)
+    # Auto-confirm manual crypto topups by polling the blockchain.
+    scheduler.add_job(
+        run_crypto_autoconfirm_job,
+        "interval",
+        seconds=30,
+        kwargs={"bot": bot},
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.add_job(
         run_broadcast_queue,
         "interval",
@@ -184,6 +194,19 @@ async def run_reconciliation_job(bot: PremiumEmojiBot) -> None:
             await session.commit()
     except Exception as exc:
         logger.error("reconciliation_job failed: %s", exc, exc_info=True)
+
+
+async def run_crypto_autoconfirm_job(bot: PremiumEmojiBot) -> None:
+    """Poll TronGrid / toncenter for incoming deposits and confirm any
+    pending manual-crypto invoices whose amount + timestamp matches."""
+    try:
+        async with AsyncSessionFactory() as session:
+            result = await run_crypto_autoconfirm(session, bot)
+            await session.commit()
+            if result.get("confirmed"):
+                logger.info("[CRYPTO-AUTOCONFIRM] %s", result)
+    except Exception as exc:
+        logger.error("crypto_autoconfirm_job failed: %s", exc, exc_info=True)
 
 
 if __name__ == "__main__":
