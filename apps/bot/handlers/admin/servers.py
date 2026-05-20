@@ -1389,74 +1389,88 @@ async def admin_pivot_plans_do(
     """Stage 2: actually perform the bulk update."""
     await callback.answer("⏳ در حال انتقال…")
 
-    inbound = await session.scalar(
-        select(XUIInboundRecord)
-        .options(selectinload(XUIInboundRecord.server))
-        .where(XUIInboundRecord.id == callback_data.inbound_id)
-    )
-    if inbound is None or not inbound.is_active:
-        await safe_edit_or_send(callback, "❌ اینباند مقصد فعال نیست.")
-        return
-    if inbound.server is None or not inbound.server.is_active:
-        await safe_edit_or_send(callback, "❌ سرور اینباند مقصد فعال نیست.")
-        return
+    # Distributed lock so a double-click (or two admins clicking on the
+    # same inbound at the same moment) can't run the bulk update twice.
+    # The UPDATE is idempotent (second run hits no-op branch) but the
+    # extra round-trip + audit-log churn is noise we don't want.
+    from core.redis import distributed_lock
+    lock_key = f"lock:pivot_plans:{callback_data.inbound_id}"
+    async with distributed_lock(lock_key, ttl_seconds=30) as acquired:
+        if not acquired:
+            await callback.answer(
+                "⏳ یک عملیات انتقال در حال انجام است. چند لحظه صبر کنید.",
+                show_alert=True,
+            )
+            return
 
-    from sqlalchemy import update as _update, func as _func
-
-    # Snapshot what we're about to change for the audit log + UI message.
-    affected_rows = await session.execute(
-        select(Plan.id, Plan.name, Plan.inbound_id).where(
-            Plan.is_active.is_(True),
-            (Plan.inbound_id != callback_data.inbound_id) | (Plan.inbound_id.is_(None)),
+        inbound = await session.scalar(
+            select(XUIInboundRecord)
+            .options(selectinload(XUIInboundRecord.server))
+            .where(XUIInboundRecord.id == callback_data.inbound_id)
         )
-    )
-    affected = list(affected_rows.all())
-    affected_ids = [row.id for row in affected]
+        if inbound is None or not inbound.is_active:
+            await safe_edit_or_send(callback, "❌ اینباند مقصد فعال نیست.")
+            return
+        if inbound.server is None or not inbound.server.is_active:
+            await safe_edit_or_send(callback, "❌ سرور اینباند مقصد فعال نیست.")
+            return
 
-    if not affected_ids:
-        await safe_edit_or_send(
-            callback,
-            "ℹ️ همه‌ی پلن‌های فعال از قبل روی این اینباند هستند. تغییری اعمال نشد.",
+        from sqlalchemy import update as _update
+
+        # Snapshot what we're about to change for the audit log + UI message.
+        affected_rows = await session.execute(
+            select(Plan.id, Plan.name, Plan.inbound_id).where(
+                Plan.is_active.is_(True),
+                (Plan.inbound_id != callback_data.inbound_id) | (Plan.inbound_id.is_(None)),
+            )
         )
-        return
+        affected = list(affected_rows.all())
+        affected_ids = [row.id for row in affected]
 
-    # Bulk update — single SQL statement, transactional.
-    await session.execute(
-        _update(Plan)
-        .where(Plan.id.in_(affected_ids))
-        .values(inbound_id=callback_data.inbound_id)
-    )
-    await session.flush()
+        if not affected_ids:
+            await safe_edit_or_send(
+                callback,
+                "ℹ️ همه‌ی پلن‌های فعال از قبل روی این اینباند هستند. تغییری اعمال نشد.",
+            )
+            return
 
-    try:
-        await AuditLogRepository(session).log_action(
-            actor_user_id=admin_user.id,
-            action="pivot_plans_to_inbound",
-            entity_type="inbound",
-            entity_id=callback_data.inbound_id,
-            payload={
-                "moved_plan_count": len(affected_ids),
-                "moved_plan_ids": [str(pid) for pid in affected_ids],
-                # truncate to keep payload sane
-                "plan_names_preview": [row.name for row in affected[:20]],
-            },
+        # Bulk update — single SQL statement, transactional.
+        await session.execute(
+            _update(Plan)
+            .where(Plan.id.in_(affected_ids))
+            .values(inbound_id=callback_data.inbound_id)
         )
-    except Exception as exc:
-        logger.warning("Audit log failed for pivot_plans_to_inbound: %s", exc)
+        await session.flush()
 
-    target_label = _fallback_inbound_label(inbound, False).lstrip("✅ ⬜️").strip()
+        try:
+            await AuditLogRepository(session).log_action(
+                actor_user_id=admin_user.id,
+                action="pivot_plans_to_inbound",
+                entity_type="inbound",
+                entity_id=callback_data.inbound_id,
+                payload={
+                    "moved_plan_count": len(affected_ids),
+                    "moved_plan_ids": [str(pid) for pid in affected_ids],
+                    # truncate to keep payload sane
+                    "plan_names_preview": [row.name for row in affected[:20]],
+                },
+            )
+        except Exception as exc:
+            logger.warning("Audit log failed for pivot_plans_to_inbound: %s", exc)
 
-    builder = InlineKeyboardBuilder()
-    builder.button(text="↩️ بازگشت به لیست اینباندها", callback_data="admin:fallback_inbounds")
-    builder.adjust(1)
+        target_label = _fallback_inbound_label(inbound, False).lstrip("✅ ⬜️").strip()
 
-    text = (
-        "✅ <b>انتقال انجام شد!</b>\n"
-        "━━━━━━━━━━━━━━\n"
-        f"🎯 اینباند مقصد: <code>{target_label}</code>\n"
-        f"📦 پلن‌های منتقل‌شده: <b>{len(affected_ids)}</b>\n"
-        "━━━━━━━━━━━━━━\n"
-        "از این پس، هر خرید جدید روی این اینباند ساخته می‌شود.\n"
-        "کانفیگ‌های موجود تغییری نکرده‌اند."
-    )
-    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        builder = InlineKeyboardBuilder()
+        builder.button(text="↩️ بازگشت به لیست اینباندها", callback_data="admin:fallback_inbounds")
+        builder.adjust(1)
+
+        text = (
+            "✅ <b>انتقال انجام شد!</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            f"🎯 اینباند مقصد: <code>{target_label}</code>\n"
+            f"📦 پلن‌های منتقل‌شده: <b>{len(affected_ids)}</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "از این پس، هر خرید جدید روی این اینباند ساخته می‌شود.\n"
+            "کانفیگ‌های موجود تغییری نکرده‌اند."
+        )
+        await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")

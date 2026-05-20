@@ -285,6 +285,12 @@ async def _handle_direct_purchase(
         payload["wallet_debited"] = True
         payload["order_id"] = str(order.id)
         payment.callback_payload = payload
+        # Defence in depth: flush so concurrent IPN retries see the marker
+        # immediately even before this transaction commits. The outer
+        # process_successful_payment already holds `FOR UPDATE` on the
+        # payment row, but flushing here also helps for any non-IPN
+        # callers that might invoke _handle_direct_purchase directly.
+        await session.flush()
         logger.info("[PROVISION] Wallet debited OK")
     else:
         logger.info("[PROVISION] Wallet debit already recorded for order %s", order.id)
@@ -499,6 +505,9 @@ async def _handle_direct_renewal(
         )
         payload["wallet_debited"] = True
         payment.callback_payload = payload
+        # See _handle_direct_purchase: flush so a concurrent IPN retry
+        # immediately sees the marker even before this transaction commits.
+        await session.flush()
 
     try:
         await apply_renewal(
