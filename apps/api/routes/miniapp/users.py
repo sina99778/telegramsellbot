@@ -1944,9 +1944,9 @@ async def _purchase_with_wallet(
 
     order.status = "provisioned"
 
-    # ── Notify admins ──
+    # ── Sales notification — prefers the dedicated channel ──
     try:
-        from services.notifications import notify_admins
+        from services.notifications import notify_sales_event
         from core.formatting import format_volume_bytes
         bot = PremiumEmojiBot(
             token=settings.bot_token.get_secret_value(),
@@ -1963,7 +1963,7 @@ async def _purchase_with_wallet(
                 f"📛 کانفیگ: {config_name}\n"
                 f"💳 روش: کیف پول"
             )
-            await notify_admins(session, bot, admin_text)
+            await notify_sales_event(session, bot, admin_text)
         finally:
             await bot.session.close()
     except Exception as exc:
@@ -2502,9 +2502,9 @@ async def renew_subscription(
     )
     await session.refresh(user.wallet)
 
-    # ── Notify admins ──
+    # ── Sales notification — prefers the dedicated channel ──
     try:
-        from services.notifications import notify_admins
+        from services.notifications import notify_sales_event
         bot = PremiumEmojiBot(
             token=settings.bot_token.get_secret_value(),
             default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
@@ -2520,11 +2520,11 @@ async def renew_subscription(
                 f"💰 مبلغ: {price:.2f} USD\n"
                 f"💳 روش: کیف پول"
             )
-            await notify_admins(session, bot, admin_text)
+            await notify_sales_event(session, bot, admin_text)
         finally:
             await bot.session.close()
     except Exception as exc:
-        logger.warning("[RENEWAL] Failed to notify admins: %s", exc)
+        logger.warning("[RENEWAL] Failed to notify: %s", exc)
 
     return RenewalResponse(
         status="renewed",

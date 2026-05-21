@@ -1592,8 +1592,8 @@ async def _finalize_purchase(
             parse_mode="HTML"
         )
 
-    # ── Notify admins about the purchase ──
-    from services.notifications import notify_admins
+    # ── Sales notification — prefers the dedicated channel ──
+    from services.notifications import notify_sales_event
 
     user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
     admin_text = (
@@ -1605,9 +1605,9 @@ async def _finalize_purchase(
         f"💳 روش: {payment_label}"
     )
     try:
-        await notify_admins(session, bot, admin_text)
+        await notify_sales_event(session, bot, admin_text)
     except Exception as exc:
-        logger.warning("Failed to notify admins about purchase: %s", exc)
+        logger.warning("Failed to notify about purchase: %s", exc)
 
     # ── Referral bonus on first purchase ──
     try:

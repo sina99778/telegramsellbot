@@ -356,8 +356,8 @@ async def _handle_direct_purchase(
                 caption=f"📷 QR کد کانفیگ {config_name}",
             )
 
-        # Notify admins
-        from services.notifications import notify_admins
+        # Sales notification — prefers the dedicated channel
+        from services.notifications import notify_sales_event
         user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
         admin_text = (
             "🛒 خرید جدید!\n\n"
@@ -368,9 +368,9 @@ async def _handle_direct_purchase(
             f"💳 روش: {provider_fa}"
         )
         try:
-            await notify_admins(session, bot, admin_text)
+            await notify_sales_event(session, bot, admin_text)
         except Exception as exc:
-            logger.warning("[PROVISION] Failed to notify admins: %s", exc)
+            logger.warning("[PROVISION] Failed to notify about purchase: %s", exc)
 
     except Exception as exc:
         # CRITICAL: catch every exception type, not just ProvisioningError.

@@ -56,3 +56,49 @@ async def notify_admins(
             logger.error("Unexpected error notifying admin tg=%s: %s", tg_id, exc)
 
     await asyncio.gather(*[_send(tg_id) for tg_id in admin_telegram_ids], return_exceptions=True)
+
+
+async def notify_sales_event(
+    session: AsyncSession,
+    bot: Bot,
+    text: str,
+    *,
+    fallback_to_admins: bool = True,
+) -> None:
+    """Send a purchase/renewal/topup-style notification.
+
+    Routing rules:
+    1. If the admin has configured a sales-report channel (AppSettings
+       key ``notifications.sales_channel``), send the message there ONLY.
+       This keeps admin DMs quiet — one shared channel for every sale.
+    2. If the channel is not configured OR the send to the channel
+       fails (forbidden, bad request, kicked, …), fall back to the
+       legacy "DM every admin" behaviour so we never silently drop a
+       sale notification.
+    """
+    from repositories.settings import AppSettingsRepository
+
+    chat_id: int | None = None
+    try:
+        chat_id = await AppSettingsRepository(session).get_sales_report_chat_id()
+    except Exception as exc:
+        logger.warning("Failed to load sales-report channel setting: %s", exc)
+
+    if chat_id is not None:
+        try:
+            await bot.send_message(chat_id, text, parse_mode="HTML")
+            return
+        except (TelegramForbiddenError, TelegramBadRequest) as exc:
+            logger.warning(
+                "Sales-report channel %s rejected the message (%s); "
+                "falling back to admin DMs",
+                chat_id, exc,
+            )
+        except Exception as exc:
+            logger.error(
+                "Unexpected error sending to sales-report channel %s: %s",
+                chat_id, exc,
+            )
+
+    if fallback_to_admins:
+        await notify_admins(session, bot, text)
