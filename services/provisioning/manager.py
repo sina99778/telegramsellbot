@@ -620,17 +620,61 @@ class ProvisioningManager:
         # the old client still exists on the old panel until cleanup, and
         # X-UI rejects duplicates by uuid within a single panel; even across
         # panels we want a fresh tracking row.
-        client_uuid, username, email, sub_id = await self._generate_unique_client_identity()
+        #
+        # IMPORTANT: keep the user-facing display name stable across the
+        # migration. The provisioning convention is
+        # ``<display>_<sub_id[:6]>`` — we extract the <display> part from
+        # the old row, then rotate ONLY the 6-char suffix + the uuid.
+        # Without this the row ends up named ``u_a1b2c3d4e5f6`` (the
+        # generic identity helper's fallback), which the user sees as
+        # their config name in every bot message and in the X-UI panel.
+        import re as _re
+        old_display_name = (xui.username or "").strip()
+        m = _re.match(r"^(.+)_[a-f0-9]{6}$", old_display_name)
+        display_root = m.group(1) if m else (old_display_name or None)
+        if not display_root or len(display_root) > 50:
+            display_root = (sub.plan.name if sub.plan else None) or "config"
+        # Keep only safe characters so panel/email validators don't choke.
+        display_root = _re.sub(r"[^A-Za-z0-9_\-]+", "", display_root) or "config"
+
+        # Pick a fresh (uuid, sub_id, email/username) tuple that doesn't
+        # collide with any OTHER XUIClientRecord. We deliberately exclude
+        # this row from the uniqueness check so the old values (which we're
+        # about to overwrite) don't make every candidate look duplicated.
+        from uuid import uuid4 as _uuid4
+        client_uuid: str = ""
+        username: str = ""
+        email: str = ""
+        sub_id: str = ""
+        for _attempt in range(20):
+            candidate_sub_id = _uuid4().hex[:16]
+            candidate_uuid = str(_uuid4())
+            candidate_username = f"{display_root}_{candidate_sub_id[:6]}"
+            candidate_email = candidate_username
+            collision = await self.session.scalar(
+                select(XUIClientRecord).where(
+                    XUIClientRecord.id != xui.id,
+                    (XUIClientRecord.client_uuid == candidate_uuid)
+                    | (XUIClientRecord.username == candidate_username)
+                    | (XUIClientRecord.email == candidate_email),
+                )
+            )
+            if collision is None:
+                client_uuid = candidate_uuid
+                sub_id = candidate_sub_id
+                username = candidate_username
+                email = candidate_email
+                break
+        if not client_uuid:
+            raise MigrationError("نتوانستیم هویت یکتای جدید بسازیم. لطفاً دوباره تلاش کنید.")
+
         new_sub_link = build_sub_link(target_server, sub_id)
         security_settings = await AppSettingsRepository(self.session).get_service_security_settings()
 
-        # Try to preserve the user's preferred display name as the remark
-        # on the new client. Fall back to plan name or "config".
-        remark = (
-            (xui.username.split("_")[0] if xui.username else None)
-            or (sub.plan.name if sub.plan else None)
-            or "config"
-        )
+        # The remark on the new client matches the display root so the
+        # user sees the SAME name they originally chose, both in the bot
+        # and in the X-UI panel.
+        remark = display_root
         new_vless_uri = build_vless_uri(
             client_uuid=client_uuid,
             server=target_server,
