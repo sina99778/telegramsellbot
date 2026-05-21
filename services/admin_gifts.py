@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import traceback
+from dataclasses import dataclass
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
@@ -20,6 +22,21 @@ logger = logging.getLogger(__name__)
 
 ACTIVE_GIFT_STATUSES = ("active", "pending_activation")
 ALL_GIFT_STATUSES = ("active", "pending_activation", "expired")
+
+# Synchronous variant cap. The miniapp admin endpoint calls
+# `grant_bulk_subscription_gift` and awaits the result (so the admin
+# sees matched/updated/failed counts immediately). Each subscription
+# touches X-UI over the network, so we cap the inline run at this many
+# subscriptions; above it, the admin is told to use the bot UI which
+# kicks off the background variant with a progress bar.
+_SYNC_MAX_SUBS = 60
+
+
+@dataclass(slots=True, frozen=True)
+class BulkGiftResult:
+    matched_count: int
+    updated_count: int
+    failed_count: int
 
 
 def get_gift_statuses(status_scope: str) -> tuple[str, ...]:
@@ -73,6 +90,61 @@ async def _gift_single_subscription(
             )
             await session.rollback()
             return False, None, None
+
+
+async def grant_bulk_subscription_gift(
+    *,
+    session: AsyncSession,
+    gift_type: str,
+    amount: float,
+    status_scope: str,
+    server_id: UUID | None = None,
+) -> BulkGiftResult:
+    """Synchronous bulk-gift used by the miniapp admin endpoint.
+
+    Walks every subscription matching the (status_scope, server_id)
+    filter and applies the gift one by one. Each subscription is
+    processed in its own short-lived session (see _gift_single_subscription)
+    so a single failure can't poison the rest.
+
+    For very large fan-outs this would time out the HTTP request; we
+    cap it at `_SYNC_MAX_SUBS` and ask the admin to use the bot's
+    background variant when the cap is exceeded.
+    """
+    if gift_type not in {"time", "volume"}:
+        raise ValueError("Invalid gift type.")
+    if amount <= 0:
+        raise ValueError("Gift amount must be > 0.")
+
+    statuses = get_gift_statuses(status_scope)
+    stmt = select(Subscription.id).where(Subscription.status.in_(statuses))
+    if server_id is not None:
+        stmt = (
+            stmt.join(XUIClientRecord, XUIClientRecord.subscription_id == Subscription.id)
+            .join(XUIInboundRecord, XUIClientRecord.inbound_id == XUIInboundRecord.id)
+            .where(XUIInboundRecord.server_id == server_id)
+        )
+    result = await session.execute(stmt)
+    subscription_ids = list(result.scalars().unique().all())
+
+    matched = len(subscription_ids)
+    if matched == 0:
+        return BulkGiftResult(0, 0, 0)
+    if matched > _SYNC_MAX_SUBS:
+        raise ValueError(
+            f"تعداد سرویس‌های انتخاب‌شده ({matched}) بیش از حد مجاز ({_SYNC_MAX_SUBS}) "
+            "برای اجرای فوری است. لطفاً از منوی ربات «هدیه گروهی» استفاده کنید."
+        )
+
+    updated = 0
+    failed = 0
+    for sub_id in subscription_ids:
+        success, _tg_id, _conf_name = await _gift_single_subscription(sub_id, gift_type, amount)
+        if success:
+            updated += 1
+        else:
+            failed += 1
+    return BulkGiftResult(matched_count=matched, updated_count=updated, failed_count=failed)
 
 
 async def grant_bulk_subscription_gift_background(

@@ -79,6 +79,7 @@ from services.custom_purchase import (
     create_custom_purchase_plan,
     get_custom_purchase_template_plan,
 )
+from services.admin_gifts import grant_bulk_subscription_gift
 from services.payment import review_gateway_payment
 from services.plan_inventory import (
     PlanStockError,

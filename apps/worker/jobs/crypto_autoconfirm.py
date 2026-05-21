@@ -17,8 +17,13 @@ Design notes
 * Each successful auto-confirm appends the TX hash to a list on the
   payment row so the same hash never auto-confirms twice (replay
   protection on top of process_successful_payment's own idempotency).
-* The job is wrapped in a single session.commit() per payment so that
-  one failing payment doesn't poison the rest.
+* Each match is wrapped in `session.begin_nested()` (a SAVEPOINT) so a
+  failure on one invoice does NOT roll back the matches that already
+  succeeded earlier in the same job run.
+* After a successful auto-confirm we also:
+    - clear the buying user's FSM "waiting_for_manual_hash" state (so
+      whatever they type next isn't interpreted as a TX hash);
+    - post to the sales-report channel via notify_sales_event.
 """
 from __future__ import annotations
 
@@ -121,53 +126,104 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
             if matched_payment is None:
                 continue
 
+            # Each match runs inside its own SAVEPOINT so a failure on
+            # this invoice (e.g. transient X-UI panel error, audit log
+            # FK constraint, …) doesn't roll back any matches that
+            # already succeeded earlier in the same job run.
             try:
-                # Stamp hash + processed marker BEFORE process_successful_payment.
-                # process_successful_payment is itself idempotent (FOR UPDATE +
-                # actually_paid guard), so this is belt-and-braces.
-                payload = dict(matched_payment.callback_payload or {})
-                processed = list(payload.get("autoconfirm_processed_hashes") or [])
-                processed.append(tx_hash)
-                payload["autoconfirm_processed_hashes"] = processed
-                payload["autoconfirm_tx_hash"] = tx_hash
-                payload["autoconfirm_at"] = datetime.now(timezone.utc).isoformat()
-                payload["tx_hash"] = tx_hash  # surface to admin recovery UI
-                matched_payment.provider_payment_id = tx_hash
-                matched_payment.callback_payload = payload
-                await session.flush()
+                async with session.begin_nested():
+                    # Stamp hash + processed marker BEFORE
+                    # process_successful_payment. process_successful_payment
+                    # is itself idempotent (FOR UPDATE + actually_paid
+                    # guard); this list is the autoconfirm-specific
+                    # replay-protection.
+                    payload = dict(matched_payment.callback_payload or {})
+                    processed = list(payload.get("autoconfirm_processed_hashes") or [])
+                    processed.append(tx_hash)
+                    payload["autoconfirm_processed_hashes"] = processed
+                    payload["autoconfirm_tx_hash"] = tx_hash
+                    payload["autoconfirm_at"] = datetime.now(timezone.utc).isoformat()
+                    payload["tx_hash"] = tx_hash  # surface to admin recovery UI
+                    matched_payment.provider_payment_id = tx_hash
+                    matched_payment.callback_payload = payload
+                    await session.flush()
 
-                await process_successful_payment(
-                    session=session,
-                    payment=matched_payment,
-                    amount_to_credit=Decimal(str(matched_payment.price_amount)),
-                )
-                # Remove the matched invoice from the local list so a
-                # follow-up TX doesn't re-trigger this branch.
-                invoices.remove(matched_payment)
-                confirmed += 1
-                logger.info(
-                    "[CRYPTO-AUTOCONFIRM] confirmed payment=%s tx=%s amount=%s %s",
-                    matched_payment.id, tx_hash, tx_amount, currency,
-                )
-
-                # Notify the user.
-                if bot is not None:
-                    try:
-                        from models.user import User as _U
-                        u = await session.scalar(select(_U).where(_U.id == matched_payment.user_id))
-                        if u:
-                            await bot.send_message(
-                                u.telegram_id,
-                                "✅ <b>پرداخت کریپتو شما به‌صورت خودکار تأیید شد</b>\n"
-                                f"💰 موجودی کیف پول شما <b>{matched_payment.price_amount:.2f} $</b> شارژ شد.\n"
-                                f"🔗 هش تراکنش: <code>{tx_hash}</code>",
-                            )
-                    except Exception as exc:
-                        logger.warning("autoconfirm user notify failed: %s", exc)
+                    await process_successful_payment(
+                        session=session,
+                        payment=matched_payment,
+                        amount_to_credit=Decimal(str(matched_payment.price_amount)),
+                    )
             except Exception as exc:
                 logger.error(
                     "[CRYPTO-AUTOCONFIRM] process_successful_payment failed for %s: %s",
                     matched_payment.id, exc, exc_info=True,
                 )
+                # Skip the rest of the post-match steps for this invoice.
+                continue
+
+            # If we got here, the SAVEPOINT committed. Remove the
+            # matched invoice from the local list so a follow-up TX in
+            # the same poll doesn't re-trigger this branch.
+            try:
+                invoices.remove(matched_payment)
+            except ValueError:
+                pass
+            confirmed += 1
+            logger.info(
+                "[CRYPTO-AUTOCONFIRM] confirmed payment=%s tx=%s amount=%s %s",
+                matched_payment.id, tx_hash, tx_amount, currency,
+            )
+
+            # ── Post-match best-effort follow-ups (never failed below)
+            # Note: we deliberately do NOT try to clear the buyer's FSM
+            # "waiting_for_manual_hash" state from here. The worker runs
+            # in its own process and cannot reach the bot's MemoryStorage.
+            # The bot-side hash-input handler already short-circuits when
+            # it finds the payment row in a terminal state, so a late
+            # /skip from the user is harmless.
+
+            # 1) DM the user.
+            if bot is not None:
+                try:
+                    from models.user import User as _U
+                    u = await session.scalar(select(_U).where(_U.id == matched_payment.user_id))
+                    if u:
+                        # Escape values that could contain Telegram-HTML special
+                        # chars even though tx hashes are hex; defence in depth.
+                        from html import escape as _esc
+                        await bot.send_message(
+                            u.telegram_id,
+                            "✅ <b>پرداخت کریپتو شما به‌صورت خودکار تأیید شد</b>\n"
+                            f"💰 موجودی کیف پول شما <b>{matched_payment.price_amount:.2f} $</b> شارژ شد.\n"
+                            f"🔗 هش تراکنش: <code>{_esc(str(tx_hash))}</code>",
+                            parse_mode="HTML",
+                        )
+                except Exception as exc:
+                    logger.warning("autoconfirm user notify failed: %s", exc)
+
+            # 2) Post to the sales-report channel (or fall back to
+            #    admin DMs if no channel is configured).
+            if bot is not None:
+                try:
+                    from services.notifications import notify_sales_event
+                    from models.user import User as _U
+                    u = await session.scalar(select(_U).where(_U.id == matched_payment.user_id))
+                    if u:
+                        from html import escape as _esc
+                        user_link = (
+                            f"@{u.username}" if u.username
+                            else f"<a href='tg://user?id={u.telegram_id}'>مشاهده پروفایل</a>"
+                        )
+                        msg = (
+                            "💳 شارژ خودکار کیف پول!\n\n"
+                            f"👤 کاربر: {_esc(u.first_name or '-')} | {user_link} "
+                            f"(ID: <code>{u.telegram_id}</code>)\n"
+                            f"💰 مبلغ: <b>{matched_payment.price_amount:.2f} USD</b>\n"
+                            f"💱 ارز: {_esc(currency)}\n"
+                            f"🔗 TX: <code>{_esc(str(tx_hash))}</code>"
+                        )
+                        await notify_sales_event(session, bot, msg)
+                except Exception as exc:
+                    logger.warning("autoconfirm sales-notify failed: %s", exc)
 
     return {"checked": checked, "confirmed": confirmed, "pending_invoices": len(pending)}
