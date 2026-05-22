@@ -61,6 +61,7 @@ COPY --chown=appuser:appgroup repositories ./repositories
 COPY --chown=appuser:appgroup schemas ./schemas
 COPY --chown=appuser:appgroup services ./services
 COPY --chown=appuser:appgroup miniapp ./miniapp
+COPY --chown=appuser:appgroup scripts ./scripts
 
 USER appuser
 
