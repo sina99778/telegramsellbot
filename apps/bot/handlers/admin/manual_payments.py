@@ -4,13 +4,15 @@ Admin handler for approving/rejecting manual crypto payments.
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 from uuid import UUID
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramForbiddenError
-from aiogram.types import CallbackQuery
+from aiogram.filters import Command, CommandObject
+from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 router = Router(name="admin-manual-payments")
 router.callback_query.middleware(AdminOnlyMiddleware())
+router.message.middleware(AdminOnlyMiddleware())
 
 
 async def _build_payment_context(session: AsyncSession, payment: Payment) -> str:
@@ -310,3 +313,185 @@ async def reject_manual_payment(
             pass
         except Exception as exc:
             logger.warning("Could not notify user about rejection: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  /diag_autoconfirm <order_id_or_payment_uuid>
+#
+#  When a manual-crypto payment doesn't auto-confirm, the admin has no way
+#  to figure out WHY without sshing the server. This command answers the
+#  question in one bot message: was the row gated out? did the explorer
+#  return any TXs? did any TX match? if not — by how much was the amount
+#  off?
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _esc(text: object) -> str:
+    """HTML-escape; keep tx hashes / addresses safe inside <code> tags."""
+    from html import escape
+    return escape(str(text))
+
+
+async def _load_payment_for_diag(session: AsyncSession, ident: str) -> Payment | None:
+    """Try interpreting ``ident`` as a UUID first, then fall back to order_id."""
+    # UUID path
+    try:
+        pid = UUID(ident)
+        p = await session.scalar(select(Payment).where(Payment.id == pid))
+        if p is not None:
+            return p
+    except (ValueError, AttributeError):
+        pass
+    # order_id path
+    return await session.scalar(select(Payment).where(Payment.order_id == ident))
+
+
+@router.message(Command("diag_autoconfirm"))
+async def diag_autoconfirm(message: Message, command: CommandObject, session: AsyncSession) -> None:
+    """Diagnose why a specific manual-crypto invoice isn't auto-confirming.
+
+    Usage:
+        /diag_autoconfirm <order_id_or_payment_uuid>
+
+    The reply contains:
+      1. Payment summary (status, amount, address, autoconfirm flag).
+      2. Autoconfirm gating verdict.
+      3. Raw blockchain probe — every incoming TX in the 24h window, with
+         per-TX `amount_matches` verdict against the invoice amount.
+      4. Verdict line: "would auto-confirm" / "no matching TX found" /
+         "explorer error".
+    """
+    ident = (command.args or "").strip()
+    if not ident:
+        await message.answer(
+            "<b>/diag_autoconfirm</b>\n"
+            "Usage: <code>/diag_autoconfirm &lt;order_id_or_payment_uuid&gt;</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    payment = await _load_payment_for_diag(session, ident)
+    if payment is None:
+        await message.answer(
+            f"❌ Payment <code>{_esc(ident)}</code> not found "
+            "(tried both UUID and order_id).",
+            parse_mode="HTML",
+        )
+        return
+
+    # Late imports keep this file importable in environments where
+    # services.crypto_autoconfirm transitively imports things we don't need.
+    from services.crypto_autoconfirm import (
+        AUTOCONFIRM_CURRENCIES,
+        amount_matches,
+        fetch_incoming,
+        is_autoconfirmable,
+    )
+
+    payload = payment.callback_payload or {}
+    address = payload.get("address")
+    cur = (payment.pay_currency or "").strip()
+    is_ac = is_autoconfirmable(cur)
+
+    created_at = payment.created_at
+    if created_at and created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+
+    # ─── 1. Payment summary
+    lines: list[str] = []
+    lines.append("🔍 <b>diag_autoconfirm</b>")
+    lines.append("")
+    lines.append("<b>Payment</b>")
+    lines.append(f"  id:        <code>{_esc(payment.id)}</code>")
+    lines.append(f"  order_id:  <code>{_esc(payment.order_id)}</code>")
+    lines.append(f"  provider:  <code>{_esc(payment.provider)}</code>")
+    lines.append(f"  status:    <code>{_esc(payment.payment_status)}</code>")
+    lines.append(f"  kind:      <code>{_esc(payment.kind)}</code>")
+    lines.append(f"  currency:  <code>{_esc(payment.pay_currency)}</code>")
+    lines.append(f"  pay_amt:   <code>{_esc(payment.pay_amount)}</code>")
+    lines.append(f"  price_amt: <code>{_esc(payment.price_amount)} USD</code>")
+    lines.append(f"  created:   <code>{_esc(created_at.isoformat() if created_at else '-')}</code>")
+    lines.append(f"  address:   <code>{_esc(address)}</code>")
+    lines.append(f"  ac_flag:   <code>{_esc(payload.get('autoconfirm_enabled'))}</code>")
+
+    # ─── 2. Gating verdict
+    lines.append("")
+    lines.append("<b>Gating</b>")
+    if payment.provider != "manual_crypto":
+        lines.append(f"  ❌ provider is <code>{_esc(payment.provider)}</code>, not manual_crypto — autoconfirm never looks at this row.")
+        await message.answer("\n".join(lines), parse_mode="HTML")
+        return
+    if payment.payment_status not in ("waiting_hash", "waiting_receipt"):
+        lines.append(f"  ❌ status is <code>{_esc(payment.payment_status)}</code> — autoconfirm only polls waiting_hash / waiting_receipt.")
+        await message.answer("\n".join(lines), parse_mode="HTML")
+        return
+    if not is_ac:
+        lines.append(f"  ❌ currency <code>{_esc(cur)}</code> is NOT in AUTOCONFIRM_CURRENCIES.")
+        lines.append(f"     Allowed: <code>{_esc(sorted(AUTOCONFIRM_CURRENCIES))}</code>")
+        await message.answer("\n".join(lines), parse_mode="HTML")
+        return
+    if not address:
+        lines.append("  ❌ callback_payload.address is empty — autoconfirm skips this row.")
+        await message.answer("\n".join(lines), parse_mode="HTML")
+        return
+    if payment.pay_amount is None:
+        lines.append("  ❌ pay_amount is NULL — autoconfirm filter excludes this row.")
+        await message.answer("\n".join(lines), parse_mode="HTML")
+        return
+    lines.append("  ✅ row passes all autoconfirm filters.")
+
+    # ─── 3. Blockchain probe
+    since = (created_at or datetime.now(timezone.utc) - timedelta(hours=24)) - timedelta(seconds=60)
+    lines.append("")
+    lines.append("<b>Explorer probe</b>")
+    lines.append(f"  fetching since: <code>{_esc(since.isoformat(timespec='seconds'))}</code>")
+
+    try:
+        txs = await fetch_incoming(currency=cur, address=str(address), since=since)
+    except Exception as exc:
+        lines.append(f"  ❌ explorer call raised: <code>{_esc(type(exc).__name__)}: {_esc(exc)}</code>")
+        await message.answer("\n".join(lines), parse_mode="HTML")
+        return
+
+    lines.append(f"  got {len(txs)} tx(s) back")
+
+    any_match = False
+    if not txs:
+        lines.append("  (nothing yet — either the user hasn't paid, the explorer is rate-limited, or our stored address differs from the on-chain destination)")
+    else:
+        lines.append("")
+        lines.append("<b>Per-TX match</b>")
+        # Cap at first 20 to stay under Telegram's 4096-char limit.
+        for tx in txs[:20]:
+            tx_hash = str(tx.get("hash") or "?")
+            tx_amt = tx.get("amount")
+            tx_ts = tx.get("timestamp")
+            try:
+                matches = amount_matches(cur, Decimal(payment.pay_amount), Decimal(tx_amt))
+            except Exception:
+                matches = False
+            any_match = any_match or matches
+            mark = "✅" if matches else "  "
+            short_hash = tx_hash[:12] + "…" if len(tx_hash) > 14 else tx_hash
+            lines.append(
+                f"  {mark} <code>{_esc(short_hash)}</code>  "
+                f"amt=<code>{_esc(tx_amt)}</code>  "
+                f"at <code>{_esc(tx_ts.isoformat(timespec='seconds') if tx_ts else '?')}</code>"
+            )
+        if len(txs) > 20:
+            lines.append(f"  … and {len(txs) - 20} more not shown.")
+
+    # ─── 4. Verdict
+    lines.append("")
+    lines.append("<b>Verdict</b>")
+    if any_match:
+        lines.append("  ✅ At least one TX matches the invoice amount.")
+        lines.append("     The next autoconfirm poll (≤30 s) should pick it up.")
+    elif not txs:
+        lines.append("  ⏳ No transactions on the address in the time window.")
+        lines.append("     Either the user hasn't paid yet OR the explorer is rate-limited.")
+        lines.append("     Set TONCENTER_API_KEY / TRONGRID_API_KEY in .env if this is chronic.")
+    else:
+        lines.append(f"  ⚠️ {len(txs)} TX(s) arrived but none matched the invoice's amount.")
+        lines.append("     Most likely the user rounded the amount — refund/retry by hand.")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")

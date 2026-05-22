@@ -73,14 +73,21 @@ def is_autoconfirmable(currency: str | None) -> bool:
 # we tell them and is asked to send it exactly.
 
 def quantize_for_currency(amount: Decimal, currency: str) -> Decimal:
-    """Pick a sensible display precision per currency."""
+    """Pick a sensible display precision per currency.
+
+    All values must round-trip through ``Payment.pay_amount`` which is
+    ``Numeric(18, 8)`` — i.e. 8 decimals max. We deliberately stay at or
+    below that everywhere so the stored value equals the displayed value
+    bit-for-bit. (Earlier this used 9 dp for TON and silently lost the
+    last digit on INSERT, which broke amount matching universally.)
+    """
     c = (currency or "").strip()
     if c in TRON_USDT_CURRENCIES:
-        return amount.quantize(Decimal("0.000001"))   # 6 dp on USDT
+        return amount.quantize(Decimal("0.000001"))  # 6 dp on USDT
     if c in TRX_CURRENCIES:
-        return amount.quantize(Decimal("0.000001"))   # 6 dp on TRX
+        return amount.quantize(Decimal("0.000001"))  # 6 dp on TRX
     if c in TON_CURRENCIES:
-        return amount.quantize(Decimal("0.000000001"))  # 9 dp on TON
+        return amount.quantize(Decimal("0.000001"))  # 6 dp on TON — fits Numeric(18,8)
     return amount.quantize(Decimal("0.00000001"))
 
 
@@ -101,13 +108,18 @@ def generate_unique_pay_amount(
 
     c = (currency or "").strip()
     # Suffix unit: how many digits below the integer part the suffix lives.
+    # Stay at the quantizer's precision so the candidate doesn't drift
+    # back to a higher precision the DB column can't hold.
     if c in TRON_USDT_CURRENCIES or c in TRX_CURRENCIES:
         # Suffix in 10^-6..10^-4 range: e.g. 0.000123 → 0.0099%-level
         unit = Decimal("0.000001")
         max_suffix = 9999
     elif c in TON_CURRENCIES:
-        unit = Decimal("0.000000001")
-        max_suffix = 999_999
+        # Was 10^-9; now matches the 6-dp quantizer so the value stored
+        # in Payment.pay_amount (Numeric 18,8) is bit-exact with what
+        # the user is asked to send.
+        unit = Decimal("0.000001")
+        max_suffix = 9999
     else:
         unit = Decimal("0.00000001")
         max_suffix = 9999
@@ -160,6 +172,47 @@ async def pending_amounts_for(
 USDT_TRC20_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"
 
 
+def _trongrid_headers() -> dict[str, str]:
+    """Return TronGrid auth header iff an API key is configured.
+
+    Lazily imported so this module stays importable in tests that haven't
+    initialised core.config (e.g. unit tests for quantize_for_currency).
+    """
+    try:
+        from core.config import settings
+        key = settings.trongrid_api_key
+        if key is None:
+            return {}
+        raw = key.get_secret_value() if hasattr(key, "get_secret_value") else str(key)
+        raw = (raw or "").strip()
+        if not raw:
+            return {}
+        return {"TRON-PRO-API-KEY": raw}
+    except Exception:
+        return {}
+
+
+def _toncenter_params() -> dict[str, str]:
+    """Return TonCenter api_key query param iff configured.
+
+    TonCenter accepts the key either as ``X-API-Key`` header OR as a
+    ``api_key`` query param. We use the query-param form because some
+    older TonCenter proxies ignore the header.
+    """
+    try:
+        from core.config import settings
+        key = settings.toncenter_api_key
+        if key is None:
+            return {}
+        raw = key.get_secret_value() if hasattr(key, "get_secret_value") else str(key)
+        raw = (raw or "").strip()
+        if not raw:
+            return {}
+        return {"api_key": raw}
+    except Exception:
+        return {}
+
+
 async def fetch_tron_trc20_incoming(
     address: str,
     *,
@@ -179,9 +232,10 @@ async def fetch_tron_trc20_incoming(
         "min_timestamp": int(since.timestamp() * 1000),
         "limit": 50,
     }
+    headers = _trongrid_headers()
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            r = await client.get(url, params=params)
+            r = await client.get(url, params=params, headers=headers)
             r.raise_for_status()
             data = r.json()
     except Exception as exc:
@@ -213,9 +267,10 @@ async def fetch_tron_trx_incoming(
         "min_timestamp": int(since.timestamp() * 1000),
         "limit": 50,
     }
+    headers = _trongrid_headers()
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            r = await client.get(url, params=params)
+            r = await client.get(url, params=params, headers=headers)
             r.raise_for_status()
             data = r.json()
     except Exception as exc:
@@ -250,6 +305,8 @@ async def fetch_ton_incoming(
         "to_lt": 0,
         "archival": "false",
     }
+    # Merge api_key query param if configured (lifts the 1 req/s anon limit).
+    params.update(_toncenter_params())
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.get(url, params=params)

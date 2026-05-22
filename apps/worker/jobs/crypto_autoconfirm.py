@@ -58,14 +58,22 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
     """Public entry point used by apps/worker/main.py scheduler."""
     cutoff = datetime.now(timezone.utc) - _MAX_INVOICE_AGE
 
+    # `with_for_update(skip_locked=True)` honours the concurrency contract
+    # documented on `process_successful_payment`: callers MUST hold the
+    # payment row lock before crediting the wallet. `skip_locked` ensures
+    # a row currently being processed by a NowPayments IPN or manual-
+    # approval handler is silently skipped this cycle and picked up on
+    # the next one (30 s later) — no head-of-line blocking.
     rows = await session.execute(
-        select(Payment).where(
+        select(Payment)
+        .where(
             Payment.provider == "manual_crypto",
             Payment.payment_status.in_(("waiting_hash", "waiting_receipt")),
             Payment.created_at >= cutoff,
             Payment.pay_currency.in_(tuple(AUTOCONFIRM_CURRENCIES)),
             Payment.pay_amount.is_not(None),
         )
+        .with_for_update(skip_locked=True)
     )
     pending: list[Payment] = list(rows.scalars().all())
     if not pending:
@@ -74,13 +82,35 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
     # Group by (currency, address) so we only hit each blockchain API
     # once per unique deposit destination.
     by_target: dict[tuple[str, str], list[Payment]] = {}
+    skipped_non_autoconfirmable = 0
     for p in pending:
         payload = p.callback_payload or {}
         addr = payload.get("address")
         cur = (p.pay_currency or "").strip()
         if not addr or not is_autoconfirmable(cur):
+            # Bubble this up — it's the #1 way payments silently
+            # never get auto-confirmed (admin stored a currency name
+            # that isn't in AUTOCONFIRM_CURRENCIES, or callback_payload
+            # somehow lost its address).
+            logger.warning(
+                "[CRYPTO-AUTOCONFIRM] skipping payment %s — addr=%r currency=%r "
+                "not autoconfirmable (autoconfirmable set: %s)",
+                p.id, addr, cur, sorted(AUTOCONFIRM_CURRENCIES),
+            )
+            skipped_non_autoconfirmable += 1
             continue
         by_target.setdefault((cur, str(addr)), []).append(p)
+
+    if by_target:
+        logger.info(
+            "[CRYPTO-AUTOCONFIRM] polling %d pending invoices across %d (currency,address) targets",
+            sum(len(v) for v in by_target.values()), len(by_target),
+        )
+    elif skipped_non_autoconfirmable:
+        logger.info(
+            "[CRYPTO-AUTOCONFIRM] %d pending invoices, but ALL were skipped as non-autoconfirmable",
+            skipped_non_autoconfirmable,
+        )
 
     confirmed = 0
     checked = 0
@@ -98,6 +128,17 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
         txs = await fetch_incoming(currency=currency, address=address, since=since_with_skew)
         checked += len(txs)
 
+        # Visibility for "the worker IS running but never finds anything":
+        # if this line keeps logging 0 txs, the issue is upstream (TronGrid
+        # 429 / wrong address / firewall) — not the matcher.
+        _addr_short = address[:8] + "…" if len(address) > 10 else address
+        logger.info(
+            "[CRYPTO-AUTOCONFIRM] %s @ %s — fetched %d tx(s) since %s for %d pending invoice(s)",
+            currency, _addr_short, len(txs), since_with_skew.isoformat(timespec="seconds"),
+            len(invoices),
+        )
+
+        unmatched_in_target = 0
         for tx in txs:
             tx_hash = tx.get("hash")
             tx_amount = tx.get("amount")
@@ -124,6 +165,14 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
                     break
 
             if matched_payment is None:
+                # Useful for the "user paid 5.123457 but our invoice was 5.123459"
+                # diagnosis — surfaces in DEBUG only so we don't spam INFO at
+                # every poll cycle.
+                logger.debug(
+                    "[CRYPTO-AUTOCONFIRM] tx %s amount=%s on %s @ %s — no pending invoice matches",
+                    tx_hash, tx_amount, currency, _addr_short,
+                )
+                unmatched_in_target += 1
                 continue
 
             # Each match runs inside its own SAVEPOINT so a failure on
@@ -225,5 +274,18 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
                         await notify_sales_event(session, bot, msg)
                 except Exception as exc:
                     logger.warning("autoconfirm sales-notify failed: %s", exc)
+
+        # End of this (currency, address) target: if we polled TXs but none
+        # matched, surface that at INFO so the operator sees the precise
+        # "explorer responded, matcher rejected" signal — the most likely
+        # remaining cause once polling works is precision drift between
+        # what the user actually sent and what the bot asked for.
+        if unmatched_in_target and unmatched_in_target == len(txs):
+            logger.info(
+                "[CRYPTO-AUTOCONFIRM] %s @ %s — got %d tx(s) but NONE matched any of "
+                "the %d pending invoice amount(s). Likely an amount-drift or "
+                "address-format mismatch — run /diag_autoconfirm <order_id> to inspect.",
+                currency, _addr_short, len(txs), len(invoices),
+            )
 
     return {"checked": checked, "confirmed": confirmed, "pending_invoices": len(pending)}

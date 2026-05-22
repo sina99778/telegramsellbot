@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     tronado_wallet_address: str | None = None
     tronado_wage_from_business_percentage: int = 0
 
+    # Blockchain-explorer API keys used by the crypto auto-confirm worker.
+    # Both are OPTIONAL: leave unset for anonymous polling (works for
+    # low volume), set them for higher request budgets on busy servers.
+    #   TronGrid:  https://www.trongrid.io/ (free 100k req/day)
+    #   TonCenter: https://toncenter.com/ (free 1 req/s without a key)
+    trongrid_api_key:  SecretStr | None = None
+    toncenter_api_key: SecretStr | None = None
+
     support_url: str | None = None
     owner_telegram_id: int | None = None
     admin_api_key: SecretStr | None = None

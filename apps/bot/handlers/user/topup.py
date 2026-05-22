@@ -729,11 +729,13 @@ async def topup_pay_manual(
         # exactly. The autoconfirm watcher matches at this precision too.
         if currency in {"BTC"}:
             crypto_display = f"{crypto_amount:.8f}"
-        elif currency in {"TON"}:
-            crypto_display = f"{crypto_amount:.9f}"
         elif currency in {"ETH", "LTC"}:
             crypto_display = f"{crypto_amount:.6f}"
         else:
+            # TON / TRX / USDT-TRC20 all use 6 decimals — matches
+            # services.crypto_autoconfirm.quantize_for_currency so the
+            # value the user sees is exactly what gets stored in DB and
+            # exactly what the autoconfirm worker matches against.
             crypto_display = f"{crypto_amount:.6f}"
 
         text += (
