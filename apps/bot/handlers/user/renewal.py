@@ -394,6 +394,21 @@ async def renew_pay_wallet(
 
         await state.clear()
 
+        # Pre-flight: probe the panel BEFORE we debit. Saves the user
+        # from a "debited then refunded" round-trip when the server is
+        # already known to be down.
+        try:
+            from services.provisioning.manager import ProvisioningManager as _PM
+            preflight_ok, preflight_reason = await _PM(session).preflight_check_subscription(sub.id)
+        except Exception:
+            preflight_ok, preflight_reason = True, None  # don't block the user on a broken probe
+        if not preflight_ok:
+            try:
+                await callback.message.answer(f"⚠️ {preflight_reason or 'سرور در دسترس نیست.'}")
+            except Exception:
+                pass
+            return
+
         # Send loading message as a NEW message so we can edit it with the result
         try:
             loading_msg = await callback.message.answer("⏳ در حال تمدید...")
@@ -790,8 +805,8 @@ async def _apply_renewal(sub, renew_type: str, amount: float, session: AsyncSess
 
 
 async def _notify_renewal_admins(callback, user, renew_type, amount, price, session) -> None:
-    """Notify admins about a renewal."""
-    from services.notifications import notify_admins
+    """Notify about a renewal — prefers the sales report channel."""
+    from services.notifications import notify_sales_event
     user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
     renew_type_label = "حجم" if renew_type == "volume" else "زمان"
     admin_text = (
@@ -803,9 +818,9 @@ async def _notify_renewal_admins(callback, user, renew_type, amount, price, sess
     )
     try:
         bot = callback.bot
-        await notify_admins(session, bot, admin_text)
+        await notify_sales_event(session, bot, admin_text)
     except Exception as exc:
-        logger.warning("Failed to notify admins about renewal: %s", exc)
+        logger.warning("Failed to notify about renewal: %s", exc)
 
 
 async def _clear_sub_alert_keys(sub_id) -> None:

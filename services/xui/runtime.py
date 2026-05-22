@@ -237,10 +237,15 @@ def build_xui_client_config(server: XUIServerRecord) -> XUIClientConfig:
     if server.credentials is None:
         raise ValueError("X-UI server credentials are missing.")
 
+    # Honour the XUI_VERIFY_SSL flag from .env. Many X-UI panels run on
+    # raw IPs with self-signed certs, so the default (True) was breaking
+    # logins. The setting lives in core.config.settings.xui_verify_ssl.
+    from core.config import settings as _settings
     return XUIClientConfig(
         base_url=server.base_url,
         username=server.credentials.username,
         password=SecretStr(decrypt_secret(server.credentials.password_encrypted)),
+        verify_ssl=_settings.xui_verify_ssl,
     )
 
 

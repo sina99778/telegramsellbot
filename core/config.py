@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     # set False to enforce HMAC strictly.
     tetrapay_legacy_unsigned_callback: bool = True
 
+    # NOTE: the list of inbounds users can migrate TO via the
+    # "🛠 تغییر سرور" flow used to live here as an .env list. It now lives
+    # in the AppSettings DB table under "service.migration_targets" and
+    # is managed through the admin bot UI:
+    #   🖥 مدیریت سرورها → ⚙️ اینباندهای fallback
+
     @model_validator(mode="after")
     def _validate_secrets(self) -> "Settings":
         """Validate APP_SECRET_KEY and other secrets.

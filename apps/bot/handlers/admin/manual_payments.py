@@ -14,11 +14,13 @@ from aiogram.types import CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.utils.messaging import safe_edit_or_send
 from models.payment import Payment
 from models.user import User
+from models.wallet import Wallet
 from services.payment import process_successful_payment
 
 logger = logging.getLogger(__name__)
@@ -29,9 +31,18 @@ router.callback_query.middleware(AdminOnlyMiddleware())
 
 async def _build_payment_context(session: AsyncSession, payment: Payment) -> str:
     """Build a context string with red flags for the admin reviewing a manual
-    payment: how old the account is, how many recent rejections, the user's
-    current wallet balance. Helps spot bot-spam / fraud-pattern accounts."""
-    user = await session.get(User, payment.user_id)
+    payment.
+
+    NOTE: in async SQLAlchemy, lazy-loaded relationships raise MissingGreenlet
+    when accessed outside a greenlet-spawn context. We therefore (a) eager-load
+    the User → Wallet relationship via selectinload, and (b) fall back to a
+    direct Wallet query if it still comes back unloaded.
+    """
+    user = await session.scalar(
+        select(User)
+        .options(selectinload(User.wallet))
+        .where(User.id == payment.user_id)
+    )
     if user is None:
         return ""
 
@@ -64,9 +75,11 @@ async def _build_payment_context(session: AsyncSession, payment: Payment) -> str
         ) or 0
     )
 
-    balance_str = "—"
-    if user.wallet is not None:
-        balance_str = f"{float(user.wallet.balance):.2f}$"
+    # Balance — never touch `user.wallet` directly because the relationship
+    # may not be greenlet-loaded on every code path. Always query Wallet
+    # explicitly when we need the live number.
+    wallet = await session.scalar(select(Wallet).where(Wallet.user_id == user.id))
+    balance_str = f"{float(wallet.balance):.2f}$" if wallet is not None else "—"
 
     flags: list[str] = []
     if age_days is not None and age_days < 3:

@@ -79,6 +79,7 @@ from services.custom_purchase import (
     create_custom_purchase_plan,
     get_custom_purchase_template_plan,
 )
+from services.admin_gifts import grant_bulk_subscription_gift
 from services.payment import review_gateway_payment
 from services.plan_inventory import (
     PlanStockError,
@@ -183,7 +184,9 @@ async def get_dashboard(
         select(Subscription)
         .options(
             selectinload(Subscription.plan),
-            selectinload(Subscription.xui_client),
+            selectinload(Subscription.xui_client)
+            .selectinload(XUIClientRecord.inbound)
+            .selectinload(XUIInboundRecord.server),
         )
         .where(
             Subscription.user_id == user.id,
@@ -238,7 +241,9 @@ async def get_configs(
         select(Subscription)
         .options(
             selectinload(Subscription.plan),
-            selectinload(Subscription.xui_client),
+            selectinload(Subscription.xui_client)
+            .selectinload(XUIClientRecord.inbound)
+            .selectinload(XUIInboundRecord.server),
         )
         .where(Subscription.user_id == user.id)
         .order_by(Subscription.created_at.desc())
@@ -254,12 +259,43 @@ async def get_configs(
 
 
 def _subscription_to_view(sub: Subscription) -> SubscriptionView:
+    # Reconstruct the vless:// URI for the miniapp so the user can copy/scan
+    # it directly. We can't store it in the DB (config can change), so we
+    # rebuild from the X-UI client + inbound + server snapshot we already
+    # have loaded. If any piece is missing, vless_uri stays None and the
+    # UI falls back to just the sub_link.
+    vless_uri: str | None = None
+    xui = sub.xui_client
+    if xui is not None and xui.inbound is not None and xui.inbound.server is not None and sub.sub_link:
+        try:
+            from services.xui.runtime import build_vless_uri
+            # sub_id is the last path segment of the sub_link
+            # (e.g. https://host:port/sub/<sub_id>?sig=...)
+            tail = sub.sub_link.rsplit("/", 1)[-1].split("?", 1)[0]
+            if tail:
+                remark = (
+                    xui.username
+                    or (sub.plan.name if sub.plan else None)
+                    or "config"
+                )
+                vless_uri = build_vless_uri(
+                    client_uuid=xui.client_uuid,
+                    server=xui.inbound.server,
+                    inbound=xui.inbound,
+                    sub_id=tail,
+                    remark=remark,
+                )
+        except Exception:
+            # Don't break the dashboard if a single sub can't be rendered.
+            vless_uri = None
+
     return SubscriptionView(
         id=sub.id,
         status=sub.status,
         used_bytes=sub.used_bytes,
         volume_bytes=sub.volume_bytes,
         sub_link=sub.sub_link,
+        vless_uri=vless_uri,
         plan_name=sub.plan.name if sub.plan else None,
         plan_price=sub.plan.price if sub.plan else None,
         plan_duration_days=sub.plan.duration_days if sub.plan else None,
@@ -1909,9 +1945,9 @@ async def _purchase_with_wallet(
 
     order.status = "provisioned"
 
-    # ── Notify admins ──
+    # ── Sales notification — prefers the dedicated channel ──
     try:
-        from services.notifications import notify_admins
+        from services.notifications import notify_sales_event
         from core.formatting import format_volume_bytes
         bot = PremiumEmojiBot(
             token=settings.bot_token.get_secret_value(),
@@ -1928,7 +1964,7 @@ async def _purchase_with_wallet(
                 f"📛 کانفیگ: {config_name}\n"
                 f"💳 روش: کیف پول"
             )
-            await notify_admins(session, bot, admin_text)
+            await notify_sales_event(session, bot, admin_text)
         finally:
             await bot.session.close()
     except Exception as exc:
@@ -2467,9 +2503,9 @@ async def renew_subscription(
     )
     await session.refresh(user.wallet)
 
-    # ── Notify admins ──
+    # ── Sales notification — prefers the dedicated channel ──
     try:
-        from services.notifications import notify_admins
+        from services.notifications import notify_sales_event
         bot = PremiumEmojiBot(
             token=settings.bot_token.get_secret_value(),
             default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
@@ -2485,11 +2521,11 @@ async def renew_subscription(
                 f"💰 مبلغ: {price:.2f} USD\n"
                 f"💳 روش: کیف پول"
             )
-            await notify_admins(session, bot, admin_text)
+            await notify_sales_event(session, bot, admin_text)
         finally:
             await bot.session.close()
     except Exception as exc:
-        logger.warning("[RENEWAL] Failed to notify admins: %s", exc)
+        logger.warning("[RENEWAL] Failed to notify: %s", exc)
 
     return RenewalResponse(
         status="renewed",

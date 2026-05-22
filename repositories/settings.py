@@ -348,6 +348,91 @@ class AppSettingsRepository:
         await self.session.flush()
         return record
 
+    # ── Migration target inbounds (user-side "🛠 تغییر سرور" picker) ─────────
+    #
+    # We store the list of inbound UUIDs that users can migrate ONTO as a
+    # JSON array under a single AppSetting key. Empty / unset means "every
+    # active inbound" — that's the fallback the user-side picker uses when
+    # the admin hasn't configured a dedicated fallback yet.
+
+    MIGRATION_TARGETS_KEY = "service.migration_targets"
+
+    async def get_migration_target_inbound_ids(self) -> list[str]:
+        record = await self.session.get(AppSetting, self.MIGRATION_TARGETS_KEY)
+        if record is None or not record.value_json:
+            return []
+        raw = record.value_json.get("inbound_ids") or []
+        if not isinstance(raw, list):
+            return []
+        return [str(item) for item in raw if item]
+
+    async def set_migration_target_inbound_ids(self, inbound_ids: list[str]) -> None:
+        # Dedupe + drop empties without changing the order the admin picked.
+        seen: set[str] = set()
+        cleaned: list[str] = []
+        for raw in inbound_ids:
+            s = str(raw).strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            cleaned.append(s)
+
+        record = await self.session.get(AppSetting, self.MIGRATION_TARGETS_KEY)
+        if record is None:
+            record = AppSetting(key=self.MIGRATION_TARGETS_KEY, value_json={})
+        record.value_json = {"inbound_ids": cleaned}
+        self.session.add(record)
+        await self.session.flush()
+
+    async def toggle_migration_target_inbound(self, inbound_id: str) -> bool:
+        """Flip the membership of `inbound_id` in the migration targets list.
+        Returns True if it ended up enabled, False if disabled."""
+        current = await self.get_migration_target_inbound_ids()
+        if inbound_id in current:
+            await self.set_migration_target_inbound_ids(
+                [x for x in current if x != inbound_id]
+            )
+            return False
+        await self.set_migration_target_inbound_ids(current + [inbound_id])
+        return True
+
+    # ── Sales-report channel ──────────────────────────────────────────────
+    #
+    # Optional chat (channel or supergroup) that every purchase / renewal /
+    # topup notification is routed to. When unset, notifications fall back
+    # to the legacy "DM every admin" behaviour. When set, admins stop
+    # getting their personal DMs spammed and instead read sales activity
+    # from one shared channel.
+
+    SALES_CHANNEL_KEY = "notifications.sales_channel"
+
+    async def get_sales_report_chat_id(self) -> int | None:
+        record = await self.session.get(AppSetting, self.SALES_CHANNEL_KEY)
+        if record is None or not record.value_json:
+            return None
+        raw = record.value_json.get("chat_id")
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    async def set_sales_report_chat_id(self, chat_id: int | None, title: str | None = None) -> None:
+        record = await self.session.get(AppSetting, self.SALES_CHANNEL_KEY)
+        if chat_id is None:
+            # Clear the setting entirely.
+            if record is not None:
+                record.value_json = {}
+                self.session.add(record)
+                await self.session.flush()
+            return
+        if record is None:
+            record = AppSetting(key=self.SALES_CHANNEL_KEY, value_json={})
+        record.value_json = {"chat_id": int(chat_id), "title": (title or "")[:128]}
+        self.session.add(record)
+        await self.session.flush()
+
     # ── Toman exchange rate ──────────────────────────────────────────────────
 
     USD_TOMAN_RATE_KEY = "finance.usd_toman_rate"

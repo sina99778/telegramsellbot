@@ -285,6 +285,12 @@ async def _handle_direct_purchase(
         payload["wallet_debited"] = True
         payload["order_id"] = str(order.id)
         payment.callback_payload = payload
+        # Defence in depth: flush so concurrent IPN retries see the marker
+        # immediately even before this transaction commits. The outer
+        # process_successful_payment already holds `FOR UPDATE` on the
+        # payment row, but flushing here also helps for any non-IPN
+        # callers that might invoke _handle_direct_purchase directly.
+        await session.flush()
         logger.info("[PROVISION] Wallet debited OK")
     else:
         logger.info("[PROVISION] Wallet debit already recorded for order %s", order.id)
@@ -350,8 +356,8 @@ async def _handle_direct_purchase(
                 caption=f"📷 QR کد کانفیگ {config_name}",
             )
 
-        # Notify admins
-        from services.notifications import notify_admins
+        # Sales notification — prefers the dedicated channel
+        from services.notifications import notify_sales_event
         user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
         admin_text = (
             "🛒 خرید جدید!\n\n"
@@ -362,40 +368,80 @@ async def _handle_direct_purchase(
             f"💳 روش: {provider_fa}"
         )
         try:
-            await notify_admins(session, bot, admin_text)
+            await notify_sales_event(session, bot, admin_text)
         except Exception as exc:
-            logger.warning("[PROVISION] Failed to notify admins: %s", exc)
+            logger.warning("[PROVISION] Failed to notify about purchase: %s", exc)
 
-    except ProvisioningError as exc:
-        logger.error("[PROVISION] Provisioning FAILED: %s", exc)
-        # Refund
-        await wallet_manager.process_transaction(
-            user_id=user.id,
-            amount=Decimal(str(final_price)),
-            transaction_type="refund",
-            direction="credit",
-            currency=plan.currency,
-            reference_type="order",
-            reference_id=order.id,
-            description="Automatic refund after provisioning failure",
-            metadata={"plan_id": str(plan.id)},
-        )
-        order.status = "refunded"
-        payload = dict(payment.callback_payload or {})
-        payload["wallet_debited"] = False
-        payload["order_id"] = str(order.id)
-        payment.callback_payload = payload
-        try:
-            await bot.send_message(
-                user.telegram_id,
-                "❌ خطا در ساخت کانفیگ. مبلغ به کیف پول شما بازگردانده شد."
-            )
-        except Exception as bot_exc:
-            logger.error("[PROVISION] Failed to send refund message: %s", bot_exc)
-        return False
     except Exception as exc:
-        logger.error("[PROVISION] Failed to send config to user: %s", exc, exc_info=True)
-        return order is not None and order.status == "provisioned"
+        # CRITICAL: catch every exception type, not just ProvisioningError.
+        # X-UI panel outages surface as ConnectError / TimeoutError /
+        # XUIAuthenticationError etc., and a narrow catch leaves the user
+        # debited with no config. We refund unconditionally and only mark
+        # `failed_needs_manual_refund` if the refund itself fails.
+        is_provisioning_err = isinstance(exc, ProvisioningError)
+        log_fn = logger.error if is_provisioning_err else logger.critical
+        log_fn(
+            "[PROVISION] Provisioning FAILED (%s): %s",
+            type(exc).__name__, exc, exc_info=not is_provisioning_err,
+        )
+        try:
+            await wallet_manager.process_transaction(
+                user_id=user.id,
+                amount=Decimal(str(final_price)),
+                transaction_type="refund",
+                direction="credit",
+                currency=plan.currency,
+                reference_type="order",
+                reference_id=order.id,
+                description="Automatic refund after provisioning failure",
+                metadata={
+                    "plan_id": str(plan.id),
+                    "failure_reason": type(exc).__name__,
+                },
+            )
+            order.status = "refunded"
+            payload = dict(payment.callback_payload or {})
+            payload["wallet_debited"] = False
+            payload["order_id"] = str(order.id)
+            payment.callback_payload = payload
+            try:
+                await bot.send_message(
+                    user.telegram_id,
+                    "❌ خطا در ساخت کانفیگ. مبلغ به کیف پول شما بازگردانده شد.\n"
+                    "می‌توانید با همان موجودی دوباره خرید کنید یا با پشتیبانی تماس بگیرید."
+                )
+            except Exception as bot_exc:
+                logger.error("[PROVISION] Failed to send refund message: %s", bot_exc)
+        except Exception as refund_exc:
+            logger.critical(
+                "[PROVISION] Refund ALSO failed for order %s: %s",
+                order.id, refund_exc, exc_info=True,
+            )
+            order.status = "failed_needs_manual_refund"
+            payload = dict(payment.callback_payload or {})
+            payload["needs_manual_refund"] = True
+            payload["failure_reason"] = type(exc).__name__
+            payment.callback_payload = payload
+            try:
+                from services.notifications import notify_admins
+                await notify_admins(
+                    session, bot,
+                    "🚨 خرید ناموفق + refund هم شکست!\n"
+                    f"order={order.id}\nuser={user.telegram_id}\n"
+                    f"amount={final_price} {plan.currency}\n"
+                    f"reason: {type(exc).__name__}",
+                )
+            except Exception:
+                pass
+            try:
+                await bot.send_message(
+                    user.telegram_id,
+                    "❌ ساخت کانفیگ ناموفق بود و بازگشت خودکار مبلغ هم انجام نشد.\n"
+                    "موضوع برای پیگیری به ادمین ارجاع شد — لطفاً به پشتیبانی پیام بدهید."
+                )
+            except Exception:
+                pass
+        return False
     finally:
         await bot.session.close()
 
@@ -438,9 +484,9 @@ async def _handle_direct_renewal(
 
     logger.info("[RENEWAL] Applying renewal: sub=%s, type=%s, amount=%s", sub_id_str, renew_type, renew_amount)
 
+    wallet_manager = WalletManager(session)
     payload = dict(payment.callback_payload or {})
     if not payload.get("wallet_debited"):
-        wallet_manager = WalletManager(session)
         await wallet_manager.process_transaction(
             user_id=payment.user_id,
             amount=Decimal(str(payment.price_amount)),
@@ -459,14 +505,82 @@ async def _handle_direct_renewal(
         )
         payload["wallet_debited"] = True
         payment.callback_payload = payload
+        # See _handle_direct_purchase: flush so a concurrent IPN retry
+        # immediately sees the marker even before this transaction commits.
+        await session.flush()
 
-    await apply_renewal(
-        session=session,
-        subscription=subscription,
-        renew_type=renew_type,
-        amount=float(renew_amount),
-    )
-    logger.info("[RENEWAL] Renewal applied successfully for subscription %s", sub_id_str)
+    try:
+        await apply_renewal(
+            session=session,
+            subscription=subscription,
+            renew_type=renew_type,
+            amount=float(renew_amount),
+        )
+        logger.info("[RENEWAL] Renewal applied successfully for subscription %s", sub_id_str)
+    except Exception as exc:
+        # apply_renewal may fail because X-UI is down, server credentials
+        # are bad, etc. Whatever the cause: user's money must come back.
+        logger.critical(
+            "[RENEWAL] apply_renewal FAILED for sub %s (%s): %s",
+            sub_id_str, type(exc).__name__, exc, exc_info=True,
+        )
+        try:
+            await wallet_manager.process_transaction(
+                user_id=payment.user_id,
+                amount=Decimal(str(payment.price_amount)),
+                transaction_type="refund",
+                direction="credit",
+                currency=payment.price_currency,
+                reference_type="payment",
+                reference_id=payment.id,
+                description=f"Auto-refund: renewal of {sub_id_str} failed",
+                metadata={
+                    "sub_id": str(subscription.id),
+                    "failure_reason": type(exc).__name__,
+                },
+            )
+            payload = dict(payment.callback_payload or {})
+            payload["wallet_debited"] = False
+            payload["renewal_failed"] = True
+            payment.callback_payload = payload
+            try:
+                bot = _get_shared_bot()
+                try:
+                    user = await session.scalar(select(User).where(User.id == payment.user_id))
+                    if user:
+                        await bot.send_message(
+                            user.telegram_id,
+                            "❌ تمدید سرویس ناموفق بود. مبلغ به کیف پول شما بازگردانده شد.",
+                        )
+                finally:
+                    await bot.session.close()
+            except Exception:
+                pass
+        except Exception as refund_exc:
+            logger.critical(
+                "[RENEWAL] Refund ALSO failed for payment %s: %s",
+                payment.id, refund_exc, exc_info=True,
+            )
+            payload = dict(payment.callback_payload or {})
+            payload["needs_manual_refund"] = True
+            payload["failure_reason"] = type(exc).__name__
+            payment.callback_payload = payload
+            try:
+                bot = _get_shared_bot()
+                try:
+                    from services.notifications import notify_admins
+                    await notify_admins(
+                        session, bot,
+                        "🚨 تمدید ناموفق + refund هم شکست!\n"
+                        f"payment={payment.id}\nsub={sub_id_str}\n"
+                        f"amount={payment.price_amount} {payment.price_currency}\n"
+                        f"reason: {type(exc).__name__}",
+                    )
+                finally:
+                    await bot.session.close()
+            except Exception:
+                pass
+        return False
 
     # Notify user
     bot: Bot | None = None

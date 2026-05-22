@@ -65,62 +65,10 @@
         }
     });
 
-    // ─── Pull-to-refresh (properly gated) ──────────────────────────────────
-    const mainContent = document.getElementById('main-content');
-    let pullStartY = 0;
-    let pullTriggered = false;
-    let pullCooldown = false;
-
-    mainContent?.addEventListener('touchstart', (e) => {
-        // Only start pull tracking if we're at the very top of the active page-scroll
-        const activeScroll = document.querySelector('.page.active .page-scroll');
-        if (activeScroll && activeScroll.scrollTop <= 0 && !pullCooldown) {
-            pullStartY = e.touches[0].clientY;
-            pullTriggered = false;
-        } else {
-            pullStartY = 0;
-        }
-    }, { passive: true });
-
-    mainContent?.addEventListener('touchmove', (e) => {
-        if (!pullStartY || pullCooldown) return;
-        const activeScroll = document.querySelector('.page.active .page-scroll');
-        if (!activeScroll || activeScroll.scrollTop > 0) {
-            pullStartY = 0;
-            return;
-        }
-        const pullDist = e.touches[0].clientY - pullStartY;
-        if (pullDist > 40) {
-            mainContent.style.transform = `translateY(${Math.min(pullDist * 0.2, 30)}px)`;
-            mainContent.style.transition = 'none';
-        }
-        if (pullDist > 120) {
-            pullTriggered = true;
-        }
-    }, { passive: true });
-
-    mainContent?.addEventListener('touchend', async () => {
-        mainContent.style.transition = 'transform 0.3s ease';
-        mainContent.style.transform = '';
-
-        if (!pullTriggered || pullCooldown) {
-            pullStartY = 0;
-            return;
-        }
-        pullStartY = 0;
-        pullTriggered = false;
-        pullCooldown = true;
-
-        const activePage = document.querySelector('.page.active');
-        const pageId = activePage?.id?.replace('page-', '');
-        if (pageId && typeof Pages !== 'undefined' && Pages[`load_${pageId}`]) {
-            try { tg?.HapticFeedback?.impactOccurred('light'); } catch {}
-            UI.toast('بروزرسانی...');
-            try { await Pages[`load_${pageId}`](); } catch {}
-        }
-        // Cooldown to prevent double-trigger
-        setTimeout(() => { pullCooldown = false; }, 1500);
-    });
+    // Pull-to-refresh was removed in v6 — users reported accidental
+    // refreshes mid-scroll because the threshold was too low and the
+    // gesture overlapped with normal upward scrolling. The header
+    // refresh button (top-right) still triggers a manual reload.
 
     // Show UI with staggered entrance
     document.getElementById('loading-screen').classList.add('hidden');

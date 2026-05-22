@@ -112,3 +112,9 @@ class ReadyConfigPlanStates(StatesGroup):
 
 class ReadyConfigUploadStates(StatesGroup):
     waiting_for_file = State()
+
+
+class SalesChannelStates(StatesGroup):
+    # Admin sends either a forwarded message from the target channel
+    # OR a chat_id directly (negative numbers like -1001234567890).
+    waiting_for_channel = State()

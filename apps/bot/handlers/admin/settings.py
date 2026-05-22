@@ -11,7 +11,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
-from apps.bot.states.admin import GatewaySettingsStates, ReferralSettingsStates, SettingsStates
+from apps.bot.states.admin import GatewaySettingsStates, ReferralSettingsStates, SalesChannelStates, SettingsStates
 from core.texts import AdminButtons, AdminMessages
 from repositories.settings import AppSettingsRepository
 from apps.bot.utils.messaging import safe_edit_or_send
@@ -125,10 +125,14 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     builder.button(text="اموجی پریمیم", callback_data="admin:settings:premium_emoji_toggle")
     builder.button(text="مپ اموجی", callback_data="admin:settings:premium_emoji_map")
 
+    # ── Section: Notifications
+    builder.button(text="━━ 📢 اعلان‌ها ━━", callback_data="admin:settings:noop")
+    builder.button(text="📢 کانال گزارش فروش", callback_data="admin:settings:sales_channel")
+
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
     # 1 header, 2 toggles, 1 header, 3 prices, 1 header, 3 custom, 1 header, 3 security,
-    # 1 header, 5 gateways, 1 header, 2 appearance, 1 back
-    builder.adjust(1, 2, 1, 3, 1, 3, 1, 3, 1, 5, 1, 2, 1)
+    # 1 header, 5 gateways, 1 header, 2 appearance, 1 header, 1 sales-channel, 1 back
+    builder.adjust(1, 2, 1, 3, 1, 3, 1, 3, 1, 5, 1, 2, 1, 1, 1)
 
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -1436,6 +1440,174 @@ async def force_join_set_channel_done(message: Message, state: FSMContext, sessi
     await AppSettingsRepository(session).update_gateway_settings(force_join_channel=channel)
     await state.clear()
     await message.answer(f"✅ کانال جوین اجباری به <code>{channel}</code> تغییر کرد.")
+
+
+# ─── Sales report channel ───────────────────────────────────────────────────
+#
+# Optional dedicated chat (channel / supergroup) that every purchase,
+# renewal and topup notification is routed to instead of DM'ing every
+# admin. Saves admins from a flood of pings and gives the team one
+# shared activity feed.
+
+@router.callback_query(F.data == "admin:settings:sales_channel")
+async def sales_channel_overview(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Show current sales-channel state + options to set / clear / test."""
+    await callback.answer()
+    settings_repo = AppSettingsRepository(session)
+    chat_id = await settings_repo.get_sales_report_chat_id()
+
+    builder = InlineKeyboardBuilder()
+    if chat_id is None:
+        text = (
+            "📢 <b>کانال گزارش فروش</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            "❌ هیچ کانالی تنظیم نشده — اعلان‌ها به DM همه‌ی ادمین‌ها می‌رود.\n\n"
+            "<b>برای تنظیم:</b>\n"
+            "1) ربات را به‌عنوان <b>ادمین</b> به کانال خود اضافه کنید "
+            "(دسترسی «ارسال پیام» کافی است).\n"
+            "2) یک پیام از همان کانال را به ربات <b>فوروارد</b> کنید "
+            "یا chat_id کانال را به‌صورت دستی بفرستید "
+            "(مثل <code>-1001234567890</code>)."
+        )
+        builder.button(text="➕ تنظیم کانال", callback_data="admin:settings:sales_channel:set")
+    else:
+        text = (
+            "📢 <b>کانال گزارش فروش</b>\n"
+            "━━━━━━━━━━━━━━\n"
+            f"✅ chat_id فعلی: <code>{chat_id}</code>\n\n"
+            "هر خرید، تمدید و شارژ کیف پول به این کانال ارسال می‌شود.\n"
+            "اعلان‌های اضطراری (شکست refund و …) همچنان به DM ادمین‌ها می‌رود."
+        )
+        builder.button(text="🧪 ارسال پیام تست", callback_data="admin:settings:sales_channel:test")
+        builder.button(text="🔁 تغییر کانال", callback_data="admin:settings:sales_channel:set")
+        builder.button(text="🗑 حذف کانال", callback_data="admin:settings:sales_channel:clear")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:bot_settings")
+    builder.adjust(1)
+    await state.clear()
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "admin:settings:sales_channel:set")
+async def sales_channel_set_prompt(
+    callback: CallbackQuery,
+    state: FSMContext,
+) -> None:
+    await callback.answer()
+    await state.set_state(SalesChannelStates.waiting_for_channel)
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ انصراف", callback_data="admin:settings:sales_channel")
+    builder.adjust(1)
+    await safe_edit_or_send(
+        callback,
+        "📢 <b>تنظیم کانال گزارش فروش</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "<b>روش ۱:</b> یک پیام از کانال هدف را به همین چت <b>فوروارد</b> کنید "
+        "(ربات chat_id را خودش استخراج می‌کند).\n\n"
+        "<b>روش ۲:</b> chat_id کانال را مستقیماً بفرستید "
+        "(عدد منفی مثل <code>-1001234567890</code>).\n\n"
+        "⚠️ ربات باید از قبل به‌عنوان ادمین/عضو کانال اضافه شده باشد، "
+        "وگرنه ارسال پیام شکست می‌خورد.",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+
+
+@router.message(SalesChannelStates.waiting_for_channel)
+async def sales_channel_receive(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Accept either a forwarded message OR a raw chat_id."""
+    chat_id: int | None = None
+    title: str | None = None
+
+    fwd_chat = getattr(message, "forward_from_chat", None)
+    if fwd_chat is not None:
+        chat_id = fwd_chat.id
+        title = fwd_chat.title or fwd_chat.username or None
+    elif message.text:
+        raw = message.text.strip()
+        try:
+            chat_id = int(raw)
+        except ValueError:
+            await message.answer(
+                "❌ ورودی معتبر نیست. یک پیام را از کانال هدف فوروارد کنید "
+                "یا chat_id را به‌صورت یک عدد صحیح بفرستید."
+            )
+            return
+
+    if chat_id is None:
+        await message.answer(
+            "❌ ورودی معتبر نیست. یک پیام را از کانال هدف فوروارد کنید "
+            "یا chat_id را به‌صورت یک عدد صحیح بفرستید."
+        )
+        return
+
+    # Sanity-test the channel by actually sending a message. If the bot
+    # isn't in the channel, we want the admin to know NOW, not the first
+    # time a customer buys.
+    try:
+        await message.bot.send_message(
+            chat_id,
+            "✅ این چت به‌عنوان <b>کانال گزارش فروش</b> ربات تنظیم شد.\n"
+            "از این به بعد، خریدها/تمدیدها/شارژها اینجا گزارش خواهند شد.",
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        await message.answer(
+            f"❌ ربات نتوانست به <code>{chat_id}</code> پیام بفرستد:\n"
+            f"<code>{type(exc).__name__}: {str(exc)[:200]}</code>\n\n"
+            "ابتدا ربات را به‌عنوان ادمین در آن کانال اضافه کنید و دوباره تلاش کنید."
+        )
+        return
+
+    await AppSettingsRepository(session).set_sales_report_chat_id(chat_id, title=title)
+    await state.clear()
+    await message.answer(
+        f"✅ کانال گزارش فروش روی <code>{chat_id}</code> تنظیم شد.\n"
+        "اعلان‌های فروش از این لحظه به آنجا می‌روند."
+    )
+
+
+@router.callback_query(F.data == "admin:settings:sales_channel:test")
+async def sales_channel_test(
+    callback: CallbackQuery,
+    session: AsyncSession,
+) -> None:
+    """Fire a sample message into the configured channel to verify routing."""
+    await callback.answer()
+    chat_id = await AppSettingsRepository(session).get_sales_report_chat_id()
+    if chat_id is None:
+        await callback.answer("هیچ کانالی تنظیم نشده.", show_alert=True)
+        return
+    try:
+        await callback.bot.send_message(
+            chat_id,
+            "🧪 پیام تست از پنل ادمین — کانال گزارش فروش به‌درستی کار می‌کند.",
+            parse_mode="HTML",
+        )
+        await callback.answer("✅ پیام تست ارسال شد.", show_alert=True)
+    except Exception as exc:
+        await callback.answer(
+            f"❌ خطا: {type(exc).__name__}: {str(exc)[:120]}",
+            show_alert=True,
+        )
+
+
+@router.callback_query(F.data == "admin:settings:sales_channel:clear")
+async def sales_channel_clear(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    await callback.answer("✅ حذف شد. اعلان‌ها به DM ادمین‌ها برمی‌گردد.", show_alert=True)
+    await AppSettingsRepository(session).set_sales_report_chat_id(None)
+    await sales_channel_overview(callback, state, session)
 
 
 # ─── Force Join Check (User callback) ────────────────────────────────────────

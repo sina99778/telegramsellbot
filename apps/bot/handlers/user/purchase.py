@@ -46,6 +46,27 @@ router = Router(name="user-purchase")
 CONFIG_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]{3,32}$")
 
 
+# Friendly Persian message when FSM state has expired or never carried plan_id.
+# Caused by: bot restart, FSM cleared by another flow, user clicked a stale
+# callback after /cancel, etc. Naked `data["plan_id"]` raised KeyError and
+# bubbled up as "خطا در انجام خرید: 'plan_id'" — useless to the end user.
+_STATE_EXPIRED_MSG = (
+    "⛔ این مرحله از خرید منقضی شده است.\n"
+    "لطفاً از منوی اصلی روی «🛒 خرید کانفیگ» بزنید و دوباره شروع کنید."
+)
+
+
+def _get_state_plan_id(data: dict) -> "UUID | None":
+    """Read plan_id from FSM state safely. Returns None if missing/invalid."""
+    raw = data.get("plan_id") if isinstance(data, dict) else None
+    if not raw:
+        return None
+    try:
+        return UUID(str(raw))
+    except (ValueError, TypeError):
+        return None
+
+
 def _phone_request_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(text="ارسال شماره موبایل", request_contact=True)]],
@@ -409,7 +430,11 @@ async def discount_code_entered(
 
     code = message.text.strip().upper()
     data = await state.get_data()
-    plan_id = UUID(data["plan_id"])
+    plan_id = _get_state_plan_id(data)
+    if plan_id is None:
+        await state.clear()
+        await message.answer(_STATE_EXPIRED_MSG)
+        return
 
     repo = DiscountRepository(session)
     discount, reason = await repo.validate_code_with_reason(code, plan_id=plan_id)
@@ -455,7 +480,12 @@ async def _show_payment_method_choice(
 ) -> None:
     """Show wallet vs gateway payment options (from callback)."""
     data = await state.get_data()
-    plan = await session.get(Plan, UUID(data["plan_id"]))
+    plan_id = _get_state_plan_id(data)
+    if plan_id is None:
+        await state.clear()
+        await safe_edit_or_send(callback, _STATE_EXPIRED_MSG)
+        return
+    plan = await session.get(Plan, plan_id)
     if plan is None:
         await state.clear()
         await safe_edit_or_send(callback, Messages.PLAN_NOT_AVAILABLE)
@@ -513,7 +543,12 @@ async def _show_payment_method_choice_msg(
 ) -> None:
     """Show wallet vs gateway payment options (from message)."""
     data = await state.get_data()
-    plan = await session.get(Plan, UUID(data["plan_id"]))
+    plan_id = _get_state_plan_id(data)
+    if plan_id is None:
+        await state.clear()
+        await message.answer(_STATE_EXPIRED_MSG)
+        return
+    plan = await session.get(Plan, plan_id)
     if plan is None:
         await state.clear()
         await message.answer(Messages.PLAN_NOT_AVAILABLE)
@@ -939,7 +974,10 @@ async def _process_wallet_purchase(
     data = await state.get_data()
     await state.clear()
 
-    plan_id = UUID(data["plan_id"])
+    plan_id = _get_state_plan_id(data)
+    if plan_id is None:
+        await safe_edit_or_send(callback, _STATE_EXPIRED_MSG)
+        return
     config_name = data.get("config_name", "VPN")
     discount_percent = data.get("discount_percent", 0)
     discount_id = data.get("discount_id")
@@ -1027,7 +1065,11 @@ async def _process_gateway_purchase(
     data = await state.get_data()
     # DON'T clear state yet — we need it after payment confirmation via IPN
 
-    plan_id = UUID(data["plan_id"])
+    plan_id = _get_state_plan_id(data)
+    if plan_id is None:
+        await state.clear()
+        await safe_edit_or_send(callback, _STATE_EXPIRED_MSG)
+        return
     config_name = data.get("config_name", "VPN")
     discount_percent = data.get("discount_percent", 0)
 
@@ -1134,8 +1176,12 @@ async def _process_tronado_purchase(
         return
 
     data = await state.get_data()
-    plan_id = UUID(data["plan_id"])
-    config_name = data["config_name"]
+    plan_id = _get_state_plan_id(data)
+    if plan_id is None:
+        await state.clear()
+        await safe_edit_or_send(callback, _STATE_EXPIRED_MSG)
+        return
+    config_name = data.get("config_name") or "VPN"
     discount_percent = int(data.get("discount_percent", 0))
     discount_percent = max(0, min(100, discount_percent))
     discount_id = data.get("discount_id")
@@ -1198,8 +1244,12 @@ async def _process_tetrapay_purchase(
 
     data = await state.get_data()
     # DON'T clear state yet
-    
-    plan_id = UUID(data["plan_id"])
+
+    plan_id = _get_state_plan_id(data)
+    if plan_id is None:
+        await state.clear()
+        await safe_edit_or_send(callback, _STATE_EXPIRED_MSG)
+        return
     config_name = data.get("config_name", "VPN")
     discount_percent = data.get("discount_percent", 0)
 
@@ -1359,6 +1409,20 @@ async def _finalize_purchase(
 ) -> None:
     """Shared purchase finalization: wallet debit, provisioning, sending config."""
     wallet_manager = WalletManager(session)
+
+    # ── Pre-flight: probe X-UI panel BEFORE we touch the wallet ──
+    # If the panel is unreachable, the user gets a polite "try again
+    # later" and not a single coin moves. This is the cheapest way to
+    # avoid the "debited but configless" failure mode.
+    provisioning_manager = ProvisioningManager(session)
+    ok, reason = await provisioning_manager.preflight_check_plan(plan.id)
+    if not ok:
+        await bot.send_message(
+            chat_id=chat_id,
+            text=f"⚠️ {reason or 'سرور در دسترس نیست.'}",
+        )
+        return
+
     order = Order(
         user_id=user.id,
         plan_id=plan.id,
@@ -1395,8 +1459,17 @@ async def _finalize_purchase(
             order_id=order.id,
             config_name=config_name,
         )
-    except ProvisioningError as exc:
-        logger.error("Provisioning failed for order %s: %s", order.id, exc)
+    except Exception as exc:
+        # CRITICAL: catch EVERY exception — not just ProvisioningError. The
+        # X-UI panel can also raise ConnectError, TimeoutError,
+        # XUIAuthenticationError, etc., and a narrow catch would leave the
+        # user debited and configless. Always refund + tell the user.
+        is_provisioning_err = isinstance(exc, ProvisioningError)
+        log_fn = logger.error if is_provisioning_err else logger.critical
+        log_fn(
+            "Provisioning failed for order %s (%s): %s",
+            order.id, type(exc).__name__, exc, exc_info=not is_provisioning_err,
+        )
         try:
             await wallet_manager.process_transaction(
                 user_id=user.id,
@@ -1407,15 +1480,39 @@ async def _finalize_purchase(
                 reference_type="order",
                 reference_id=order.id,
                 description="Automatic refund after provisioning failure",
-                metadata={"plan_id": str(plan.id)},
+                metadata={
+                    "plan_id": str(plan.id),
+                    "failure_reason": type(exc).__name__,
+                },
             )
             order.status = "refunded"
+            await bot.send_message(chat_id=chat_id, text=Messages.PROVISIONING_FAILED_REFUNDED)
         except Exception as refund_exc:
             logger.critical(
-                "CRITICAL: Refund also failed for order %s: %s", order.id, refund_exc
+                "CRITICAL: Refund also failed for order %s: %s",
+                order.id, refund_exc, exc_info=True,
             )
             order.status = "failed_needs_manual_refund"
-        await bot.send_message(chat_id=chat_id, text=Messages.PROVISIONING_FAILED_REFUNDED)
+            # Tell the user we couldn't auto-refund + ping support / admins.
+            try:
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text=Messages.PROVISIONING_FAILED_MANUAL_REFUND,
+                )
+            except Exception:
+                pass
+            # Alert admins so they can refund manually before the user complains.
+            try:
+                from services.notifications import notify_admins
+                await notify_admins(
+                    session, bot,
+                    f"🚨 خرید ناموفق + refund هم شکست خورد!\n"
+                    f"order={order.id}\nuser={user.telegram_id}\n"
+                    f"amount={final_price} {plan.currency}\n"
+                    f"reason: {type(exc).__name__}: {str(exc)[:160]}",
+                )
+            except Exception:
+                pass
         return
 
     order.status = "provisioned"
@@ -1495,8 +1592,8 @@ async def _finalize_purchase(
             parse_mode="HTML"
         )
 
-    # ── Notify admins about the purchase ──
-    from services.notifications import notify_admins
+    # ── Sales notification — prefers the dedicated channel ──
+    from services.notifications import notify_sales_event
 
     user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
     admin_text = (
@@ -1508,9 +1605,9 @@ async def _finalize_purchase(
         f"💳 روش: {payment_label}"
     )
     try:
-        await notify_admins(session, bot, admin_text)
+        await notify_sales_event(session, bot, admin_text)
     except Exception as exc:
-        logger.warning("Failed to notify admins about purchase: %s", exc)
+        logger.warning("Failed to notify about purchase: %s", exc)
 
     # ── Referral bonus on first purchase ──
     try:
