@@ -150,6 +150,8 @@ const Pages = (() => {
         //         row 2 → [usage card spanning both columns]
         const usagePct = UI.getUsagePercent(data.total_volume_used, data.total_volume);
         const usageClass = usagePct >= 90 ? 'danger' : usagePct >= 75 ? 'warn' : '';
+        // Mirror the progress-bar tone on the big headline percent.
+        const usageHeadlineClass = usagePct >= 90 ? 'is-danger' : usagePct >= 75 ? 'is-warn' : '';
         const banners = [
             (!salesEnabled && !isAdmin)
                 ? '<div class="config-warning danger wide">⛔ فروش سرویس موقتاً غیرفعال است.</div>'
@@ -175,12 +177,12 @@ const Pages = (() => {
                 <div class="row-between">
                     <div>
                         <div class="stat-label">مصرف مجموع ${(data.active_config_count || 0)} سرویس</div>
-                        <div class="stat-value" style="font-size:18px;direction:ltr;text-align:start">${UI.formatBytes(data.total_volume_used)}</div>
-                        <div class="stat-hint" style="direction:ltr;text-align:start">از ${UI.formatBytes(data.total_volume)} مجموع</div>
+                        <div class="stat-value stat-value--compact">${UI.formatBytes(data.total_volume_used)}</div>
+                        <div class="stat-hint stat-hint--ltr">از ${UI.formatBytes(data.total_volume)} مجموع</div>
                     </div>
-                    <div style="font-size:30px;font-weight:900;direction:ltr;color:${usagePct >= 90 ? 'var(--coral)' : usagePct >= 75 ? 'var(--amber)' : 'var(--cyan)'};letter-spacing:-0.02em">${usagePct}<span style="font-size:18px">%</span></div>
+                    <div class="usage-headline ${usageHeadlineClass}">${usagePct}<span class="pct-unit">%</span></div>
                 </div>
-                <div class="progress-bar-container" style="margin-block-start:12px">
+                <div class="progress-bar-container stat-progress">
                     <div class="progress-bar ${usageClass}" style="width:${usagePct}%"></div>
                 </div>
             </div>
@@ -333,43 +335,25 @@ const Pages = (() => {
 
         UI.showModal(`
             <div class="modal-title">${UI.icon('configs')} ${escapeHtml(name)}</div>
-            <div style="text-align:center;margin-bottom:16px">
-                <div style="font-size:36px;font-weight:800;color:var(--accent-primary)">${pct}%</div>
-                <p style="font-size:12px;color:var(--text-muted)">مصرف شده</p>
+            <div class="modal-pct">
+                <div class="modal-pct__value">${pct}%</div>
+                <div class="modal-pct__label">مصرف شده</div>
             </div>
-            <div class="progress-bar-container" style="height:8px;margin-bottom:16px">
+            <div class="progress-bar-container" style="margin-bottom:16px">
                 <div class="progress-bar-fill ${UI.getProgressClass(pct)}" style="width:${pct}%"></div>
             </div>
             ${health.warning ? `<div class="config-warning ${health.isExpired ? 'danger' : ''}" style="margin-bottom:12px">${health.warning}</div>` : ''}
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:13px">
+            <div class="modal-stats-grid">
                 <div>
-                    <span style="color:var(--text-muted)">وضعیت</span>
-                    <div style="font-weight:600;margin-top:2px">${statusText}</div>
+                    <span>وضعیت</span>
+                    <strong>${statusText}</strong>
                 </div>
-                <div>
-                    <span style="color:var(--text-muted)">باقیمانده</span>
-                    <div style="font-weight:600;margin-top:2px">${health.daysLabel}</div>
-                </div>
-                <div>
-                    <span style="color:var(--text-muted)">مصرف</span>
-                    <div style="font-weight:600;margin-top:2px">${UI.formatBytes(sub.used_bytes)}</div>
-                </div>
-                <div>
-                    <span style="color:var(--text-muted)">کل حجم</span>
-                    <div style="font-weight:600;margin-top:2px">${UI.formatBytes(sub.volume_bytes)}</div>
-                </div>
-                <div>
-                    <span style="color:var(--text-muted)">باقی‌مانده حجم</span>
-                    <div style="font-weight:600;margin-top:2px">${UI.formatBytes(health.remainingBytes)}</div>
-                </div>
-                <div>
-                    <span style="color:var(--text-muted)">پلن</span>
-                    <div style="font-weight:600;margin-top:2px">${sub.plan_name || '-'}</div>
-                </div>
-                <div>
-                    <span style="color:var(--text-muted)">شروع</span>
-                    <div style="font-weight:600;margin-top:2px">${UI.formatDate(sub.starts_at)}</div>
-                </div>
+                <div><span>باقیمانده</span><strong>${health.daysLabel}</strong></div>
+                <div><span>مصرف</span><strong>${UI.formatBytes(sub.used_bytes)}</strong></div>
+                <div><span>کل حجم</span><strong>${UI.formatBytes(sub.volume_bytes)}</strong></div>
+                <div><span>باقی‌مانده حجم</span><strong>${UI.formatBytes(health.remainingBytes)}</strong></div>
+                <div><span>پلن</span><strong>${sub.plan_name || '-'}</strong></div>
+                <div><span>شروع</span><strong>${UI.formatDate(sub.starts_at)}</strong></div>
             </div>
             ${linkSection}
             ${(renewalsEnabled || isAdmin) ? `<button class="btn btn-primary btn-block" style="margin-top:16px" onclick="Pages.showRenewal('${sub.id}')">تمدید سرویس</button>` : '<div class="config-warning" style="margin-top:16px;text-align:center">⏸ تمدید موقتاً غیرفعال است</div>'}
@@ -530,9 +514,9 @@ const Pages = (() => {
 
         // Sales-closed banner spans the whole grid
         const closedBanner = (!salesEnabled && !isAdmin) ? `
-            <div class="empty-state wide" style="border-color:rgba(239,111,97,0.4);background:rgba(239,111,97,0.06)">
-                <div class="empty-icon" style="background:rgba(239,111,97,0.18);color:var(--coral)">${UI.icon('lock')}</div>
-                <p style="color:var(--coral);font-weight:900;font-size:15px">فروش موقتاً بسته شده است</p>
+            <div class="empty-state wide is-closed">
+                <div class="empty-icon">${UI.icon('lock')}</div>
+                <p class="closed-headline">فروش موقتاً بسته شده است</p>
                 <p class="empty-hint">در حال حاضر امکان خرید سرویس وجود ندارد. کمی بعد دوباره تلاش کنید.</p>
             </div>` : '';
 
@@ -1311,9 +1295,7 @@ const Pages = (() => {
             </div>
             <div class="admin-profile" style="background:var(--bg-elevated);border:1px solid var(--border-strong);box-shadow:var(--shadow-glow)">
                 <div style="display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);padding-bottom:12px;margin-bottom:12px">
-                    <div style="width:48px;height:48px;border-radius:50%;background:var(--accent-primary);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:900;color:#000">
-                        ${(user.name || 'U')[0].toUpperCase()}
-                    </div>
+                    <div class="admin-avatar">${(user.name || 'U')[0].toUpperCase()}</div>
                     <div>
                         <strong style="font-size:18px">${escapeHtml(user.name || '-')}</strong>
                         <span style="font-size:12px;opacity:0.7">${escapeHtml(user.telegram_id)} | @${escapeHtml(user.username || '-')}</span>

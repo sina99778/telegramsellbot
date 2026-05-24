@@ -167,8 +167,22 @@ async def get_dashboard(
             Subscription.status.in_(active_statuses),
         )
     ) or 0
+    # "Total used" for the dashboard summary header is a CUMULATIVE
+    # figure — it should keep counting bytes the user consumed in
+    # previous cycles that we've already rolled into `lifetime_used_bytes`
+    # (every renewal and inbound migration accumulates current usage
+    # there before zeroing the per-cycle counter). Per-subscription
+    # views still show only `used_bytes` because they're "this cycle".
     total_used = await session.scalar(
-        select(func.coalesce(func.sum(Subscription.used_bytes), 0)).where(
+        select(
+            func.coalesce(
+                func.sum(
+                    func.coalesce(Subscription.lifetime_used_bytes, 0)
+                    + func.coalesce(Subscription.used_bytes, 0)
+                ),
+                0,
+            )
+        ).where(
             Subscription.user_id == user.id,
             Subscription.status.in_(active_statuses),
         )

@@ -2185,6 +2185,100 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
     box-shadow: 0 0 0 4px rgba(54, 209, 224, 0.18);
 }
 
+/* ─── 27.5. Utility classes (cleanup of inline styles in pages.js) ───── */
+
+/* Big LTR percentage used on the dashboard usage card. Was inline:
+   font-size:30px;font-weight:900;direction:ltr;color:<ternary>. */
+.usage-headline {
+    font-size: 30px;
+    font-weight: 900;
+    direction: ltr;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    color: var(--cyan);
+    font-variant-numeric: tabular-nums;
+}
+.usage-headline > .pct-unit { font-size: 18px; font-weight: 700; }
+.usage-headline.is-warn   { color: var(--amber); }
+.usage-headline.is-danger { color: var(--coral); }
+
+/* Compact stat value (bytes line under "مصرف مجموع N سرویس"). */
+.stat-value--compact {
+    font-size: 18px;
+    direction: ltr;
+    text-align: start;
+    font-weight: 800;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+.stat-hint--ltr {
+    direction: ltr;
+    text-align: start;
+}
+
+/* Section spacer above progress bar inside a stat-card. */
+.stat-progress { margin-block-start: var(--space-3); }
+
+/* Modal: tighten the centered percentage block in config detail modal. */
+.modal-pct {
+    text-align: center;
+    margin-block-end: var(--space-3);
+}
+.modal-pct__value {
+    font-size: 36px;
+    font-weight: 800;
+    color: var(--accent);
+    line-height: 1;
+    direction: ltr;
+}
+.modal-pct__label {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-block-start: 4px;
+}
+
+/* Two-column grid used inside the config-detail modal under the
+   percentage. Used to be inline display:grid;grid-template-columns:1fr 1fr. */
+.modal-stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-3);
+    font-size: 13px;
+}
+.modal-stats-grid > div > span { color: var(--text-muted); }
+.modal-stats-grid > div > strong { display: block; margin-block-start: 2px; font-weight: 700; }
+
+/* Admin user-profile avatar circle. Replaces the long inline
+   width:48px;height:48px;border-radius:50%;background:... block. */
+.admin-avatar {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    font-weight: 900;
+    color: #000;
+    flex: 0 0 auto;
+}
+
+/* Sales-closed banner — was inline border-color + background. */
+.empty-state.is-closed {
+    border-color: rgba(239, 111, 97, 0.4);
+    background: rgba(239, 111, 97, 0.06);
+}
+.empty-state.is-closed .empty-icon {
+    background: rgba(239, 111, 97, 0.18);
+    color: var(--coral);
+}
+.empty-state.is-closed .closed-headline {
+    color: var(--coral);
+    font-weight: 900;
+    font-size: 15px;
+}
+
 /* ─── 28. Reduced motion ─────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
