@@ -14,7 +14,7 @@
 # ============================================================================
 set -Eeuo pipefail
 
-INSTALLER_VERSION="2026-05-22-1"
+INSTALLER_VERSION="2026-05-24-2"
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${PROJECT_DIR}/.env"
@@ -23,6 +23,7 @@ SETUP_SCRIPT="${PROJECT_DIR}/setup.sh"
 DEPLOY_SCRIPT="${PROJECT_DIR}/deploy.sh"
 BACKUP_SCRIPT="${PROJECT_DIR}/backup.sh"
 RESTORE_SCRIPT="${PROJECT_DIR}/restore.sh"
+DOCTOR_SCRIPT="${PROJECT_DIR}/doctor.sh"
 NGINX_SITE_PATH="/etc/nginx/sites-available/telegramsellbot.conf"
 NGINX_SITE_LINK="/etc/nginx/sites-enabled/telegramsellbot.conf"
 LOG_FILE="${PROJECT_DIR}/installer.log"
@@ -463,7 +464,7 @@ fetch_latest_code() {
     return 1
   fi
 
-  chmod +x "${SETUP_SCRIPT}" "${DEPLOY_SCRIPT}" "${BACKUP_SCRIPT}" "${RESTORE_SCRIPT}" 2>/dev/null || true
+  chmod +x "${SETUP_SCRIPT}" "${DEPLOY_SCRIPT}" "${BACKUP_SCRIPT}" "${RESTORE_SCRIPT}" "${DOCTOR_SCRIPT}" 2>/dev/null || true
 
   local new_sha new_branch
   new_sha="$(git_short_sha)"
@@ -559,6 +560,47 @@ quick_reload() {
   fi
   pause
 }
+
+# ============================================================================
+#  ACTION: Doctor — self-diagnose + self-heal
+# ============================================================================
+doctor_run() {
+  print_header
+  echo -e "${BOLD}🩺 Doctor — Self-Diagnose & Self-Heal${NC}"
+  echo -e "${DIM}Walks through ~15 checks (containers, DB schema, heartbeats, logs)"
+  echo -e "and tries to auto-fix what it can. Choose a mode below.${NC}"
+  echo
+  echo "  1) Auto-fix mode    (default — find AND fix what's broken)"
+  echo "  2) Dry-run scan     (only diagnose; never modify anything)"
+  echo "  0) Back"
+  echo
+  read -r -p "Choose: " mode
+  case "${mode}" in
+    1|"") ;;
+    2) DOCTOR_DRYRUN=1 ;;
+    0) return ;;
+    *) warn "Invalid option."; pause; return ;;
+  esac
+
+  if [[ ! -x "${DOCTOR_SCRIPT}" ]]; then
+    chmod +x "${DOCTOR_SCRIPT}" 2>/dev/null || true
+  fi
+  if [[ ! -f "${DOCTOR_SCRIPT}" ]]; then
+    error "doctor.sh not found at ${DOCTOR_SCRIPT}. Pull the latest code (option 1) and try again."
+    pause
+    return
+  fi
+
+  echo
+  if [[ "${DOCTOR_DRYRUN:-0}" -eq 1 ]]; then
+    (cd "${PROJECT_DIR}" && "${DOCTOR_SCRIPT}" --dry-run) || true
+  else
+    (cd "${PROJECT_DIR}" && "${DOCTOR_SCRIPT}") || true
+  fi
+  unset DOCTOR_DRYRUN
+  pause
+}
+
 
 # ============================================================================
 #  ACTION: logs submenu
@@ -873,13 +915,14 @@ main_menu() {
     echo -e "${BOLD}Inspection${NC}"
     echo -e "  6) 📜 Logs"
     echo -e "  7) 📊 Service Status"
+    echo -e "  ${BOLD}${GREEN}8)${NC} 🩺 Doctor               ${DIM}(self-diagnose + auto-fix)${NC}"
     echo
     echo -e "${BOLD}Data${NC}"
-    echo -e "  8) 🗄️  Database Tools"
-    echo -e "  9) 💾 Backup / Restore"
+    echo -e "  9) 🗄️  Database Tools"
+    echo -e "  10) 💾 Backup / Restore"
     echo
     echo -e "${BOLD}Danger${NC}"
-    echo -e "  ${RED}10)${NC} 🗑️  Full Uninstall"
+    echo -e "  ${RED}11)${NC} 🗑️  Full Uninstall"
     echo
     echo -e "  0) Exit"
     echo
@@ -892,9 +935,10 @@ main_menu() {
       5)  install_prerequisites_and_ssl ;;
       6)  logs_menu ;;
       7)  service_status ;;
-      8)  database_tools_menu ;;
-      9)  backup_menu ;;
-      10) full_uninstall ;;
+      8)  doctor_run ;;
+      9)  database_tools_menu ;;
+      10) backup_menu ;;
+      11) full_uninstall ;;
       0)  success "Goodbye."; exit 0 ;;
       *)  warn "Invalid option."; pause ;;
     esac
