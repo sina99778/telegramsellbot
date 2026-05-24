@@ -1,24 +1,85 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from uuid import UUID
 
 from aiogram import Router
 from aiogram.filters import CommandStart, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from apps.bot.keyboards.inline import build_wallet_topup_keyboard
 from apps.bot.keyboards.user import get_main_menu_keyboard
 from apps.bot.states.purchase import PurchaseStates
 from core.texts import Messages
 from models.plan import Plan
+from models.subscription import Subscription
+from models.user import User
+from models.wallet import Wallet
 from repositories.user import UserRepository
 
 logger = logging.getLogger(__name__)
 
 router = Router(name="user-start")
+
+
+async def _build_welcome_status_line(
+    session: AsyncSession,
+    user: User,
+) -> str:
+    """One-line user-status header rendered on /start for returning users.
+
+    Always returns 2–3 short lines, each ending with `\n`, so the caller
+    can splice it straight into `Messages.WELCOME_BACK`. Best-effort:
+    any DB hiccup yields a one-line fallback rather than crashing /start.
+    """
+    try:
+        # Wallet balance — lazy-loaded; one targeted query keeps it cheap.
+        balance = await session.scalar(
+            select(Wallet.balance).where(Wallet.user_id == user.id)
+        )
+        balance_str = f"{float(balance or 0):.2f}"
+
+        # Active sub count + nearest expiry — single query, no joins.
+        active_subs = (
+            await session.execute(
+                select(Subscription.ends_at, Subscription.status)
+                .where(
+                    Subscription.user_id == user.id,
+                    Subscription.status.in_(("active", "pending_activation")),
+                )
+            )
+        ).all()
+        active_count = len(active_subs)
+
+        nearest_expiry_days: int | None = None
+        now = datetime.now(timezone.utc)
+        for ends_at, _ in active_subs:
+            if ends_at is None:
+                continue
+            ea = ends_at if ends_at.tzinfo else ends_at.replace(tzinfo=timezone.utc)
+            days = (ea - now).days
+            if days < 0:
+                continue
+            if nearest_expiry_days is None or days < nearest_expiry_days:
+                nearest_expiry_days = days
+
+        lines: list[str] = [
+            f"💰 موجودی کیف پول: <b>{balance_str}$</b>\n",
+            f"📦 سرویس‌های فعال: <b>{active_count}</b>\n",
+        ]
+        if nearest_expiry_days is not None and nearest_expiry_days <= 3:
+            lines.append(
+                f"⚠️ نزدیک‌ترین انقضا: <b>{nearest_expiry_days}</b> روز دیگر\n"
+            )
+        return "".join(lines)
+    except Exception as exc:
+        logger.warning("welcome status-line build failed for user %s: %s", user.id, exc)
+        return "✨ همه‌چیز آماده است.\n"
 
 
 @router.message(CommandStart(deep_link=True))
@@ -80,11 +141,16 @@ async def start_deep_link_handler(
     if is_created:
         welcome_text = Messages.WELCOME_NEW.format(name=welcome_name)
     else:
-        welcome_text = Messages.WELCOME_BACK.format(name=welcome_name)
+        status_line = await _build_welcome_status_line(session, user)
+        welcome_text = Messages.WELCOME_BACK.format(
+            name=welcome_name,
+            status_line=status_line,
+        )
 
     await message.answer(
         welcome_text,
         reply_markup=get_main_menu_keyboard(is_admin=is_admin, telegram_id=telegram_user.id),
+        parse_mode="HTML",
     )
 
 
@@ -142,7 +208,11 @@ async def start_command_handler(message: Message, session: AsyncSession) -> None
     if is_created:
         welcome_text = Messages.WELCOME_NEW.format(name=welcome_name)
     else:
-        welcome_text = Messages.WELCOME_BACK.format(name=welcome_name)
+        status_line = await _build_welcome_status_line(session, user)
+        welcome_text = Messages.WELCOME_BACK.format(
+            name=welcome_name,
+            status_line=status_line,
+        )
 
     from core.config import settings
     is_admin = user.role in {"admin", "owner"} or telegram_user.id == settings.owner_telegram_id
@@ -150,6 +220,7 @@ async def start_command_handler(message: Message, session: AsyncSession) -> None
     await message.answer(
         welcome_text,
         reply_markup=get_main_menu_keyboard(is_admin=is_admin, telegram_id=telegram_user.id),
+        parse_mode="HTML",
     )
 
 

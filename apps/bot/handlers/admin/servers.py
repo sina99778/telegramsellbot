@@ -88,7 +88,10 @@ def _admin_main_text() -> str:
 
 
 @router.message(Command("admin"))
-@router.message(F.text == "پنل مدیریت ⚙️")
+# Accept both the new label ("⚙️ پنل مدیریت") and the legacy one
+# ("پنل مدیریت ⚙️") so admins whose Telegram clients still have the
+# old keyboard cached can use it until they hit /start once.
+@router.message(F.text.in_(["⚙️ پنل مدیریت", "پنل مدیریت ⚙️"]))
 async def admin_main_menu(message: Message) -> None:
     await message.answer(_admin_main_text(), reply_markup=_build_admin_main_markup(), parse_mode="HTML")
 

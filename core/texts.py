@@ -2,38 +2,50 @@ from __future__ import annotations
 
 
 class Buttons:
-    TEST_CONFIG = "🧪 | کانفیگ تست"
-    BUY_CONFIG = "🛒 | خرید سرویس جدید"
-    PROFILE_WALLET = "👤 | حساب کاربری و شارژ"
-    SUPPORT = "💬 | پشتیبانی آنلاین"
-    MY_CONFIGS = "📋 | سرویس‌های من"
-    REFERRAL = "🔗 | دعوت دوستان"
-    TOPUP_CRYPTO = "💳 | شارژ با کریپتو"
-    CUSTOM_AMOUNT = "🔢 | مبلغ دلخواه"
-    OPEN_PAYMENT = "🔗 | ورود به درگاه پرداخت"
-    RENEW_SERVICE = "🔄 | تمدید سرویس"
-    RENEW_TIME = "⏳ | تمدید زمان"
-    RENEW_VOLUME = "💾 | تمدید حجم"
-    PREV = "◀️ | قبلی"
-    NEXT = "بعدی | ▶️"
-    BACK = "🔙 | بازگشت"
+    # Main user menu — kept as exact-match strings; handlers route via
+    # `F.text == Buttons.X`, so changing the label here automatically
+    # re-skins every button without touching any handler file.
+    BUY_CONFIG = "🛒 خرید سرویس"
+    MY_CONFIGS = "📋 سرویس‌های من"
+    PROFILE_WALLET = "💰 حساب و کیف پول"
+    TEST_CONFIG = "🎁 سرویس تست رایگان"
+    REFERRAL = "🎉 دعوت دوستان"
+    SUPPORT = "💬 پشتیبانی"
+    # Inline / sub-flow buttons
+    TOPUP_CRYPTO = "💳 شارژ با کریپتو"
+    CUSTOM_AMOUNT = "🔢 مبلغ دلخواه"
+    OPEN_PAYMENT = "🔗 ورود به درگاه پرداخت"
+    RENEW_SERVICE = "🔄 تمدید سرویس"
+    RENEW_TIME = "⏳ تمدید زمان"
+    RENEW_VOLUME = "💾 تمدید حجم"
+    PREV = "◀️ قبلی"
+    NEXT = "بعدی ▶️"
+    BACK = "🔙 بازگشت"
 
 
 class Messages:
-    MENU_PLACEHOLDER = "🔹 راهنمای سریع:"
+    MENU_PLACEHOLDER = "از منوی زیر انتخاب کنید…"
     WELCOME_NEW = (
-        "👋 سلام <b>{name}</b> عزیز، خوش آمدید!\n\n"
-        "🚀 این ربات سریع‌ترین و پایدارترین کانفیگ‌های V2Ray را آنی به شما تحویل می‌دهد.\n\n"
-        "<b>✨ امکانات:</b>\n"
-        "🔸 خرید آنلاین و تحویل فوری\n"
-        "🔸 مدیریت و تمدید کانفیگ‌ها\n"
-        "🔸 شارژ کیف پول با کریپتو یا پرداخت ریالی\n"
-        "🔸 پشتیبانی ۲۴ ساعته\n\n"
-        "👇 برای شروع، از منوی زیر استفاده کنید."
+        "👋 سلام <b>{name}</b> عزیز!\n\n"
+        "🚀 سریع‌ترین و پایدارترین کانفیگ‌های V2Ray به‌صورت آنی.\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "🔸 خرید آنی  •  تحویل فوری\n"
+        "🔸 تمدید زمان و حجم  •  انتقال بین سرورها\n"
+        "🔸 شارژ با کریپتو / کارت بانکی\n"
+        "🔸 پشتیبانی ۲۴ ساعته\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "👇 برای شروع، از منو استفاده کنید."
     )
+    # `WELCOME_BACK` now embeds a live status line so the user sees
+    # their balance + active-subs count + nearest-expiry warning
+    # immediately on /start. Fields are filled in apps/bot/handlers/user/start.py
+    # by `_build_welcome_status_line`.
     WELCOME_BACK = (
-        "👋 خوش برگشتید <b>{name}</b> عزیز!\n\n"
-        "⚡ همه‌چیز آماده است. از منوی زیر گزینه‌ی مورد نظر را انتخاب کنید 👇"
+        "👋 خوش برگشتید <b>{name}</b> عزیز!\n"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "{status_line}"
+        "━━━━━━━━━━━━━━━━━━━\n"
+        "از منوی زیر انتخاب کنید 👇"
     )
     WALLET_NOT_FOUND = "❌ کیف پول شما بارگذاری نشد. لطفاً دوباره /start را بزنید."
     PROFILE_OVERVIEW = (
