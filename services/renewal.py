@@ -79,6 +79,13 @@ async def apply_renewal(
             # Only modify COLUMN attributes — never touch relationships!
             if renew_type == "volume":
                 subscription.volume_bytes += int(amount * 1024**3)
+                # Roll the current cycle's consumption into the lifetime
+                # counter BEFORE resetting. Resellers bill on (lifetime
+                # + current) so this 1-line accumulator is what keeps
+                # the total "delivered bytes" honest across renewals.
+                subscription.lifetime_used_bytes = (
+                    (subscription.lifetime_used_bytes or 0) + (subscription.used_bytes or 0)
+                )
                 subscription.used_bytes = 0
             elif renew_type == "time":
                 days_to_add = int(amount)

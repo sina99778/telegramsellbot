@@ -44,6 +44,13 @@ class Subscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     volume_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    # Monotonic counter of bytes delivered BEFORE the most recent reset.
+    # Every code path that resets `used_bytes` to 0 (volume renewal, inbound
+    # migration, …) MUST first accumulate `used_bytes` into this column.
+    # Resellers bill the operator on (lifetime_used_bytes + used_bytes) —
+    # this column is what makes "total volume delivered" actually accurate
+    # across renewals instead of dropping every cycle.
+    lifetime_used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     sub_link: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_usage_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

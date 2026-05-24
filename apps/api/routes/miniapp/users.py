@@ -435,10 +435,16 @@ async def get_admin_customer_report(
         raise HTTPException(status_code=400, detail="دوره گزارش باید daily یا weekly باشد.")
     now = datetime.now(timezone.utc)
     start = now - (timedelta(days=7) if period == "weekly" else timedelta(days=1))
+    # Exclude refunded / cancelled / disabled rows — those subscriptions
+    # didn't actually generate billable traffic for the operator and would
+    # otherwise inflate the period's total_volume_gb that resellers see.
     stmt = (
         select(Subscription)
         .options(selectinload(Subscription.user), selectinload(Subscription.plan))
-        .where(Subscription.created_at >= start)
+        .where(
+            Subscription.created_at >= start,
+            Subscription.status.in_(("active", "pending_activation", "expired")),
+        )
         .order_by(Subscription.created_at.desc())
     )
     if user_id is not None:

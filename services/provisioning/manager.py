@@ -740,6 +740,14 @@ class ProvisioningManager:
                 # the DB record consistent so the bot reports the correct
                 # numbers until the sync job pulls real usage.
                 sub.volume_bytes = remaining_bytes
+                # Migration resets the X-UI client's traffic counter to 0,
+                # so we must save the pre-migration consumption into the
+                # lifetime counter — otherwise reseller billing would
+                # silently lose every byte the user consumed before the
+                # admin moved them to a new inbound.
+                sub.lifetime_used_bytes = (
+                    (sub.lifetime_used_bytes or 0) + (sub.used_bytes or 0)
+                )
                 sub.used_bytes = 0
 
                 await self.session.flush()

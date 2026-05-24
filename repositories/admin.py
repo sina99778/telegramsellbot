@@ -42,8 +42,38 @@ class AdminStatsRepository:
         )
         return int(result or 0)
 
+    # Statuses whose delivered bytes should be counted toward reseller
+    # billing. We INCLUDE expired (those bytes were actually consumed),
+    # active and pending_activation. We EXCLUDE refunded (operator gave
+    # the money back) and disabled (admin-suspended; usually compensated
+    # separately). cancelled is excluded too: typically a customer
+    # cancellation happens before significant usage.
+    _BILLABLE_STATUSES: tuple[str, ...] = ("active", "pending_activation", "expired")
+
     async def get_total_used_bytes(self) -> int:
+        """Total bytes delivered to customers.
+
+        IMPORTANT: every code path that resets ``Subscription.used_bytes``
+        to 0 (volume renewal at services/renewal.py and inbound migration
+        at services/provisioning/manager.py) FIRST accumulates the
+        previous-cycle bytes into ``lifetime_used_bytes``. So the
+        right "total delivered" sum is the column pair, not just
+        ``used_bytes`` — that one only holds the *current* cycle.
+
+        Resellers bill the operator on this number. If you ever change
+        the sum, double-check that renewals and migrations still
+        accumulate into ``lifetime_used_bytes`` first, or you'll silently
+        under-bill yourself.
+        """
         result = await self.session.scalar(
-            select(func.sum(Subscription.used_bytes)).select_from(Subscription)
+            select(
+                func.coalesce(
+                    func.sum(
+                        func.coalesce(Subscription.lifetime_used_bytes, 0)
+                        + func.coalesce(Subscription.used_bytes, 0)
+                    ),
+                    0,
+                )
+            ).where(Subscription.status.in_(self._BILLABLE_STATUSES))
         )
         return int(result or 0)
