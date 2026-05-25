@@ -58,7 +58,7 @@ sync_project_files() {
   fi
 
   cd "${INSTALL_DIR}"
-  chmod +x setup.sh install.sh deploy.sh
+  chmod +x setup.sh install.sh deploy.sh doctor.sh backup.sh restore.sh 2>/dev/null || true
 }
 
 trap cleanup EXIT

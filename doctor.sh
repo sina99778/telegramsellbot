@@ -334,6 +334,13 @@ check_db_schema() {
     if [[ "${col}" == "1" ]]; then
       fixed "Column added + backfill complete"
       FAIL=$((FAIL - 1))
+      # The api/bot/worker have been retrying queries against the
+      # now-missing column and emitting UndefinedColumn errors. Restart
+      # them so (a) the next log scan doesn't surface stale errors and
+      # (b) any in-memory SQLAlchemy column-cache is reset.
+      info "Restarting app containers to clear stale UndefinedColumn errors..."
+      docker restart "${C_API}" "${C_BOT}" "${C_WORKER}" >/dev/null 2>&1 || true
+      sleep 4
     else
       fail "Migration ran but column still missing — check 'docker logs api'"
     fi
@@ -430,6 +437,10 @@ check_disk_space() {
 
 # Scan recent logs for known error patterns. No auto-fix — output is
 # meant to point the operator at root cause.
+#
+# We use `docker logs --since=10m` instead of `--tail=N` so an old
+# error from BEFORE today's fix doesn't keep showing up as a fresh
+# WARN every time the operator runs the doctor.
 check_log_errors() {
   declare -A patterns=(
     ["MissingGreenlet"]="Async-lazy-load bug — file should eager-load via selectinload"
@@ -437,25 +448,29 @@ check_log_errors() {
     ["redis.exceptions.ConnectionError"]="Redis unreachable — check container + .env REDIS_PASSWORD"
     ["TelegramRetryAfter"]="Bot is being rate-limited by Telegram — usually self-recovers"
     ["TelegramServerError"]="Telegram side hiccup — usually transient"
-    ["UndefinedColumn"]="DB schema drift — run install.sh option 11 to re-check schema"
-    ["ImportError|ModuleNotFoundError"]="Missing dependency — `docker compose build` to rebuild image"
+    ["UndefinedColumn"]="DB schema drift — run doctor again to apply pending migrations"
+    ["ImportError|ModuleNotFoundError"]="Missing dependency — \`docker compose build\` to rebuild image"
     ["X-UI panel error|XUI .* failed"]="Reseller panel unreachable — check XUI_BASE_URL + credentials"
   )
   local any_hits=0
   for c in "${APP_CONTAINERS[@]}"; do
     if ! docker inspect "${c}" >/dev/null 2>&1; then continue; fi
+    # `--since=10m` filters to entries from the last 10 minutes only.
+    # 2>&1 captures stderr from the container too, but stderr from
+    # `docker logs` itself (e.g. "no configuration" if a context is
+    # weird) goes to /dev/null so it doesn't pollute the log buffer.
     local log
-    log="$(docker logs --tail=300 "${c}" 2>&1 || true)"
+    log="$(docker logs --since=10m "${c}" 2>&1 < /dev/null || true)"
     for pat in "${!patterns[@]}"; do
       local count
       count="$(printf '%s\n' "${log}" | grep -cE "${pat}" || true)"
       if [[ "${count}" -gt 0 ]]; then
-        warn "${c}: ${count}× '${pat}' — ${patterns[${pat}]}"
+        warn "${c}: ${count}× '${pat}' (last 10 min) — ${patterns[${pat}]}"
         any_hits=$((any_hits + 1))
       fi
     done
   done
-  [[ "${any_hits}" -eq 0 ]] && ok "No known error patterns in recent logs"
+  [[ "${any_hits}" -eq 0 ]] && ok "No known error patterns in the last 10 minutes of logs"
 }
 
 # Compare local code to origin/master. Don't auto-pull — that's the
