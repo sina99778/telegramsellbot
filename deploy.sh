@@ -73,14 +73,42 @@ full_deploy() {
     docker rm -f telegramsellbot-postgres telegramsellbot-redis telegramsellbot-api telegramsellbot-bot telegramsellbot-worker >/dev/null 2>&1 || true
   fi
 
+  # ── 1. Bring up postgres + redis (data layer) ───────────────────────────
   "${COMPOSE_CMD[@]}" -f docker-compose.prod.yml up -d --build postgres redis
   wait_for_postgres
 
+  # ── 2. Build the api image BEFORE running any one-off task in it ────────
+  #
+  # init_database + migrations both run inside `compose run --rm api …`
+  # which spins up an ephemeral container from the CURRENT api image.
+  # If the image is stale (still pre-migration code), the ephemeral
+  # container won't have today's `scripts/migrations/` directory and
+  # the migration step crashes with:
+  #
+  #     python: can't open file '/app/scripts/migrations/001_…py':
+  #     [Errno 2] No such file or directory
+  #
+  # Building api now — before init+migrations — guarantees the ephemeral
+  # container is always built from the just-pulled code. Plus we ALSO
+  # bind-mount scripts/ as a belt-and-braces fallback for the case
+  # where a build cache decided nothing changed.
+  echo "Building api image so migrations see today's code..."
+  "${COMPOSE_CMD[@]}" -f docker-compose.prod.yml build api
+
+  # The mount path is reused by both init and migration invocations
+  # below. Use a function so the call sites stay readable.
+  api_oneshot() {
+    "${COMPOSE_CMD[@]}" -f docker-compose.prod.yml run --rm \
+      -v "$(pwd)/scripts:/app/scripts:ro" \
+      api "$@"
+  }
+
+  # ── 3. init_database (or alembic, if configured) ────────────────────────
   DB_BOOTSTRAP_EXIT_CODE=0
   if [[ -f "alembic.ini" && -d "migrations" ]]; then
-    "${COMPOSE_CMD[@]}" -f docker-compose.prod.yml run --rm api python -m alembic upgrade head || DB_BOOTSTRAP_EXIT_CODE=$?
+    api_oneshot python -m alembic upgrade head || DB_BOOTSTRAP_EXIT_CODE=$?
   else
-    "${COMPOSE_CMD[@]}" -f docker-compose.prod.yml run --rm api python -c "import asyncio; import models; from core.database import init_database; asyncio.run(init_database())" || DB_BOOTSTRAP_EXIT_CODE=$?
+    api_oneshot python -c "import asyncio; import models; from core.database import init_database; asyncio.run(init_database())" || DB_BOOTSTRAP_EXIT_CODE=$?
   fi
 
   if [[ "${DB_BOOTSTRAP_EXIT_CODE}" -ne 0 ]]; then
@@ -99,7 +127,7 @@ full_deploy() {
     exit "${DB_BOOTSTRAP_EXIT_CODE}"
   fi
 
-  # ── Run additive migrations ─────────────────────────────────────────────
+  # ── 4. Run additive migrations ──────────────────────────────────────────
   # `init_database()` (SQLAlchemy create_all) only adds missing TABLES.
   # It does NOT add new COLUMNS to existing tables — which means a code
   # update that introduces a new column (e.g. lifetime_used_bytes) on an
@@ -111,16 +139,19 @@ full_deploy() {
   # one-off scripts live there; the deploy pulls them in automatically
   # so the operator can never forget.
   if [[ -d "scripts/migrations" ]]; then
-    for migration in scripts/migrations/*.py; do
-      [[ -f "${migration}" ]] || continue
+    shopt -s nullglob
+    migrations=(scripts/migrations/*.py)
+    shopt -u nullglob
+    for migration in "${migrations[@]}"; do
       echo "Running migration: ${migration}"
-      if ! "${COMPOSE_CMD[@]}" -f docker-compose.prod.yml run --rm api python "${migration}"; then
+      if ! api_oneshot python "${migration}"; then
         echo "Migration ${migration} failed — aborting deploy. Fix the issue and re-run." >&2
         exit 1
       fi
     done
   fi
 
+  # ── 5. Bring up app containers (api is already built; bot+worker now) ──
   "${COMPOSE_CMD[@]}" -f docker-compose.prod.yml up -d --build api bot worker
 }
 
