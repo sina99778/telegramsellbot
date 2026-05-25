@@ -99,6 +99,28 @@ full_deploy() {
     exit "${DB_BOOTSTRAP_EXIT_CODE}"
   fi
 
+  # ── Run additive migrations ─────────────────────────────────────────────
+  # `init_database()` (SQLAlchemy create_all) only adds missing TABLES.
+  # It does NOT add new COLUMNS to existing tables — which means a code
+  # update that introduces a new column (e.g. lifetime_used_bytes) on an
+  # already-populated DB causes UndefinedColumn crashes until someone
+  # runs the matching migration script by hand.
+  #
+  # Loop through every Python file in scripts/migrations/ — each must be
+  # idempotent (re-runnable, no-op when already applied). add_*.py-style
+  # one-off scripts live there; the deploy pulls them in automatically
+  # so the operator can never forget.
+  if [[ -d "scripts/migrations" ]]; then
+    for migration in scripts/migrations/*.py; do
+      [[ -f "${migration}" ]] || continue
+      echo "Running migration: ${migration}"
+      if ! "${COMPOSE_CMD[@]}" -f docker-compose.prod.yml run --rm api python "${migration}"; then
+        echo "Migration ${migration} failed — aborting deploy. Fix the issue and re-run." >&2
+        exit 1
+      fi
+    done
+  fi
+
   "${COMPOSE_CMD[@]}" -f docker-compose.prod.yml up -d --build api bot worker
 }
 

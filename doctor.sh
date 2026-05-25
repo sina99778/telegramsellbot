@@ -322,10 +322,10 @@ check_db_schema() {
   fi
 
   fail "DB schema: lifetime_used_bytes column is MISSING (causes total-volume under-reporting)"
-  if do_fix "run scripts/add_lifetime_used_bytes.py via api container" \
+  if do_fix "run scripts/migrations/001_add_lifetime_used_bytes.py via api container" \
        run_compose run --rm \
          -v "${PROJECT_DIR}/scripts:/app/scripts:ro" \
-         api python scripts/add_lifetime_used_bytes.py; then
+         api python scripts/migrations/001_add_lifetime_used_bytes.py; then
     # Re-check.
     sleep 1
     col="$(docker exec "${C_PG}" psql -U "${pg_user}" -d "${pg_db}" -tAc \
