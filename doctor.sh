@@ -483,6 +483,17 @@ check_code_freshness() {
     warn "Could not 'git fetch origin master' — check repo state"
     return
   fi
+
+  # Production should always be on the master branch. If the local
+  # checkout is on a feature branch, an older `Update & Deploy` could
+  # have silently rolled the server backward to that branch's stale
+  # remote pointer. Flag it loudly.
+  local branch
+  branch="$(git -C "${PROJECT_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "?")"
+  if [[ "${branch}" != "master" && "${branch}" != "HEAD" ]]; then
+    warn "Local branch is '${branch}' — production should be on 'master'. Run install.sh option 1 to switch."
+  fi
+
   local behind
   behind="$(git -C "${PROJECT_DIR}" rev-list HEAD..origin/master --count 2>/dev/null || echo 0)"
   if [[ "${behind}" -gt 0 ]]; then

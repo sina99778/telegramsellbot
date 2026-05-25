@@ -434,15 +434,24 @@ fetch_latest_code() {
     return 1
   fi
 
-  local current_branch remote_branch
+  # ── DEPLOY ALWAYS TARGETS origin/master ─────────────────────────────────
+  # Earlier versions of this function used the operator's LOCAL branch
+  # name as the reset target. That had a hidden trap: if the server was
+  # checked out on a feature branch (e.g. claude/stoic-archimedes-acd651)
+  # whose remote was pinned at a stale commit, "update & deploy" would
+  # silently roll the server BACKWARD to that stale commit — losing
+  # every newer fix that had been merged into master in the meantime
+  # (sales-report channel, autoconfirm, miniapp polish, …).
+  #
+  # Lesson: production deploys must follow master, not whatever happens
+  # to be checked out. Always reset to origin/master, and rebind the
+  # local "master" branch pointer so `git status` shows the truth.
+  local deploy_ref="origin/master"
+  local current_branch
   current_branch="$(cd "${PROJECT_DIR}" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
-  if [[ -z "${current_branch}" || "${current_branch}" == "HEAD" ]]; then
-    current_branch="master"
-    info "Detached HEAD detected; resetting to origin/master."
-    (cd "${PROJECT_DIR}" && git checkout -B master origin/master) || {
-      error "Could not check out master."; return 1; }
+  if [[ -n "${current_branch}" && "${current_branch}" != "HEAD" && "${current_branch}" != "master" ]]; then
+    warn "Local branch is '${current_branch}', not 'master'. Update will switch to master."
   fi
-  remote_branch="origin/${current_branch}"
 
   # Refuse to clobber operator-side changes silently.
   local dirty_count
@@ -458,9 +467,13 @@ fetch_latest_code() {
     (cd "${PROJECT_DIR}" && git reset --hard HEAD && git clean -fd)
   fi
 
-  info "Resetting ${current_branch} to ${remote_branch}..."
-  if ! (cd "${PROJECT_DIR}" && git reset --hard "${remote_branch}"); then
-    error "git reset --hard ${remote_branch} failed."
+  info "Resetting local master to ${deploy_ref}..."
+  if ! (cd "${PROJECT_DIR}" && git checkout -B master "${deploy_ref}"); then
+    error "git checkout -B master ${deploy_ref} failed."
+    return 1
+  fi
+  if ! (cd "${PROJECT_DIR}" && git reset --hard "${deploy_ref}"); then
+    error "git reset --hard ${deploy_ref} failed."
     return 1
   fi
 
