@@ -10,11 +10,16 @@ from apps.bot.handlers.user.topup import router as topup_router
 from apps.bot.handlers.user.renewal import router as renewal_router
 from apps.bot.handlers.user.transfer import router as transfer_router
 from apps.bot.handlers.user.inline import router as inline_router
+from apps.bot.middlewares.menu_escape import MainMenuEscapeMiddleware
 from apps.bot.middlewares.user import UserAccessMiddleware
 from apps.bot.middlewares.force_join import ForceJoinMiddleware
 
 
 router = Router(name="user")
+# MainMenuEscapeMiddleware MUST run first — it clears stuck FSM state
+# when the user taps a main-menu reply-keyboard button, before any
+# state-filtered handler gets a chance to misinterpret the button label.
+router.message.middleware(MainMenuEscapeMiddleware())
 router.message.middleware(UserAccessMiddleware())
 router.callback_query.middleware(UserAccessMiddleware())
 router.message.middleware(ForceJoinMiddleware())

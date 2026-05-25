@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from uuid import UUID
 
 from aiogram import Router
-from aiogram.filters import CommandStart, CommandObject
+from aiogram.filters import Command, CommandStart, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from sqlalchemy import func, select
@@ -80,6 +80,22 @@ async def _build_welcome_status_line(
     except Exception as exc:
         logger.warning("welcome status-line build failed for user %s: %s", user.id, exc)
         return "✨ همه‌چیز آماده است.\n"
+
+
+# Register the /cancel handler in the FIRST user-router (start_router)
+# so it short-circuits state-filtered handlers in later routers (purchase,
+# topup, my_configs, …) that would otherwise interpret the literal text
+# "/cancel" as flow input and reject it. The handler always replies — if
+# there was no state, the user still gets a "nothing to cancel" hint
+# instead of confused silence.
+@router.message(Command("cancel"))
+async def cancel_any_flow(message: Message, state: FSMContext) -> None:
+    current = await state.get_state()
+    if current is None:
+        await message.answer("ℹ️ هیچ عملیات فعالی برای لغو وجود ندارد.")
+        return
+    await state.clear()
+    await message.answer("✅ عملیات لغو شد. از منوی پایین انتخاب کنید.")
 
 
 @router.message(CommandStart(deep_link=True))
