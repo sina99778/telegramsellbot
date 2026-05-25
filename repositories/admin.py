@@ -43,12 +43,19 @@ class AdminStatsRepository:
         return int(result or 0)
 
     # Statuses whose delivered bytes should be counted toward reseller
-    # billing. We INCLUDE expired (those bytes were actually consumed),
-    # active and pending_activation. We EXCLUDE refunded (operator gave
-    # the money back) and disabled (admin-suspended; usually compensated
-    # separately). cancelled is excluded too: typically a customer
-    # cancellation happens before significant usage.
-    _BILLABLE_STATUSES: tuple[str, ...] = ("active", "pending_activation", "expired")
+    # billing. We INCLUDE every status where the customer paid and the
+    # row still exists in DB:
+    #   * active, pending_activation — current cycle
+    #   * expired                     — bytes were actually consumed
+    #   * disabled                    — admin-disabled (e.g. ip_guard);
+    #                                   the bytes already shipped before
+    #                                   the shutdown, so they're billable.
+    # We EXCLUDE the two "money returned" terminal states:
+    #   * cancelled                   — user (or admin) tore down the row
+    #   * refunded                    — wallet was credited back
+    _BILLABLE_STATUSES: tuple[str, ...] = (
+        "active", "pending_activation", "expired", "disabled",
+    )
 
     async def get_total_used_bytes(self) -> int:
         """Total bytes delivered to customers.

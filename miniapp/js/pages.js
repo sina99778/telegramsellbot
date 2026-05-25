@@ -176,9 +176,9 @@ const Pages = (() => {
             <div class="stat-card wide">
                 <div class="row-between">
                     <div>
-                        <div class="stat-label">مصرف مجموع ${(data.active_config_count || 0)} سرویس</div>
+                        <div class="stat-label">حجم خریداری‌شده</div>
                         <div class="stat-value stat-value--compact">${UI.formatBytes(data.total_volume_used)}</div>
-                        <div class="stat-hint stat-hint--ltr">از ${UI.formatBytes(data.total_volume)} مجموع</div>
+                        <div class="stat-hint stat-hint--ltr">از ${UI.formatBytes(data.total_volume)} (شامل منقضی)</div>
                     </div>
                     <div class="usage-headline ${usageHeadlineClass}">${usagePct}<span class="pct-unit">%</span></div>
                 </div>

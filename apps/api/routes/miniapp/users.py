@@ -160,19 +160,36 @@ async def get_dashboard(
     if user.wallet is None:
         raise HTTPException(status_code=404, detail="Wallet not found.")
 
+    # ── Two distinct status sets for the dashboard ────────────────────────
+    #
+    # `active_statuses`     — rows the user can still USE right now.
+    #                         Drives the "X سرویس فعال" tile and the
+    #                         per-config list.
+    #
+    # `purchased_statuses`  — rows the user PAID FOR and that still exist
+    #                         in DB. Drives the "حجم خریداری شده" headline:
+    #                         includes expired subs (the bytes were really
+    #                         consumed) and admin-disabled subs (the user
+    #                         paid for them — admin disabled for abuse).
+    #                         Excludes only `cancelled` and `refunded`
+    #                         — the rows where the user got their money
+    #                         back (or self-cancelled an expired row).
     active_statuses = ("active", "pending_activation")
+    purchased_statuses = ("active", "pending_activation", "expired", "disabled")
+
     active_count = await session.scalar(
         select(func.count()).select_from(Subscription).where(
             Subscription.user_id == user.id,
             Subscription.status.in_(active_statuses),
         )
     ) or 0
-    # "Total used" for the dashboard summary header is a CUMULATIVE
-    # figure — it should keep counting bytes the user consumed in
-    # previous cycles that we've already rolled into `lifetime_used_bytes`
-    # (every renewal and inbound migration accumulates current usage
-    # there before zeroing the per-cycle counter). Per-subscription
-    # views still show only `used_bytes` because they're "this cycle".
+    # Dashboard "total used / total volume" headline reflects EVERY
+    # subscription the user paid for and still owns — not just the ones
+    # currently active. Otherwise an operator who renews monthly never
+    # sees their cumulative purchase history; only the current cycle.
+    # We sum `lifetime_used_bytes + used_bytes` because every renewal/
+    # migration accumulates the pre-reset bytes into lifetime before
+    # zeroing used_bytes.
     total_used = await session.scalar(
         select(
             func.coalesce(
@@ -184,13 +201,13 @@ async def get_dashboard(
             )
         ).where(
             Subscription.user_id == user.id,
-            Subscription.status.in_(active_statuses),
+            Subscription.status.in_(purchased_statuses),
         )
     ) or 0
     total_vol = await session.scalar(
         select(func.coalesce(func.sum(Subscription.volume_bytes), 0)).where(
             Subscription.user_id == user.id,
-            Subscription.status.in_(active_statuses),
+            Subscription.status.in_(purchased_statuses),
         )
     ) or 0
 
@@ -449,15 +466,15 @@ async def get_admin_customer_report(
         raise HTTPException(status_code=400, detail="دوره گزارش باید daily یا weekly باشد.")
     now = datetime.now(timezone.utc)
     start = now - (timedelta(days=7) if period == "weekly" else timedelta(days=1))
-    # Exclude refunded / cancelled / disabled rows — those subscriptions
-    # didn't actually generate billable traffic for the operator and would
-    # otherwise inflate the period's total_volume_gb that resellers see.
+    # Exclude refunded / cancelled rows — money was returned, no
+    # legitimate sale to bill. Keep `disabled` though (admin disabled
+    # for abuse, customer paid, bytes were delivered).
     stmt = (
         select(Subscription)
         .options(selectinload(Subscription.user), selectinload(Subscription.plan))
         .where(
             Subscription.created_at >= start,
-            Subscription.status.in_(("active", "pending_activation", "expired")),
+            Subscription.status.in_(("active", "pending_activation", "expired", "disabled")),
         )
         .order_by(Subscription.created_at.desc())
     )
