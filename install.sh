@@ -429,10 +429,24 @@ fetch_latest_code() {
   require_commands git || return 1
 
   info "Fetching latest code from origin..."
+  # If the clone was created with `--single-branch` (e.g. setup.sh
+  # bootstraps with `--depth 1 --branch master --single-branch`), the
+  # local remote refspec restricts what `git fetch` brings in. If the
+  # server happens to be on a different branch (e.g. `main`), then a
+  # naked `git fetch origin` will NOT make `origin/master` resolvable
+  # and the next `git checkout -B master origin/master` fails with
+  # "is not a commit".
+  #
+  # Defensive: explicitly widen the remote refspec to all branches,
+  # then explicitly fetch master so origin/master is always materialized.
+  (cd "${PROJECT_DIR}" && git remote set-branches --add origin '*' 2>/dev/null) || true
   if ! (cd "${PROJECT_DIR}" && git fetch --prune origin); then
     error "git fetch failed."
     return 1
   fi
+  # Belt-and-braces: force-create origin/master from the remote tip
+  # even if some local refspec quirk dropped it.
+  (cd "${PROJECT_DIR}" && git fetch origin '+refs/heads/master:refs/remotes/origin/master' 2>/dev/null) || true
 
   # ── DEPLOY ALWAYS TARGETS origin/master ─────────────────────────────────
   # Earlier versions of this function used the operator's LOCAL branch
