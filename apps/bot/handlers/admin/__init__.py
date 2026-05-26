@@ -15,9 +15,17 @@ from apps.bot.handlers.admin.gifts import router as gifts_router
 from apps.bot.handlers.admin.recovery import router as recovery_router
 from apps.bot.handlers.admin.manual_payments import router as manual_payments_router
 from apps.bot.handlers.admin.customers import router as customers_router
+from apps.bot.middlewares.menu_escape import MainMenuEscapeMiddleware
 
 
 router = Router(name="admin")
+# Same FSM-escape protection we added to the user router (see
+# apps/bot/handlers/user/__init__.py and middlewares/menu_escape.py).
+# Without it, an admin in a plan-edit flow who taps "⚙️ پنل مدیریت"
+# has the button label silently consumed by the state-filtered handler
+# as the new plan name — producing a confusing ProgrammingError on
+# DB write.
+router.message.middleware(MainMenuEscapeMiddleware())
 router.include_router(servers_router)
 router.include_router(plans_router)
 router.include_router(ready_configs_router)
