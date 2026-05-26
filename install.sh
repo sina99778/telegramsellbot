@@ -630,6 +630,94 @@ doctor_run() {
 
 
 # ============================================================================
+#  ACTION: Dashboard admin (web management console credentials)
+# ============================================================================
+dashboard_admin_menu() {
+  while true; do
+    print_header
+    echo -e "${BOLD}🌐 Dashboard Admin${NC}"
+    echo -e "${DIM}Manage credentials for the web management console at${NC}"
+    local web_base
+    web_base="$(read_env_value WEB_BASE_URL)"
+    echo -e "${DIM}  ${web_base:-https://<your-domain>}/dashboard/${NC}"
+    echo
+    echo "  1) ساخت ادمین جدید"
+    echo "  2) تغییر رمز یک ادمین موجود"
+    echo "  3) فهرست ادمین‌های ثبت‌شده"
+    echo "  4) غیرفعال کردن یک ادمین"
+    echo "  0) Back"
+    echo
+    read -r -p "Choose: " ch
+    case "${ch}" in
+      1) dashboard_admin_run create ;;
+      2) dashboard_admin_run set-password ;;
+      3) dashboard_admin_run list ;;
+      4) dashboard_admin_run disable ;;
+      0) return ;;
+      *) warn "Invalid option."; pause ;;
+    esac
+  done
+}
+
+dashboard_admin_run() {
+  local subcmd="$1"
+  print_header
+  echo -e "${BOLD}🌐 Dashboard Admin — ${subcmd}${NC}"
+  echo
+
+  if [[ ! -f "${ENV_FILE}" ]]; then
+    error ".env file not found — configure (option 4) first."; pause; return
+  fi
+  if [[ "$(compose_impl)" == "missing" ]]; then
+    error "Docker Compose not installed."; pause; return
+  fi
+  if ! docker inspect "${C_PG:-telegramsellbot-postgres}" >/dev/null 2>&1; then
+    error "Postgres container not running — start with Deploy first."; pause; return
+  fi
+
+  local args=()
+  case "${subcmd}" in
+    create|set-password)
+      local username password use_auto
+      read -r -p "نام کاربری: " username
+      [[ -n "${username}" ]] || { warn "نام کاربری خالی نمی‌تواند باشد."; pause; return; }
+      args+=("--username" "${username}")
+      echo
+      echo "  1) خودم رمز رو وارد می‌کنم"
+      echo "  2) رمز قوی به‌صورت خودکار تولید کن"
+      read -r -p "Choose [1/2]: " use_auto
+      if [[ "${use_auto}" == "2" ]]; then
+        args+=("--auto-password")
+      else
+        read -r -s -p "رمز عبور (مخفی): " password; echo
+        if [[ -z "${password}" ]]; then
+          warn "رمز خالی نمی‌تواند باشد."; pause; return
+        fi
+        args+=("--password" "${password}")
+      fi
+      ;;
+    disable)
+      local username
+      read -r -p "نام کاربری برای غیرفعال‌سازی: " username
+      [[ -n "${username}" ]] || { warn "نام کاربری خالی."; pause; return; }
+      args+=("--username" "${username}")
+      ;;
+    list)
+      : # no args
+      ;;
+  esac
+
+  # Run the helper inside an ephemeral api container. Bind-mount the
+  # host's scripts/ so even an out-of-date image works.
+  run_compose run --rm \
+      -v "${PROJECT_DIR}/scripts:/app/scripts:ro" \
+      api python scripts/dashboard_admin.py "${subcmd}" "${args[@]}" \
+    || warn "Command failed — check the output above."
+  pause
+}
+
+
+# ============================================================================
 #  ACTION: logs submenu
 # ============================================================================
 view_logs_for() {
@@ -938,18 +1026,19 @@ main_menu() {
     echo -e "${BOLD}Setup${NC}"
     echo -e "  4) ⚙️  Configure .env"
     echo -e "  5) 🔐 Install Prerequisites & SSL"
+    echo -e "  6) 🌐 Dashboard Admin           ${DIM}(web console credentials)${NC}"
     echo
     echo -e "${BOLD}Inspection${NC}"
-    echo -e "  6) 📜 Logs"
-    echo -e "  7) 📊 Service Status"
-    echo -e "  ${BOLD}${GREEN}8)${NC} 🩺 Doctor               ${DIM}(self-diagnose + auto-fix)${NC}"
+    echo -e "  7) 📜 Logs"
+    echo -e "  8) 📊 Service Status"
+    echo -e "  ${BOLD}${GREEN}9)${NC} 🩺 Doctor               ${DIM}(self-diagnose + auto-fix)${NC}"
     echo
     echo -e "${BOLD}Data${NC}"
-    echo -e "  9) 🗄️  Database Tools"
-    echo -e "  10) 💾 Backup / Restore"
+    echo -e "  10) 🗄️  Database Tools"
+    echo -e "  11) 💾 Backup / Restore"
     echo
     echo -e "${BOLD}Danger${NC}"
-    echo -e "  ${RED}11)${NC} 🗑️  Full Uninstall"
+    echo -e "  ${RED}12)${NC} 🗑️  Full Uninstall"
     echo
     echo -e "  0) Exit"
     echo
@@ -960,12 +1049,13 @@ main_menu() {
       3)  quick_reload ;;
       4)  setup_env_builder ;;
       5)  install_prerequisites_and_ssl ;;
-      6)  logs_menu ;;
-      7)  service_status ;;
-      8)  doctor_run ;;
-      9)  database_tools_menu ;;
-      10) backup_menu ;;
-      11) full_uninstall ;;
+      6)  dashboard_admin_menu ;;
+      7)  logs_menu ;;
+      8)  service_status ;;
+      9)  doctor_run ;;
+      10) database_tools_menu ;;
+      11) backup_menu ;;
+      12) full_uninstall ;;
       0)  success "Goodbye."; exit 0 ;;
       *)  warn "Invalid option."; pause ;;
     esac

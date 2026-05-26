@@ -1,0 +1,115 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Base typography / RTL fix-ups ──────────────────────────────────── */
+html,
+body {
+  height: 100%;
+  font-feature-settings: "ss01", "ss02";
+}
+
+body {
+  font-family: theme("fontFamily.sans");
+}
+
+/* Western digits everywhere — same convention as the miniapp. */
+* {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Scrollbar refresh: thin, dark, accent-tinted thumb. */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(36, 49, 73, 0.6);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(54, 209, 224, 0.5);
+}
+
+/* ── Reusable component classes ─────────────────────────────────────── */
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium
+           text-sm transition-all duration-150 select-none
+           focus:outline-none focus:ring-2 focus:ring-accent/40
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply bg-accent text-bg-base hover:bg-accent-soft active:bg-accent-deep
+           shadow-glow;
+  }
+  .btn-secondary {
+    @apply bg-bg-elev text-slate-100 border border-bg-border
+           hover:bg-bg-border;
+  }
+  .btn-ghost {
+    @apply text-slate-300 hover:bg-bg-elev;
+  }
+  .btn-danger {
+    @apply bg-danger/15 text-danger border border-danger/40 hover:bg-danger/25;
+  }
+
+  .card {
+    @apply bg-bg-panel border border-bg-border rounded-xl2 p-5 shadow-card;
+  }
+  .stat-card {
+    @apply card flex flex-col gap-2;
+  }
+  .stat-label {
+    @apply text-xs text-slate-400 font-medium;
+  }
+  .stat-value {
+    @apply text-2xl font-bold text-white tracking-tight;
+  }
+
+  .input {
+    @apply w-full bg-bg-elev border border-bg-border rounded-lg px-3 py-2
+           text-sm text-slate-100 placeholder:text-slate-500
+           focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent/60;
+  }
+
+  .label {
+    @apply text-xs text-slate-300 font-medium mb-1.5 block;
+  }
+
+  /* Table system. Uses real <table> so column resizing + screen readers work. */
+  .data-table {
+    @apply w-full text-sm;
+  }
+  .data-table thead {
+    @apply text-slate-400 text-xs uppercase tracking-wider;
+  }
+  .data-table th {
+    @apply text-start font-medium px-4 py-3 border-b border-bg-border;
+  }
+  .data-table td {
+    @apply px-4 py-3 border-b border-bg-border/60 align-middle;
+  }
+  .data-table tbody tr:hover {
+    @apply bg-bg-elev/40;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-md text-[11px] font-medium;
+  }
+  .badge-success {
+    @apply bg-success/15 text-success;
+  }
+  .badge-warn {
+    @apply bg-warn/15 text-warn;
+  }
+  .badge-danger {
+    @apply bg-danger/15 text-danger;
+  }
+  .badge-muted {
+    @apply bg-slate-500/15 text-slate-400;
+  }
+}

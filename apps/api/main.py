@@ -16,14 +16,17 @@ from apps.api.routes.webhooks.tetrapay import router as tetrapay_webhook_router
 from apps.api.routes.webhooks.tronado import router as tronado_webhook_router
 from apps.api.routes.dl import router as dl_router
 from apps.api.routes.sub import router as sub_router
+from apps.api.routes.dashboard import router as dashboard_router
 
 logger = logging.getLogger(__name__)
 
 MINIAPP_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "miniapp"
+DASHBOARD_DIST_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "dashboard" / "dist"
 
 app = FastAPI(title="telegramsellbot-api", version="0.1.0")
 app.include_router(miniapp_users_router, prefix="/api/miniapp", tags=["miniapp"])
 app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
+app.include_router(dashboard_router, prefix="/api/dashboard", tags=["dashboard"])
 app.include_router(nowpayments_webhook_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(tetrapay_webhook_router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(tronado_webhook_router, prefix="/api/webhooks", tags=["webhooks"])
@@ -74,3 +77,51 @@ if MINIAPP_DIR.exists():
     logger.info("Mini App mounted at /miniapp/")
 else:
     logger.warning("miniapp directory not found at %s — Mini App will not be served.", MINIAPP_DIR)
+
+
+# ─── Serve Dashboard SPA static files ────────────────────────────────────────
+#
+# The Vue 3 SPA is built into `dashboard/dist/` during the Docker build
+# (multi-stage; see Dockerfile). We serve every nested asset path, plus
+# fall back to index.html for unknown paths so Vue Router's history-mode
+# routes (e.g. /dashboard/users/123) load correctly on a hard refresh.
+logger.info("Looking for dashboard build at: %s (exists=%s)",
+            DASHBOARD_DIST_DIR, DASHBOARD_DIST_DIR.exists())
+
+if DASHBOARD_DIST_DIR.exists():
+    from starlette.requests import Request as _DashboardReq
+    from starlette.responses import FileResponse as _DashboardFile, Response as _DashboardResp
+
+    # Mount /dashboard/assets/ for chunks (Vite emits hashed filenames
+    # under /assets/ by default; we keep that prefix to stay
+    # build-tool-agnostic).
+    _assets = DASHBOARD_DIST_DIR / "assets"
+    if _assets.exists():
+        app.mount("/dashboard/assets", StaticFiles(directory=str(_assets)), name="dashboard-assets")
+
+    _index = DASHBOARD_DIST_DIR / "index.html"
+
+    @app.get("/dashboard")
+    @app.get("/dashboard/")
+    @app.get("/dashboard/{path:path}")
+    async def _serve_dashboard(path: str = "") -> _DashboardResp:
+        # Direct hits for top-level files (favicon, robots.txt, …)
+        if path:
+            candidate = DASHBOARD_DIST_DIR / path
+            if candidate.is_file():
+                return _DashboardFile(str(candidate))
+        # Vue Router fallback: any unknown sub-path serves the SPA shell.
+        return _DashboardFile(
+            str(_index),
+            media_type="text/html",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    logger.info("Dashboard SPA mounted at /dashboard/")
+else:
+    logger.warning(
+        "dashboard/dist not found at %s — dashboard SPA disabled. "
+        "Build with `cd dashboard && npm ci && npm run build`, or rely on "
+        "the multi-stage Docker build to do it for you.",
+        DASHBOARD_DIST_DIR,
+    )

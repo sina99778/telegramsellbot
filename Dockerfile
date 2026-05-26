@@ -1,3 +1,4 @@
+# ─── Stage 1: Python dependencies ───────────────────────────────────────
 FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -36,6 +37,22 @@ RUN "${VENV_PATH}/bin/pip" install \
     pillow
 
 
+# ─── Stage 2: Vue 3 dashboard build ─────────────────────────────────────
+# Built separately so a Python-only change doesn't trigger an npm install.
+FROM node:20-alpine AS dashboard-builder
+
+WORKDIR /dashboard
+
+# Copy manifests first for cache-friendly layer.
+COPY dashboard/package.json dashboard/package-lock.json* ./
+RUN npm install --no-audit --no-fund
+
+# Now copy the rest of the source and build.
+COPY dashboard/ ./
+RUN npm run build
+
+
+# ─── Stage 3: Runtime image ─────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -62,6 +79,10 @@ COPY --chown=appuser:appgroup schemas ./schemas
 COPY --chown=appuser:appgroup services ./services
 COPY --chown=appuser:appgroup miniapp ./miniapp
 COPY --chown=appuser:appgroup scripts ./scripts
+# Vue 3 dashboard — built in stage 2 above. We copy only `dist/` so the
+# runtime image stays small (no node_modules baggage). FastAPI serves
+# this directory at /dashboard/ — see apps/api/main.py.
+COPY --from=dashboard-builder --chown=appuser:appgroup /dashboard/dist /app/dashboard/dist
 
 USER appuser
 
