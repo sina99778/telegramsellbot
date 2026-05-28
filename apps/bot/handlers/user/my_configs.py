@@ -254,10 +254,24 @@ def _build_config_list_keyboard(
 
 
 def _build_config_button_label(sub: Subscription) -> str:
-    config_name = (
-        sub.xui_client.username if sub.xui_client else (sub.plan.name if sub.plan else "نامشخص")
-    )
+    # For configs imported from the legacy bot, we don't have an XUIClientRecord
+    # (those configs live on the OLD operator's panels). Their identity sits on
+    # the Subscription itself in `legacy_remark` — the original config name we
+    # preserve byte-for-byte for the eventual migrate-to-new-inbound flow.
+    if sub.source == "imported_legacy" and sub.legacy_remark:
+        config_name = sub.legacy_remark
+    elif sub.xui_client:
+        config_name = sub.xui_client.username
+    elif sub.plan:
+        config_name = sub.plan.name
+    else:
+        config_name = "نامشخص"
+
     status_emoji = {"active": "✅", "pending_activation": "⏳", "expired": "❌", "disabled": "🚫"}.get(sub.status, "❓")
+    # Visual marker so the user can tell at a glance which configs are
+    # carry-overs from the previous bot vs new ones on this bot.
+    if sub.source == "imported_legacy":
+        status_emoji = f"🗂 {status_emoji}"
     label = f"{status_emoji} {config_name}"
     if sub.ends_at is not None:
         now = datetime.now(timezone.utc)
@@ -429,6 +443,16 @@ async def my_config_detail_handler(
     )
     if sub is None:
         await safe_edit_or_send(callback, "کانفیگ پیدا نشد یا متعلق به شما نیست.")
+        return
+
+    # ── Imported-from-legacy subs render a separate, simpler view ─────────
+    # They have no XUIClientRecord on our side (the original config lived
+    # on the old operator's panels). All we can show is the carried-over
+    # metadata + the original VLESS link. The action set is also different:
+    # there's no usage sync, no real renewal — only "transfer to an inbound
+    # this operator allows", which we wire below.
+    if sub.source == "imported_legacy":
+        await _render_imported_sub_detail(callback, sub)
         return
 
     plan = sub.plan
@@ -1244,17 +1268,23 @@ async def change_inbound_start(
     if sub is None:
         await safe_edit_or_send(callback, "کانفیگ پیدا نشد یا متعلق به شما نیست.")
         return
-    if sub.status not in ("active", "pending_activation"):
+    # Imported-legacy subs can be migrated regardless of status (an
+    # "expired" import just means the legacy expiry passed — but the
+    # operator may still want to re-provision it on a new inbound). For
+    # native subs we keep the original guard.
+    if sub.source != "imported_legacy" and sub.status not in ("active", "pending_activation"):
         await safe_edit_or_send(
             callback,
             "این سرویس قابل انتقال نیست. فقط کانفیگ‌های فعال یا منتظر فعال‌سازی منتقل می‌شوند.",
         )
         return
-    if sub.xui_client is None:
+    # Imported-from-legacy subs are allowed to migrate to ANY admin-
+    # allowed inbound (they have no current X-UI client to exclude).
+    if sub.xui_client is None and sub.source != "imported_legacy":
         await safe_edit_or_send(callback, "این کانفیگ روی پنل X-UI ثبت نشده است.")
         return
 
-    current_inbound_id = sub.xui_client.inbound_id
+    current_inbound_id = sub.xui_client.inbound_id if sub.xui_client else None
     inbounds = await _list_available_inbounds(session, exclude_inbound_id=current_inbound_id)
     if not inbounds:
         await safe_edit_or_send(
@@ -1443,11 +1473,24 @@ async def change_inbound_execute(
         await state.clear()
         return
 
+    # Pick the right migration path. Imported-legacy subs have no X-UI
+    # client on our side and need a fresh provision; native subs swap
+    # an existing client between inbounds.
+    sub_source = await session.scalar(
+        select(Subscription.source).where(Subscription.id == sub_id),
+    )
     try:
-        result: MigrationResult = await ProvisioningManager(session).migrate_subscription_to_inbound(
-            subscription_id=sub_id,
-            target_inbound_id=callback_data.inbound_id,
-        )
+        mgr = ProvisioningManager(session)
+        if sub_source == "imported_legacy":
+            result: MigrationResult = await mgr.migrate_imported_subscription_to_inbound(
+                subscription_id=sub_id,
+                target_inbound_id=callback_data.inbound_id,
+            )
+        else:
+            result = await mgr.migrate_subscription_to_inbound(
+                subscription_id=sub_id,
+                target_inbound_id=callback_data.inbound_id,
+            )
     except MigrationError as exc:
         await safe_edit_or_send(callback, f"❌ {exc}")
         await state.clear()
@@ -1514,3 +1557,69 @@ async def change_inbound_execute(
     )
 
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+
+
+# ─────────────────────────────────────────────────────────────────────────
+#  Imported-from-legacy-bot config viewer
+# ─────────────────────────────────────────────────────────────────────────
+#
+# These rows came in via `scripts/import_legacy.py` from the previous
+# operator's MySQL bot. We don't own the X-UI client on the other side,
+# so this view is read-only metadata + a CTA to migrate onto an
+# admin-allowed inbound (preserving the original config name verbatim).
+
+async def _render_imported_sub_detail(callback: CallbackQuery, sub: Subscription) -> None:
+    import html as _html
+
+    remark = sub.legacy_remark or "نامشخص"
+    legacy_link = sub.legacy_link or sub.sub_link or ""
+    volume_label = format_volume_bytes(sub.volume_bytes) if sub.volume_bytes else "نامشخص"
+
+    if sub.ends_at is not None:
+        now = datetime.now(timezone.utc)
+        ea = sub.ends_at if sub.ends_at.tzinfo else sub.ends_at.replace(tzinfo=timezone.utc)
+        remaining_days = (ea - now).days
+        if remaining_days > 0:
+            time_label = f"{remaining_days} روز مانده"
+        else:
+            time_label = "منقضی شده ❌"
+    else:
+        time_label = "نامحدود / نامشخص"
+
+    status_label = {
+        "active": "✅ فعال",
+        "pending_activation": "⏳ منتظر فعال‌سازی",
+        "expired": "❌ منقضی",
+        "disabled": "🚫 غیرفعال",
+    }.get(sub.status, sub.status)
+
+    lines = [
+        "🗂 <b>کانفیگ منتقل‌شده از ربات قبلی</b>",
+        "━━━━━━━━━━━━━━",
+        f"📛 نام: <code>{_html.escape(remark)}</code>",
+        f"💾 حجم: <code>{_html.escape(volume_label)}</code>",
+        f"📅 زمان: <code>{_html.escape(time_label)}</code>",
+        f"🔄 وضعیت: {status_label}",
+        "",
+    ]
+    if legacy_link:
+        lines.append("🔗 <b>لینک قدیمی</b> (ممکن است دیگر کار نکند):")
+        lines.append(f"<code>{_html.escape(legacy_link)}</code>")
+        lines.append("")
+    lines.append(
+        "ℹ️ این کانفیگ از ربات قبلی منتقل شده. برای استفاده‌ی پایدار، آن را "
+        "به یکی از اینباندهای جدید انتقال دهید. <b>نام کانفیگ حفظ می‌شود</b>."
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="🚀 انتقال به اینباند جدید",
+        callback_data=MyConfigCallback(action="change_inbound", subscription_id=sub.id).pack(),
+    )
+    builder.button(
+        text="🔙 بازگشت",
+        callback_data="myconfig:back_to_list",
+    )
+    builder.adjust(1)
+
+    await safe_edit_or_send(callback, "\n".join(lines), reply_markup=builder.as_markup())

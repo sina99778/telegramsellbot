@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -812,6 +813,179 @@ class ProvisioningManager:
             new_vless_uri=new_vless_uri,
             new_sub_link=new_sub_link,
             old_inbound_label=old_inbound_label,
+            new_inbound_label=new_inbound_label,
+            remaining_bytes=remaining_bytes,
+        )
+
+    async def migrate_imported_subscription_to_inbound(
+        self,
+        *,
+        subscription_id: UUID,
+        target_inbound_id: UUID,
+    ) -> MigrationResult:
+        """Move a subscription imported from the legacy bot onto a real X-UI inbound.
+
+        Different from `migrate_subscription_to_inbound` in TWO ways:
+
+        1. There's no existing XUIClientRecord on our side (the original
+           lived on the previous operator's panels). We CREATE a fresh
+           one rather than mutate.
+        2. The remark / username used on the new X-UI panel is taken
+           VERBATIM from `Subscription.legacy_remark` — no regex parse,
+           no hex suffix, no plan-name fallback. This is the operator's
+           hard requirement ("بدون تغییر نام") and what makes imported
+           users see exactly the same config name they had before.
+
+        On success the sub flips out of imported mode (source / legacy_*
+        cleared) and behaves like a native sub from here on.
+
+        Raises MigrationError on validation issues; raises generic Exception
+        on X-UI failures (savepoint rolls everything back).
+        """
+        sub = await self.session.scalar(
+            select(Subscription).where(Subscription.id == subscription_id),
+        )
+        if sub is None:
+            raise MigrationError("کانفیگ پیدا نشد.")
+        if sub.source != "imported_legacy":
+            raise MigrationError("این عملیات فقط برای کانفیگ‌های وارد‌شده از ربات قبلی است.")
+        if not sub.legacy_remark:
+            raise MigrationError("نام کانفیگ قدیمی ثبت نشده — انتقال ممکن نیست.")
+
+        # Admin's allowed-target whitelist (same one the regular migration uses).
+        from repositories.settings import AppSettingsRepository
+        settings_repo = AppSettingsRepository(self.session)
+        allowed = await settings_repo.get_migration_target_inbound_ids()
+        if allowed and target_inbound_id not in allowed:
+            raise MigrationError("این اینباند برای انتقال مجاز نیست.")
+
+        target_inbound = await self.session.scalar(
+            select(XUIInboundRecord)
+            .options(selectinload(XUIInboundRecord.server).selectinload(XUIServerRecord.credentials))
+            .where(XUIInboundRecord.id == target_inbound_id),
+        )
+        if target_inbound is None or not target_inbound.is_active:
+            raise MigrationError("اینباند مقصد در دسترس نیست.")
+        target_server = ensure_inbound_server_loaded(target_inbound)
+        if not target_server.is_active:
+            raise MigrationError("سرور مقصد غیرفعال است.")
+
+        # Fresh identity for the new X-UI client. We DO NOT append a hex
+        # suffix — the new client's email/username/remark all reuse the
+        # legacy remark exactly. (Email collisions on a server would be
+        # exceedingly rare — the original system stored uniqueness on
+        # client UUID, not email.)
+        client_uuid = str(uuid4())
+        sub_id = secrets.token_hex(8)
+        remark = sub.legacy_remark
+        email = remark
+        username = remark
+
+        # Quota that "carries over" from the legacy bot. We have no
+        # usage history on our side; the volume the user purchased on
+        # the legacy bot is what we provision again. lifetime_used_bytes
+        # stays at 0 — we never saw the bytes deliver.
+        remaining_bytes = max(int(sub.volume_bytes or 0), 0)
+
+        new_sub_link = build_sub_link(target_server, sub_id)
+        new_vless_uri = build_vless_uri(
+            client_uuid=client_uuid,
+            server=target_server,
+            inbound=target_inbound,
+            sub_id=sub_id,
+            remark=remark,
+        )
+
+        security_settings = await settings_repo.get_service_security_settings()
+        expiry_ms = int(sub.ends_at.timestamp() * 1000) if sub.ends_at is not None else 0
+
+        xui_payload = XUIClient(
+            id=client_uuid,
+            uuid=client_uuid,
+            email=email,
+            limitIp=security_settings.xui_limit_ip,
+            totalGB=remaining_bytes,
+            expiryTime=expiry_ms,
+            enable=True,
+            subId=sub_id,
+            comment=f"imported-migrated:sub={sub.id}",
+        )
+
+        new_inbound_label = (
+            target_inbound.remark or f"اینباند {target_inbound.xui_inbound_remote_id}"
+        )
+
+        logger.info(
+            "Migrating imported subscription %s to inbound %s — remark=%r",
+            sub.id, new_inbound_label, remark,
+        )
+
+        xui_call_succeeded = False
+        savepoint_committed = False
+        try:
+            async with self.session.begin_nested():
+                # Create the new XUIClientRecord first; if the X-UI panel
+                # call below fails, the savepoint rolls it back.
+                xui = XUIClientRecord(
+                    subscription_id=sub.id,
+                    inbound_id=target_inbound.id,
+                    client_uuid=client_uuid,
+                    xui_client_remote_id=client_uuid,
+                    email=email,
+                    username=username,
+                    sub_link=new_sub_link,
+                    is_active=True,
+                    usage_bytes=0,
+                )
+                self.session.add(xui)
+
+                # Flip the sub out of imported mode. Keep `lifetime_used_bytes`
+                # at whatever it was (probably 0) — there are no pre-migration
+                # bytes we can attribute on our side.
+                sub.sub_link = new_sub_link
+                sub.source = None
+                sub.legacy_link = None
+                # We DO keep `legacy_remark` set deliberately — it documents
+                # the original name forever in case the operator audits.
+                if sub.status == "expired":
+                    # Migration of an expired imported sub effectively re-
+                    # provisions; flip back to active so the user can use it.
+                    sub.status = "active"
+                    sub.expired_at = None
+
+                await self.session.flush()
+
+                async with self._get_xui_client_for_server(target_server) as xui_api:
+                    await xui_api.add_client_to_inbound(
+                        target_inbound.xui_inbound_remote_id, xui_payload,
+                    )
+                xui_call_succeeded = True
+            savepoint_committed = True
+            await self.session.refresh(sub)
+            await self.session.refresh(xui)
+        except MigrationError:
+            raise
+        except Exception as exc:
+            if xui_call_succeeded and not savepoint_committed:
+                try:
+                    async with self._get_xui_client_for_server(target_server) as xui_api:
+                        await xui_api.delete_client(
+                            inbound_id=target_inbound.xui_inbound_remote_id,
+                            client_id=client_uuid,
+                        )
+                except Exception as cleanup_exc:
+                    logger.error(
+                        "Imported-migration cleanup failed for client %s on inbound %s: %s",
+                        client_uuid, target_inbound.xui_inbound_remote_id, cleanup_exc,
+                    )
+            raise MigrationError(f"انتقال ناموفق بود: {exc}") from exc
+
+        return MigrationResult(
+            subscription=sub,
+            xui_client=xui,
+            new_vless_uri=new_vless_uri,
+            new_sub_link=new_sub_link,
+            old_inbound_label="(ربات قبلی)",
             new_inbound_label=new_inbound_label,
             remaining_bytes=remaining_bytes,
         )
