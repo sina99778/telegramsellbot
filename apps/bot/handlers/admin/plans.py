@@ -27,6 +27,7 @@ from models.plan import Plan
 from models.user import User
 from models.xui import XUIInboundRecord
 from repositories.audit import AuditLogRepository
+from repositories.settings import AppSettingsRepository
 from apps.bot.utils.messaging import safe_edit_or_send
 from apps.bot.utils.panels import admin_panel, status_label
 from services.plan_inventory import get_plan_stock_map, set_plan_sales_limit
@@ -71,11 +72,35 @@ MENU_INTERRUPT_TEXTS = {
 DECIMAL_SEPARATORS = {".", ",", "\u066b", "\u066c", "\u060c"}
 
 
+async def _resolve_money_input_mode(session: AsyncSession) -> tuple[str, int]:
+    """Return (display_currency, toman_rate). Used by every price prompt.
+
+    Internal storage is always USD; the admin enters values in whatever
+    the bot's global display currency is set to, and the handler
+    converts to USD before persisting.
+    """
+    repo = AppSettingsRepository(session)
+    return await repo.get_display_currency(), int(await repo.get_toman_rate())
+
+
+def _money_unit_label(display_currency: str) -> str:
+    return "\u062a\u0648\u0645\u0627\u0646" if display_currency == "IRT" else "\u062f\u0644\u0627\u0631"
+
+
+def _to_usd(amount: Decimal, display_currency: str, toman_rate: int) -> Decimal:
+    """Convert admin input to USD. Internal storage is always USD."""
+    if display_currency == "IRT" and toman_rate > 0:
+        return (amount / Decimal(toman_rate)).quantize(Decimal("0.00000001"))
+    return amount
+
+
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_inbound_selection)
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_name)
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_duration_days)
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_volume_gb)
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_price)
+@router.message(Command("cancel"), CreatePlanStates.waiting_for_renewal_price_per_gb)
+@router.message(Command("cancel"), CreatePlanStates.waiting_for_renewal_price_per_day)
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_ip_limit)
 @router.message(Command("cancel"), PlanEditStates.waiting_for_duration_days)
 @router.message(Command("cancel"), PlanEditStates.waiting_for_name)
@@ -94,6 +119,8 @@ async def cancel_plan_creation(message: Message, state: FSMContext) -> None:
 @router.message(CreatePlanStates.waiting_for_duration_days, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(CreatePlanStates.waiting_for_volume_gb, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(CreatePlanStates.waiting_for_price, F.text.in_(MENU_INTERRUPT_TEXTS))
+@router.message(CreatePlanStates.waiting_for_renewal_price_per_gb, F.text.in_(MENU_INTERRUPT_TEXTS))
+@router.message(CreatePlanStates.waiting_for_renewal_price_per_day, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(CreatePlanStates.waiting_for_ip_limit, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(PlanEditStates.waiting_for_duration_days, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(PlanEditStates.waiting_for_name, F.text.in_(MENU_INTERRUPT_TEXTS))
@@ -406,7 +433,7 @@ async def create_plan_duration(message: Message, state: FSMContext) -> None:
 
 
 @router.message(CreatePlanStates.waiting_for_volume_gb)
-async def create_plan_volume(message: Message, state: FSMContext) -> None:
+async def create_plan_volume(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if not message.text:
         return
     try:
@@ -419,29 +446,115 @@ async def create_plan_volume(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(volume_gb=volume_gb)
     await state.set_state(CreatePlanStates.waiting_for_price)
-    await message.answer(AdminMessages.ENTER_PRICE)
+
+    # Make the price prompt match the bot's global display-currency mode
+    # so the admin types in the unit they think in.
+    display_currency, _rate = await _resolve_money_input_mode(session)
+    unit = _money_unit_label(display_currency)
+    await message.answer(f"💰 قیمت فروش این پلن را به {unit} وارد کنید.")
 
 
 @router.message(CreatePlanStates.waiting_for_price)
 async def create_plan_price(
     message: Message,
     state: FSMContext,
+    session: AsyncSession,
 ) -> None:
-    """Collect price, then ask for the IP-limit override before creating."""
+    """Collect the sale price, then chain into the two REQUIRED renewal-pricing
+    questions (per-GB and per-day) before the optional ip_limit step.
+
+    Per-plan renewal pricing replaces the old global price_per_gb /
+    price_per_10_days. The global setting still acts as a backstop for
+    legacy plans that have NULL overrides.
+    """
     if not message.text:
         return
 
     try:
-        price = Decimal(_normalize_decimal_input(message.text))
+        price_input = Decimal(_normalize_decimal_input(message.text))
     except InvalidOperation:
         await message.answer(AdminMessages.INVALID_PRICE)
         return
 
-    if price <= Decimal("0"):
+    if price_input <= Decimal("0"):
         await message.answer(AdminMessages.PRICE_GT_ZERO)
         return
 
-    await state.update_data(price=str(price))
+    display_currency, toman_rate = await _resolve_money_input_mode(session)
+    price_usd = _to_usd(price_input, display_currency, toman_rate)
+
+    # Store as USD; remember both the input + the resolved display mode so
+    # subsequent steps don't have to look it up again.
+    await state.update_data(
+        price=str(price_usd),
+        display_currency=display_currency,
+        toman_rate=toman_rate,
+    )
+    await state.set_state(CreatePlanStates.waiting_for_renewal_price_per_gb)
+    unit = _money_unit_label(display_currency)
+    await message.answer(
+        f"💰 قیمت تمدید این پلن برای <b>هر گیگابایت</b> اضافه را به {unit} وارد کنید.\n\n"
+        "این قیمت مخصوص همین پلن است (به‌جای تنظیم عمومی قبلی).\n"
+        "برای لغو /cancel را بزنید.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(CreatePlanStates.waiting_for_renewal_price_per_gb)
+async def create_plan_renewal_per_gb(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    if not message.text:
+        return
+    try:
+        gb_input = Decimal(_normalize_decimal_input(message.text))
+    except InvalidOperation:
+        await message.answer(AdminMessages.INVALID_PRICE)
+        return
+    if gb_input < Decimal("0"):
+        await message.answer("❌ قیمت نمی‌تواند منفی باشد.")
+        return
+
+    data = await state.get_data()
+    display_currency = str(data.get("display_currency", "USD"))
+    toman_rate = int(data.get("toman_rate", 100000))
+    per_gb_usd = _to_usd(gb_input, display_currency, toman_rate)
+
+    await state.update_data(renewal_price_per_gb=str(per_gb_usd))
+    await state.set_state(CreatePlanStates.waiting_for_renewal_price_per_day)
+    unit = _money_unit_label(display_currency)
+    await message.answer(
+        f"⏳ قیمت تمدید این پلن برای <b>هر روز</b> اضافه را به {unit} وارد کنید.\n\n"
+        "برای لغو /cancel را بزنید.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(CreatePlanStates.waiting_for_renewal_price_per_day)
+async def create_plan_renewal_per_day(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    if not message.text:
+        return
+    try:
+        day_input = Decimal(_normalize_decimal_input(message.text))
+    except InvalidOperation:
+        await message.answer(AdminMessages.INVALID_PRICE)
+        return
+    if day_input < Decimal("0"):
+        await message.answer("❌ قیمت نمی‌تواند منفی باشد.")
+        return
+
+    data = await state.get_data()
+    display_currency = str(data.get("display_currency", "USD"))
+    toman_rate = int(data.get("toman_rate", 100000))
+    per_day_usd = _to_usd(day_input, display_currency, toman_rate)
+
+    await state.update_data(renewal_price_per_day=str(per_day_usd))
     await state.set_state(CreatePlanStates.waiting_for_ip_limit)
     await message.answer(
         "🔐 محدودیت آی‌پی برای این پلن را وارد کنید (تعداد دستگاه هم‌زمان):\n"
@@ -482,6 +595,16 @@ async def create_plan_ip_limit(
     protocol = str(form_data["protocol"])
     inbound_id = UUID(str(form_data["inbound_id"]))
     price = Decimal(str(form_data["price"]))
+    renewal_price_per_gb = (
+        Decimal(str(form_data["renewal_price_per_gb"]))
+        if form_data.get("renewal_price_per_gb") is not None
+        else None
+    )
+    renewal_price_per_day = (
+        Decimal(str(form_data["renewal_price_per_day"]))
+        if form_data.get("renewal_price_per_day") is not None
+        else None
+    )
     # Include a UUID fragment so code is always globally unique,
     # even if the admin creates two plans with identical parameters.
     code = (
@@ -501,6 +624,8 @@ async def create_plan_ip_limit(
         currency="USD",
         is_active=True,
         ip_limit=ip_limit,
+        renewal_price_per_gb=renewal_price_per_gb,
+        renewal_price_per_day=renewal_price_per_day,
     )
 
     # Always clear state first so admin is NEVER stuck regardless of what happens next
@@ -688,12 +813,18 @@ async def edit_plan_price_start(
     if plan is None:
         await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
         return
-    await state.update_data(plan_id=str(plan.id), page=callback_data.page)
+    display_currency, toman_rate = await _resolve_money_input_mode(session)
+    unit = _money_unit_label(display_currency)
+    current_display = int(plan.price * toman_rate) if display_currency == "IRT" else float(plan.price)
+    await state.update_data(
+        plan_id=str(plan.id), page=callback_data.page,
+        display_currency=display_currency, toman_rate=toman_rate,
+    )
     await state.set_state(PlanEditStates.waiting_for_price)
     await safe_edit_or_send(
         callback,
-        f"قیمت فعلی پلن «{plan.name}»: {plan.price} {plan.currency}\n"
-        "قیمت جدید را به دلار ارسال کنید. برای لغو /cancel را بزنید.",
+        f"قیمت فعلی پلن «{plan.name}»: {current_display} {unit}\n"
+        f"قیمت جدید را به {unit} ارسال کنید. برای لغو /cancel را بزنید.",
     )
 
 
@@ -707,14 +838,18 @@ async def edit_plan_price_submit(
     if not message.text:
         return
     try:
-        price = Decimal(_normalize_decimal_input(message.text))
+        price_input = Decimal(_normalize_decimal_input(message.text))
     except InvalidOperation:
         await message.answer(AdminMessages.INVALID_PRICE)
         return
-    if price <= Decimal("0"):
+    if price_input <= Decimal("0"):
         await message.answer(AdminMessages.PRICE_GT_ZERO)
         return
     data = await state.get_data()
+    # Convert from whatever currency the admin was prompted in back to USD
+    display_currency = str(data.get("display_currency", "USD"))
+    toman_rate = int(data.get("toman_rate", 100000))
+    price = _to_usd(price_input, display_currency, toman_rate)
     await state.clear()
     plan = await session.get(Plan, UUID(str(data["plan_id"])))
     if plan is None:
@@ -897,13 +1032,26 @@ async def _edit_renewal_price_start(
     plan_name: str,
 ) -> None:
     await callback.answer()
-    current = f"{current_value}" if current_value is not None else "پیش‌فرض عمومی"
-    await state.update_data(plan_id=str(callback_data.plan_id), page=callback_data.page)
+    display_currency, toman_rate = await _resolve_money_input_mode(session)
+    money_unit = _money_unit_label(display_currency)
+    if current_value is None:
+        current = "پیش‌فرض عمومی"
+    elif display_currency == "IRT":
+        current = f"{int(current_value * toman_rate):,} {money_unit}"
+    else:
+        current = f"{current_value} {money_unit}"
+    await state.update_data(
+        plan_id=str(callback_data.plan_id),
+        page=callback_data.page,
+        display_currency=display_currency,
+        toman_rate=toman_rate,
+    )
     await state.set_state(target_state)
     await safe_edit_or_send(
         callback,
-        f"💰 قیمت تمدید هر {unit_label} برای پلن «{plan_name}»: {current}\n\n"
-        "مقدار جدید را بفرستید:\n"
+        f"💰 قیمت تمدید هر {unit_label} برای پلن «{plan_name}»\n"
+        f"مقدار فعلی: {current}\n\n"
+        f"مقدار جدید را به {money_unit} بفرستید:\n"
         "• یک عدد (مثلاً 0.5)\n"
         "• <code>-</code> → استفاده از پیش‌فرض عمومی\n\n"
         "برای لغو /cancel را بزنید.",
@@ -961,18 +1109,22 @@ async def _submit_renewal_price_override(
     raw = message.text.strip() if message.text else ""
     if not raw:
         return
+    data = await state.get_data()
+    display_currency = str(data.get("display_currency", "USD"))
+    toman_rate = int(data.get("toman_rate", 100000))
     if raw in {"-", "_", "—", "none", "None"}:
         new_value: Decimal | None = None
     else:
         try:
-            new_value = Decimal(_normalize_decimal_input(raw))
-            if new_value < 0:
+            new_value_input = Decimal(_normalize_decimal_input(raw))
+            if new_value_input < 0:
                 raise InvalidOperation
         except InvalidOperation:
             await message.answer("❌ مقدار نامعتبر. عدد ≥ ۰ یا «-» را بفرستید.")
             return
+        # Convert from whatever display currency the admin typed in → USD
+        new_value = _to_usd(new_value_input, display_currency, toman_rate)
 
-    data = await state.get_data()
     await state.clear()
     plan = await session.get(Plan, UUID(str(data["plan_id"])))
     if plan is None:

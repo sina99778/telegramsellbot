@@ -58,8 +58,17 @@ export interface PlanUpdateBody {
   renewal_price_per_day?: number | null;
 }
 
-export function listPlans(): Promise<{ items: PlanItem[]; total: number }> {
-  return api.get<{ items: PlanItem[]; total: number }>("/plans");
+export interface PlanListResponse {
+  items: PlanItem[];
+  total: number;
+  // Global currency settings — used by the UI to label / convert prices.
+  // Internal storage is ALWAYS USD; the dashboard converts on input/output.
+  display_currency: "USD" | "IRT";
+  toman_rate: number;
+}
+
+export function listPlans(): Promise<PlanListResponse> {
+  return api.get<PlanListResponse>("/plans");
 }
 
 export function listInboundOptions(): Promise<{ items: InboundOption[] }> {

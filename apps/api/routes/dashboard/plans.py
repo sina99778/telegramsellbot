@@ -31,6 +31,7 @@ from models.plan import Plan
 from models.subscription import Subscription
 from models.xui import XUIInboundRecord, XUIServerRecord
 from repositories.audit import AuditLogRepository
+from repositories.settings import AppSettingsRepository
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,12 @@ AuthDep = Annotated[tuple[DashboardAdmin, AsyncSession], Depends(require_dashboa
 @router.get("")
 async def list_plans(auth: AuthDep) -> dict[str, Any]:
     _admin, session = auth
+    settings_repo = AppSettingsRepository(session)
+    # Surface the global currency mode + Toman rate so the UI can
+    # label prices correctly and the create form can convert Toman
+    # input → USD before submitting (internal storage is always USD).
+    display_currency = await settings_repo.get_display_currency()
+    toman_rate = int(await settings_repo.get_toman_rate())
     plans = (await session.execute(
         select(Plan)
         .options(
@@ -82,7 +89,12 @@ async def list_plans(auth: AuthDep) -> dict[str, Any]:
             "subscription_count": sub_count,
             "created_at": p.created_at.isoformat() if p.created_at else None,
         })
-    return {"items": items, "total": len(items)}
+    return {
+        "items": items,
+        "total": len(items),
+        "display_currency": display_currency,
+        "toman_rate": toman_rate,
+    }
 
 
 class PlanCreateBody(BaseModel):

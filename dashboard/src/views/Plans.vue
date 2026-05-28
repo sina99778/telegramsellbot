@@ -20,6 +20,28 @@ const banner = ref<string | null>(null);
 const bannerTone = ref<"ok" | "warn">("ok");
 const busyId = ref<string>("");
 
+// Global currency mode, refreshed from the plans endpoint. We keep
+// internal storage in USD; if display=IRT, the form converts the
+// admin's Toman input to USD on submit, and converts USD → Toman for
+// existing values when populating the edit dialog.
+const displayCurrency = ref<"USD" | "IRT">("USD");
+const tomanRate = ref<number>(100000);
+const isToman = computed(() => displayCurrency.value === "IRT");
+const moneyUnitLabel = computed(() => isToman.value ? "تومان" : "$");
+const moneyStep = computed(() => isToman.value ? "1000" : "0.01");
+
+function usdToDisplay(usd: number): number {
+  return isToman.value ? Math.round(usd * tomanRate.value) : Math.round(usd * 100) / 100;
+}
+function displayToUsd(v: number): number {
+  return isToman.value ? Math.round((v / tomanRate.value) * 1e8) / 1e8 : v;
+}
+function fmtMoney(usd: number): string {
+  const v = usdToDisplay(usd);
+  if (isToman.value) return v.toLocaleString("en-US") + " تومان";
+  return "$" + v.toFixed(2);
+}
+
 const showCreate = ref(false);
 const createBusy = ref(false);
 const createForm = ref({
@@ -61,6 +83,8 @@ async function refresh() {
     const [r, ib] = await Promise.all([listPlans(), listInboundOptions()]);
     items.value = r.items;
     inbounds.value = ib.items;
+    displayCurrency.value = r.display_currency;
+    tomanRate.value = r.toman_rate;
   } catch (exc) {
     errorMsg.value = exc instanceof ApiError ? exc.detail : "خطا";
   } finally {
@@ -91,27 +115,48 @@ async function doCreate() {
     flash("نام پلن خالی است.", "warn");
     return;
   }
+  // Per-plan renewal pricing is now MANDATORY — no more global fallback for new plans.
+  const rGbDisplay = _numOrNull(createForm.value.renewal_price_per_gb);
+  const rDayDisplay = _numOrNull(createForm.value.renewal_price_per_day);
+  if (rGbDisplay === null || rGbDisplay < 0) {
+    flash("قیمت تمدید هر گیگ را وارد کنید.", "warn");
+    return;
+  }
+  if (rDayDisplay === null || rDayDisplay < 0) {
+    flash("قیمت تمدید هر روز را وارد کنید.", "warn");
+    return;
+  }
   createBusy.value = true;
   try {
+    // Convert any money input from the admin's display currency to USD before
+    // sending — internal storage is always USD.
+    const priceUsd = displayToUsd(Number(createForm.value.price));
+    const renewalPriceUsd = displayToUsd(Number(createForm.value.renewal_price));
+    const renewGbUsd = displayToUsd(rGbDisplay);
+    const renewDayUsd = displayToUsd(rDayDisplay);
     await createPlan({
       name: createForm.value.name.trim(),
       protocol: createForm.value.protocol,
       inbound_id: createForm.value.inbound_id || null,
       duration_days: createForm.value.duration_days,
       volume_gb: createForm.value.volume_gb,
-      price: createForm.value.price,
-      renewal_price: createForm.value.renewal_price,
-      currency: createForm.value.currency,
+      price: priceUsd,
+      renewal_price: renewalPriceUsd,
+      currency: "USD",  // Plan.currency is always USD internally
       ip_limit: _numOrNull(createForm.value.ip_limit),
-      renewal_price_per_gb: _numOrNull(createForm.value.renewal_price_per_gb),
-      renewal_price_per_day: _numOrNull(createForm.value.renewal_price_per_day),
+      renewal_price_per_gb: renewGbUsd,
+      renewal_price_per_day: renewDayUsd,
     });
     flash("پلن جدید اضافه شد.");
     showCreate.value = false;
     createForm.value = {
       name: "", protocol: "vless", inbound_id: "",
-      duration_days: 30, volume_gb: 30, price: 5, renewal_price: 5, currency: "USD",
-      ip_limit: "", renewal_price_per_gb: "", renewal_price_per_day: "",
+      duration_days: 30, volume_gb: 30,
+      price: usdToDisplay(5), renewal_price: usdToDisplay(5),
+      currency: "USD",
+      ip_limit: "",
+      renewal_price_per_gb: usdToDisplay(0.1),
+      renewal_price_per_day: usdToDisplay(0.1),
     };
     refresh();
   } catch (exc) {
@@ -123,19 +168,21 @@ async function doCreate() {
 
 function openEdit(p: PlanItem) {
   editing.value = p;
+  // Populate the form with values already converted to the admin's
+  // display currency. doEdit() converts them back to USD on submit.
   editForm.value = {
     name: p.name,
     protocol: p.protocol,
     inbound_id: p.inbound_id || "",
     duration_days: p.duration_days,
     volume_gb: p.volume_gb,
-    price: p.price,
-    renewal_price: p.renewal_price,
+    price: usdToDisplay(p.price),
+    renewal_price: usdToDisplay(p.renewal_price),
     currency: p.currency,
     is_active: p.is_active,
     ip_limit: p.ip_limit ?? "",
-    renewal_price_per_gb: p.renewal_price_per_gb ?? "",
-    renewal_price_per_day: p.renewal_price_per_day ?? "",
+    renewal_price_per_gb: p.renewal_price_per_gb !== null ? usdToDisplay(p.renewal_price_per_gb) : "",
+    renewal_price_per_day: p.renewal_price_per_day !== null ? usdToDisplay(p.renewal_price_per_day) : "",
   };
 }
 
@@ -153,19 +200,23 @@ async function doEdit() {
   if (!editing.value) return;
   editBusy.value = true;
   try {
+    // Convert any monetary form input back to USD before PATCH-ing.
+    // _formToPatchOverride returns -1 for empty (= clear override).
+    const renewGbOverride = _formToPatchOverride(editForm.value.renewal_price_per_gb);
+    const renewDayOverride = _formToPatchOverride(editForm.value.renewal_price_per_day);
     await updatePlan(editing.value.id, {
       name: editForm.value.name.trim(),
       protocol: editForm.value.protocol,
       inbound_id: editForm.value.inbound_id || null,
       duration_days: editForm.value.duration_days,
       volume_gb: editForm.value.volume_gb,
-      price: editForm.value.price,
-      renewal_price: editForm.value.renewal_price,
+      price: displayToUsd(Number(editForm.value.price)),
+      renewal_price: displayToUsd(Number(editForm.value.renewal_price)),
       currency: editForm.value.currency,
       is_active: editForm.value.is_active,
       ip_limit: _formToPatchOverride(editForm.value.ip_limit),
-      renewal_price_per_gb: _formToPatchOverride(editForm.value.renewal_price_per_gb),
-      renewal_price_per_day: _formToPatchOverride(editForm.value.renewal_price_per_day),
+      renewal_price_per_gb: renewGbOverride < 0 ? renewGbOverride : displayToUsd(renewGbOverride),
+      renewal_price_per_day: renewDayOverride < 0 ? renewDayOverride : displayToUsd(renewDayOverride),
     });
     flash("پلن به‌روزرسانی شد.");
     editing.value = null;
@@ -269,14 +320,19 @@ async function doDelete(p: PlanItem) {
             <td>{{ p.duration_days }} روز</td>
             <td class="font-mono">{{ p.volume_gb.toFixed(0) }} GB</td>
             <td>
-              <div class="font-mono">{{ p.price.toFixed(2) }} {{ p.currency }}</div>
-              <div class="text-[11px] text-slate-500 font-mono space-y-0.5">
-                <div>تمدید کامل: {{ p.renewal_price.toFixed(2) }}</div>
+              <div class="font-mono">{{ fmtMoney(p.price) }}</div>
+              <div class="text-[11px] text-slate-500 space-y-0.5">
                 <div v-if="p.renewal_price_per_gb !== null">
-                  <span class="text-sky-300">گیگ: {{ p.renewal_price_per_gb.toFixed(2) }}</span>
+                  <span class="text-sky-300">گیگ: {{ fmtMoney(p.renewal_price_per_gb) }}</span>
+                </div>
+                <div v-else>
+                  <span class="text-amber-300">گیگ: پیش‌فرض</span>
                 </div>
                 <div v-if="p.renewal_price_per_day !== null">
-                  <span class="text-sky-300">روز: {{ p.renewal_price_per_day.toFixed(2) }}</span>
+                  <span class="text-sky-300">روز: {{ fmtMoney(p.renewal_price_per_day) }}</span>
+                </div>
+                <div v-else>
+                  <span class="text-amber-300">روز: پیش‌فرض</span>
                 </div>
               </div>
             </td>
@@ -344,40 +400,41 @@ async function doDelete(p: PlanItem) {
             <input v-model.number="createForm.volume_gb" class="input" type="number" min="0" step="1" />
           </div>
           <div>
-            <label class="label">قیمت فروش</label>
-            <input v-model.number="createForm.price" class="input" type="number" min="0" step="0.01" />
+            <label class="label">قیمت فروش ({{ moneyUnitLabel }})</label>
+            <input v-model.number="createForm.price" class="input" type="number" min="0" :step="moneyStep" />
           </div>
           <div>
-            <label class="label">قیمت تمدید</label>
-            <input v-model.number="createForm.renewal_price" class="input" type="number" min="0" step="0.01" />
-          </div>
-          <div>
-            <label class="label">واحد ارز</label>
-            <select v-model="createForm.currency" class="input">
-              <option value="USD">USD</option>
-              <option value="IRR">IRR (تومان)</option>
-            </select>
+            <label class="label">قیمت تمدید کامل ({{ moneyUnitLabel }})</label>
+            <input v-model.number="createForm.renewal_price" class="input" type="number" min="0" :step="moneyStep" />
           </div>
         </div>
 
+        <!-- Required: per-plan renewal pricing — no longer a global fallback. -->
+        <div class="border-t border-bg-border pt-3 mt-2">
+          <div class="text-[12px] text-slate-200 mb-2 font-medium">
+            قیمت تمدید این پلن ({{ moneyUnitLabel }}) — اجباری
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label class="label">قیمت هر گیگ افزایش حجم</label>
+              <input v-model="createForm.renewal_price_per_gb" class="input" type="number" min="0" :step="moneyStep" required />
+            </div>
+            <div>
+              <label class="label">قیمت هر روز افزایش زمان</label>
+              <input v-model="createForm.renewal_price_per_day" class="input" type="number" min="0" :step="moneyStep" required />
+            </div>
+          </div>
+        </div>
+
+        <!-- Optional: per-plan IP cap. Empty = inherit global setting. -->
         <div class="border-t border-bg-border pt-3 mt-2">
           <div class="text-[12px] text-slate-400 mb-2">
-            موارد زیر اختیاری‌اند — خالی بگذار تا از پیش‌فرض عمومی استفاده شود.
+            محدودیت IP — اختیاری (خالی = پیش‌فرض عمومی)
           </div>
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div>
-              <label class="label">محدودیت آی‌پی (هم‌زمان)</label>
-              <input v-model="createForm.ip_limit" class="input" type="number" min="0" placeholder="پیش‌فرض" />
-              <div class="text-[10px] text-slate-500 mt-1">۰ = نامحدود (طبق قرارداد X-UI)</div>
-            </div>
-            <div>
-              <label class="label">قیمت تمدید هر گیگ</label>
-              <input v-model="createForm.renewal_price_per_gb" class="input" type="number" min="0" step="0.01" placeholder="پیش‌فرض" />
-            </div>
-            <div>
-              <label class="label">قیمت تمدید هر روز</label>
-              <input v-model="createForm.renewal_price_per_day" class="input" type="number" min="0" step="0.01" placeholder="پیش‌فرض" />
-            </div>
+          <div>
+            <label class="label">محدودیت آی‌پی هم‌زمان</label>
+            <input v-model="createForm.ip_limit" class="input" type="number" min="0" placeholder="پیش‌فرض" />
+            <div class="text-[10px] text-slate-500 mt-1">۰ = نامحدود (طبق قرارداد X-UI)</div>
           </div>
         </div>
 
@@ -433,19 +490,12 @@ async function doDelete(p: PlanItem) {
             <input v-model.number="editForm.volume_gb" class="input" type="number" min="0" step="1" />
           </div>
           <div>
-            <label class="label">قیمت فروش</label>
-            <input v-model.number="editForm.price" class="input" type="number" min="0" step="0.01" />
+            <label class="label">قیمت فروش ({{ moneyUnitLabel }})</label>
+            <input v-model.number="editForm.price" class="input" type="number" min="0" :step="moneyStep" />
           </div>
           <div>
-            <label class="label">قیمت تمدید</label>
-            <input v-model.number="editForm.renewal_price" class="input" type="number" min="0" step="0.01" />
-          </div>
-          <div>
-            <label class="label">واحد ارز</label>
-            <select v-model="editForm.currency" class="input">
-              <option value="USD">USD</option>
-              <option value="IRR">IRR (تومان)</option>
-            </select>
+            <label class="label">قیمت تمدید کامل ({{ moneyUnitLabel }})</label>
+            <input v-model.number="editForm.renewal_price" class="input" type="number" min="0" :step="moneyStep" />
           </div>
           <div class="flex items-center gap-2">
             <input id="ed_active" v-model="editForm.is_active" type="checkbox" class="w-4 h-4" />
@@ -453,24 +503,33 @@ async function doDelete(p: PlanItem) {
           </div>
         </div>
 
+        <!-- Per-plan renewal pricing (this is the "per plan" pricing the
+             admin requested instead of the old global fallback). -->
+        <div class="border-t border-bg-border pt-3 mt-2">
+          <div class="text-[12px] text-slate-200 mb-2 font-medium">
+            قیمت تمدید این پلن ({{ moneyUnitLabel }})
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label class="label">قیمت هر گیگ افزایش حجم</label>
+              <input v-model="editForm.renewal_price_per_gb" class="input" type="number" min="0" :step="moneyStep" placeholder="خالی = پیش‌فرض عمومی" />
+            </div>
+            <div>
+              <label class="label">قیمت هر روز افزایش زمان</label>
+              <input v-model="editForm.renewal_price_per_day" class="input" type="number" min="0" :step="moneyStep" placeholder="خالی = پیش‌فرض عمومی" />
+            </div>
+          </div>
+        </div>
+
+        <!-- Optional IP cap override. -->
         <div class="border-t border-bg-border pt-3 mt-2">
           <div class="text-[12px] text-slate-400 mb-2">
-            خالی بگذار تا از پیش‌فرض عمومی استفاده شود (در «تنظیمات»).
+            محدودیت IP — اختیاری
           </div>
-          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div>
-              <label class="label">محدودیت آی‌پی</label>
-              <input v-model="editForm.ip_limit" class="input" type="number" min="0" placeholder="پیش‌فرض" />
-              <div class="text-[10px] text-slate-500 mt-1">۰ = نامحدود</div>
-            </div>
-            <div>
-              <label class="label">قیمت تمدید هر گیگ</label>
-              <input v-model="editForm.renewal_price_per_gb" class="input" type="number" min="0" step="0.01" placeholder="پیش‌فرض" />
-            </div>
-            <div>
-              <label class="label">قیمت تمدید هر روز</label>
-              <input v-model="editForm.renewal_price_per_day" class="input" type="number" min="0" step="0.01" placeholder="پیش‌فرض" />
-            </div>
+          <div>
+            <label class="label">محدودیت آی‌پی هم‌زمان</label>
+            <input v-model="editForm.ip_limit" class="input" type="number" min="0" placeholder="خالی = پیش‌فرض عمومی" />
+            <div class="text-[10px] text-slate-500 mt-1">۰ = نامحدود</div>
           </div>
         </div>
 
