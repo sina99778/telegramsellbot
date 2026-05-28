@@ -22,7 +22,12 @@ import asyncio
 # Strong references for fire-and-forget background tasks. Without holding a
 # reference the asyncio event loop is free to GC them mid-execution.
 _BG_TASKS: set[asyncio.Task] = set()
-from services.admin_gifts import grant_bulk_subscription_gift_background
+from services.admin_gifts import (
+    WALLET_GIFT_SEGMENTS,
+    _wallet_gift_segment_label,
+    grant_bulk_subscription_gift_background,
+    grant_bulk_wallet_gift_background,
+)
 
 
 router = Router(name="admin-gifts")
@@ -46,19 +51,84 @@ class GiftConfirmCallback(CallbackData, prefix="gift_ok"):
     action: str
 
 
+class WalletGiftSegmentCallback(CallbackData, prefix="wg_seg"):
+    segment: str
+
+
 @router.callback_query(F.data == "admin:gifts")
 async def gift_menu(callback: CallbackQuery, state: FSMContext) -> None:
+    """Top-level gift menu. Two flavours:
+      * هدیه به کیف پول  → bulk wallet credit, segments by user state
+      * هدیه به سرویس  → time/volume gift to existing subscriptions
+    """
+    await callback.answer()
+    await state.clear()
+    builder = InlineKeyboardBuilder()
+    builder.button(text="💰 هدیه به کیف پول کاربران", callback_data="admin:gifts:wallet")
+    builder.button(text="📅 هدیه زمان/حجم سرویس‌ها", callback_data="admin:gifts:subs")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:main")
+    builder.adjust(1)
+    await safe_edit_or_send(
+        callback,
+        "🎁 <b>هدیه گروهی</b>\n\nنوع هدیه را انتخاب کن:",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "admin:gifts:subs")
+async def gift_subs_entry(callback: CallbackQuery, state: FSMContext) -> None:
+    """Legacy entry-point — subscription gift flow."""
     await callback.answer()
     await state.clear()
     builder = InlineKeyboardBuilder()
     builder.button(text="فقط کانفیگ‌های فعال", callback_data=GiftScopeCallback(status_scope="active").pack())
     builder.button(text="همه کانفیگ‌ها", callback_data=GiftScopeCallback(status_scope="all").pack())
-    builder.button(text=AdminButtons.BACK, callback_data="admin:main")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:gifts")
     builder.adjust(1)
     await safe_edit_or_send(
         callback,
-        "🎁 هدیه گروهی به کانفیگ‌ها\n\nابتدا مشخص کنید هدیه به کدام کانفیگ‌ها اعمال شود.",
+        "📅 هدیه گروهی به کانفیگ‌ها\n\nابتدا مشخص کنید هدیه به کدام کانفیگ‌ها اعمال شود.",
         reply_markup=builder.as_markup(),
+    )
+
+
+# ─── Wallet-credit bulk gift ────────────────────────────────────────────
+
+
+@router.callback_query(F.data == "admin:gifts:wallet")
+async def wallet_gift_entry(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.clear()
+    builder = InlineKeyboardBuilder()
+    for seg in WALLET_GIFT_SEGMENTS:
+        builder.button(text=_wallet_gift_segment_label(seg), callback_data=WalletGiftSegmentCallback(segment=seg).pack())
+    builder.button(text=AdminButtons.BACK, callback_data="admin:gifts")
+    builder.adjust(1)
+    await safe_edit_or_send(
+        callback,
+        "💰 <b>شارژ کیف پول گروهی</b>\n\nمحدوده‌ی کاربران را انتخاب کن:",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(WalletGiftSegmentCallback.filter())
+async def wallet_gift_segment_chosen(
+    callback: CallbackQuery,
+    callback_data: WalletGiftSegmentCallback,
+    state: FSMContext,
+) -> None:
+    await callback.answer()
+    await state.update_data(wallet_gift_segment=callback_data.segment)
+    await state.set_state(BulkGiftStates.waiting_for_amount)
+    await state.update_data(wallet_gift_phase="amount")
+    await safe_edit_or_send(
+        callback,
+        "💰 مبلغ شارژ هر کاربر را به <b>دلار</b> بفرست (مثلاً <code>0.5</code> یا <code>5</code>).\n\n"
+        "<i>اگر می‌خواهی یک یادداشت کوتاه روی هدیه قرار بدی، بعد از مبلغ یک خط جدید بزن و یادداشتت رو بنویس.</i>\n\n"
+        "برای لغو /cancel را بفرست.",
+        parse_mode="HTML",
     )
 
 
@@ -131,6 +201,12 @@ async def gift_amount_entered(message: Message, state: FSMContext) -> None:
     if not message.text:
         return
     data = await state.get_data()
+
+    # Branch into the wallet-gift flow if the user came in via "💰 هدیه به کیف پول".
+    if data.get("wallet_gift_phase") == "amount":
+        await _wallet_gift_amount_entered(message, state, data)
+        return
+
     gift_type = str(data.get("gift_type") or "")
     try:
         amount = float(message.text.strip().replace(",", "."))
@@ -198,6 +274,97 @@ async def gift_confirm(
             server_id=server_id,
         ),
         name=f"bulk-gift-{admin_user.id}",
+    )
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
+
+
+# ─── Wallet-credit bulk gift: amount + confirm + dispatch ──────────────
+
+
+class WalletGiftConfirmCallback(CallbackData, prefix="wg_ok"):
+    action: str  # "apply" | "cancel"
+
+
+async def _wallet_gift_amount_entered(message: Message, state: FSMContext, data: dict) -> None:
+    text = (message.text or "").strip()
+    if text.lower() == "/cancel":
+        await state.clear()
+        await message.answer("لغو شد.")
+        return
+    # Split first-line = amount, rest = optional note.
+    first, sep, rest = text.partition("\n")
+    try:
+        amount = float(first.replace(",", "."))
+        if amount <= 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ عدد نامعتبر. مثلاً <code>0.5</code> یا <code>5</code> بفرست.", parse_mode="HTML")
+        return
+
+    note = rest.strip() or None
+    segment = str(data.get("wallet_gift_segment") or "all")
+    await state.update_data(
+        wallet_gift_amount=amount,
+        wallet_gift_note=note,
+        wallet_gift_phase="confirm",
+    )
+
+    note_line = f"\nیادداشت: <i>{note}</i>" if note else ""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ ارسال هدیه", callback_data=WalletGiftConfirmCallback(action="apply").pack())
+    builder.button(text="❌ لغو", callback_data=WalletGiftConfirmCallback(action="cancel").pack())
+    builder.adjust(1)
+    await message.answer(
+        "🎁 <b>تأیید نهایی</b>\n\n"
+        f"محدوده: <b>{_wallet_gift_segment_label(segment)}</b>\n"
+        f"مبلغ هر نفر: <b>{amount} $</b>"
+        f"{note_line}",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(WalletGiftConfirmCallback.filter())
+async def wallet_gift_confirm(
+    callback: CallbackQuery,
+    callback_data: WalletGiftConfirmCallback,
+    state: FSMContext,
+    session: AsyncSession,
+    admin_user: User,
+    bot: Bot,
+) -> None:
+    await callback.answer()
+    if callback_data.action != "apply":
+        await state.clear()
+        await safe_edit_or_send(callback, "لغو شد.")
+        return
+
+    data = await state.get_data()
+    await state.clear()
+    segment = str(data.get("wallet_gift_segment") or "all")
+    amount = float(data.get("wallet_gift_amount") or 0)
+    note = data.get("wallet_gift_note") or None
+
+    if amount <= 0:
+        await safe_edit_or_send(callback, "❌ مبلغ نامعتبر — لطفاً دوباره از منو شروع کن.")
+        return
+
+    msg = await callback.message.edit_text("⏳ در حال آماده‌سازی و ارسال هدایا... لطفاً این پیام را پاک نکنید.")
+    if isinstance(msg, bool):
+        msg = callback.message
+
+    task = asyncio.create_task(
+        grant_bulk_wallet_gift_background(
+            bot=bot,
+            admin_telegram_id=callback.from_user.id,
+            admin_user_id=admin_user.id,
+            progress_message_id=msg.message_id,
+            segment=segment,
+            amount_usd=amount,
+            note=note,
+        ),
+        name=f"bulk-wallet-gift-{admin_user.id}",
     )
     _BG_TASKS.add(task)
     task.add_done_callback(_BG_TASKS.discard)

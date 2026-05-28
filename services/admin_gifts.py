@@ -295,3 +295,232 @@ async def grant_bulk_subscription_gift_background(
             )
         except Exception:
             pass
+
+
+# ─── Bulk wallet credit gift (Faoxima parity) ─────────────────────────────
+
+WALLET_GIFT_SEGMENTS = ("all", "active_subs", "inactive_subs", "referrers")
+
+
+def _wallet_gift_segment_label(segment: str) -> str:
+    return {
+        "all": "همه‌ی کاربران",
+        "active_subs": "کاربران دارای سرویس فعال",
+        "inactive_subs": "کاربران بدون سرویس فعال",
+        "referrers": "کاربرانی که حداقل یک رفرال داشته‌اند",
+    }.get(segment, segment)
+
+
+async def _resolve_wallet_gift_users(session: AsyncSession, segment: str) -> list[tuple[UUID, int]]:
+    """Return (user_id, telegram_id) tuples for the chosen segment."""
+    from models.user import User
+    from sqlalchemy import distinct, func as _f
+
+    q = select(User.id, User.telegram_id)
+
+    if segment == "active_subs":
+        sub_users = (
+            select(distinct(Subscription.user_id))
+            .where(Subscription.status.in_(("active", "pending_activation")))
+            .scalar_subquery()
+        )
+        q = q.where(User.id.in_(sub_users))
+    elif segment == "inactive_subs":
+        sub_users = (
+            select(distinct(Subscription.user_id))
+            .where(Subscription.status.in_(("active", "pending_activation")))
+            .scalar_subquery()
+        )
+        q = q.where(~User.id.in_(sub_users))
+    elif segment == "referrers":
+        # Users who have referred at least one other user.
+        referrer_users = (
+            select(distinct(User.referred_by_user_id))
+            .where(User.referred_by_user_id.is_not(None))
+            .scalar_subquery()
+        )
+        q = q.where(User.id.in_(referrer_users))
+    elif segment != "all":
+        raise ValueError(f"unknown wallet-gift segment: {segment!r}")
+
+    # Exclude users we can't message (banned / blocked the bot).
+    q = q.where(User.status != "banned")
+
+    rows = (await session.execute(q)).all()
+    return [(r[0], int(r[1])) for r in rows]
+
+
+async def grant_bulk_wallet_gift_background(
+    *,
+    bot: Bot,
+    admin_telegram_id: int,
+    admin_user_id: UUID,
+    progress_message_id: int,
+    segment: str,
+    amount_usd: float,
+    note: str | None = None,
+) -> None:
+    """Credit a fixed USD amount to every user in `segment`.
+
+    Mirrors Faoxima's `cronbot/gift.php` flow: resolve target users,
+    process in batches of 5, write a single AuditLog summary at the end,
+    optionally DM each recipient. Failures are logged + retried in a
+    second pass (with smaller batches) before being marked permanent.
+
+    Each credit goes through `WalletManager.process_transaction` so the
+    wallet ledger gets a proper row with `transaction_type='admin_gift'`.
+    """
+    from decimal import Decimal
+    from services.wallet.manager import WalletManager
+
+    BATCH = 5
+
+    try:
+        async with AsyncSessionFactory() as session:
+            targets = await _resolve_wallet_gift_users(session, segment)
+
+        total = len(targets)
+        if total == 0:
+            await bot.edit_message_text(
+                chat_id=admin_telegram_id,
+                message_id=progress_message_id,
+                text="ℹ️ هیچ کاربری در این محدوده پیدا نشد.",
+            )
+            return
+
+        amount_dec = Decimal(str(amount_usd))
+        success = 0
+        failed_targets: list[tuple[UUID, int]] = []
+
+        await bot.edit_message_text(
+            chat_id=admin_telegram_id,
+            message_id=progress_message_id,
+            text=(
+                f"⏳ شارژ کیف پول گروهی\n\n"
+                f"محدوده: {_wallet_gift_segment_label(segment)}\n"
+                f"مبلغ هر نفر: <b>{amount_dec} $</b>\n"
+                f"کل گیرنده‌ها: <b>{total}</b>\n\n"
+                f"🔄 در حال اجرا..."
+            ),
+            parse_mode="HTML",
+        )
+
+        for i in range(0, total, BATCH):
+            chunk = targets[i:i + BATCH]
+            for user_id, tg_id in chunk:
+                try:
+                    async with AsyncSessionFactory() as cs:
+                        wm = WalletManager(cs)
+                        await wm.process_transaction(
+                            user_id=user_id,
+                            amount=amount_dec,
+                            transaction_type="admin_gift",
+                            direction="credit",
+                            currency="USD",
+                            description=note or "هدیه گروهی از مدیر",
+                            metadata={"segment": segment, "by_admin_user_id": str(admin_user_id)},
+                        )
+                        await cs.commit()
+                    success += 1
+                    # Best-effort recipient DM (don't fail the gift on Telegram errors).
+                    try:
+                        suffix = f"\n\n📝 {note}" if note else ""
+                        await bot.send_message(
+                            tg_id,
+                            f"🎁 <b>هدیه از مدیر</b>\n\n💰 <b>{amount_dec} $</b> به کیف پول شما اضافه شد.{suffix}",
+                            parse_mode="HTML",
+                        )
+                    except TelegramAPIError:
+                        pass
+                except Exception as exc:
+                    logger.warning("bulk wallet gift failed for user=%s: %s", user_id, exc)
+                    failed_targets.append((user_id, tg_id))
+
+            # Progress update roughly every 25 recipients.
+            done = min(i + BATCH, total)
+            if done == total or done % 25 == 0:
+                try:
+                    await bot.edit_message_text(
+                        chat_id=admin_telegram_id,
+                        message_id=progress_message_id,
+                        text=(
+                            f"⏳ شارژ کیف پول گروهی — در حال انجام\n\n"
+                            f"محدوده: {_wallet_gift_segment_label(segment)}\n"
+                            f"موفق: <b>{success}</b> / {total}\n"
+                            f"ناموفق فعلی: <b>{len(failed_targets)}</b>"
+                        ),
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+
+        # Retry failed users once with batch size 1.
+        if failed_targets:
+            retry_targets = failed_targets[:]
+            failed_targets = []
+            for user_id, tg_id in retry_targets:
+                try:
+                    async with AsyncSessionFactory() as cs:
+                        await WalletManager(cs).process_transaction(
+                            user_id=user_id,
+                            amount=amount_dec,
+                            transaction_type="admin_gift",
+                            direction="credit",
+                            currency="USD",
+                            description=note or "هدیه گروهی از مدیر (retry)",
+                            metadata={"segment": segment, "by_admin_user_id": str(admin_user_id), "retry": True},
+                        )
+                        await cs.commit()
+                    success += 1
+                    try:
+                        await bot.send_message(
+                            tg_id,
+                            f"🎁 <b>هدیه از مدیر</b>\n\n💰 <b>{amount_dec} $</b> به کیف پول شما اضافه شد.",
+                            parse_mode="HTML",
+                        )
+                    except TelegramAPIError:
+                        pass
+                except Exception:
+                    failed_targets.append((user_id, tg_id))
+
+        # Final summary + audit log
+        async with AsyncSessionFactory() as session:
+            await AuditLogRepository(session).log_action(
+                actor_user_id=admin_user_id,
+                action="bulk_wallet_gift",
+                entity_type="wallet",
+                entity_id=admin_user_id,
+                payload={
+                    "segment": segment,
+                    "amount_usd": float(amount_usd),
+                    "total_targets": total,
+                    "success": success,
+                    "failed": len(failed_targets),
+                    "note": note,
+                },
+            )
+            await session.commit()
+
+        await bot.edit_message_text(
+            chat_id=admin_telegram_id,
+            message_id=progress_message_id,
+            text=(
+                f"✅ شارژ کیف پول گروهی پایان یافت\n\n"
+                f"محدوده: {_wallet_gift_segment_label(segment)}\n"
+                f"مبلغ هر نفر: <b>{amount_dec} $</b>\n"
+                f"کل گیرنده‌ها: <b>{total}</b>\n"
+                f"موفق: <b>{success}</b>\n"
+                f"ناموفق: <b>{len(failed_targets)}</b>"
+            ),
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logger.error("Background bulk wallet gift failed: %s\n%s", exc, traceback.format_exc())
+        try:
+            await bot.edit_message_text(
+                chat_id=admin_telegram_id,
+                message_id=progress_message_id,
+                text=f"❌ خطای غیرمنتظره در حین پردازش هدایا رخ داد.\n\n{type(exc).__name__}: {exc}",
+            )
+        except Exception:
+            pass
