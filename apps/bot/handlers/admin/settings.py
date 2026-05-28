@@ -402,10 +402,17 @@ async def toggle_premium_emoji(callback: CallbackQuery, session: AsyncSession) -
 
 @router.callback_query(F.data == "admin:settings:premium_emoji_add")
 async def edit_premium_emoji_map_start(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
-    """New, simpler UX: admin just sends one message containing premium
-    emojis, the handler reads message.entities and auto-maps each
-    premium emoji to its fallback character. No key= typing.
+    """Show the operator-preferred "paste list + replace each emoji"
+    flow. Every emoji actually used in the bot's user-facing text
+    appears as `key=<default emoji>` — the admin replaces the right-hand
+    side with their premium-emoji counterpart (or the raw custom_emoji_id
+    if they have it) and sends it back.
+
+    The submit handler accepts BOTH formats transparently — pure
+    `<custom_emoji>` entities on the right and raw IDs both work.
     """
+    from services.telegram.premium_emoji import DEFAULT_EMOJI_KEYS
+
     await callback.answer()
     await state.set_state(SettingsStates.waiting_for_premium_emoji_map)
 
@@ -413,27 +420,48 @@ async def edit_premium_emoji_map_start(callback: CallbackQuery, state: FSMContex
     current_settings = await settings_repo.get_premium_emoji_settings()
     current_count = len(current_settings.emoji_map or {})
 
-    msg = (
-        "✨ <b>افزودن اموجی پریمیم</b>\n\n"
-        f"📊 اموجی‌های فعلی: <b>{current_count}</b>\n\n"
-        "📋 <b>روش کار:</b>\n"
-        "همین الان یک پیام برام بفرست که هر اموجی پریمیومی که می‌خوای جایگزین بشه، توش باشه.\n"
-        "می‌تونی چند تا اموجی پریمیم رو با هم تو یک پیام بفرستی — ربات هر کدوم رو خودش تشخیص می‌ده و به اموجی پایه‌ی متناظرش وصل می‌کنه.\n\n"
-        "<i>مثلاً اگه اموجی پریمیم تیک سبز رو بفرستی، روی همه‌ی ✅های ربات اون نشون داده می‌شه.</i>\n\n"
-        "<i>برای لغو /cancel را بفرست.</i>"
-    )
+    # Build the catalogue body. Each line is `key=<default emoji>`.
+    catalogue_lines = [f"{k}={v}" for k, v in DEFAULT_EMOJI_KEYS.items()]
+    body = "\n".join(catalogue_lines)
 
+    header = (
+        "✨ <b>مدیریت آسان اموجی‌های پرمیوم</b>\n\n"
+        f"📊 اموجی‌های فعلی نگاشته‌شده: <b>{current_count}</b> از <b>{len(DEFAULT_EMOJI_KEYS)}</b>\n\n"
+        "برای تغییر اموجی‌ها، کافیست لیست زیر را کپی کنید، اموجی پیش‌فرض را پاک کرده و اموجی پرمیوم خود را جایگزین کنید "
+        "(یا آیدی آن را بگذارید) و بفرستید:\n\n"
+    )
+    footer = "\n\nبرای لغو /cancel را بفرستید."
+
+    # Telegram message limit is 4096 chars. Our catalogue is ~110 lines
+    # × ~15 chars ≈ 1700 chars — safely fits. Wrap in <pre> so the
+    # operator can long-press to copy on mobile.
+    msg = header + f"<pre>{body}</pre>" + footer
     await safe_edit_or_send(callback, msg, parse_mode="HTML")
 
 
 @router.message(SettingsStates.waiting_for_premium_emoji_map)
 async def edit_premium_emoji_map_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    """Parse `message.entities` for `custom_emoji` entries and auto-build
-    the map. The MessageEntity offsets are in UTF-16 code units, so we
-    decode the text via utf-16-le before slicing.
+    """Parse the operator's reply. Three modes are accepted transparently:
 
-    Falls back to the legacy "key=value" format if the message has no
-    custom_emoji entities — keeps the old workflow working too.
+    1. **Paste-list with replaced emojis** (preferred):
+            success=<premium ✅>
+            error=<premium ❌>
+            ...
+       — for each line, we look at the byte range AFTER the `=` and pick
+       any `custom_emoji` MessageEntity that falls inside it.
+
+    2. **Paste-list with raw IDs**:
+            success=5210952531676504517
+            error=5197488032259546995
+       — the right side is a numeric custom_emoji_id we keep as-is.
+
+    3. **Single-message with just premium emojis** (no key=):
+            ✨🔥💎
+       — falls back to "auto-map each entity to its underlying fallback
+       char" behaviour from the previous design.
+
+    Mode 1 wins when both keys + entities are present, because the
+    explicit key→value pairing is more deterministic than auto-detection.
     """
     from services.telegram.premium_emoji import (
         VALID_CUSTOM_EMOJI_ID_RE,
@@ -442,13 +470,59 @@ async def edit_premium_emoji_map_submit(message: Message, state: FSMContext, ses
 
     text = message.text or message.caption or ""
     entities = list(message.entities or message.caption_entities or [])
+    utf16 = text.encode("utf-16-le") if text else b""
 
     extracted: dict[str, str] = {}
 
-    # ── Primary path: read native custom_emoji entities ──────────────
-    if text and entities:
-        # Convert once. MessageEntity offset/length are in UTF-16 code units.
-        utf16 = text.encode("utf-16-le")
+    # ── Mode 1 + 2: paste-list parsing ────────────────────────────
+    # For each `key=value` line, locate it inside the original text
+    # (utf-16 indexed) so we can correlate any custom_emoji entity that
+    # falls inside the value's byte range.
+    cursor_utf16 = 0
+    if text:
+        for raw_line in text.split("\n"):
+            line_len_utf16 = len(raw_line.encode("utf-16-le")) // 2
+            sep = "=" if "=" in raw_line else (":" if ":" in raw_line else None)
+            if not sep:
+                cursor_utf16 += line_len_utf16 + 1  # +1 for the \n
+                continue
+
+            # Where does the value start within the whole message, in UTF-16 units?
+            key_part, val_part = raw_line.split(sep, 1)
+            key = key_part.strip()
+            if not key:
+                cursor_utf16 += line_len_utf16 + 1
+                continue
+
+            val_start_utf16 = cursor_utf16 + (len((key_part + sep).encode("utf-16-le")) // 2)
+            val_end_utf16 = cursor_utf16 + line_len_utf16
+
+            # Any custom_emoji entity overlapping the value range?
+            chosen_cid: str | None = None
+            for ent in entities:
+                if ent.type != "custom_emoji" or not ent.custom_emoji_id:
+                    continue
+                if ent.offset < val_start_utf16 or ent.offset >= val_end_utf16:
+                    continue
+                cid = str(ent.custom_emoji_id).strip()
+                if VALID_CUSTOM_EMOJI_ID_RE.match(cid):
+                    chosen_cid = cid
+                    break
+
+            if chosen_cid:
+                extracted[key] = chosen_cid
+            else:
+                # No entity → try raw ID after `=`.
+                val_clean = val_part.strip()
+                if val_clean and VALID_CUSTOM_EMOJI_ID_RE.match(val_clean):
+                    extracted[key] = val_clean
+
+            cursor_utf16 += line_len_utf16 + 1  # account for \n
+
+    # ── Mode 3: single-message of just premium emojis ─────────────
+    # Used only if the operator didn't include a single key=. We auto-
+    # map each premium emoji to its fallback character.
+    if not extracted and text and entities:
         for ent in entities:
             if ent.type != "custom_emoji" or not ent.custom_emoji_id:
                 continue
@@ -464,29 +538,14 @@ async def edit_premium_emoji_map_submit(message: Message, state: FSMContext, ses
             if VALID_CUSTOM_EMOJI_ID_RE.match(cid):
                 extracted[fallback] = cid
 
-    # ── Fallback: legacy "key=value" / "key:value" lines ─────────────
-    # Keeps the old workflow working if the operator still pastes a list.
-    if not extracted and text:
-        for line in text.splitlines():
-            clean = line.strip()
-            if not clean:
-                continue
-            sep = "=" if "=" in clean else (":" if ":" in clean else None)
-            if not sep:
-                continue
-            key, val = clean.split(sep, 1)
-            key = key.strip()
-            val = val.strip()
-            if key and VALID_CUSTOM_EMOJI_ID_RE.match(val):
-                extracted[key] = val
-
     if not extracted:
         await message.answer(
             "⚠️ هیچ اموجی پریمیومی توی پیام پیدا نشد.\n\n"
-            "<b>چطور بفرستم؟</b>\n"
-            "• کیبورد اموجی تلگرامت رو باز کن، یه اموجی پریمیوم انتخاب کن، بفرست. می‌تونی چندتا با هم بفرستی.\n"
-            "• اموجی‌های پایه (مثل ✅ یا 🔥) باید نسخه‌ی پریمیومش رو بفرستی نه نسخه‌ی معمولی — وگرنه ربات نمی‌فهمه چی رو باید نگاشت کنه.\n"
-            "• اگه اشتراک پریمیوم نداری، نمی‌تونی از تلگرام پریمیوم بفرستی.\n\n"
+            "<b>دو روش پشتیبانی می‌شه:</b>\n"
+            "1) لیست رو کپی کن، جای هر اموجی پیش‌فرض، اموجی پرمیوم خودت رو بذار:\n"
+            "   <code>success=&lt;premium emoji&gt;</code>\n"
+            "2) فقط چند تا اموجی پرمیوم رو بفرست — ربات خودش به اموجی پایه‌ی هرکدوم وصل می‌کنه:\n"
+            "   <code>✨🔥💎</code>\n\n"
             "<i>برای لغو /cancel را بفرست.</i>",
             parse_mode="HTML",
         )
