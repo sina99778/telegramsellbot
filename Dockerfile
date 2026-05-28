@@ -14,12 +14,16 @@ RUN apt-get update \
     && "${VENV_PATH}/bin/pip" install --upgrade pip setuptools wheel \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ONLY dependencies (not the project itself) — avoids slow wheel build
+# Install ONLY dependencies (not the project itself) — avoids slow wheel build.
+# Note: the version pins MUST stay in sync with pyproject.toml. The Dockerfile
+# does NOT read pyproject (faster build), so adding a dep there is not enough —
+# you must also list it here.
 COPY pyproject.toml ./
 RUN "${VENV_PATH}/bin/pip" install \
-    aiogram \
+    "aiogram>=3.27.0,<4.0.0" \
     fastapi \
     "uvicorn[standard]" \
+    "python-multipart>=0.0.9" \
     sqlalchemy \
     asyncpg \
     alembic \
