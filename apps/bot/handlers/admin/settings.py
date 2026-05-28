@@ -6,6 +6,7 @@ import json
 from aiogram import F, Router
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1183,10 +1184,6 @@ async def card_to_card_menu(callback: CallbackQuery, session: AsyncSession) -> N
 class _CardAutoMinutesState(StatesGroup):
     waiting_for_minutes = State()
     waiting_for_exception_ids = State()
-
-
-# Lazy import: aiogram State is needed only inside this submenu
-from aiogram.fsm.state import State, StatesGroup  # noqa: E402
 
 
 @router.callback_query(F.data == "admin:gw:card_auto")
