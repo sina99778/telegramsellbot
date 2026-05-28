@@ -859,9 +859,19 @@ class ProvisioningManager:
             raise MigrationError("نام کانفیگ قدیمی ثبت نشده — انتقال ممکن نیست.")
 
         # Admin's allowed-target whitelist (same one the regular migration uses).
+        # `get_migration_target_inbound_ids` returns `list[str]` — we have to
+        # cast each entry to UUID before membership-checking, otherwise the
+        # comparison is always `UUID not in [str, str, ...]` → False positive
+        # that blocks every imported-sub migration when ANY whitelist exists.
         from repositories.settings import AppSettingsRepository
         settings_repo = AppSettingsRepository(self.session)
-        allowed = await settings_repo.get_migration_target_inbound_ids()
+        allowed_raw = await settings_repo.get_migration_target_inbound_ids()
+        allowed: list[UUID] = []
+        for raw in allowed_raw:
+            try:
+                allowed.append(UUID(raw))
+            except (TypeError, ValueError):
+                continue
         if allowed and target_inbound_id not in allowed:
             raise MigrationError("این اینباند برای انتقال مجاز نیست.")
 
