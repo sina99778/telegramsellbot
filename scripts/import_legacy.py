@@ -322,6 +322,11 @@ def _parse_unix(raw) -> datetime | None:
         return None
 
 
+async def _existing_ref_codes(session: AsyncSession) -> set[str]:
+    rows = await session.execute(select(User.ref_code).where(User.ref_code.is_not(None)))
+    return {r[0] for r in rows.all() if r[0]}
+
+
 async def import_users(
     session: AsyncSession,
     rows: Iterator[dict],
@@ -329,8 +334,27 @@ async def import_users(
     stats: ImportStats,
     limit: int = 0,
 ) -> None:
-    """Idempotent UPSERT. Never overwrites existing rows' profile data."""
+    """Idempotent UPSERT. Never overwrites existing rows' profile data.
+
+    Two important details for re-runs / partial recovery:
+
+    * Each row runs inside its own ``session.begin_nested()`` SAVEPOINT.
+      A failure on one row only rolls back THAT row — earlier inserts
+      stay flushed. (The previous implementation called the bare
+      ``session.rollback()`` which threw away every successful insert
+      in the same transaction; that's why an earlier attempt landed
+      with ``inserted=0`` despite 1100+ rows being touched.)
+
+    * The legacy ``phone`` column is intentionally NOT copied — this
+      bot's ``users`` table has no ``phone`` field, and a stray kwarg
+      to ``User(...)`` raises ``TypeError`` on every row.
+
+    * The legacy ``refcode`` is preserved when it doesn't collide with
+      an existing ref_code on this bot (``ref_code`` is UNIQUE); on
+      collision we leave it NULL so the row still imports.
+    """
     existing = await _existing_user_telegram_ids(session)
+    existing_refs = await _existing_ref_codes(session)
     n = 0
     for row in rows:
         if limit and n >= limit:
@@ -346,36 +370,46 @@ async def import_users(
             stats.users_skipped_existing += 1
             # Still try to credit legacy wallet to existing user IF
             # their current wallet is zero — operator-safe upgrade.
-            await _maybe_credit_legacy_wallet(session, tg, row, toman_rate, stats)
+            try:
+                async with session.begin_nested():
+                    await _maybe_credit_legacy_wallet(session, tg, row, toman_rate, stats)
+            except Exception as exc:
+                logger.warning("wallet-credit existing tg=%s failed: %s", tg, exc)
             continue
 
-        try:
-            user = User(
-                telegram_id=tg,
-                username=(row.get("username") or None) or None,
-                first_name=(row.get("name") or None) or None,
-                ref_code=(row.get("refcode") or None) or None,
-                phone=(row.get("phone") or None) or None,
-                role="user",  # Legacy `isAdmin` is intentionally ignored —
-                              # let this bot's admin list be authoritative.
-            )
-            # Stamp the original signup date when we have it.
-            signup = _parse_unix(row.get("date"))
-            if signup is not None:
-                user.created_at = signup
-            session.add(user)
-            await session.flush()
+        # Pick a ref_code that doesn't collide. Legacy `refcode` can be
+        # the user's own personal code OR (in some legacy bots) the
+        # referrer's code shared by many users — without ever importing
+        # we can't tell. We try it first; on collision we drop it.
+        legacy_refcode = (row.get("refcode") or "").strip() or None
+        chosen_ref = legacy_refcode if (legacy_refcode and legacy_refcode not in existing_refs) else None
 
-            # Wallet
-            await _credit_legacy_wallet(session, user, row, toman_rate, stats)
+        try:
+            async with session.begin_nested():
+                user = User(
+                    telegram_id=tg,
+                    username=(row.get("username") or None) or None,
+                    first_name=(row.get("name") or None) or None,
+                    ref_code=chosen_ref,
+                    role="user",  # Legacy `isAdmin` is intentionally ignored —
+                                  # let this bot's admin list be authoritative.
+                )
+                # Stamp the original signup date when we have it.
+                signup = _parse_unix(row.get("date"))
+                if signup is not None:
+                    user.created_at = signup
+                session.add(user)
+                await session.flush()
+
+                # Wallet
+                await _credit_legacy_wallet(session, user, row, toman_rate, stats)
             stats.users_inserted += 1
             existing.add(tg)
+            if chosen_ref:
+                existing_refs.add(chosen_ref)
         except Exception as exc:
             logger.warning("user tg=%s failed: %s", tg, exc)
             stats.users_failed += 1
-            await session.rollback()
-            # Keep going — refresh existing-set after rollback.
-            existing = await _existing_user_telegram_ids(session)
 
 
 async def _credit_legacy_wallet(
@@ -504,43 +538,36 @@ async def import_orders(
         volume_bytes = volume_gb * 1024**3 if volume_gb > 0 else 0
 
         try:
-            sub = Subscription(
-                user_id=user_uuid,
-                status=status,
-                activation_mode="explicit",  # imports are not first-use waiters
-                starts_at=created_dt,
-                ends_at=expire_dt,
-                activated_at=created_dt,
-                expired_at=expire_dt if status == "expired" else None,
-                volume_bytes=volume_bytes,
-                used_bytes=0,
-                lifetime_used_bytes=0,
-                sub_link=legacy_link or None,
-                source="imported_legacy",
-                legacy_remark=(row.get("remark") or "").strip()[:128] or None,
-                legacy_link=legacy_link or None,
-            )
-            sub.created_at = created_dt
-            # Stash the token in callback_payload (via order? no — we don't
-            # have order_id). Store it on the Subscription's own audit log
-            # is overkill; instead we de-dup using a SELECT below at re-run.
-            # Use a tiny payload-like trick: store on legacy_link suffix? no,
-            # cleaner to encode in remark? no. Add to Subscription model? we
-            # already have legacy_remark — and (user_id + legacy_remark)
-            # would collide for users with multiple identical remarks. So
-            # for true uniqueness, use `Subscription.sub_link` as the
-            # dedup target (legacy_link is unique enough in practice
-            # because each legacy order has its own VLESS UUID).
-            session.add(sub)
-            await session.flush()
+            # SAVEPOINT per row so one bad sub doesn't wipe out earlier
+            # successful flushes in the same transaction.
+            async with session.begin_nested():
+                sub = Subscription(
+                    user_id=user_uuid,
+                    status=status,
+                    activation_mode="explicit",  # imports are not first-use waiters
+                    starts_at=created_dt,
+                    ends_at=expire_dt,
+                    activated_at=created_dt,
+                    expired_at=expire_dt if status == "expired" else None,
+                    volume_bytes=volume_bytes,
+                    used_bytes=0,
+                    lifetime_used_bytes=0,
+                    sub_link=legacy_link or None,
+                    source="imported_legacy",
+                    legacy_remark=(row.get("remark") or "").strip()[:128] or None,
+                    legacy_link=legacy_link or None,
+                )
+                sub.created_at = created_dt
+                # De-dup target is `legacy_link` (unique per legacy order
+                # because each order has its own VLESS UUID). See
+                # _existing_legacy_tokens.
+                session.add(sub)
+                await session.flush()
             imported_tokens.add((tg, token))
             stats.orders_inserted += 1
         except Exception as exc:
             logger.warning("order tg=%s token=%s failed: %s", tg, token, exc)
             stats.orders_failed += 1
-            await session.rollback()
-            # Refresh dedup set after rollback so we don't try the same row again.
-            imported_tokens = await _existing_legacy_tokens(session)
 
 
 async def _existing_legacy_tokens(session: AsyncSession) -> set[tuple[int, str]]:
