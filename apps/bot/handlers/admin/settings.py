@@ -1144,15 +1144,23 @@ async def manual_crypto_gateway_menu(callback: CallbackQuery, session: AsyncSess
 @router.callback_query(F.data == "admin:gw:card")
 async def card_to_card_menu(callback: CallbackQuery, session: AsyncSession) -> None:
     await callback.answer()
-    gw = await AppSettingsRepository(session).get_gateway_settings()
+    repo = AppSettingsRepository(session)
+    gw = await repo.get_gateway_settings()
+    auto = await repo.get_card_autoconfirm_settings()
     status = "فعال" if gw.card_to_card_enabled else "غیرفعال"
+    auto_label = (
+        f"🟢 بعد از {auto.delay_minutes} دقیقه" if auto.enabled
+        else "🔴 خاموش"
+    )
     text = (
         "مدیریت کارت به کارت\n\n"
         f"وضعیت: {status}\n"
         f"شماره کارت: <code>{gw.card_number or 'تنظیم نشده'}</code>\n"
         f"صاحب کارت: {gw.card_holder or 'تنظیم نشده'}\n"
         f"بانک: {gw.card_bank or 'تنظیم نشده'}\n"
-        f"توضیح: {gw.card_note or 'تنظیم نشده'}"
+        f"توضیح: {gw.card_note or 'تنظیم نشده'}\n\n"
+        f"تأیید خودکار رسید: {auto_label}\n"
+        f"کاربران مستثنا: {len(auto.exception_telegram_ids)} نفر"
     )
     builder = InlineKeyboardBuilder()
     builder.button(
@@ -1163,9 +1171,138 @@ async def card_to_card_menu(callback: CallbackQuery, session: AsyncSession) -> N
     builder.button(text="نام صاحب کارت", callback_data="admin:gw:card_holder")
     builder.button(text="نام بانک", callback_data="admin:gw:card_bank")
     builder.button(text="توضیح پرداخت", callback_data="admin:gw:card_note")
+    builder.button(text="⏱ تأیید خودکار رسید", callback_data="admin:gw:card_auto")
     builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
     builder.adjust(1)
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+
+
+# ─── Card auto-confirm submenu ──────────────────────────────────────────
+
+
+class _CardAutoMinutesState(StatesGroup):
+    waiting_for_minutes = State()
+    waiting_for_exception_ids = State()
+
+
+# Lazy import: aiogram State is needed only inside this submenu
+from aiogram.fsm.state import State, StatesGroup  # noqa: E402
+
+
+@router.callback_query(F.data == "admin:gw:card_auto")
+async def card_auto_menu(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    repo = AppSettingsRepository(session)
+    auto = await repo.get_card_autoconfirm_settings()
+    exempt_preview = ", ".join(str(x) for x in auto.exception_telegram_ids[:8]) or "—"
+    if len(auto.exception_telegram_ids) > 8:
+        exempt_preview += f" … (+{len(auto.exception_telegram_ids) - 8})"
+    text = (
+        "⏱ <b>تأیید خودکار رسید کارت‌به‌کارت</b>\n\n"
+        f"وضعیت: {'🟢 روشن' if auto.enabled else '🔴 خاموش'}\n"
+        f"تأخیر: <b>{auto.delay_minutes}</b> دقیقه پس از ثبت رسید\n"
+        f"کاربران مستثنا: <b>{len(auto.exception_telegram_ids)}</b>\n"
+        f"<code>{_html_escape(exempt_preview)}</code>\n\n"
+        "<i>وقتی روشن باشد، رسیدی که در حالت «در انتظار تأیید» مانده و از مدت تنظیم‌شده گذشته،"
+        " به‌طور خودکار تأیید و کیف پول کاربر شارژ می‌شود — مگر اینکه آی‌دی کاربر در لیست استثنا باشد.</i>"
+    )
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=("🔴 خاموش کن" if auto.enabled else "🟢 روشن کن"),
+        callback_data="admin:gw:card_auto:toggle",
+    )
+    builder.button(text=f"⏱ تأخیر ({auto.delay_minutes} دقیقه)",
+                   callback_data="admin:gw:card_auto:minutes")
+    builder.button(text="🚫 ویرایش لیست استثنا",
+                   callback_data="admin:gw:card_auto:exceptions")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:gw:card")
+    builder.adjust(1)
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+def _html_escape(s: str) -> str:
+    from html import escape as _e
+    return _e(s)
+
+
+@router.callback_query(F.data == "admin:gw:card_auto:toggle")
+async def card_auto_toggle(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    repo = AppSettingsRepository(session)
+    auto = await repo.get_card_autoconfirm_settings()
+    await repo.update_card_autoconfirm_settings(enabled=not auto.enabled)
+    await card_auto_menu(callback, session)
+
+
+@router.callback_query(F.data == "admin:gw:card_auto:minutes")
+async def card_auto_minutes_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(_CardAutoMinutesState.waiting_for_minutes)
+    await safe_edit_or_send(
+        callback,
+        "⏱ تعداد دقیقه‌ی تأخیر تا تأیید خودکار را وارد کن (عددی ≥ ۱).\n\n"
+        "مثال: <code>30</code>\n\nبرای لغو /cancel را بفرست.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(_CardAutoMinutesState.waiting_for_minutes)
+async def card_auto_minutes_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text or message.text.strip() == "/cancel":
+        await state.clear()
+        await message.answer("لغو شد.")
+        return
+    try:
+        minutes = int(message.text.strip())
+        if minutes < 1:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ عدد نامعتبر. یک عدد ≥ ۱ بفرست.")
+        return
+    repo = AppSettingsRepository(session)
+    await repo.update_card_autoconfirm_settings(delay_minutes=minutes)
+    await state.clear()
+    await message.answer(f"✅ تأخیر تأیید خودکار رسید روی <b>{minutes}</b> دقیقه تنظیم شد.", parse_mode="HTML")
+
+
+@router.callback_query(F.data == "admin:gw:card_auto:exceptions")
+async def card_auto_exceptions_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(_CardAutoMinutesState.waiting_for_exception_ids)
+    await safe_edit_or_send(
+        callback,
+        "🚫 لیست telegram_id کاربرانی که نباید رسید آن‌ها خودکار تأیید شود را بفرست.\n"
+        "می‌توانی با کاما، فاصله یا خط جدید جدا کنی. برای پاک کردن لیست، خالی بفرست.\n\n"
+        "مثال: <code>123456789, 987654321</code>\n\nبرای لغو /cancel را بفرست.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(_CardAutoMinutesState.waiting_for_exception_ids)
+async def card_auto_exceptions_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    raw = (message.text or "").strip()
+    if raw == "/cancel":
+        await state.clear()
+        await message.answer("لغو شد.")
+        return
+    # Accept comma/space/newline separated. Filter to positive ints.
+    ids: list[int] = []
+    if raw and raw != "-":
+        import re as _re
+        for tok in _re.split(r"[,\s\n]+", raw):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                v = int(tok)
+                if v > 0:
+                    ids.append(v)
+            except ValueError:
+                pass
+    repo = AppSettingsRepository(session)
+    await repo.update_card_autoconfirm_settings(exception_telegram_ids=ids)
+    await state.clear()
+    await message.answer(f"✅ لیست استثنا با <b>{len(ids)}</b> آی‌دی به‌روزرسانی شد.", parse_mode="HTML")
 
 
 @router.callback_query(F.data == "admin:gw:card_toggle")

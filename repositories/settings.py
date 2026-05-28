@@ -35,6 +35,7 @@ SERVICE_SECURITY_SETTINGS_KEY = "service.security"
 PREMIUM_EMOJI_SETTINGS_KEY = "bot.premium_emoji"
 USER_ACTIONS_SETTINGS_KEY = "user.actions"
 BUTTON_STYLE_SETTINGS_KEY = "bot.button_style"
+CARD_AUTOCONFIRM_SETTINGS_KEY = "payment.card_autoconfirm"
 
 @dataclass(slots=True)
 class RenewalSettings:
@@ -87,6 +88,16 @@ class UserActionsSettings:
     transfer_enabled: bool
     sales_enabled: bool = True
     renewals_enabled: bool = True
+
+
+@dataclass(slots=True)
+class CardAutoconfirmSettings:
+    """Worker auto-approves a card-receipt payment that's been sitting in
+    `pending_approval` for at least `delay_minutes` and isn't on the
+    `exception_telegram_ids` list. 0 = disabled."""
+    enabled: bool
+    delay_minutes: int
+    exception_telegram_ids: list[int]
 
 
 @dataclass(slots=True)
@@ -880,6 +891,49 @@ class AppSettingsRepository:
         self.session.add(record)
         await self.session.flush()
         return await self.get_user_actions_settings()
+
+    # ── Card-receipt auto-confirm ────────────────────────────────────
+
+    async def get_card_autoconfirm_settings(self) -> 'CardAutoconfirmSettings':
+        record = await self.session.get(AppSetting, CARD_AUTOCONFIRM_SETTINGS_KEY)
+        if record is None or not record.value_json:
+            return CardAutoconfirmSettings(enabled=False, delay_minutes=30, exception_telegram_ids=[])
+        payload = dict(record.value_json or {})
+        raw_excl = payload.get("exception_telegram_ids") or []
+        exclusions: list[int] = []
+        if isinstance(raw_excl, list):
+            for v in raw_excl:
+                try:
+                    exclusions.append(int(v))
+                except (TypeError, ValueError):
+                    continue
+        return CardAutoconfirmSettings(
+            enabled=bool(payload.get("enabled", False)),
+            delay_minutes=max(int(payload.get("delay_minutes", 30) or 30), 1),
+            exception_telegram_ids=exclusions,
+        )
+
+    async def update_card_autoconfirm_settings(
+        self,
+        *,
+        enabled: bool | None = None,
+        delay_minutes: int | None = None,
+        exception_telegram_ids: list[int] | None = None,
+    ) -> 'CardAutoconfirmSettings':
+        record = await self.session.get(AppSetting, CARD_AUTOCONFIRM_SETTINGS_KEY)
+        if record is None:
+            record = AppSetting(key=CARD_AUTOCONFIRM_SETTINGS_KEY, value_json={})
+        payload = dict(record.value_json or {})
+        if enabled is not None:
+            payload["enabled"] = bool(enabled)
+        if delay_minutes is not None:
+            payload["delay_minutes"] = max(int(delay_minutes), 1)
+        if exception_telegram_ids is not None:
+            payload["exception_telegram_ids"] = [int(x) for x in exception_telegram_ids]
+        record.value_json = payload
+        self.session.add(record)
+        await self.session.flush()
+        return await self.get_card_autoconfirm_settings()
 
     # ── Button-style (Bot API 9.4) ───────────────────────────────────
 

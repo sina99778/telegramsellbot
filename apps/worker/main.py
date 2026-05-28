@@ -30,6 +30,7 @@ from apps.worker.jobs.subscriptions import sync_all_subscription_states
 from apps.worker.jobs.expiry_notifications import send_expiry_notifications
 from apps.worker.jobs.server_health import check_server_health
 from apps.worker.jobs.backup import run_backup
+from apps.worker.jobs.card_autoconfirm import run_card_autoconfirm
 from apps.worker.jobs.crypto_autoconfirm import run_crypto_autoconfirm
 from apps.worker.jobs.reconciliation import run_reconciliation
 from core.config import settings
@@ -61,6 +62,16 @@ async def main() -> None:
         run_crypto_autoconfirm_job,
         "interval",
         seconds=30,
+        kwargs={"bot": bot},
+        max_instances=1,
+        coalesce=True,
+    )
+    # Auto-approve card-receipt payments older than the operator-configured
+    # delay. Disabled by default; turned on from the bot admin / dashboard.
+    scheduler.add_job(
+        run_card_autoconfirm_job,
+        "interval",
+        seconds=60,
         kwargs={"bot": bot},
         max_instances=1,
         coalesce=True,
@@ -211,6 +222,19 @@ async def run_crypto_autoconfirm_job(bot: PremiumEmojiBot) -> None:
                 logger.info("[CRYPTO-AUTOCONFIRM] %s", result)
     except Exception as exc:
         logger.error("crypto_autoconfirm_job failed: %s", exc, exc_info=True)
+
+
+async def run_card_autoconfirm_job(bot: PremiumEmojiBot) -> None:
+    """Auto-approve manual card-to-card receipts older than the
+    operator-configured delay. No-ops when disabled."""
+    try:
+        async with AsyncSessionFactory() as session:
+            result = await run_card_autoconfirm(session, bot)
+            await session.commit()
+            if result.get("confirmed"):
+                logger.info("[CARD-AUTOCONFIRM] %s", result)
+    except Exception as exc:
+        logger.error("card_autoconfirm_job failed: %s", exc, exc_info=True)
 
 
 if __name__ == "__main__":
