@@ -24,6 +24,7 @@ DEPLOY_SCRIPT="${PROJECT_DIR}/deploy.sh"
 BACKUP_SCRIPT="${PROJECT_DIR}/backup.sh"
 RESTORE_SCRIPT="${PROJECT_DIR}/restore.sh"
 DOCTOR_SCRIPT="${PROJECT_DIR}/doctor.sh"
+MIGRATE_BUNDLE_SCRIPT="${PROJECT_DIR}/migrate_bundle.sh"
 NGINX_SITE_PATH="/etc/nginx/sites-available/telegramsellbot.conf"
 NGINX_SITE_LINK="/etc/nginx/sites-enabled/telegramsellbot.conf"
 LOG_FILE="${PROJECT_DIR}/installer.log"
@@ -491,7 +492,7 @@ fetch_latest_code() {
     return 1
   fi
 
-  chmod +x "${SETUP_SCRIPT}" "${DEPLOY_SCRIPT}" "${BACKUP_SCRIPT}" "${RESTORE_SCRIPT}" "${DOCTOR_SCRIPT}" 2>/dev/null || true
+  chmod +x "${SETUP_SCRIPT}" "${DEPLOY_SCRIPT}" "${BACKUP_SCRIPT}" "${RESTORE_SCRIPT}" "${DOCTOR_SCRIPT}" "${MIGRATE_BUNDLE_SCRIPT}" 2>/dev/null || true
 
   local new_sha new_branch
   new_sha="$(git_short_sha)"
@@ -870,9 +871,11 @@ backup_menu() {
     print_header
     echo -e "${BOLD}💾 Backup / Restore${NC}"
     echo
-    echo "  1) Create New Backup"
-    echo "  2) Restore From Backup"
+    echo "  1) Create New Backup           ${DIM}(DB only, .sql.gz)${NC}"
+    echo "  2) Restore From Backup         ${DIM}(DB only)${NC}"
     echo "  3) List Backups"
+    echo
+    echo -e "  ${BOLD}${GREEN}4)${NC} 🚚 Server Migration Bundle  ${DIM}(DB + .env + ready_configs, encrypted)${NC}"
     echo "  0) Back"
     echo
     read -r -p "Choose: " ch
@@ -880,10 +883,101 @@ backup_menu() {
       1) backup_run ;;
       2) restore_run ;;
       3) print_header; list_backups || true; pause ;;
+      4) migrate_bundle_menu ;;
       0) return ;;
       *) warn "Invalid option."; pause ;;
     esac
   done
+}
+
+# ────────────────────────────────────────────────────────────────────────────
+#  ACTION: Migration bundle — true one-button server migration
+# ────────────────────────────────────────────────────────────────────────────
+migrate_bundle_menu() {
+  while true; do
+    print_header
+    echo -e "${BOLD}🚚 Server Migration Bundle${NC}"
+    echo -e "${DIM}One encrypted file containing DB + .env + ready_configs.${NC}"
+    echo -e "${DIM}Copy the file to the new VPS and restore in one step.${NC}"
+    echo
+    echo "  1) Create bundle on THIS server     ${DIM}(for export)${NC}"
+    echo "  2) Restore from a bundle file       ${DIM}(on a new server)${NC}"
+    echo "  0) Back"
+    echo
+    read -r -p "Choose: " ch
+    case "${ch}" in
+      1) migrate_bundle_create ;;
+      2) migrate_bundle_restore ;;
+      0) return ;;
+      *) warn "Invalid option."; pause ;;
+    esac
+  done
+}
+
+migrate_bundle_create() {
+  print_header
+  echo -e "${BOLD}🚚 Create Migration Bundle${NC}"
+  echo
+  if [[ ! -f "${MIGRATE_BUNDLE_SCRIPT}" ]]; then
+    error "migrate_bundle.sh not found. Pull the latest code (option 1) and try again."
+    pause; return
+  fi
+  chmod +x "${MIGRATE_BUNDLE_SCRIPT}" 2>/dev/null || true
+
+  # The wrapped script prompts for the passphrase itself (with confirmation).
+  if (cd "${PROJECT_DIR}" && "${MIGRATE_BUNDLE_SCRIPT}" create); then
+    success "Bundle created. Transfer to the new server and use option 2 there to restore."
+  else
+    error "Bundle creation failed — see output above."
+  fi
+  pause
+}
+
+migrate_bundle_restore() {
+  print_header
+  echo -e "${BOLD}🚚 Restore From Migration Bundle${NC}"
+  echo -e "${YELLOW}⚠️  This will overwrite .env and (after a confirmation) the database.${NC}"
+  echo
+  if [[ ! -f "${MIGRATE_BUNDLE_SCRIPT}" ]]; then
+    error "migrate_bundle.sh not found."
+    pause; return
+  fi
+  chmod +x "${MIGRATE_BUNDLE_SCRIPT}" 2>/dev/null || true
+
+  # List candidate bundles in backups/.
+  local candidates=()
+  if [[ -d "${PROJECT_DIR}/backups" ]]; then
+    shopt -s nullglob
+    candidates=("${PROJECT_DIR}"/backups/tsb_migration_*.tar.gz.enc)
+    shopt -u nullglob
+  fi
+  local picked=""
+  if [[ ${#candidates[@]} -gt 0 ]]; then
+    echo -e "${BOLD}Found bundles:${NC}"
+    local i=1
+    for f in "${candidates[@]}"; do
+      printf "  %2d) %s   (%s)\n" "${i}" "$(basename "${f}")" "$(du -h "${f}" | awk '{print $1}')"
+      i=$((i+1))
+    done
+    echo "   0) Cancel  /  Enter a custom path"
+    echo
+    read -r -p "Pick number, or 0 to type a path: " ch
+    if [[ "${ch}" =~ ^[1-9][0-9]*$ && "${ch}" -le ${#candidates[@]} ]]; then
+      picked="${candidates[$((ch-1))]}"
+    fi
+  fi
+  if [[ -z "${picked}" ]]; then
+    read -r -p "Path to bundle file: " picked
+    [[ -n "${picked}" ]] || { warn "Cancelled."; pause; return; }
+  fi
+
+  if (cd "${PROJECT_DIR}" && "${MIGRATE_BUNDLE_SCRIPT}" restore "${picked}"); then
+    echo
+    info "Migration restored. Now run option 2 (Full Deploy) to rebuild images + apply migrations."
+  else
+    error "Restore failed — see output above."
+  fi
+  pause
 }
 
 # ============================================================================
