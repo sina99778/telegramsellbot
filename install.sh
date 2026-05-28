@@ -826,15 +826,25 @@ list_backups() {
     warn "No backups directory yet."
     return 1
   fi
-  local files=("${dir}"/*.sql.gz)
-  if [[ ! -e "${files[0]}" ]]; then
-    warn "No .sql.gz backups found in ${dir}."
+  # Accept both the new comprehensive tar.gz bundles AND any legacy
+  # DB-only .sql.gz dumps that still sit in the folder.
+  shopt -s nullglob
+  local files=("${dir}"/tsb_backup_*.tar.gz "${dir}"/*.sql.gz)
+  shopt -u nullglob
+  if [[ ${#files[@]} -eq 0 ]]; then
+    warn "No backups found in ${dir}."
     return 1
   fi
   echo -e "${BOLD}Available backups${NC}"
   local i=1
   for f in "${files[@]}"; do
-    printf "  %2d) %s  (%s)\n" "${i}" "$(basename "${f}")" "$(du -h "${f}" | awk '{print $1}')"
+    local kind=""
+    case "${f}" in
+      *.tar.gz) kind="${CYAN}[bundle]${NC}" ;;
+      *.sql.gz) kind="${DIM}[legacy DB-only]${NC}" ;;
+    esac
+    printf "  %2d) %s  (%s)  " "${i}" "$(basename "${f}")" "$(du -h "${f}" | awk '{print $1}')"
+    echo -e "${kind}"
     i=$((i + 1))
   done
   return 0
@@ -842,14 +852,16 @@ list_backups() {
 
 restore_run() {
   print_header
-  echo -e "${BOLD}🔁 Restore Database from Backup${NC}"
-  echo -e "${YELLOW}This will WIPE the current database and replace it with the chosen backup.${NC}"
+  echo -e "${BOLD}🔁 Restore from Backup${NC}"
+  echo -e "${YELLOW}This will WIPE the current database (and possibly replace .env).${NC}"
   echo
 
   if ! list_backups; then pause; return; fi
 
   local dir="${PROJECT_DIR}/backups"
-  local files=("${dir}"/*.sql.gz)
+  shopt -s nullglob
+  local files=("${dir}"/tsb_backup_*.tar.gz "${dir}"/*.sql.gz)
+  shopt -u nullglob
   echo
   read -r -p "Pick a backup number (or 0 to cancel): " pick
   if ! [[ "${pick}" =~ ^[0-9]+$ ]] || [[ "${pick}" -lt 1 || "${pick}" -gt "${#files[@]}" ]]; then
@@ -871,12 +883,12 @@ backup_menu() {
     print_header
     echo -e "${BOLD}💾 Backup / Restore${NC}"
     echo
-    echo "  1) Create New Backup           ${DIM}(DB only, .sql.gz)${NC}"
-    echo "  2) Restore From Backup         ${DIM}(DB only)${NC}"
-    echo "  3) List Backups"
+    echo -e "  1) Create New Backup           ${DIM}(comprehensive: DB + .env + X-UI + ready_configs)${NC}"
+    echo -e "  2) Restore From Backup         ${DIM}(auto-detects bundle or legacy .sql.gz)${NC}"
+    echo -e "  3) List Backups"
     echo
-    echo -e "  ${BOLD}${GREEN}4)${NC} 🚚 Server Migration Bundle  ${DIM}(DB + .env + ready_configs, encrypted)${NC}"
-    echo "  0) Back"
+    echo -e "  ${BOLD}${GREEN}4)${NC} 🚚 Server Migration Bundle  ${DIM}(same as 1, plus encryption for transit)${NC}"
+    echo -e "  0) Back"
     echo
     read -r -p "Choose: " ch
     case "${ch}" in
