@@ -69,6 +69,10 @@ class Subscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # full JSON arrays from old.orders_list.link can be long.
     legacy_link: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_usage_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # User-attached label. Visible to the user on the my-configs list and to
+    # the admin in the dashboard. Faoxima parity for `note` per-service.
+    # Nullable so the column is harmless on the auto-sync migration path.
+    user_note: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
     user: Mapped[User] = relationship("User", back_populates="subscriptions")
     order: Mapped[Order | None] = relationship("Order", back_populates="subscription")
