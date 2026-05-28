@@ -848,8 +848,15 @@ class ProvisioningManager:
         Raises MigrationError on validation issues; raises generic Exception
         on X-UI failures (savepoint rolls everything back).
         """
+        # Eager-load `plan` because we touch `sub.plan` further down for
+        # the per-plan ip_limit lookup. Without selectinload(), the
+        # attribute access lazy-loads, which under async SQLAlchemy raises
+        # `greenlet_spawn has not been called` outside of an explicit
+        # greenlet context.
         sub = await self.session.scalar(
-            select(Subscription).where(Subscription.id == subscription_id),
+            select(Subscription)
+            .options(selectinload(Subscription.plan))
+            .where(Subscription.id == subscription_id),
         )
         if sub is None:
             raise MigrationError("کانفیگ پیدا نشد.")
