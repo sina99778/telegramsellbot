@@ -452,6 +452,35 @@ class AppSettingsRepository:
         self.session.add(record)
         await self.session.flush()
 
+    # ── Display currency mode (USD vs IRT/Toman) ─────────────────────────────
+    #
+    # Drives every user-facing price string via `core.formatting.format_money`.
+    # Internally we always store USD (Numeric 18,8); this setting only
+    # affects what customers SEE and how their topup input is INTERPRETED.
+    # Conversion uses `get_toman_rate()` above.
+    #
+    #   mode="USD"  (default): customers see "12.50 $" and type USD on topup.
+    #   mode="IRT":            customers see "2,187,500 تومان" and type Toman.
+    DISPLAY_CURRENCY_KEY = "ui.display_currency"
+
+    async def get_display_currency(self) -> str:
+        record = await self.session.get(AppSetting, self.DISPLAY_CURRENCY_KEY)
+        if record and record.value_json:
+            mode = str(record.value_json.get("mode", "USD")).upper()
+            if mode in ("USD", "IRT"):
+                return mode
+        return "USD"
+
+    async def set_display_currency(self, mode: str) -> None:
+        if mode not in ("USD", "IRT"):
+            raise ValueError("display currency must be 'USD' or 'IRT'")
+        record = await self.session.get(AppSetting, self.DISPLAY_CURRENCY_KEY)
+        if record is None:
+            record = AppSetting(key=self.DISPLAY_CURRENCY_KEY)
+        record.value_json = {"mode": mode}
+        self.session.add(record)
+        await self.session.flush()
+
     # ── Payment gateway settings ─────────────────────────────────────────────
 
     GATEWAY_SETTINGS_KEY = "payment.gateways"

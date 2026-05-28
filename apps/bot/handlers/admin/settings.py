@@ -36,6 +36,7 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     premium_emoji_settings = await settings_repo.get_premium_emoji_settings()
     user_actions = await settings_repo.get_user_actions_settings()
     toman_rate = await settings_repo.get_toman_rate()
+    display_currency = await settings_repo.get_display_currency()
     
     text = admin_panel(
         "⚙️ تنظیمات عمومی ربات",
@@ -53,6 +54,7 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
                     ("تمدید هر ۱ گیگ", f"{renewal_settings.price_per_gb} دلار"),
                     ("تمدید هر ۱۰ روز", f"{renewal_settings.price_per_10_days} دلار"),
                     ("نرخ دلار", f"{toman_rate:,} تومان"),
+                    ("ارز نمایش", "تومان 💵" if display_currency == "IRT" else "دلار $"),
                 ],
             ),
             (
@@ -99,6 +101,11 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     builder.button(text="قیمت گیگ تمدید", callback_data="admin:settings:edit_gb")
     builder.button(text="قیمت ۱۰ روز تمدید", callback_data="admin:settings:edit_days")
     builder.button(text="نرخ دلار", callback_data="admin:settings:edit_toman")
+    currency_button_label = (
+        "🔄 تغییر نمایش به دلار" if display_currency == "IRT"
+        else "🔄 تغییر نمایش به تومان"
+    )
+    builder.button(text=currency_button_label, callback_data="admin:settings:toggle_currency")
 
     # ── Section: Custom plans
     builder.button(text="━━ 🧩 خرید دلخواه ━━", callback_data="admin:settings:noop")
@@ -130,9 +137,10 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     builder.button(text="📢 کانال گزارش فروش", callback_data="admin:settings:sales_channel")
 
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
-    # 1 header, 2 toggles, 1 header, 3 prices, 1 header, 3 custom, 1 header, 3 security,
-    # 1 header, 5 gateways, 1 header, 2 appearance, 1 header, 1 sales-channel, 1 back
-    builder.adjust(1, 2, 1, 3, 1, 3, 1, 3, 1, 5, 1, 2, 1, 1, 1)
+    # 1 header, 2 toggles, 1 header, 4 prices (gb / days / toman-rate / currency-mode),
+    # 1 header, 3 custom, 1 header, 3 security, 1 header, 5 gateways,
+    # 1 header, 2 appearance, 1 header, 1 sales-channel, 1 back.
+    builder.adjust(1, 2, 1, 4, 1, 3, 1, 3, 1, 5, 1, 2, 1, 1, 1)
 
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -162,6 +170,23 @@ async def toggle_renewals(callback: CallbackQuery, session: AsyncSession) -> Non
     await repo.update_user_actions_settings(renewals_enabled=new_val)
     status = "روشن ✅" if new_val else "خاموش 🔴"
     await callback.answer(f"تمدید سرویس: {status}", show_alert=True)
+    await bot_settings_menu(callback, session)
+
+
+@router.callback_query(F.data == "admin:settings:toggle_currency")
+async def toggle_display_currency(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Flip the user-facing display between USD ($) and IRT (تومان).
+
+    Internally we keep storing USD; this only changes what customers see
+    in wallet balances, plan prices, topup invoices, etc. Conversion uses
+    the existing toman-rate setting.
+    """
+    repo = AppSettingsRepository(session)
+    current = await repo.get_display_currency()
+    new_mode = "IRT" if current == "USD" else "USD"
+    await repo.set_display_currency(new_mode)
+    label = "تومان 💵" if new_mode == "IRT" else "دلار $"
+    await callback.answer(f"نمایش ارز تغییر کرد به: {label}", show_alert=True)
     await bot_settings_menu(callback, session)
 
 

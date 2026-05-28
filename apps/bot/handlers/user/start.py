@@ -42,7 +42,14 @@ async def _build_welcome_status_line(
         balance = await session.scalar(
             select(Wallet.balance).where(Wallet.user_id == user.id)
         )
-        balance_str = f"{float(balance or 0):.2f}"
+        # Honour the operator's display-currency choice so a Toman-mode
+        # bot shows "1,234,000 تومان" instead of "12.34$" on /start.
+        from core.formatting import format_money
+        from repositories.settings import AppSettingsRepository
+        _settings = AppSettingsRepository(session)
+        _rate = await _settings.get_toman_rate()
+        _mode = await _settings.get_display_currency()
+        balance_str = format_money(balance or 0, mode=_mode, toman_rate=_rate)
 
         # Active sub count + nearest expiry — single query, no joins.
         active_subs = (
@@ -69,7 +76,9 @@ async def _build_welcome_status_line(
                 nearest_expiry_days = days
 
         lines: list[str] = [
-            f"💰 موجودی کیف پول: <b>{balance_str}$</b>\n",
+            # `balance_str` already includes its currency suffix from
+            # format_money — don't append "$" or "تومان" here.
+            f"💰 موجودی کیف پول: <b>{balance_str}</b>\n",
             f"📦 سرویس‌های فعال: <b>{active_count}</b>\n",
         ]
         if nearest_expiry_days is not None and nearest_expiry_days <= 3:

@@ -38,15 +38,18 @@ async def wallet_profile_handler(message: Message, session: AsyncSession) -> Non
         return
 
     from repositories.settings import AppSettingsRepository
-    from core.formatting import format_price_with_toman
-    toman_rate = await AppSettingsRepository(session).get_toman_rate()
-    balance_display = format_price_with_toman(user.wallet.balance, toman_rate)
+    from core.formatting import format_money
+    settings_repo = AppSettingsRepository(session)
+    toman_rate = await settings_repo.get_toman_rate()
+    display_currency = await settings_repo.get_display_currency()
+    balance_display = format_money(user.wallet.balance, mode=display_currency, toman_rate=toman_rate)
+    credit_display = format_money(user.wallet.credit_limit, mode=display_currency, toman_rate=toman_rate)
 
     await message.answer(
         Messages.PROFILE_OVERVIEW.format(
             name=user.first_name or "کاربر",
             balance=balance_display,
-            credit_limit=f"{user.wallet.credit_limit:.2f}",
+            credit_limit=credit_display,
         ),
         reply_markup=build_wallet_profile_keyboard(),
     )
@@ -64,16 +67,19 @@ async def wallet_profile_callback_handler(callback: CallbackQuery, session: Asyn
         return
 
     from repositories.settings import AppSettingsRepository
-    from core.formatting import format_price_with_toman
-    toman_rate = await AppSettingsRepository(session).get_toman_rate()
-    balance_display = format_price_with_toman(user.wallet.balance, toman_rate)
+    from core.formatting import format_money
+    settings_repo = AppSettingsRepository(session)
+    toman_rate = await settings_repo.get_toman_rate()
+    display_currency = await settings_repo.get_display_currency()
+    balance_display = format_money(user.wallet.balance, mode=display_currency, toman_rate=toman_rate)
+    credit_display = format_money(user.wallet.credit_limit, mode=display_currency, toman_rate=toman_rate)
 
     await safe_edit_or_send(
         callback,
         Messages.PROFILE_OVERVIEW.format(
             name=user.first_name or "کاربر",
             balance=balance_display,
-            credit_limit=f"{user.wallet.credit_limit:.2f}",
+            credit_limit=credit_display,
         ),
         reply_markup=build_wallet_profile_keyboard(),
     )

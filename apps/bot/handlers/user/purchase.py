@@ -498,16 +498,17 @@ async def _show_payment_method_choice(
     else:
         final_price = original_price
 
-    from core.formatting import format_price_with_toman
+    from core.formatting import format_money
     from repositories.settings import AppSettingsRepository
     settings_repo = AppSettingsRepository(session)
     toman_rate = await settings_repo.get_toman_rate()
+    display_currency = await settings_repo.get_display_currency()
     gw = await settings_repo.get_gateway_settings()
-    price_display = format_price_with_toman(final_price, toman_rate)
+    price_display = format_money(final_price, mode=display_currency, toman_rate=toman_rate)
 
     discount_line = ""
     if discount_percent > 0:
-        orig_display = format_price_with_toman(original_price, toman_rate)
+        orig_display = format_money(original_price, mode=display_currency, toman_rate=toman_rate)
         discount_line = f"🏷 تخفیف: {discount_percent}% (قیمت اصلی: {orig_display})\n"
 
     text = (
@@ -561,16 +562,17 @@ async def _show_payment_method_choice_msg(
     else:
         final_price = original_price
 
-    from core.formatting import format_price_with_toman
+    from core.formatting import format_money
     from repositories.settings import AppSettingsRepository
     settings_repo = AppSettingsRepository(session)
     toman_rate = await settings_repo.get_toman_rate()
+    display_currency = await settings_repo.get_display_currency()
     gw = await settings_repo.get_gateway_settings()
-    price_display = format_price_with_toman(final_price, toman_rate)
+    price_display = format_money(final_price, mode=display_currency, toman_rate=toman_rate)
 
     discount_line = ""
     if discount_percent > 0:
-        orig_display = format_price_with_toman(original_price, toman_rate)
+        orig_display = format_money(original_price, mode=display_currency, toman_rate=toman_rate)
         discount_line = f"🏷 تخفیف: {discount_percent}% (قیمت اصلی: {orig_display})\n"
 
     text = (

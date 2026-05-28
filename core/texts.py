@@ -52,8 +52,11 @@ class Messages:
         "👤 <b>حساب کاربری شما</b>\n"
         "━━━━━━━━━━━━━━\n"
         "👤 نام: <b>{name}</b>\n"
-        "💰 موجودی: <b>{balance} $</b>\n"
-        "💳 سقف اعتبار: <b>{credit_limit} $</b> "
+        # `balance` and `credit_limit` are pre-formatted by the caller via
+        # `core.formatting.format_money(...)` — they already include the
+        # currency symbol/word ("$ " or " تومان"), so DO NOT append "$".
+        "💰 موجودی: <b>{balance}</b>\n"
+        "💳 سقف اعتبار: <b>{credit_limit}</b> "
         "<i>(حد منفی مجاز برای حساب‌های ویژه)</i>\n"
         "━━━━━━━━━━━━━━\n"
         "برای افزایش موجودی، روی <b>«شارژ کیف پول»</b> بزنید."
