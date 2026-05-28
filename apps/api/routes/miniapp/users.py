@@ -2334,10 +2334,15 @@ async def get_renewal_quote(
     _validate_renewal_request(subscription, body.renew_type, body.amount)
     settings_repo = AppSettingsRepository(session)
     renewal_settings = await settings_repo.get_renewal_settings()
+    plan = None
+    if subscription.plan_id is not None:
+        from models.plan import Plan as _Plan
+        plan = await session.scalar(select(_Plan).where(_Plan.id == subscription.plan_id))
     price = calculate_renewal_price(
         renew_type=body.renew_type,
         amount=body.amount,
         settings=renewal_settings,
+        plan=plan,
     )
     return RenewalQuoteResponse(
         renew_type=body.renew_type,
@@ -2366,10 +2371,15 @@ async def renew_subscription(
     _validate_renewal_request(subscription, body.renew_type, body.amount)
 
     renewal_settings = await AppSettingsRepository(session).get_renewal_settings()
+    plan = None
+    if subscription.plan_id is not None:
+        from models.plan import Plan as _Plan
+        plan = await session.scalar(select(_Plan).where(_Plan.id == subscription.plan_id))
     price = calculate_renewal_price(
         renew_type=body.renew_type,
         amount=body.amount,
         settings=renewal_settings,
+        plan=plan,
     )
 
     renewal_meta = {

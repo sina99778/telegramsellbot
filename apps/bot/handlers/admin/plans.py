@@ -10,6 +10,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import func, not_, select
@@ -75,10 +76,14 @@ DECIMAL_SEPARATORS = {".", ",", "\u066b", "\u066c", "\u060c"}
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_duration_days)
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_volume_gb)
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_price)
+@router.message(Command("cancel"), CreatePlanStates.waiting_for_ip_limit)
 @router.message(Command("cancel"), PlanEditStates.waiting_for_duration_days)
 @router.message(Command("cancel"), PlanEditStates.waiting_for_name)
 @router.message(Command("cancel"), PlanEditStates.waiting_for_price)
 @router.message(Command("cancel"), PlanEditStates.waiting_for_stock_limit)
+@router.message(Command("cancel"), PlanEditStates.waiting_for_ip_limit)
+@router.message(Command("cancel"), PlanEditStates.waiting_for_renewal_price_per_gb)
+@router.message(Command("cancel"), PlanEditStates.waiting_for_renewal_price_per_day)
 async def cancel_plan_creation(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(AdminMessages.PLAN_CREATION_CANCELLED)
@@ -89,10 +94,14 @@ async def cancel_plan_creation(message: Message, state: FSMContext) -> None:
 @router.message(CreatePlanStates.waiting_for_duration_days, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(CreatePlanStates.waiting_for_volume_gb, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(CreatePlanStates.waiting_for_price, F.text.in_(MENU_INTERRUPT_TEXTS))
+@router.message(CreatePlanStates.waiting_for_ip_limit, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(PlanEditStates.waiting_for_duration_days, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(PlanEditStates.waiting_for_name, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(PlanEditStates.waiting_for_price, F.text.in_(MENU_INTERRUPT_TEXTS))
 @router.message(PlanEditStates.waiting_for_stock_limit, F.text.in_(MENU_INTERRUPT_TEXTS))
+@router.message(PlanEditStates.waiting_for_ip_limit, F.text.in_(MENU_INTERRUPT_TEXTS))
+@router.message(PlanEditStates.waiting_for_renewal_price_per_gb, F.text.in_(MENU_INTERRUPT_TEXTS))
+@router.message(PlanEditStates.waiting_for_renewal_price_per_day, F.text.in_(MENU_INTERRUPT_TEXTS))
 async def interrupt_plan_creation_with_main_menu(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(AdminMessages.PLAN_CREATION_INTERRUPTED)
@@ -191,6 +200,22 @@ async def view_plan(
         if plan.inbound
         else "نامشخص"
     )
+
+    # Per-plan override labels — "پیش‌فرض" means "fall back to the global
+    # setting in the bot's admin → settings menu".
+    ip_limit_label = (
+        "نامحدود" if plan.ip_limit == 0 else
+        f"{plan.ip_limit} دستگاه" if plan.ip_limit is not None else "پیش‌فرض عمومی"
+    )
+    renewal_gb_label = (
+        f"{plan.renewal_price_per_gb} {plan.currency} / GB"
+        if plan.renewal_price_per_gb is not None else "پیش‌فرض عمومی"
+    )
+    renewal_day_label = (
+        f"{plan.renewal_price_per_day} {plan.currency} / روز"
+        if plan.renewal_price_per_day is not None else "پیش‌فرض عمومی"
+    )
+
     text = admin_panel(
         "جزئیات پلن",
         [
@@ -210,6 +235,14 @@ async def view_plan(
                     ("حجم", format_volume_bytes(plan.volume_bytes)),
                     ("موجودی", stock_label),
                     ("قیمت", f"{plan.price} {plan.currency}"),
+                ],
+            ),
+            (
+                "محدودیت‌ها و قیمت تمدید",
+                [
+                    ("محدودیت IP", ip_limit_label),
+                    ("تمدید هر گیگ", renewal_gb_label),
+                    ("تمدید هر روز", renewal_day_label),
                 ],
             ),
         ],
@@ -242,6 +275,18 @@ async def view_plan(
         callback_data=PlanActionCallback(action="edit_stock", plan_id=plan.id, page=callback_data.page).pack(),
     )
     builder.button(
+        text="🔐 محدودیت IP",
+        callback_data=PlanActionCallback(action="edit_ip_limit", plan_id=plan.id, page=callback_data.page).pack(),
+    )
+    builder.button(
+        text="📦 قیمت تمدید گیگ",
+        callback_data=PlanActionCallback(action="edit_renew_gb", plan_id=plan.id, page=callback_data.page).pack(),
+    )
+    builder.button(
+        text="⏳ قیمت تمدید روز",
+        callback_data=PlanActionCallback(action="edit_renew_day", plan_id=plan.id, page=callback_data.page).pack(),
+    )
+    builder.button(
         text="✖ حذف پلن",
         callback_data=PlanActionCallback(action="delete", plan_id=plan.id, page=callback_data.page).pack(),
     )
@@ -249,7 +294,7 @@ async def view_plan(
         text="🔙 بازگشت به لیست",
         callback_data=PlanListPageCallback(page=callback_data.page).pack(),
     )
-    builder.adjust(2, 2, 2, 1, 1)
+    builder.adjust(2, 2, 2, 2, 1, 1)
     
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -381,9 +426,8 @@ async def create_plan_volume(message: Message, state: FSMContext) -> None:
 async def create_plan_price(
     message: Message,
     state: FSMContext,
-    session: AsyncSession,
-    admin_user: User,
 ) -> None:
+    """Collect price, then ask for the IP-limit override before creating."""
     if not message.text:
         return
 
@@ -397,10 +441,47 @@ async def create_plan_price(
         await message.answer(AdminMessages.PRICE_GT_ZERO)
         return
 
+    await state.update_data(price=str(price))
+    await state.set_state(CreatePlanStates.waiting_for_ip_limit)
+    await message.answer(
+        "🔐 محدودیت آی‌پی برای این پلن را وارد کنید (تعداد دستگاه هم‌زمان):\n"
+        "• یک عدد ≥ ۱  → همان مقدار به X-UI داده می‌شود\n"
+        "• <code>۰</code>  → نامحدود (طبق قرارداد X-UI)\n"
+        "• <code>-</code>  → از پیش‌فرض عمومی استفاده شود\n\n"
+        "برای لغو /cancel را بزنید.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(CreatePlanStates.waiting_for_ip_limit)
+async def create_plan_ip_limit(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    """Finalize plan creation with the optional ip_limit override."""
+    if not message.text:
+        return
+
+    raw = message.text.strip()
+    ip_limit: int | None
+    if raw in {"-", "_", "—", "none", "None"}:
+        ip_limit = None
+    else:
+        try:
+            ip_limit = int(_normalize_integer_input(raw))
+            if ip_limit < 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ مقدار نامعتبر. عدد ≥ ۰ یا کاراکتر «-» را بفرستید.")
+            return
+
     form_data = await state.get_data()
     volume_bytes = int(form_data["volume_gb"]) * 1024 * 1024 * 1024
     protocol = str(form_data["protocol"])
     inbound_id = UUID(str(form_data["inbound_id"]))
+    price = Decimal(str(form_data["price"]))
     # Include a UUID fragment so code is always globally unique,
     # even if the admin creates two plans with identical parameters.
     code = (
@@ -419,6 +500,7 @@ async def create_plan_price(
         renewal_price=price,
         currency="USD",
         is_active=True,
+        ip_limit=ip_limit,
     )
 
     # Always clear state first so admin is NEVER stuck regardless of what happens next
@@ -720,6 +802,224 @@ async def edit_plan_stock_submit(
     await session.flush()
     label = "نامحدود" if stock.is_unlimited else f"{stock.stock_remaining} باقی‌مانده از {stock.sales_limit}"
     await message.answer(f"✅ موجودی فروش پلن «{plan.name}» تنظیم شد: {label}")
+
+
+# ─── Per-plan overrides: IP limit, renewal/GB, renewal/day ──────────────
+# All three follow the same input convention:
+#   • a positive number       → set as override
+#   • 0                       → 0 (unlimited for ip_limit, free for prices)
+#   • "-" / "_" / "—" / "none"→ clear override → fall back to global default
+
+
+@router.callback_query(PlanActionCallback.filter(F.action == "edit_ip_limit"))
+async def edit_plan_ip_limit_start(
+    callback: CallbackQuery,
+    callback_data: PlanActionCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    await callback.answer()
+    plan = await session.get(Plan, callback_data.plan_id)
+    if plan is None:
+        await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
+        return
+    current = (
+        "نامحدود (۰)" if plan.ip_limit == 0 else
+        str(plan.ip_limit) if plan.ip_limit is not None else "پیش‌فرض عمومی"
+    )
+    await state.update_data(plan_id=str(plan.id), page=callback_data.page)
+    await state.set_state(PlanEditStates.waiting_for_ip_limit)
+    await safe_edit_or_send(
+        callback,
+        f"🔐 محدودیت آی‌پی فعلی پلن «{plan.name}»: {current}\n\n"
+        "مقدار جدید را بفرستید:\n"
+        "• یک عدد ≥ ۱ → همان مقدار\n"
+        "• <code>۰</code> → نامحدود\n"
+        "• <code>-</code> → استفاده از پیش‌فرض عمومی\n\n"
+        "برای لغو /cancel را بزنید.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(PlanEditStates.waiting_for_ip_limit)
+async def edit_plan_ip_limit_submit(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    if not message.text:
+        return
+    raw = message.text.strip()
+    if raw in {"-", "_", "—", "none", "None"}:
+        new_value: int | None = None
+    else:
+        try:
+            new_value = int(_normalize_integer_input(raw))
+            if new_value < 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ مقدار نامعتبر. عدد ≥ ۰ یا «-» را بفرستید.")
+            return
+
+    data = await state.get_data()
+    await state.clear()
+    plan = await session.get(Plan, UUID(str(data["plan_id"])))
+    if plan is None:
+        await message.answer(AdminMessages.PLAN_NOT_FOUND)
+        return
+    old_value = plan.ip_limit
+    plan.ip_limit = new_value
+    try:
+        await AuditLogRepository(session).log_action(
+            actor_user_id=admin_user.id,
+            action="edit_plan_ip_limit",
+            entity_type="plan",
+            entity_id=plan.id,
+            payload={"from": old_value, "to": new_value},
+        )
+    except Exception as exc:
+        logger.warning("Audit log failed: %s", exc)
+    await session.flush()
+    label = "پیش‌فرض عمومی" if new_value is None else ("نامحدود" if new_value == 0 else str(new_value))
+    await message.answer(f"✅ محدودیت IP پلن «{plan.name}» تنظیم شد: {label}")
+
+
+async def _edit_renewal_price_start(
+    *,
+    callback: CallbackQuery,
+    callback_data: PlanActionCallback,
+    state: FSMContext,
+    session: AsyncSession,
+    unit_label: str,
+    target_state: State,
+    current_value: Decimal | None,
+    plan_name: str,
+) -> None:
+    await callback.answer()
+    current = f"{current_value}" if current_value is not None else "پیش‌فرض عمومی"
+    await state.update_data(plan_id=str(callback_data.plan_id), page=callback_data.page)
+    await state.set_state(target_state)
+    await safe_edit_or_send(
+        callback,
+        f"💰 قیمت تمدید هر {unit_label} برای پلن «{plan_name}»: {current}\n\n"
+        "مقدار جدید را بفرستید:\n"
+        "• یک عدد (مثلاً 0.5)\n"
+        "• <code>-</code> → استفاده از پیش‌فرض عمومی\n\n"
+        "برای لغو /cancel را بزنید.",
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(PlanActionCallback.filter(F.action == "edit_renew_gb"))
+async def edit_plan_renewal_gb_start(
+    callback: CallbackQuery,
+    callback_data: PlanActionCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    plan = await session.get(Plan, callback_data.plan_id)
+    if plan is None:
+        await callback.answer()
+        await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
+        return
+    await _edit_renewal_price_start(
+        callback=callback, callback_data=callback_data, state=state, session=session,
+        unit_label="گیگابایت", target_state=PlanEditStates.waiting_for_renewal_price_per_gb,
+        current_value=plan.renewal_price_per_gb, plan_name=plan.name,
+    )
+
+
+@router.callback_query(PlanActionCallback.filter(F.action == "edit_renew_day"))
+async def edit_plan_renewal_day_start(
+    callback: CallbackQuery,
+    callback_data: PlanActionCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    plan = await session.get(Plan, callback_data.plan_id)
+    if plan is None:
+        await callback.answer()
+        await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
+        return
+    await _edit_renewal_price_start(
+        callback=callback, callback_data=callback_data, state=state, session=session,
+        unit_label="روز", target_state=PlanEditStates.waiting_for_renewal_price_per_day,
+        current_value=plan.renewal_price_per_day, plan_name=plan.name,
+    )
+
+
+async def _submit_renewal_price_override(
+    *,
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin_user: User,
+    field: str,
+    unit_label: str,
+) -> None:
+    raw = message.text.strip() if message.text else ""
+    if not raw:
+        return
+    if raw in {"-", "_", "—", "none", "None"}:
+        new_value: Decimal | None = None
+    else:
+        try:
+            new_value = Decimal(_normalize_decimal_input(raw))
+            if new_value < 0:
+                raise InvalidOperation
+        except InvalidOperation:
+            await message.answer("❌ مقدار نامعتبر. عدد ≥ ۰ یا «-» را بفرستید.")
+            return
+
+    data = await state.get_data()
+    await state.clear()
+    plan = await session.get(Plan, UUID(str(data["plan_id"])))
+    if plan is None:
+        await message.answer(AdminMessages.PLAN_NOT_FOUND)
+        return
+    old_value = getattr(plan, field)
+    setattr(plan, field, new_value)
+    try:
+        await AuditLogRepository(session).log_action(
+            actor_user_id=admin_user.id,
+            action=f"edit_plan_{field}",
+            entity_type="plan",
+            entity_id=plan.id,
+            payload={"from": str(old_value) if old_value is not None else None,
+                     "to": str(new_value) if new_value is not None else None},
+        )
+    except Exception as exc:
+        logger.warning("Audit log failed: %s", exc)
+    await session.flush()
+    label = "پیش‌فرض عمومی" if new_value is None else f"{new_value} {plan.currency} / {unit_label}"
+    await message.answer(f"✅ قیمت تمدید هر {unit_label} پلن «{plan.name}» تنظیم شد: {label}")
+
+
+@router.message(PlanEditStates.waiting_for_renewal_price_per_gb)
+async def edit_plan_renewal_gb_submit(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    await _submit_renewal_price_override(
+        message=message, state=state, session=session, admin_user=admin_user,
+        field="renewal_price_per_gb", unit_label="گیگابایت",
+    )
+
+
+@router.message(PlanEditStates.waiting_for_renewal_price_per_day)
+async def edit_plan_renewal_day_submit(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    await _submit_renewal_price_override(
+        message=message, state=state, session=session, admin_user=admin_user,
+        field="renewal_price_per_day", unit_label="روز",
+    )
 
 
 @router.callback_query(PlanActionCallback.filter(F.action == "delete"))

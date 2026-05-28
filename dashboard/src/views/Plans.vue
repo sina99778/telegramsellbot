@@ -31,6 +31,10 @@ const createForm = ref({
   price: 5,
   renewal_price: 5,
   currency: "USD",
+  // Per-plan overrides — empty string means "use global default".
+  ip_limit: "" as string | number,
+  renewal_price_per_gb: "" as string | number,
+  renewal_price_per_day: "" as string | number,
 });
 
 const editing = ref<PlanItem | null>(null);
@@ -45,6 +49,9 @@ const editForm = ref({
   renewal_price: 5,
   currency: "USD",
   is_active: true,
+  ip_limit: "" as string | number,
+  renewal_price_per_gb: "" as string | number,
+  renewal_price_per_day: "" as string | number,
 });
 
 async function refresh() {
@@ -71,6 +78,14 @@ function flash(msg: string, tone: "ok" | "warn" = "ok") {
 const activeCount = computed(() => items.value.filter((p) => p.is_active).length);
 const totalSubs = computed(() => items.value.reduce((s, p) => s + p.subscription_count, 0));
 
+// "" / null in the form means "leave the override unset (fall back to global)".
+// Anything numeric — including 0 — is taken at face value.
+function _numOrNull(v: string | number): number | null {
+  if (v === "" || v === null || v === undefined) return null;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 async function doCreate() {
   if (!createForm.value.name.trim()) {
     flash("نام پلن خالی است.", "warn");
@@ -87,12 +102,16 @@ async function doCreate() {
       price: createForm.value.price,
       renewal_price: createForm.value.renewal_price,
       currency: createForm.value.currency,
+      ip_limit: _numOrNull(createForm.value.ip_limit),
+      renewal_price_per_gb: _numOrNull(createForm.value.renewal_price_per_gb),
+      renewal_price_per_day: _numOrNull(createForm.value.renewal_price_per_day),
     });
     flash("پلن جدید اضافه شد.");
     showCreate.value = false;
     createForm.value = {
       name: "", protocol: "vless", inbound_id: "",
       duration_days: 30, volume_gb: 30, price: 5, renewal_price: 5, currency: "USD",
+      ip_limit: "", renewal_price_per_gb: "", renewal_price_per_day: "",
     };
     refresh();
   } catch (exc) {
@@ -114,7 +133,20 @@ function openEdit(p: PlanItem) {
     renewal_price: p.renewal_price,
     currency: p.currency,
     is_active: p.is_active,
+    ip_limit: p.ip_limit ?? "",
+    renewal_price_per_gb: p.renewal_price_per_gb ?? "",
+    renewal_price_per_day: p.renewal_price_per_day ?? "",
   };
+}
+
+// Map a form field back to the PATCH payload. Empty string in the form
+// means "unset" -> send -1 (the backend's "clear" sentinel). A number
+// is sent as-is. Same convention applies for ip_limit & both renewal
+// pricing overrides.
+function _formToPatchOverride(v: string | number): number {
+  if (v === "" || v === null || v === undefined) return -1;
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) ? n : -1;
 }
 
 async function doEdit() {
@@ -131,6 +163,9 @@ async function doEdit() {
       renewal_price: editForm.value.renewal_price,
       currency: editForm.value.currency,
       is_active: editForm.value.is_active,
+      ip_limit: _formToPatchOverride(editForm.value.ip_limit),
+      renewal_price_per_gb: _formToPatchOverride(editForm.value.renewal_price_per_gb),
+      renewal_price_per_day: _formToPatchOverride(editForm.value.renewal_price_per_day),
     });
     flash("پلن به‌روزرسانی شد.");
     editing.value = null;
@@ -223,14 +258,26 @@ async function doDelete(p: PlanItem) {
             <td>
               <div class="text-white font-medium">{{ p.name }}</div>
               <div class="text-[11px] text-slate-500 font-mono">{{ p.code }}</div>
+              <div class="text-[11px] mt-1">
+                <span v-if="p.ip_limit !== null" class="badge badge-info">
+                  IP: {{ p.ip_limit === 0 ? "∞" : p.ip_limit }}
+                </span>
+                <span v-else class="text-slate-500">IP: عمومی</span>
+              </div>
             </td>
             <td class="font-mono text-xs uppercase">{{ p.protocol }}</td>
             <td>{{ p.duration_days }} روز</td>
             <td class="font-mono">{{ p.volume_gb.toFixed(0) }} GB</td>
             <td>
               <div class="font-mono">{{ p.price.toFixed(2) }} {{ p.currency }}</div>
-              <div class="text-[11px] text-slate-500 font-mono">
-                تمدید: {{ p.renewal_price.toFixed(2) }}
+              <div class="text-[11px] text-slate-500 font-mono space-y-0.5">
+                <div>تمدید کامل: {{ p.renewal_price.toFixed(2) }}</div>
+                <div v-if="p.renewal_price_per_gb !== null">
+                  <span class="text-sky-300">گیگ: {{ p.renewal_price_per_gb.toFixed(2) }}</span>
+                </div>
+                <div v-if="p.renewal_price_per_day !== null">
+                  <span class="text-sky-300">روز: {{ p.renewal_price_per_day.toFixed(2) }}</span>
+                </div>
               </div>
             </td>
             <td class="text-xs">
@@ -312,6 +359,28 @@ async function doDelete(p: PlanItem) {
             </select>
           </div>
         </div>
+
+        <div class="border-t border-bg-border pt-3 mt-2">
+          <div class="text-[12px] text-slate-400 mb-2">
+            موارد زیر اختیاری‌اند — خالی بگذار تا از پیش‌فرض عمومی استفاده شود.
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label class="label">محدودیت آی‌پی (هم‌زمان)</label>
+              <input v-model="createForm.ip_limit" class="input" type="number" min="0" placeholder="پیش‌فرض" />
+              <div class="text-[10px] text-slate-500 mt-1">۰ = نامحدود (طبق قرارداد X-UI)</div>
+            </div>
+            <div>
+              <label class="label">قیمت تمدید هر گیگ</label>
+              <input v-model="createForm.renewal_price_per_gb" class="input" type="number" min="0" step="0.01" placeholder="پیش‌فرض" />
+            </div>
+            <div>
+              <label class="label">قیمت تمدید هر روز</label>
+              <input v-model="createForm.renewal_price_per_day" class="input" type="number" min="0" step="0.01" placeholder="پیش‌فرض" />
+            </div>
+          </div>
+        </div>
+
         <div class="flex justify-end gap-2 pt-2">
           <button class="btn btn-secondary" :disabled="createBusy" @click="showCreate = false">انصراف</button>
           <button class="btn btn-primary" :disabled="createBusy" @click="doCreate">
@@ -383,6 +452,28 @@ async function doDelete(p: PlanItem) {
             <label for="ed_active" class="text-sm text-slate-200">فعال</label>
           </div>
         </div>
+
+        <div class="border-t border-bg-border pt-3 mt-2">
+          <div class="text-[12px] text-slate-400 mb-2">
+            خالی بگذار تا از پیش‌فرض عمومی استفاده شود (در «تنظیمات»).
+          </div>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label class="label">محدودیت آی‌پی</label>
+              <input v-model="editForm.ip_limit" class="input" type="number" min="0" placeholder="پیش‌فرض" />
+              <div class="text-[10px] text-slate-500 mt-1">۰ = نامحدود</div>
+            </div>
+            <div>
+              <label class="label">قیمت تمدید هر گیگ</label>
+              <input v-model="editForm.renewal_price_per_gb" class="input" type="number" min="0" step="0.01" placeholder="پیش‌فرض" />
+            </div>
+            <div>
+              <label class="label">قیمت تمدید هر روز</label>
+              <input v-model="editForm.renewal_price_per_day" class="input" type="number" min="0" step="0.01" placeholder="پیش‌فرض" />
+            </div>
+          </div>
+        </div>
+
         <div class="flex justify-end gap-2 pt-2">
           <button class="btn btn-secondary" :disabled="editBusy" @click="editing = null">انصراف</button>
           <button class="btn btn-primary" :disabled="editBusy" @click="doEdit">

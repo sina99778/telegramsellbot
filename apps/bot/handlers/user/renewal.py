@@ -19,6 +19,7 @@ from apps.bot.states.renew import RenewStates
 from core.redis import distributed_lock
 from core.texts import Buttons, Messages
 from models.order import Order
+from models.plan import Plan
 from models.subscription import Subscription
 from repositories.settings import AppSettingsRepository
 from repositories.user import UserRepository
@@ -228,14 +229,23 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
     settings_repo = AppSettingsRepository(session)
     renewal_settings = await settings_repo.get_renewal_settings()
 
+    # Look up the sub's plan so we can prefer its per-plan overrides
+    # (renewal_price_per_gb / renewal_price_per_day) over the global
+    # defaults. Falls back gracefully if the plan was deleted.
+    plan = await session.scalar(
+        select(Plan).join(Subscription, Subscription.plan_id == Plan.id).where(Subscription.id == sub_id)
+    )
+
     volume_added = 0.0
     time_added_days = 0.0
-    
+
     if renew_type == "volume":
-        price = amount * renewal_settings.price_per_gb
+        per_gb = plan.effective_renewal_price_per_gb(renewal_settings.price_per_gb) if plan else renewal_settings.price_per_gb
+        price = amount * per_gb
         volume_added = amount
     elif renew_type == "time":
-        price = (amount / 10.0) * renewal_settings.price_per_10_days
+        per_day = plan.effective_renewal_price_per_day(renewal_settings.price_per_10_days) if plan else (renewal_settings.price_per_10_days / 10.0)
+        price = amount * per_day
         time_added_days = amount
 
     # Apply personal discount so the displayed price matches the actual charge
@@ -313,10 +323,18 @@ async def _get_renewal_data(callback_data: RenewPayCallback, session: AsyncSessi
     settings_repo = AppSettingsRepository(session)
     renewal_settings = await settings_repo.get_renewal_settings()
 
+    # Mirror renew_value_entered's per-plan-pricing logic, so the price
+    # the user is actually charged on this callback matches the one we
+    # showed them in the invoice.
+    plan = await session.scalar(
+        select(Plan).join(Subscription, Subscription.plan_id == Plan.id).where(Subscription.id == sub_id)
+    )
     if renew_type == "volume":
-        price = amount * renewal_settings.price_per_gb
+        per_gb = plan.effective_renewal_price_per_gb(renewal_settings.price_per_gb) if plan else renewal_settings.price_per_gb
+        price = amount * per_gb
     else:
-        price = (amount / 10.0) * renewal_settings.price_per_10_days
+        per_day = plan.effective_renewal_price_per_day(renewal_settings.price_per_10_days) if plan else (renewal_settings.price_per_10_days / 10.0)
+        price = amount * per_day
 
     # Apply personal discount
     discount_pct = getattr(user, "personal_discount_percent", 0) or 0

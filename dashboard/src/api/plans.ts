@@ -12,6 +12,9 @@ export interface PlanItem {
   renewal_price: number;
   currency: string;
   is_active: boolean;
+  ip_limit: number | null;
+  renewal_price_per_gb: number | null;
+  renewal_price_per_day: number | null;
   inbound_id: string | null;
   inbound_label: string | null;
   server_name: string | null;
@@ -33,6 +36,9 @@ export interface PlanCreateBody {
   price: number;
   renewal_price?: number | null;
   currency: string;
+  ip_limit?: number | null;
+  renewal_price_per_gb?: number | null;
+  renewal_price_per_day?: number | null;
 }
 
 export interface PlanUpdateBody {
@@ -45,6 +51,11 @@ export interface PlanUpdateBody {
   renewal_price?: number;
   currency?: string;
   is_active?: boolean;
+  // -1 acts as "unset, fall back to global default" (since `null`
+  // in PATCH means "don't touch" per the existing convention).
+  ip_limit?: number | null;
+  renewal_price_per_gb?: number | null;
+  renewal_price_per_day?: number | null;
 }
 
 export function listPlans(): Promise<{ items: PlanItem[]; total: number }> {

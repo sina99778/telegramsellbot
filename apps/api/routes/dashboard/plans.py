@@ -73,6 +73,9 @@ async def list_plans(auth: AuthDep) -> dict[str, Any]:
             "renewal_price": float(Decimal(str(p.renewal_price))),
             "currency": p.currency,
             "is_active": p.is_active,
+            "ip_limit": int(p.ip_limit) if p.ip_limit is not None else None,
+            "renewal_price_per_gb": float(p.renewal_price_per_gb) if p.renewal_price_per_gb is not None else None,
+            "renewal_price_per_day": float(p.renewal_price_per_day) if p.renewal_price_per_day is not None else None,
             "inbound_id": str(p.inbound_id) if p.inbound_id else None,
             "inbound_label": inbound_label,
             "server_name": server_name,
@@ -91,6 +94,10 @@ class PlanCreateBody(BaseModel):
     price: float = Field(..., ge=0)
     renewal_price: float | None = Field(None, ge=0)
     currency: str = Field("USD", min_length=1, max_length=16)
+    # New per-plan overrides — all optional. NULL keeps the global default.
+    ip_limit: int | None = Field(None, ge=0, le=1000)
+    renewal_price_per_gb: float | None = Field(None, ge=0)
+    renewal_price_per_day: float | None = Field(None, ge=0)
 
 
 @router.post("")
@@ -115,6 +122,9 @@ async def create_plan(body: PlanCreateBody, auth: AuthDep) -> dict[str, Any]:
         renewal_price=Decimal(str(body.renewal_price if body.renewal_price is not None else body.price)),
         currency=body.currency,
         is_active=True,
+        ip_limit=body.ip_limit,
+        renewal_price_per_gb=Decimal(str(body.renewal_price_per_gb)) if body.renewal_price_per_gb is not None else None,
+        renewal_price_per_day=Decimal(str(body.renewal_price_per_day)) if body.renewal_price_per_day is not None else None,
     )
     session.add(plan)
     await session.flush()
@@ -143,6 +153,12 @@ class PlanUpdateBody(BaseModel):
     renewal_price: float | None = Field(None, ge=0)
     currency: str | None = Field(None, min_length=1, max_length=16)
     is_active: bool | None = None
+    # Per-plan overrides. To CLEAR an override back to "use global", send -1.
+    # (Sending null in PATCH means "don't touch", which is the standard PATCH
+    # semantic — but here clients want a way to actively unset the field.)
+    ip_limit: int | None = Field(None, ge=-1, le=1000)
+    renewal_price_per_gb: float | None = Field(None, ge=-1)
+    renewal_price_per_day: float | None = Field(None, ge=-1)
 
 
 @router.patch("/{plan_id}")
@@ -162,6 +178,19 @@ async def update_plan(plan_id: UUID, body: PlanUpdateBody, auth: AuthDep) -> dic
     if body.renewal_price is not None:  plan.renewal_price = Decimal(str(body.renewal_price)); changes["renewal_price"] = body.renewal_price
     if body.currency is not None:       plan.currency = body.currency; changes["currency"] = body.currency
     if body.is_active is not None:      plan.is_active = body.is_active; changes["is_active"] = body.is_active
+
+    # Per-plan overrides. -1 is the "unset" sentinel (PATCH null already
+    # means "don't touch"), so dashboard can actively roll back to the
+    # global default.
+    if body.ip_limit is not None:
+        plan.ip_limit = None if body.ip_limit < 0 else int(body.ip_limit)
+        changes["ip_limit"] = plan.ip_limit
+    if body.renewal_price_per_gb is not None:
+        plan.renewal_price_per_gb = None if body.renewal_price_per_gb < 0 else Decimal(str(body.renewal_price_per_gb))
+        changes["renewal_price_per_gb"] = float(plan.renewal_price_per_gb) if plan.renewal_price_per_gb is not None else None
+    if body.renewal_price_per_day is not None:
+        plan.renewal_price_per_day = None if body.renewal_price_per_day < 0 else Decimal(str(body.renewal_price_per_day))
+        changes["renewal_price_per_day"] = float(plan.renewal_price_per_day) if plan.renewal_price_per_day is not None else None
 
     # Inbound change requires existence check + invalidates the cached
     # client mappings on the bot side. Don't bother changing it for

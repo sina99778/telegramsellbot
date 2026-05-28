@@ -23,6 +23,7 @@ class CreatePlanStates(StatesGroup):
     waiting_for_duration_days = State()
     waiting_for_volume_gb = State()
     waiting_for_price = State()
+    waiting_for_ip_limit = State()
 
 
 class PlanEditStates(StatesGroup):
@@ -30,6 +31,9 @@ class PlanEditStates(StatesGroup):
     waiting_for_duration_days = State()
     waiting_for_price = State()
     waiting_for_stock_limit = State()
+    waiting_for_ip_limit = State()
+    waiting_for_renewal_price_per_gb = State()
+    waiting_for_renewal_price_per_day = State()
 
 
 class ManageUserStates(StatesGroup):

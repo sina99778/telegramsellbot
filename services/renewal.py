@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from models.plan import Plan
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.settings import AppSettingsRepository, RenewalSettings, ServiceSecuritySettings
@@ -26,13 +27,28 @@ def calculate_renewal_price(
     renew_type: str,
     amount: float,
     settings: RenewalSettings,
+    plan: Plan | None = None,
 ) -> Decimal:
+    """Compute renewal price.
+
+    If `plan` is provided AND has the matching per-plan override set,
+    we prefer it over the global `settings` defaults. The plan override
+    is per-day; the global default is per-10-days (divided by 10).
+    """
     if amount <= 0:
         raise ValueError("Renewal amount must be positive.")
     if renew_type == "volume":
-        price = Decimal(str(amount)) * Decimal(str(settings.price_per_gb))
+        if plan is not None:
+            per_gb = plan.effective_renewal_price_per_gb(settings.price_per_gb)
+        else:
+            per_gb = settings.price_per_gb
+        price = Decimal(str(amount)) * Decimal(str(per_gb))
     elif renew_type == "time":
-        price = (Decimal(str(amount)) / Decimal("10")) * Decimal(str(settings.price_per_10_days))
+        if plan is not None:
+            per_day = plan.effective_renewal_price_per_day(settings.price_per_10_days)
+            price = Decimal(str(amount)) * Decimal(str(per_day))
+        else:
+            price = (Decimal(str(amount)) / Decimal("10")) * Decimal(str(settings.price_per_10_days))
     else:
         raise ValueError("Invalid renewal type.")
     return price.quantize(Decimal("0.01"))
@@ -64,6 +80,12 @@ async def apply_renewal(
 
     # Fetch settings before any modifications to avoid auto-flush lazy load errors
     security_settings = await AppSettingsRepository(session).get_service_security_settings()
+
+    # Load the Plan up-front so we can resolve per-plan ip_limit without
+    # touching subscription.plan inside the savepoint (lazy-load forbidden).
+    plan: Plan | None = None
+    if subscription.plan_id is not None:
+        plan = await session.scalar(select(Plan).where(Plan.id == subscription.plan_id))
 
     # ── Load xui_client via explicit query ───────────────────────────────
     # NEVER use subscription.xui_client — that triggers lazy loading!
@@ -105,7 +127,7 @@ async def apply_renewal(
             # Sync with X-UI panel — if this fails, the SAVEPOINT rolls back
             # all the DB changes above automatically.
             if xui is not None:
-                await _sync_xui_limits(session, subscription, xui, security_settings)
+                await _sync_xui_limits(session, subscription, xui, security_settings, plan=plan)
 
             await session.flush()
 
@@ -128,6 +150,8 @@ async def _sync_xui_limits(
     subscription: Subscription,
     xui: XUIClientRecord,
     security_settings: ServiceSecuritySettings,
+    *,
+    plan: Plan | None = None,
 ) -> None:
     """Sync subscription limits to X-UI panel.
 
@@ -164,12 +188,15 @@ async def _sync_xui_limits(
         if "/" in current_sub_link:
             sub_id_str = current_sub_link.rsplit("/", 1)[-1]
 
+        # Resolve the IP cap: per-plan override (if set on Plan) wins.
+        ip_limit = plan.effective_ip_limit(security_settings.xui_limit_ip) if plan else security_settings.xui_limit_ip
+
         xui_client = XUIClient(
             id=xui_full.client_uuid,
             uuid=xui_full.client_uuid,
             email=xui_full.email,
             enable=True,
-            limitIp=security_settings.xui_limit_ip,
+            limitIp=ip_limit,
             totalGB=subscription.volume_bytes,
             expiryTime=expiry_time,
             subId=sub_id_str,

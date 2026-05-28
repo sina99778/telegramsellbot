@@ -284,7 +284,7 @@ class ProvisioningManager:
             id=client_uuid,
             uuid=client_uuid,
             email=email,
-            limitIp=security_settings.xui_limit_ip,
+            limitIp=plan.effective_ip_limit(security_settings.xui_limit_ip),
             totalGB=plan.volume_bytes,
             expiryTime=expiry_ms,
             enable=True,
@@ -689,11 +689,17 @@ class ProvisioningManager:
         # plan settings.
         expiry_ms = int(sub.ends_at.timestamp() * 1000) if sub.ends_at is not None else 0
 
+        # Inherit per-plan ip_limit when the sub still has a plan attached;
+        # otherwise fall back to the global security setting. `sub.plan` is
+        # already accessed earlier in this function (display-name lookup),
+        # so it's eager-loaded by the caller.
+        _plan_for_ip = sub.plan if sub.plan_id else None
+        _ip_limit = _plan_for_ip.effective_ip_limit(security_settings.xui_limit_ip) if _plan_for_ip else security_settings.xui_limit_ip
         xui_payload = XUIClient(
             id=client_uuid,
             uuid=client_uuid,
             email=email,
-            limitIp=security_settings.xui_limit_ip,
+            limitIp=_ip_limit,
             totalGB=remaining_bytes,
             expiryTime=expiry_ms,
             enable=True,
@@ -899,11 +905,15 @@ class ProvisioningManager:
         security_settings = await settings_repo.get_service_security_settings()
         expiry_ms = int(sub.ends_at.timestamp() * 1000) if sub.ends_at is not None else 0
 
+        # Per-plan IP cap if available; otherwise global. Imported subs
+        # often don't have a plan, so the global default is the typical path.
+        _plan_for_ip = sub.plan if sub.plan_id else None
+        _ip_limit = _plan_for_ip.effective_ip_limit(security_settings.xui_limit_ip) if _plan_for_ip else security_settings.xui_limit_ip
         xui_payload = XUIClient(
             id=client_uuid,
             uuid=client_uuid,
             email=email,
-            limitIp=security_settings.xui_limit_ip,
+            limitIp=_ip_limit,
             totalGB=remaining_bytes,
             expiryTime=expiry_ms,
             enable=True,
@@ -1003,11 +1013,19 @@ class ProvisioningManager:
 
         server = ensure_inbound_server_loaded(inbound)
         expiry_ms = int(ends_at.timestamp() * 1000) if ends_at is not None else 0
+        # Preserve the per-plan ip_limit even on disable so re-enabling
+        # the client doesn't silently drop back to the global default.
+        global_ip_limit = (await AppSettingsRepository(self.session).get_service_security_settings()).xui_limit_ip
+        plan_for_ip = await self.session.scalar(
+            select(Plan).join(Subscription, Subscription.plan_id == Plan.id)
+            .where(Subscription.id == xui_record.subscription_id)
+        )
+        effective_ip_limit = plan_for_ip.effective_ip_limit(global_ip_limit) if plan_for_ip else global_ip_limit
         disabled_client = XUIClient(
             id=xui_record.xui_client_remote_id or xui_record.client_uuid,
             uuid=xui_record.client_uuid,
             email=xui_record.email,
-            limitIp=(await AppSettingsRepository(self.session).get_service_security_settings()).xui_limit_ip,
+            limitIp=effective_ip_limit,
             totalGB=volume_bytes,
             expiryTime=expiry_ms,
             enable=False,
