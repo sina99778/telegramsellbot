@@ -19,6 +19,7 @@ forgotten endpoint is never publicly reachable.
 from fastapi import APIRouter
 
 from apps.api.routes.dashboard.auth import router as auth_router
+from apps.api.routes.dashboard.brand_text import router as brand_text_router
 from apps.api.routes.dashboard.broadcast import router as broadcast_router
 from apps.api.routes.dashboard.discounts import router as discounts_router
 from apps.api.routes.dashboard.overview import router as overview_router
@@ -32,6 +33,7 @@ from apps.api.routes.dashboard.users import router as users_router
 
 router = APIRouter()
 router.include_router(auth_router, prefix="/auth", tags=["dashboard-auth"])
+router.include_router(brand_text_router, prefix="", tags=["dashboard-brand-text"])
 router.include_router(broadcast_router, prefix="/broadcast", tags=["dashboard-broadcast"])
 router.include_router(discounts_router, prefix="/discounts", tags=["dashboard-discounts"])
 router.include_router(overview_router, prefix="/overview", tags=["dashboard-overview"])

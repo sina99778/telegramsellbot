@@ -36,6 +36,8 @@ PREMIUM_EMOJI_SETTINGS_KEY = "bot.premium_emoji"
 USER_ACTIONS_SETTINGS_KEY = "user.actions"
 BUTTON_STYLE_SETTINGS_KEY = "bot.button_style"
 CARD_AUTOCONFIRM_SETTINGS_KEY = "payment.card_autoconfirm"
+BRAND_SETTINGS_KEY = "bot.brand"
+TEXT_TEMPLATES_KEY = "bot.text_templates"
 
 @dataclass(slots=True)
 class RenewalSettings:
@@ -88,6 +90,21 @@ class UserActionsSettings:
     transfer_enabled: bool
     sales_enabled: bool = True
     renewals_enabled: bool = True
+
+
+@dataclass(slots=True)
+class BrandSettings:
+    """Operator-customizable brand identity shown in bot + miniapp.
+
+    `name` is the public bot name (shown in welcomes / receipts).
+    `logo_url` points to an external image URL (the operator hosts it).
+    `accent_color` is a CSS hex color (#RRGGBB) used by the miniapp.
+    `support_handle` is the @username pointed at by every support button.
+    """
+    name: str
+    logo_url: str
+    accent_color: str
+    support_handle: str
 
 
 @dataclass(slots=True)
@@ -891,6 +908,92 @@ class AppSettingsRepository:
         self.session.add(record)
         await self.session.flush()
         return await self.get_user_actions_settings()
+
+    # ── Brand customization (bot + miniapp identity) ────────────────
+
+    async def get_brand_settings(self) -> 'BrandSettings':
+        record = await self.session.get(AppSetting, BRAND_SETTINGS_KEY)
+        defaults = BrandSettings(
+            name="TelegramSellBot",
+            logo_url="",
+            accent_color="#3b82f6",
+            support_handle="",
+        )
+        if record is None or not record.value_json:
+            return defaults
+        payload = dict(record.value_json or {})
+        return BrandSettings(
+            name=str(payload.get("name") or defaults.name),
+            logo_url=str(payload.get("logo_url") or ""),
+            accent_color=str(payload.get("accent_color") or defaults.accent_color),
+            support_handle=str(payload.get("support_handle") or ""),
+        )
+
+    async def update_brand_settings(
+        self,
+        *,
+        name: str | None = None,
+        logo_url: str | None = None,
+        accent_color: str | None = None,
+        support_handle: str | None = None,
+    ) -> 'BrandSettings':
+        record = await self.session.get(AppSetting, BRAND_SETTINGS_KEY)
+        if record is None:
+            record = AppSetting(key=BRAND_SETTINGS_KEY, value_json={})
+        payload = dict(record.value_json or {})
+        if name is not None:
+            payload["name"] = name.strip()[:64]
+        if logo_url is not None:
+            payload["logo_url"] = logo_url.strip()[:512]
+        if accent_color is not None:
+            import re as _re
+            v = accent_color.strip()
+            if v and not _re.match(r"^#[0-9a-fA-F]{6}$", v):
+                raise ValueError("accent_color must be a CSS hex like #3b82f6")
+            payload["accent_color"] = v
+        if support_handle is not None:
+            payload["support_handle"] = support_handle.strip().lstrip("@")[:64]
+        record.value_json = payload
+        self.session.add(record)
+        await self.session.flush()
+        return await self.get_brand_settings()
+
+    # ── Bot text templates (operator-editable copy) ─────────────────
+
+    async def get_text_template(self, key: str, default: str) -> str:
+        """Resolve a single template by key, with a code-side default."""
+        record = await self.session.get(AppSetting, TEXT_TEMPLATES_KEY)
+        if record is None or not record.value_json:
+            return default
+        payload = dict(record.value_json or {})
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+        return default
+
+    async def get_all_text_templates(self) -> dict[str, str]:
+        record = await self.session.get(AppSetting, TEXT_TEMPLATES_KEY)
+        if record is None or not record.value_json:
+            return {}
+        return {k: str(v) for k, v in (record.value_json or {}).items() if isinstance(v, str)}
+
+    async def update_text_templates(self, templates: dict[str, str]) -> dict[str, str]:
+        """Merge — keys not present in `templates` keep their existing values."""
+        record = await self.session.get(AppSetting, TEXT_TEMPLATES_KEY)
+        if record is None:
+            record = AppSetting(key=TEXT_TEMPLATES_KEY, value_json={})
+        payload = dict(record.value_json or {})
+        for k, v in (templates or {}).items():
+            if not isinstance(k, str):
+                continue
+            if v is None or (isinstance(v, str) and not v.strip()):
+                payload.pop(k, None)  # explicit clear → fall back to code default
+            else:
+                payload[k] = str(v)
+        record.value_json = payload
+        self.session.add(record)
+        await self.session.flush()
+        return await self.get_all_text_templates()
 
     # ── Card-receipt auto-confirm ────────────────────────────────────
 

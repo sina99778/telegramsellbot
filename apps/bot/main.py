@@ -56,6 +56,11 @@ async def on_startup(bot: PremiumEmojiBot) -> None:
         await prime_button_style_cache()
     except Exception as exc:
         logging.getLogger(__name__).warning("button style cache prime failed: %s", exc)
+    try:
+        from services.text_templates import prime_text_template_cache
+        await prime_text_template_cache()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("text-template cache prime failed: %s", exc)
 
 
 async def on_shutdown(bot: PremiumEmojiBot) -> None:
