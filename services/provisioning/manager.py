@@ -886,16 +886,25 @@ class ProvisioningManager:
         if not target_server.is_active:
             raise MigrationError("سرور مقصد غیرفعال است.")
 
-        # Fresh identity for the new X-UI client. We DO NOT append a hex
-        # suffix — the new client's email/username/remark all reuse the
-        # legacy remark exactly. (Email collisions on a server would be
-        # exceedingly rare — the original system stored uniqueness on
-        # client UUID, not email.)
+        # Fresh identity for the new X-UI client.
+        #
+        # User-visible NAME (the vless URI's `#…` fragment) is `remark` —
+        # this MUST stay byte-for-byte identical to `legacy_remark` so the
+        # imported user sees the same config name they had before
+        # ("بدون تغییر نام" — the operator's hard requirement).
+        #
+        # X-UI's `email` field, however, is an INTERNAL identifier that the
+        # user never sees. If the target panel already has a client with
+        # that email (typical when a previous migration attempt half-
+        # succeeded, or when the legacy panel and target panel happen to
+        # share the same email convention), X-UI rejects with
+        # "Duplicate email: …". We retry with a short hex suffix on the
+        # email — `remark` stays unchanged, so the user's display name is
+        # preserved.
         client_uuid = str(uuid4())
         sub_id = secrets.token_hex(8)
         remark = sub.legacy_remark
-        email = remark
-        username = remark
+        username = remark  # mirrors `remark` for our internal records
 
         # Quota that "carries over" from the legacy bot. We have no
         # usage history on our side; the volume the user purchased on
@@ -919,17 +928,6 @@ class ProvisioningManager:
         # often don't have a plan, so the global default is the typical path.
         _plan_for_ip = sub.plan if sub.plan_id else None
         _ip_limit = _plan_for_ip.effective_ip_limit(security_settings.xui_limit_ip) if _plan_for_ip else security_settings.xui_limit_ip
-        xui_payload = XUIClient(
-            id=client_uuid,
-            uuid=client_uuid,
-            email=email,
-            limitIp=_ip_limit,
-            totalGB=remaining_bytes,
-            expiryTime=expiry_ms,
-            enable=True,
-            subId=sub_id,
-            comment=f"imported-migrated:sub={sub.id}",
-        )
 
         new_inbound_label = (
             target_inbound.remark or f"اینباند {target_inbound.xui_inbound_remote_id}"
@@ -940,52 +938,112 @@ class ProvisioningManager:
             sub.id, new_inbound_label, remark,
         )
 
+        # Retry on "Duplicate email" with a hex-suffixed email. First
+        # attempt is verbatim; subsequent attempts suffix the email only.
+        # `remark` (and so the user-visible name) is never modified.
+        email_candidates: list[str] = [remark]
+        for _ in range(5):
+            email_candidates.append(f"{remark}_{secrets.token_hex(2)}")
+
         xui_call_succeeded = False
         savepoint_committed = False
+        xui = None
+        last_dup_exc: Exception | None = None
+
         try:
-            async with self.session.begin_nested():
-                # Create the new XUIClientRecord first; if the X-UI panel
-                # call below fails, the savepoint rolls it back.
-                xui = XUIClientRecord(
-                    subscription_id=sub.id,
-                    inbound_id=target_inbound.id,
-                    client_uuid=client_uuid,
-                    xui_client_remote_id=client_uuid,
-                    email=email,
-                    username=username,
-                    sub_link=new_sub_link,
-                    is_active=True,
-                    usage_bytes=0,
+            for attempt_idx, attempt_email in enumerate(email_candidates):
+                attempt_payload = XUIClient(
+                    id=client_uuid,
+                    uuid=client_uuid,
+                    email=attempt_email,
+                    limitIp=_ip_limit,
+                    totalGB=remaining_bytes,
+                    expiryTime=expiry_ms,
+                    enable=True,
+                    subId=sub_id,
+                    comment=f"imported-migrated:sub={sub.id}",
                 )
-                self.session.add(xui)
 
-                # Flip the sub out of imported mode. Keep `lifetime_used_bytes`
-                # at whatever it was (probably 0) — there are no pre-migration
-                # bytes we can attribute on our side.
-                sub.sub_link = new_sub_link
-                sub.source = None
-                sub.legacy_link = None
-                # We DO keep `legacy_remark` set deliberately — it documents
-                # the original name forever in case the operator audits.
-                if sub.status == "expired":
-                    # Migration of an expired imported sub effectively re-
-                    # provisions; flip back to active so the user can use it.
-                    sub.status = "active"
-                    sub.expired_at = None
+                try:
+                    async with self.session.begin_nested():
+                        # Create the new XUIClientRecord first; if the X-UI
+                        # panel call below fails, the savepoint rolls it back.
+                        xui = XUIClientRecord(
+                            subscription_id=sub.id,
+                            inbound_id=target_inbound.id,
+                            client_uuid=client_uuid,
+                            xui_client_remote_id=client_uuid,
+                            email=attempt_email,
+                            username=username,
+                            sub_link=new_sub_link,
+                            is_active=True,
+                            usage_bytes=0,
+                        )
+                        self.session.add(xui)
 
-                await self.session.flush()
+                        # Flip the sub out of imported mode. Keep
+                        # `lifetime_used_bytes` at whatever it was (probably
+                        # 0) — there are no pre-migration bytes we can
+                        # attribute on our side.
+                        sub.sub_link = new_sub_link
+                        sub.source = None
+                        sub.legacy_link = None
+                        # We DO keep `legacy_remark` set deliberately — it
+                        # documents the original name forever in case the
+                        # operator audits.
+                        if sub.status == "expired":
+                            # Migration of an expired imported sub effectively
+                            # re-provisions; flip back to active so the user
+                            # can use it.
+                            sub.status = "active"
+                            sub.expired_at = None
 
-                async with self._get_xui_client_for_server(target_server) as xui_api:
-                    await xui_api.add_client_to_inbound(
-                        target_inbound.xui_inbound_remote_id, xui_payload,
+                        await self.session.flush()
+
+                        async with self._get_xui_client_for_server(target_server) as xui_api:
+                            await xui_api.add_client_to_inbound(
+                                target_inbound.xui_inbound_remote_id, attempt_payload,
+                            )
+                        xui_call_succeeded = True
+                    savepoint_committed = True
+                    if attempt_idx > 0:
+                        logger.info(
+                            "Imported-migration succeeded on attempt #%d with email=%r",
+                            attempt_idx + 1, attempt_email,
+                        )
+                    break  # success — exit the retry loop
+                except Exception as inner_exc:
+                    exc_text = str(inner_exc)
+                    is_duplicate = (
+                        "Duplicate email" in exc_text
+                        or "duplicate email" in exc_text.lower()
+                        or "email already" in exc_text.lower()
                     )
-                xui_call_succeeded = True
-            savepoint_committed = True
+                    if is_duplicate and attempt_idx < len(email_candidates) - 1:
+                        last_dup_exc = inner_exc
+                        logger.warning(
+                            "X-UI rejected email=%r as duplicate, retrying with suffix…",
+                            attempt_email,
+                        )
+                        xui_call_succeeded = False  # savepoint rolled it back
+                        xui = None
+                        continue
+                    raise  # non-duplicate, or out of retries — let outer wrap it
+
+            if not savepoint_committed:
+                raise MigrationError(
+                    "نتوانستیم نام یکتا روی پنل مقصد بسازیم — لطفاً با پشتیبانی تماس بگیرید."
+                ) from last_dup_exc
+
             await self.session.refresh(sub)
-            await self.session.refresh(xui)
+            if xui is not None:
+                await self.session.refresh(xui)
         except MigrationError:
             raise
         except Exception as exc:
+            # If we managed to call add_client successfully but the savepoint
+            # rolled back for any reason after that, clean up the panel-side
+            # client so we don't leave an orphan.
             if xui_call_succeeded and not savepoint_committed:
                 try:
                     async with self._get_xui_client_for_server(target_server) as xui_api:
