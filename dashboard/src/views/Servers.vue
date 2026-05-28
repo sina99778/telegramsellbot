@@ -38,6 +38,22 @@ const createBusy = ref(false);
 const drawer = ref<ServerDetail | null>(null);
 const drawerLoading = ref(false);
 
+// ── Edit dialog state ──────────────────────────────────────────────
+const editing = ref<ServerListItem | null>(null);
+const editBusy = ref(false);
+const editForm = ref({
+  name: "",
+  base_url: "",
+  panel_username: "",
+  panel_password: "",
+  config_domain: "",
+  sub_domain: "",
+  subscription_port: 2096,
+  max_clients: 0,
+  priority: 100,
+  is_active: true,
+});
+
 async function refresh() {
   loading.value = true;
   errorMsg.value = null;
@@ -147,6 +163,70 @@ async function openDrawer(s: ServerListItem) {
   }
 }
 
+async function openEdit(s: ServerListItem) {
+  // Pull the full detail so credentials_username is available; the list
+  // payload doesn't include the X-UI username.
+  editBusy.value = true;
+  try {
+    const detail = await getServer(s.id);
+    editing.value = s;
+    editForm.value = {
+      name: detail.server.name,
+      base_url: detail.server.base_url,
+      panel_username: detail.server.credentials_username || "",
+      // Password is never returned from the API — operator types a new
+      // one only if they want to rotate it.
+      panel_password: "",
+      config_domain: detail.server.config_domain || "",
+      sub_domain: detail.server.sub_domain || "",
+      subscription_port: detail.server.subscription_port || 2096,
+      max_clients: detail.server.max_clients ?? 0,
+      priority: detail.server.priority ?? 100,
+      is_active: detail.server.is_active,
+    };
+  } catch (exc) {
+    flash(exc instanceof ApiError ? exc.detail : "خطا", "warn");
+  } finally {
+    editBusy.value = false;
+  }
+}
+
+async function doEdit() {
+  if (!editing.value) return;
+  if (!editForm.value.name.trim() || !editForm.value.base_url.trim()) {
+    flash("نام و URL سرور الزامی‌اند.", "warn");
+    return;
+  }
+  editBusy.value = true;
+  try {
+    // PATCH only the fields that differ — but the API treats `null` as
+    // "don't touch", so we send everything and let SQLAlchemy be the
+    // tiebreaker. Password is sent only if the operator typed a new one.
+    const body: any = {
+      name: editForm.value.name.trim(),
+      base_url: editForm.value.base_url.trim(),
+      panel_username: editForm.value.panel_username.trim() || undefined,
+      config_domain: editForm.value.config_domain.trim() || null,
+      sub_domain: editForm.value.sub_domain.trim() || null,
+      subscription_port: editForm.value.subscription_port,
+      max_clients: editForm.value.max_clients > 0 ? editForm.value.max_clients : null,
+      priority: editForm.value.priority,
+      is_active: editForm.value.is_active,
+    };
+    if (editForm.value.panel_password.trim()) {
+      body.panel_password = editForm.value.panel_password.trim();
+    }
+    await updateServer(editing.value.id, body);
+    flash("سرور به‌روزرسانی شد.");
+    editing.value = null;
+    refresh();
+  } catch (exc) {
+    flash(exc instanceof ApiError ? exc.detail : "خطا", "warn");
+  } finally {
+    editBusy.value = false;
+  }
+}
+
 function healthBadgeClass(s: string): string {
   if (s === "ok") return "badge badge-success";
   if (s === "error") return "badge badge-danger";
@@ -222,6 +302,7 @@ function healthLabel(s: string): string {
             <td class="font-mono">{{ s.active_inbound_count }}/{{ s.inbound_count }}</td>
             <td class="font-mono">{{ fmtNumber(s.client_count) }}</td>
             <td class="text-end whitespace-nowrap">
+              <button class="btn btn-ghost btn-sm" :disabled="busyId === s.id" @click="openEdit(s)">ویرایش</button>
               <button class="btn btn-ghost btn-sm" :disabled="busyId === s.id" @click="doTest(s)">تست</button>
               <button class="btn btn-ghost btn-sm" :disabled="busyId === s.id" @click="doToggle(s)">
                 {{ s.is_active ? "غیرفعال" : "فعال" }}
@@ -282,6 +363,68 @@ function healthLabel(s: string): string {
           <button class="btn btn-secondary" :disabled="createBusy" @click="showCreate = false">انصراف</button>
           <button class="btn btn-primary" :disabled="createBusy" @click="doCreate">
             {{ createBusy ? "..." : "افزودن" }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Edit dialog ───────────────────────────────────────────── -->
+    <div
+      v-if="editing"
+      class="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+      @click.self="editing = null"
+    >
+      <div class="card w-full max-w-lg space-y-3 max-h-[90vh] overflow-y-auto">
+        <h3 class="text-lg font-bold text-white">ویرایش سرور — {{ editing.name }}</h3>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div class="md:col-span-2">
+            <label class="label">نام دلخواه</label>
+            <input v-model="editForm.name" class="input" />
+          </div>
+          <div class="md:col-span-2">
+            <label class="label">آدرس پنل (Base URL)</label>
+            <input v-model="editForm.base_url" class="input ltr font-mono text-xs" />
+          </div>
+          <div>
+            <label class="label">نام کاربری پنل</label>
+            <input v-model="editForm.panel_username" class="input ltr" />
+          </div>
+          <div>
+            <label class="label">
+              رمز پنل
+              <span class="text-[10px] text-slate-500">(فقط اگه می‌خوای عوض کنی)</span>
+            </label>
+            <input v-model="editForm.panel_password" class="input" type="password" placeholder="بدون تغییر" />
+          </div>
+          <div>
+            <label class="label">دامنه‌ی کانفیگ</label>
+            <input v-model="editForm.config_domain" class="input" placeholder="proxy.example.com" />
+          </div>
+          <div>
+            <label class="label">دامنه‌ی sub-link</label>
+            <input v-model="editForm.sub_domain" class="input" placeholder="sub.example.com" />
+          </div>
+          <div>
+            <label class="label">پورت sub</label>
+            <input v-model.number="editForm.subscription_port" class="input" type="number" min="1" max="65535" />
+          </div>
+          <div>
+            <label class="label">حداکثر کلاینت</label>
+            <input v-model.number="editForm.max_clients" class="input" type="number" min="0" placeholder="0 = نامحدود" />
+          </div>
+          <div>
+            <label class="label">اولویت</label>
+            <input v-model.number="editForm.priority" class="input" type="number" min="0" />
+          </div>
+          <div class="flex items-center gap-2">
+            <input id="sv_active" v-model="editForm.is_active" type="checkbox" class="w-4 h-4" />
+            <label for="sv_active" class="text-sm text-slate-200">فعال</label>
+          </div>
+        </div>
+        <div class="flex justify-end gap-2 pt-2">
+          <button class="btn btn-secondary" :disabled="editBusy" @click="editing = null">انصراف</button>
+          <button class="btn btn-primary" :disabled="editBusy" @click="doEdit">
+            {{ editBusy ? "..." : "ذخیره" }}
           </button>
         </div>
       </div>
