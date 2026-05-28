@@ -486,10 +486,18 @@ async def _handle_direct_renewal(
 
     wallet_manager = WalletManager(session)
     payload = dict(payment.callback_payload or {})
+    # Partial-payment renewals: the gateway invoice was created for
+    # ONLY the gap between the user's wallet balance and the renewal
+    # cost. When the IPN credits the wallet by `price_amount`, the
+    # wallet now equals exactly the renewal cost. We need to debit the
+    # FULL renewal cost (stored in `total_renew_cost`), not just the
+    # gateway-paid portion. See apps/bot/handlers/user/renewal.py
+    # `renew_pay_partial`.
+    debit_amount = Decimal(str(payload.get("total_renew_cost") or payment.price_amount))
     if not payload.get("wallet_debited"):
         await wallet_manager.process_transaction(
             user_id=payment.user_id,
-            amount=Decimal(str(payment.price_amount)),
+            amount=debit_amount,
             transaction_type="renewal",
             direction="debit",
             currency=payment.price_currency,
@@ -501,6 +509,9 @@ async def _handle_direct_renewal(
                 "type": renew_type,
                 "amount": renew_amount,
                 "provider": payment.provider,
+                "partial": bool(payload.get("partial")),
+                "gateway_portion": float(payment.price_amount),
+                "full_renewal_cost": float(debit_amount),
             },
         )
         payload["wallet_debited"] = True
@@ -527,7 +538,7 @@ async def _handle_direct_renewal(
         try:
             await wallet_manager.process_transaction(
                 user_id=payment.user_id,
-                amount=Decimal(str(payment.price_amount)),
+                amount=debit_amount,  # refund the full amount we just debited
                 transaction_type="refund",
                 direction="credit",
                 currency=payment.price_currency,
@@ -537,6 +548,7 @@ async def _handle_direct_renewal(
                 metadata={
                     "sub_id": str(subscription.id),
                     "failure_reason": type(exc).__name__,
+                    "partial": bool(payload.get("partial")),
                 },
             )
             payload = dict(payment.callback_payload or {})

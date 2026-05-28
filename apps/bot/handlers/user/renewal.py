@@ -72,6 +72,15 @@ class RenewPayCallback(CallbackData, prefix="rp"):
     a: str  # amount string
 
 
+# Same shape, separate prefix → partial-payment routes that only invoice
+# the gap between wallet balance and full renewal cost.
+class RenewPartialPayCallback(CallbackData, prefix="rpp"):
+    m: str
+    s: str
+    t: str
+    a: str
+
+
 from apps.bot.utils.messaging import safe_edit_or_send
 
 @router.callback_query(MyConfigCallback.filter(F.action == "renew"))
@@ -396,10 +405,45 @@ async def renew_pay_wallet(
         return
 
     if user.wallet.balance < price:
-        await safe_edit_or_send(callback,
-            f"موجودی کیف پول کافی نیست.\n"
-            f"موجودی: {user.wallet.balance:.2f} USD\n"
-            f"هزینه تمدید: {price:.2f} USD"
+        # Partial-payment offer: instead of blocking, show buttons to
+        # pay the gap (price - wallet_balance) via gateway. When the
+        # gateway IPN settles, _handle_direct_renewal debits the FULL
+        # `price` against the wallet, draining what's there + the
+        # just-credited gateway portion.
+        gap = (Decimal(str(price)) - user.wallet.balance).quantize(Decimal("0.01"))
+        gw = await AppSettingsRepository(session).get_gateway_settings()
+        builder = InlineKeyboardBuilder()
+        if gw.tetrapay_enabled:
+            builder.button(
+                text=f"💳 پرداخت {gap} $ از درگاه ریالی",
+                callback_data=RenewPartialPayCallback(m="t", s=sub_id.hex, t=(renew_type[:1] or "v"), a=str(amount)).pack(),
+            )
+        if gw.nowpayments_enabled:
+            builder.button(
+                text=f"💎 پرداخت {gap} $ از درگاه ارزی",
+                callback_data=RenewPartialPayCallback(m="n", s=sub_id.hex, t=(renew_type[:1] or "v"), a=str(amount)).pack(),
+            )
+        if gw.tronado_enabled:
+            builder.button(
+                text=f"درگاه ترونادو ({gap} $)",
+                callback_data=RenewPartialPayCallback(m="tr", s=sub_id.hex, t=(renew_type[:1] or "v"), a=str(amount)).pack(),
+            )
+        if gw.manual_crypto_enabled and gw.manual_crypto_address:
+            builder.button(
+                text=f"💰 پرداخت {gap} $ به ولت دستی",
+                callback_data=RenewPartialPayCallback(m="m", s=sub_id.hex, t=(renew_type[:1] or "v"), a=str(amount)).pack(),
+            )
+        builder.button(text=Buttons.BACK, callback_data=MyConfigCallback(action="view", subscription_id=sub_id).pack())
+        builder.adjust(1)
+        await safe_edit_or_send(
+            callback,
+            "💸 <b>کسری موجودی — پرداخت اختلاف</b>\n\n"
+            f"هزینه تمدید: <b>{price:.2f} $</b>\n"
+            f"موجودی کیف پول: <b>{user.wallet.balance:.2f} $</b>\n"
+            f"کسری: <b>{gap} $</b>\n\n"
+            "می‌توانی فقط مبلغ اختلاف را از یکی از درگاه‌ها پرداخت کنی. وقتی پرداخت تأیید شد، تمدید به‌صورت خودکار اعمال می‌شود.",
+            reply_markup=builder.as_markup(),
+            parse_mode="HTML",
         )
         return
 
@@ -801,6 +845,272 @@ async def renew_pay_manual(
     # Store the topup amount and redirect to manual crypto handler
     await state.update_data(topup_amount=str(price))
 
+    from apps.bot.handlers.user.topup import topup_pay_manual
+    await topup_pay_manual(callback, state, session)
+
+
+# ─── Partial-payment routes (wallet + gateway split) ─────────────────────────
+#
+# These mirror the regular `renew_pay_*` handlers but:
+#   * The gateway invoice is for (renewal_cost - wallet_balance), not the
+#     full renewal cost.
+#   * The Payment's `callback_payload` carries `partial=True` and
+#     `total_renew_cost=<full_cost>` so `services.payment._handle_direct_renewal`
+#     debits the FULL renewal cost against the wallet (drains the existing
+#     balance + the just-credited gateway portion).
+
+
+async def _partial_setup(
+    callback_data: RenewPartialPayCallback,
+    session: AsyncSession,
+    user_telegram_id: int,
+) -> tuple | None:
+    """Pull the renewal data, compute wallet/gateway split, return everything
+    the per-provider handler needs. None if invalid."""
+    # Reuse the existing pricing helper to avoid drift between the two paths.
+    rd = await _get_renewal_data(
+        RenewPayCallback(m=callback_data.m, s=callback_data.s, t=callback_data.t, a=callback_data.a),
+        session, user_telegram_id,
+    )
+    if rd is None:
+        return None
+    user = rd["user"]
+    if user.wallet is None:
+        return None
+    full_cost = Decimal(str(rd["price"]))
+    balance = user.wallet.balance or Decimal("0")
+    gap = (full_cost - balance).quantize(Decimal("0.01"))
+    if gap <= 0:
+        # Wallet actually has enough — fall back to regular wallet path.
+        return None
+    return {**rd, "full_cost": full_cost, "gap": gap, "wallet_portion": balance}
+
+
+def _partial_meta(rd: dict) -> dict:
+    return {
+        "purpose": "renewal",
+        "partial": True,
+        "sub_id": str(rd["sub_id"]),
+        "renew_type": rd["renew_type"],
+        "renew_amount": rd["amount"],
+        "total_renew_cost": float(rd["full_cost"]),
+        "wallet_portion": float(rd["wallet_portion"]),
+    }
+
+
+@router.callback_query(RenewPartialPayCallback.filter(F.m == "n"))
+async def renew_pay_partial_nowpay(
+    callback: CallbackQuery,
+    callback_data: RenewPartialPayCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    if callback.from_user is None:
+        return
+    await callback.answer()
+    setup = await _partial_setup(callback_data, session, callback.from_user.id)
+    if setup is None:
+        await safe_edit_or_send(callback, "❌ اطلاعات تمدید نامعتبر است.")
+        return
+    user = setup["user"]
+    await state.clear()
+
+    from core.config import settings
+    from models.payment import Payment
+    from schemas.internal.nowpayments import NowPaymentsPaymentCreateRequest
+    from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
+
+    local_order_id = str(uuid4())
+    payload_req = NowPaymentsPaymentCreateRequest(
+        price_amount=setup["gap"],
+        price_currency="usd",
+        order_id=local_order_id,
+        order_description=f"Partial renewal gap for user {user.id}",
+        ipn_callback_url=settings.nowpayments_ipn_callback_url,
+    )
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    from pydantic import SecretStr
+    effective_api_key = SecretStr(gw.nowpayments_api_key) if gw.nowpayments_api_key else settings.nowpayments_api_key
+
+    try:
+        async with NowPaymentsClient(NowPaymentsClientConfig(
+            api_key=effective_api_key, base_url=settings.nowpayments_base_url,
+        )) as client:
+            invoice = await client.create_payment_invoice(payload_req)
+    except NowPaymentsRequestError:
+        await safe_edit_or_send(callback, Messages.PAYMENT_GATEWAY_UNAVAILABLE)
+        return
+
+    payment = Payment(
+        user_id=user.id,
+        provider="nowpayments",
+        kind="direct_renewal",
+        provider_invoice_id=str(invoice.id),
+        order_id=local_order_id,
+        payment_status="waiting",
+        price_currency="USD",
+        price_amount=setup["gap"],
+        invoice_url=str(invoice.invoice_url),
+        callback_payload=_partial_meta(setup),
+    )
+    session.add(payment)
+    await session.flush()
+
+    from apps.bot.keyboards.inline import build_topup_link_keyboard
+    await safe_edit_or_send(
+        callback,
+        f"🧾 فاکتور پرداخت اختلاف ساخته شد:\n\n"
+        f"💰 مبلغ گیت‌وی: {setup['gap']} USD\n"
+        f"🪙 از کیف پول: {setup['wallet_portion']} USD\n"
+        f"📦 جمع تمدید: {setup['full_cost']} USD\n\n"
+        "بعد از پرداخت و تایید، تمدید به‌صورت خودکار اعمال می‌شود.",
+        reply_markup=build_topup_link_keyboard(str(invoice.invoice_url)),
+    )
+
+
+@router.callback_query(RenewPartialPayCallback.filter(F.m == "t"))
+async def renew_pay_partial_tetrapay(
+    callback: CallbackQuery,
+    callback_data: RenewPartialPayCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    if callback.from_user is None:
+        return
+    await callback.answer()
+    setup = await _partial_setup(callback_data, session, callback.from_user.id)
+    if setup is None:
+        await safe_edit_or_send(callback, "❌ اطلاعات تمدید نامعتبر است.")
+        return
+    user = setup["user"]
+    await state.clear()
+
+    from core.config import settings
+    from models.payment import Payment
+    from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
+
+    toman_rate = await AppSettingsRepository(session).get_toman_rate()
+    if not toman_rate or toman_rate <= 0:
+        await safe_edit_or_send(callback, "❌ نرخ تبدیل تومان تنظیم نشده.")
+        return
+    toman_amount = int((setup["gap"] * toman_rate).quantize(Decimal("1")))
+    rial_amount = toman_amount * 10
+    if rial_amount < 10000:
+        await safe_edit_or_send(callback, "❌ مبلغ اختلاف کمتر از حداقل مجاز درگاه است.")
+        return
+
+    local_order_id = str(uuid4())
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    effective_key = gw.tetrapay_api_key if gw.tetrapay_api_key else settings.tetrapay_api_key.get_secret_value()
+
+    try:
+        async with TetraPayClient(TetraPayClientConfig(
+            api_key=effective_key, base_url=settings.tetrapay_base_url,
+        )) as client:
+            tx = await client.create_order(
+                hash_id=local_order_id,
+                amount=rial_amount,
+                description=f"تمدید (اختلاف) - کاربر {user.telegram_id}",
+                email=f"{user.telegram_id}@telegram.org",
+                mobile="09111111111",
+            )
+    except TetraPayRequestError as exc:
+        await safe_edit_or_send(callback, f"❌ خطا در ساخت فاکتور: {exc}")
+        return
+
+    payment = Payment(
+        user_id=user.id,
+        provider="tetrapay",
+        kind="direct_renewal",
+        provider_payment_id=tx.Authority,
+        order_id=local_order_id,
+        payment_status="waiting",
+        pay_currency="IRT",
+        price_currency="USD",
+        price_amount=setup["gap"],
+        pay_amount=Decimal(toman_amount),
+        invoice_url=tx.payment_url_bot,
+        callback_payload=_partial_meta(setup),
+    )
+    session.add(payment)
+    await session.flush()
+
+    from apps.bot.keyboards.inline import build_topup_link_keyboard
+    await safe_edit_or_send(
+        callback,
+        f"🔖 فاکتور پرداخت اختلاف (ریالی):\n\n"
+        f"💵 مبلغ درگاه: {toman_amount:,} تومان\n"
+        f"🪙 از کیف پول: {setup['wallet_portion']} USD\n"
+        f"📦 جمع تمدید: {setup['full_cost']} USD\n\n"
+        "بعد از پرداخت و تایید، تمدید به‌صورت خودکار اعمال می‌شود.",
+        reply_markup=build_topup_link_keyboard(invoice_url=tx.payment_url_web, bot_url=tx.payment_url_bot),
+    )
+
+
+@router.callback_query(RenewPartialPayCallback.filter(F.m == "tr"))
+async def renew_pay_partial_tronado(
+    callback: CallbackQuery,
+    callback_data: RenewPartialPayCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    if callback.from_user is None:
+        return
+    await callback.answer()
+    setup = await _partial_setup(callback_data, session, callback.from_user.id)
+    if setup is None:
+        await safe_edit_or_send(callback, "❌ اطلاعات تمدید نامعتبر است.")
+        return
+    user = setup["user"]
+    from apps.bot.keyboards.inline import build_topup_link_keyboard
+    from services.tronado.payments import create_tronado_invoice
+
+    try:
+        invoice = await create_tronado_invoice(
+            session=session,
+            user=user,
+            amount_usd=setup["gap"],
+            kind="direct_renewal",
+            description=f"Partial renewal gap sub {setup['sub_id']}",
+            callback_payload=_partial_meta(setup),
+        )
+    except Exception as exc:
+        await safe_edit_or_send(callback, f"خطا در ساخت فاکتور ترونادو: {exc}")
+        return
+
+    await state.clear()
+    await safe_edit_or_send(
+        callback,
+        (
+            "فاکتور پرداخت اختلاف ترونادو ساخته شد.\n\n"
+            f"مبلغ درگاه: {setup['gap']} USD\n"
+            f"از کیف پول: {setup['wallet_portion']} USD\n"
+            f"جمع تمدید: {setup['full_cost']} USD\n"
+            f"مقدار پرداخت: {invoice.tron_amount} TRX\n\n"
+            "بعد از پرداخت و تایید، تمدید به‌صورت خودکار اعمال می‌شود."
+        ),
+        reply_markup=build_topup_link_keyboard(invoice.invoice_url),
+    )
+
+
+@router.callback_query(RenewPartialPayCallback.filter(F.m == "m"))
+async def renew_pay_partial_manual(
+    callback: CallbackQuery,
+    callback_data: RenewPartialPayCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Manual-crypto partial payment: redirect through topup_pay_manual with
+    the GAP amount. Reusing topup_pay_manual keeps the receipt UX consistent
+    with non-renewal manual top-ups."""
+    if callback.from_user is None:
+        return
+    await callback.answer()
+    setup = await _partial_setup(callback_data, session, callback.from_user.id)
+    if setup is None:
+        await safe_edit_or_send(callback, "❌ اطلاعات تمدید نامعتبر است.")
+        return
+    await state.update_data(topup_amount=str(setup["gap"]))
     from apps.bot.handlers.user.topup import topup_pay_manual
     await topup_pay_manual(callback, state, session)
 
