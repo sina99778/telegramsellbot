@@ -9,12 +9,14 @@ import {
   patchBackup,
   runBackupNow,
   patchPremiumEmoji,
+  patchButtonStyle,
   type AllSettings,
+  type ButtonStyle,
 } from "@/api/settings";
 import { ApiError } from "@/api/client";
 import { fmtRelativeTime } from "@/utils/format";
 
-type Tab = "general" | "pricing" | "custom_buy" | "security" | "backup" | "premium_emoji";
+type Tab = "general" | "pricing" | "custom_buy" | "security" | "backup" | "premium_emoji" | "button_style";
 
 const tab = ref<Tab>("general");
 const data = ref<AllSettings | null>(null);
@@ -32,9 +34,18 @@ const customBuy = ref<AllSettings["custom_buy"]>({} as any);
 const security = ref<AllSettings["security"]>({} as any);
 const backup = ref<AllSettings["backup"]>({} as any);
 const premiumEmoji = ref<AllSettings["premium_emoji"]>({} as any);
+const buttonStyle = ref<AllSettings["button_style"]>({} as any);
 
 // Premium emoji map editor — array of rows for v-model ergonomics
 const emojiRows = ref<Array<{ key: string; value: string }>>([]);
+
+// The four style values the dashboard exposes. Empty = no styling (Telegram's default look).
+const BUTTON_STYLE_OPTIONS: Array<{ value: ButtonStyle; label: string }> = [
+  { value: "primary", label: "🔵 آبی (Primary)" },
+  { value: "success", label: "🟢 سبز (Success)" },
+  { value: "danger",  label: "🔴 قرمز (Danger)" },
+  { value: "",        label: "⚪️ بدون رنگ (پیش‌فرض)" },
+];
 
 async function refresh() {
   loading.value = true;
@@ -51,6 +62,7 @@ async function refresh() {
     emojiRows.value = Object.entries(r.premium_emoji.emoji_map || {}).map(
       ([key, value]) => ({ key, value }),
     );
+    buttonStyle.value = { ...r.button_style };
   } catch (exc) {
     errorMsg.value = exc instanceof ApiError ? exc.detail : "خطای شبکه";
   } finally {
@@ -167,6 +179,24 @@ async function savePremiumEmoji() {
   } finally { busy.value = false; }
 }
 
+async function saveButtonStyle() {
+  busy.value = true;
+  try {
+    await patchButtonStyle({
+      enabled: buttonStyle.value.enabled,
+      confirm: buttonStyle.value.confirm,
+      destructive: buttonStyle.value.destructive,
+      navigation: buttonStyle.value.navigation,
+      info: buttonStyle.value.info,
+    });
+    // The bot reads from a 30s in-process cache; we can't clear it
+    // from here (different process), but updates land within ~30s.
+    flash("ذخیره شد. حداکثر ۳۰ ثانیه طول می‌کشد تا روی دکمه‌های ربات اعمال شود.");
+  } catch (exc) {
+    flash(exc instanceof ApiError ? exc.detail : "خطا", "warn");
+  } finally { busy.value = false; }
+}
+
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "general",        label: "عمومی" },
   { id: "pricing",        label: "قیمت‌گذاری" },
@@ -174,6 +204,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "security",       label: "امنیت" },
   { id: "backup",         label: "بکاپ" },
   { id: "premium_emoji",  label: "اموجی پریمیم" },
+  { id: "button_style",   label: "رنگ دکمه‌ها" },
 ];
 </script>
 
@@ -413,6 +444,59 @@ const TABS: Array<{ id: Tab; label: string }> = [
 
       <div class="flex justify-end pt-2">
         <button class="btn btn-primary" :disabled="busy" @click="savePremiumEmoji">ذخیره</button>
+      </div>
+    </section>
+
+    <!-- ── Button style (Bot API 9.4 colored inline buttons) ─────── -->
+    <section v-else-if="tab === 'button_style'" class="card space-y-4">
+      <h3 class="font-bold text-white">🎨 رنگ دکمه‌های شیشه‌ای</h3>
+      <div class="text-[11px] text-slate-400 leading-5">
+        نیاز به Bot API 9.4 (فوریه ۲۰۲۶). کلاینت‌های تلگرامی که هنوز به این نسخه آپدیت نشده‌اند،
+        دکمه‌ها را با ظاهر پیش‌فرض می‌بینند — هیچ آسیبی نمی‌رسد.
+        پس از ذخیره، تا حداکثر ۳۰ ثانیه طول می‌کشد ربات تغییرات را اعمال کند.
+      </div>
+
+      <label class="flex items-center justify-between gap-3 py-2 border-b border-bg-border/60">
+        <div>
+          <div class="text-sm text-white">رنگی‌سازی فعال</div>
+          <div class="text-[11px] text-slate-500">با خاموش کردن، تمام دکمه‌ها به ظاهر پیش‌فرض تلگرام برمی‌گردند.</div>
+        </div>
+        <input type="checkbox" v-model="buttonStyle.enabled" class="w-5 h-5 accent-accent" />
+      </label>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+        <div>
+          <label class="label">✅ تأیید / مالی</label>
+          <select v-model="buttonStyle.confirm" class="input">
+            <option v-for="opt in BUTTON_STYLE_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+          </select>
+          <div class="text-[10px] text-slate-500 mt-1">دکمه‌های خرید، آمار، گزارش، تأیید پرداخت</div>
+        </div>
+        <div>
+          <label class="label">🗑 خطرناک / تنظیمات</label>
+          <select v-model="buttonStyle.destructive" class="input">
+            <option v-for="opt in BUTTON_STYLE_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+          </select>
+          <div class="text-[10px] text-slate-500 mt-1">دکمه‌های حذف، بَن، تنظیمات حساس</div>
+        </div>
+        <div>
+          <label class="label">🔙 بازگشت / پیمایش</label>
+          <select v-model="buttonStyle.navigation" class="input">
+            <option v-for="opt in BUTTON_STYLE_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+          </select>
+          <div class="text-[10px] text-slate-500 mt-1">دکمه‌های Back و منوی اصلی</div>
+        </div>
+        <div>
+          <label class="label">ℹ️ نمایش / مدیریت</label>
+          <select v-model="buttonStyle.info" class="input">
+            <option v-for="opt in BUTTON_STYLE_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+          </select>
+          <div class="text-[10px] text-slate-500 mt-1">دکمه‌های لیست‌ها و فهرست‌های اطلاعاتی</div>
+        </div>
+      </div>
+
+      <div class="flex justify-end pt-2">
+        <button class="btn btn-primary" :disabled="busy" @click="saveButtonStyle">ذخیره</button>
       </div>
     </section>
   </div>

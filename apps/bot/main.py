@@ -49,6 +49,13 @@ def configure_logging() -> None:
 async def on_startup(bot: PremiumEmojiBot) -> None:
     me = await bot.get_me()
     logging.getLogger(__name__).info("Bot started: id=%s username=@%s", me.id, me.username)
+    # Prime the button-style cache so the first keyboard render after
+    # boot already has the operator's color preferences.
+    try:
+        from apps.bot.utils.button_style import prime_button_style_cache
+        await prime_button_style_cache()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("button style cache prime failed: %s", exc)
 
 
 async def on_shutdown(bot: PremiumEmojiBot) -> None:

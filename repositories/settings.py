@@ -34,6 +34,7 @@ PHONE_VERIFICATION_SETTINGS_KEY = "user.phone_verification"
 SERVICE_SECURITY_SETTINGS_KEY = "service.security"
 PREMIUM_EMOJI_SETTINGS_KEY = "bot.premium_emoji"
 USER_ACTIONS_SETTINGS_KEY = "user.actions"
+BUTTON_STYLE_SETTINGS_KEY = "bot.button_style"
 
 @dataclass(slots=True)
 class RenewalSettings:
@@ -86,6 +87,23 @@ class UserActionsSettings:
     transfer_enabled: bool
     sales_enabled: bool = True
     renewals_enabled: bool = True
+
+
+@dataclass(slots=True)
+class ButtonStyleSettings:
+    """Bot API 9.4 added a `style` field on InlineKeyboardButton.
+    We expose it as a tiny role-based theme: the bot's keyboards tag
+    each button with a semantic role (confirm / destructive / navigation /
+    info), and the operator picks which Telegram color each role uses.
+
+    Each role value must be one of "primary" (blue), "success" (green),
+    "danger" (red), or "" (no style — use Telegram's default look).
+    """
+    enabled: bool
+    confirm: str       # default: "success"
+    destructive: str   # default: "danger"
+    navigation: str    # default: "primary"
+    info: str          # default: "primary"
 
 
 REVENUE_SETTINGS_KEY = "admin.revenue_reset"
@@ -862,3 +880,60 @@ class AppSettingsRepository:
         self.session.add(record)
         await self.session.flush()
         return await self.get_user_actions_settings()
+
+    # ── Button-style (Bot API 9.4) ───────────────────────────────────
+
+    _VALID_BUTTON_STYLES = ("primary", "success", "danger", "")
+
+    async def get_button_style_settings(self) -> 'ButtonStyleSettings':
+        record = await self.session.get(AppSetting, BUTTON_STYLE_SETTINGS_KEY)
+        defaults = dict(enabled=True, confirm="success", destructive="danger",
+                        navigation="primary", info="primary")
+        if record is None or not record.value_json:
+            return ButtonStyleSettings(**defaults)
+        payload = dict(record.value_json)
+        def _v(k: str) -> str:
+            v = str(payload.get(k, defaults[k]) or "").strip()
+            return v if v in self._VALID_BUTTON_STYLES else defaults[k]
+        return ButtonStyleSettings(
+            enabled=bool(payload.get("enabled", True)),
+            confirm=_v("confirm"),
+            destructive=_v("destructive"),
+            navigation=_v("navigation"),
+            info=_v("info"),
+        )
+
+    async def update_button_style_settings(
+        self,
+        *,
+        enabled: bool | None = None,
+        confirm: str | None = None,
+        destructive: str | None = None,
+        navigation: str | None = None,
+        info: str | None = None,
+    ) -> 'ButtonStyleSettings':
+        record = await self.session.get(AppSetting, BUTTON_STYLE_SETTINGS_KEY)
+        if record is None:
+            record = AppSetting(key=BUTTON_STYLE_SETTINGS_KEY, value_json={})
+        payload = dict(record.value_json or {})
+
+        def _validated(value: str | None) -> str | None:
+            if value is None:
+                return None
+            v = value.strip()
+            if v not in self._VALID_BUTTON_STYLES:
+                raise ValueError(f"button style must be one of {self._VALID_BUTTON_STYLES}, got {value!r}")
+            return v
+
+        if enabled is not None:
+            payload["enabled"] = bool(enabled)
+        for field, value in (("confirm", confirm), ("destructive", destructive),
+                             ("navigation", navigation), ("info", info)):
+            v = _validated(value)
+            if v is not None:
+                payload[field] = v
+
+        record.value_json = payload
+        self.session.add(record)
+        await self.session.flush()
+        return await self.get_button_style_settings()

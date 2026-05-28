@@ -27,6 +27,7 @@ from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerCredential, X
 from repositories.audit import AuditLogRepository
 from repositories.settings import AppSettingsRepository
 from services.xui.client import SanaeiXUIClient, XUIAuthenticationError, XUIClientConfig, XUIRequestError
+from apps.bot.utils.button_style import styled_button
 from apps.bot.utils.messaging import safe_edit_or_send
 from apps.bot.utils.panels import admin_panel, status_label
 
@@ -52,21 +53,24 @@ class ServerListPageCallback(CallbackData, prefix="server_list"):
 
 def _build_admin_main_markup() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="سرورها", callback_data="admin:servers")
-    builder.button(text="پلن‌ها", callback_data="admin:plans")
-    builder.button(text="فروش آماده", callback_data="admin:ready_configs")
-    builder.button(text="کاربران", callback_data="admin:users")
-    builder.button(text="مشتریان", callback_data="admin:customers")
-    builder.button(text="پیام همگانی", callback_data="admin:broadcast")
-    builder.button(text="تیکت‌ها", callback_data="admin:tickets")
-    builder.button(text="ریتارگتینگ", callback_data="admin:retargeting")
-    builder.button(text="آمار و گزارش‌ها", callback_data="admin:stats")
-    builder.button(text="مالی", callback_data="admin:finance")
-    builder.button(text="هدیه گروهی", callback_data="admin:gifts")
-    builder.button(text="تنظیمات ربات", callback_data="admin:bot_settings")
-    builder.button(text="تخفیف‌ها", callback_data="admin:discounts")
-    builder.button(text="بازیابی پرداخت‌ها", callback_data="admin:recovery")
-    builder.button(text="دریافت بکاپ", callback_data="admin:backup")
+    # Top management items — neutral "info" role (defaults to blue/primary).
+    styled_button(builder, "سرورها", callback_data="admin:servers", role="info")
+    styled_button(builder, "پلن‌ها", callback_data="admin:plans", role="info")
+    styled_button(builder, "فروش آماده", callback_data="admin:ready_configs", role="info")
+    styled_button(builder, "کاربران", callback_data="admin:users", role="info")
+    styled_button(builder, "مشتریان", callback_data="admin:customers", role="info")
+    styled_button(builder, "پیام همگانی", callback_data="admin:broadcast", role="info")
+    styled_button(builder, "تیکت‌ها", callback_data="admin:tickets", role="info")
+    styled_button(builder, "ریتارگتینگ", callback_data="admin:retargeting", role="info")
+    # Reporting / money — confirm role (defaults to green/success).
+    styled_button(builder, "آمار و گزارش‌ها", callback_data="admin:stats", role="confirm")
+    styled_button(builder, "مالی", callback_data="admin:finance", role="confirm")
+    styled_button(builder, "هدیه گروهی", callback_data="admin:gifts", role="confirm")
+    # Settings / sensitive actions — destructive role (defaults to red/danger).
+    styled_button(builder, "تنظیمات ربات", callback_data="admin:bot_settings", role="destructive")
+    styled_button(builder, "تخفیف‌ها", callback_data="admin:discounts", role="info")
+    styled_button(builder, "بازیابی پرداخت‌ها", callback_data="admin:recovery", role="info")
+    styled_button(builder, "دریافت بکاپ", callback_data="admin:backup", role="confirm")
     builder.adjust(2, 2, 2, 2, 2, 2, 2, 1)
     return builder.as_markup()
 

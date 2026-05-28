@@ -12,6 +12,7 @@ Sections
     backup       — interval_hours, channel_chat_id, sales_channel_chat_id,
                    last_run_at (read-only)
     premium_emoji — enabled + emoji_map (dict[trigger → premium-emoji-id])
+    button_style  — enabled + role→color mapping (Bot API 9.4)
 
 Every PATCH writes an AuditLog row tagged with the dashboard admin's
 username so the operator's settings changes show up alongside the bot's
@@ -69,6 +70,7 @@ async def get_all_settings(auth: AuthDep) -> dict[str, Any]:
     custom = await repo.get_custom_purchase_settings()
     security = await repo.get_service_security_settings()
     premium = await repo.get_premium_emoji_settings()
+    button_style = await repo.get_button_style_settings()
     toman_rate = await repo.get_toman_rate()
     display_currency = await repo.get_display_currency()
     backup_interval = await repo.get_backup_interval_hours()
@@ -108,6 +110,13 @@ async def get_all_settings(auth: AuthDep) -> dict[str, Any]:
         "premium_emoji": {
             "enabled": premium.enabled,
             "emoji_map": premium.emoji_map,
+        },
+        "button_style": {
+            "enabled": button_style.enabled,
+            "confirm": button_style.confirm,
+            "destructive": button_style.destructive,
+            "navigation": button_style.navigation,
+            "info": button_style.info,
         },
     }
 
@@ -315,5 +324,43 @@ async def patch_premium_emoji(body: PremiumEmojiBody, auth: AuthDep) -> dict[str
         logger.warning("Could not clear premium emoji cache: %s", exc)
     await _audit(session, admin, "premium_emoji",
                  {k: ("…" if k == "emoji_map" else v) for k, v in kwargs.items()})
+    await session.commit()
+    return {"ok": True}
+
+
+# ─── PATCH: button_style ──────────────────────────────────────────────
+
+
+class ButtonStyleBody(BaseModel):
+    enabled: bool | None = None
+    confirm: str | None = Field(None, pattern="^(primary|success|danger|)$")
+    destructive: str | None = Field(None, pattern="^(primary|success|danger|)$")
+    navigation: str | None = Field(None, pattern="^(primary|success|danger|)$")
+    info: str | None = Field(None, pattern="^(primary|success|danger|)$")
+
+
+@router.patch("/button_style")
+async def patch_button_style(body: ButtonStyleBody, auth: AuthDep) -> dict[str, Any]:
+    """Update the role→color mapping used by `styled_button`.
+
+    The bot reads from a 30s in-process cache; the dashboard API runs
+    in a different process, so we can't clear that cache from here.
+    The 30s TTL is short enough that operators see their changes
+    within half a minute of saving — no restart needed.
+    """
+    admin, session = auth
+    repo = AppSettingsRepository(session)
+    kwargs: dict[str, Any] = {}
+    for field in ("enabled", "confirm", "destructive", "navigation", "info"):
+        value = getattr(body, field)
+        if value is not None:
+            kwargs[field] = value
+    if not kwargs:
+        return {"ok": True}
+    try:
+        await repo.update_button_style_settings(**kwargs)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _audit(session, admin, "button_style", kwargs)
     await session.commit()
     return {"ok": True}

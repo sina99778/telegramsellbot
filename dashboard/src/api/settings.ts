@@ -33,7 +33,18 @@ export interface AllSettings {
     enabled: boolean;
     emoji_map: Record<string, string>;
   };
+  button_style: {
+    enabled: boolean;
+    confirm: ButtonStyle;
+    destructive: ButtonStyle;
+    navigation: ButtonStyle;
+    info: ButtonStyle;
+  };
 }
+
+// Bot API 9.4 accepts "primary" / "success" / "danger", or empty for
+// no style (Telegram's default look).
+export type ButtonStyle = "primary" | "success" | "danger" | "";
 
 export function fetchAllSettings(): Promise<AllSettings> {
   return api.get<AllSettings>("/settings");
@@ -74,4 +85,15 @@ export interface PremiumEmojiPatchBody {
 }
 export function patchPremiumEmoji(body: PremiumEmojiPatchBody): Promise<{ ok: boolean }> {
   return api.patch<{ ok: boolean }>("/settings/premium_emoji", body);
+}
+
+export interface ButtonStylePatchBody {
+  enabled?: boolean;
+  confirm?: ButtonStyle;
+  destructive?: ButtonStyle;
+  navigation?: ButtonStyle;
+  info?: ButtonStyle;
+}
+export function patchButtonStyle(body: ButtonStylePatchBody): Promise<{ ok: boolean }> {
+  return api.patch<{ ok: boolean }>("/settings/button_style", body);
 }

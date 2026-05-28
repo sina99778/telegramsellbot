@@ -133,6 +133,7 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     builder.button(text="📤 افزودن اموجی پریمیم", callback_data="admin:settings:premium_emoji_add")
     builder.button(text="📋 لیست اموجی‌ها", callback_data="admin:settings:premium_emoji_list")
     builder.button(text="🗑 پاک‌سازی همه", callback_data="admin:settings:premium_emoji_clear")
+    builder.button(text="🎨 رنگ دکمه‌ها", callback_data="admin:settings:button_styles")
 
     # ── Section: Notifications
     builder.button(text="━━ 📢 اعلان‌ها ━━", callback_data="admin:settings:noop")
@@ -144,9 +145,9 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
 
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
     # 1 header, 2 toggles, 1 header, 4 prices, 1 header, 3 custom,
-    # 1 header, 3 security, 1 header, 5 gateways, 1 header, 4 appearance,
+    # 1 header, 3 security, 1 header, 5 gateways, 1 header, 5 appearance,
     # 1 header, 1 sales-channel, 1 header, 1 legacy-import, 1 back.
-    builder.adjust(1, 2, 1, 4, 1, 3, 1, 3, 1, 5, 1, 4, 1, 1, 1, 1, 1)
+    builder.adjust(1, 2, 1, 4, 1, 3, 1, 3, 1, 5, 1, 5, 1, 1, 1, 1, 1)
 
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -1706,3 +1707,128 @@ async def force_join_check(callback: CallbackQuery, session: AsyncSession) -> No
             await callback.answer("❌ هنوز عضو کانال نشده‌اید!", show_alert=True)
     except Exception:
         await callback.answer("❌ خطا در بررسی عضویت. لطفاً دوباره تلاش کنید.", show_alert=True)
+
+
+# ─── Button-style (Bot API 9.4 inline button colors) ───────────────────────
+
+# Cycle order when admin taps a role row. We include "" to allow opting
+# out of coloring for a particular role.
+_BUTTON_STYLE_CYCLE = ("primary", "success", "danger", "")
+_BUTTON_STYLE_LABEL = {
+    "primary": "🔵 آبی (Primary)",
+    "success": "🟢 سبز (Success)",
+    "danger":  "🔴 قرمز (Danger)",
+    "":        "⚪️ بدون رنگ",
+}
+_BUTTON_ROLE_LABEL = {
+    "confirm": "✅ تأیید / مالی",
+    "destructive": "🗑 خطرناک / تنظیمات",
+    "navigation": "🔙 بازگشت / پیمایش",
+    "info": "ℹ️ نمایش / مدیریت",
+}
+
+
+def _next_style(current: str) -> str:
+    try:
+        i = _BUTTON_STYLE_CYCLE.index(current)
+    except ValueError:
+        i = -1
+    return _BUTTON_STYLE_CYCLE[(i + 1) % len(_BUTTON_STYLE_CYCLE)]
+
+
+async def _render_button_styles_panel(callback: CallbackQuery, session: AsyncSession) -> None:
+    repo = AppSettingsRepository(session)
+    cfg = await repo.get_button_style_settings()
+
+    text = admin_panel(
+        "🎨 رنگ دکمه‌های ربات",
+        [
+            (
+                "وضعیت",
+                [("فعال", status_label(cfg.enabled))],
+            ),
+            (
+                "نگاشت نقش‌ها به رنگ",
+                [
+                    (_BUTTON_ROLE_LABEL["confirm"],     _BUTTON_STYLE_LABEL.get(cfg.confirm, cfg.confirm)),
+                    (_BUTTON_ROLE_LABEL["destructive"], _BUTTON_STYLE_LABEL.get(cfg.destructive, cfg.destructive)),
+                    (_BUTTON_ROLE_LABEL["navigation"],  _BUTTON_STYLE_LABEL.get(cfg.navigation, cfg.navigation)),
+                    (_BUTTON_ROLE_LABEL["info"],        _BUTTON_STYLE_LABEL.get(cfg.info, cfg.info)),
+                ],
+            ),
+            (
+                "راهنما",
+                [
+                    ("نیاز", "نسخه تلگرام با Bot API 9.4 (Feb 2026)"),
+                    ("اثر", "روی دکمه‌های شیشه‌ای پنل ادمین"),
+                ],
+            ),
+        ],
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=("🔴 خاموش کن" if cfg.enabled else "🟢 روشن کن"),
+        callback_data="admin:settings:button_styles:toggle",
+    )
+    builder.button(text=f"تأیید: {_BUTTON_STYLE_LABEL.get(cfg.confirm)}",
+                   callback_data="admin:settings:button_styles:cycle:confirm")
+    builder.button(text=f"خطرناک: {_BUTTON_STYLE_LABEL.get(cfg.destructive)}",
+                   callback_data="admin:settings:button_styles:cycle:destructive")
+    builder.button(text=f"پیمایش: {_BUTTON_STYLE_LABEL.get(cfg.navigation)}",
+                   callback_data="admin:settings:button_styles:cycle:navigation")
+    builder.button(text=f"نمایش: {_BUTTON_STYLE_LABEL.get(cfg.info)}",
+                   callback_data="admin:settings:button_styles:cycle:info")
+    builder.button(text="↩ پیش‌فرض‌ها", callback_data="admin:settings:button_styles:reset")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:bot_settings")
+    builder.adjust(1, 1, 1, 1, 1, 1, 1)
+
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "admin:settings:button_styles")
+async def open_button_styles_panel(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    await _render_button_styles_panel(callback, session)
+
+
+@router.callback_query(F.data == "admin:settings:button_styles:toggle")
+async def toggle_button_styles(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    repo = AppSettingsRepository(session)
+    cfg = await repo.get_button_style_settings()
+    await repo.update_button_style_settings(enabled=not cfg.enabled)
+    from apps.bot.utils.button_style import clear_button_style_cache, prime_button_style_cache
+    clear_button_style_cache()
+    await prime_button_style_cache()
+    await _render_button_styles_panel(callback, session)
+
+
+@router.callback_query(F.data.startswith("admin:settings:button_styles:cycle:"))
+async def cycle_button_style_role(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    role = (callback.data or "").rsplit(":", 1)[-1]
+    if role not in {"confirm", "destructive", "navigation", "info"}:
+        return
+    repo = AppSettingsRepository(session)
+    cfg = await repo.get_button_style_settings()
+    new_style = _next_style(getattr(cfg, role))
+    await repo.update_button_style_settings(**{role: new_style})
+    from apps.bot.utils.button_style import clear_button_style_cache, prime_button_style_cache
+    clear_button_style_cache()
+    await prime_button_style_cache()
+    await _render_button_styles_panel(callback, session)
+
+
+@router.callback_query(F.data == "admin:settings:button_styles:reset")
+async def reset_button_styles(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer("به پیش‌فرض‌ها برگشت.", show_alert=False)
+    repo = AppSettingsRepository(session)
+    await repo.update_button_style_settings(
+        enabled=True, confirm="success", destructive="danger",
+        navigation="primary", info="primary",
+    )
+    from apps.bot.utils.button_style import clear_button_style_cache, prime_button_style_cache
+    clear_button_style_cache()
+    await prime_button_style_cache()
+    await _render_button_styles_panel(callback, session)
