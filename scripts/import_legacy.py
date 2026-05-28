@@ -286,6 +286,11 @@ class ImportStats:
     orders_inserted: int = 0
     orders_skipped_duplicate: int = 0
     orders_failed: int = 0
+    # Already-imported subs that had volume=0 or ends_at=null on an
+    # earlier run and got patched in place this run. Letting the
+    # operator see "X fixed" makes it obvious that re-runs are recovering
+    # broken rows rather than no-oping.
+    orders_updated: int = 0
 
 
 async def _existing_user_telegram_ids(session: AsyncSession) -> set[int]:
@@ -306,10 +311,28 @@ def _parse_telegram_id(raw) -> int | None:
 def _parse_int(raw, default: int = 0) -> int:
     if raw is None:
         return default
-    try:
-        return int(str(raw).strip())
-    except Exception:
+    s = str(raw).strip()
+    if not s:
         return default
+    # Accept floats ("30.0"), scientific notation ("3e10"), and numbers with
+    # stray non-digit tail ("30GB", "100 MB") — strip the tail conservatively.
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        return int(float(s))
+    except ValueError:
+        pass
+    # Pull leading numeric run.
+    import re as _re
+    m = _re.match(r"^[-+]?\d+(?:\.\d+)?", s)
+    if m:
+        try:
+            return int(float(m.group(0)))
+        except ValueError:
+            return default
+    return default
 
 
 def _parse_unix(raw) -> datetime | None:
@@ -320,6 +343,96 @@ def _parse_unix(raw) -> datetime | None:
         return datetime.fromtimestamp(n, tz=timezone.utc)
     except (OSError, OverflowError, ValueError):
         return None
+
+
+# ─── Smart volume + expiry detection ───────────────────────────────────
+#
+# Different forks of Mirzabot/Faoxima use different column names. We try
+# a list of candidates in priority order; the first one with a non-zero
+# value wins. Same idea for expiry — `expire_date` is most common but
+# some forks only store `days` and let the client compute.
+
+_VOLUME_COLUMNS = (
+    "volume", "volume_bytes", "total_volume", "total_bytes",
+    "data", "data_limit", "package_data", "totalGB", "total_gb",
+    "volumeTotal", "datasize", "package_volume",
+)
+
+_EXPIRE_COLUMNS = (
+    "expire_date", "expireDate", "expire_at", "expires_at",
+    "expiry", "expiry_time", "expireTime", "expirationDate",
+)
+
+_DAYS_COLUMNS = (
+    "days", "period", "duration", "duration_days", "package_days",
+)
+
+_REMARK_COLUMNS = (
+    "remark", "name", "config_name", "username", "title", "subject",
+)
+
+_LINK_COLUMNS = (
+    "link", "sub_link", "subscription_link", "config_link",
+    "vless", "vless_uri", "url",
+)
+
+_UUID_COLUMNS = (
+    "uuid", "client_id", "client_uuid", "id_client",
+)
+
+
+def _first_nonzero_int(row: dict, columns: tuple[str, ...]) -> tuple[str | None, int]:
+    """Return (which_column_won, integer_value). 0 if none had a value."""
+    for c in columns:
+        if c not in row:
+            continue
+        v = _parse_int(row[c], default=0)
+        if v != 0:  # 0 means "missing/unlimited/zero" → keep trying other cols
+            return c, v
+    return None, 0
+
+
+def _first_nonempty(row: dict, columns: tuple[str, ...]) -> tuple[str | None, str]:
+    for c in columns:
+        v = row.get(c)
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s:
+            return c, s
+    return None, ""
+
+
+def _normalize_volume_to_bytes(value: int) -> int:
+    """Auto-detect units. Mirzabot forks store volume in either bytes
+    (X-UI totalGB which is actually bytes) OR in GB integer.
+
+    Heuristic by magnitude:
+        value < 1024            → treat as GB    (e.g. 30 → 30 GB)
+        1024 ≤ value < 10**9    → treat as MB    (e.g. 30720 → 30 GB)
+        value ≥ 10**9           → treat as bytes (e.g. 32212254720 → 30 GB)
+    """
+    if value <= 0:
+        return 0
+    if value < 1024:
+        return value * (1024 ** 3)
+    if value < 10 ** 9:
+        return value * (1024 ** 2)
+    return value
+
+
+def _resolve_expiry(row: dict, created_dt: datetime, now: datetime) -> datetime | None:
+    """Find the expiry from the row. Tries expire_date columns first,
+    then computes from days+date. Returns None if both attempts fail."""
+    for c in _EXPIRE_COLUMNS:
+        v = _parse_unix(row.get(c))
+        if v is not None:
+            return v
+    days_col, days = _first_nonzero_int(row, _DAYS_COLUMNS)
+    if days > 0:
+        from datetime import timedelta as _td
+        return (created_dt or now) + _td(days=days)
+    return None
 
 
 async def _existing_ref_codes(session: AsyncSession) -> set[str]:
@@ -470,15 +583,25 @@ async def import_orders(
 ) -> None:
     """Insert each successful legacy order as an imported Subscription.
 
-    Dedup is on (user_id, legacy_token) — we encode the legacy token in
-    `Subscription.callback_payload` so we can ask "have I imported this
-    one before?" without needing an extra index.
+    Re-runs of this function are SAFE and DESIRABLE:
+      * Dedup on (user_id, legacy_link) — same row is never inserted twice.
+      * Already-imported rows whose volume_bytes or ends_at landed as
+        garbage on an earlier run get UPDATED in place this time, if the
+        new parse produced a non-zero value. That's how the operator
+        fixes the "0 B / منقضی" bug without truncating the table.
+
+    Volume / expiry parsing is now tolerant of column-name variation
+    across Mirzabot/Faoxima forks. See _VOLUME_COLUMNS, _EXPIRE_COLUMNS,
+    _DAYS_COLUMNS up top.
     """
     # Build the imported-token set in one query so the loop is O(N).
     imported_tokens = await _existing_legacy_tokens(session)
 
     # Cache telegram_id → User.id lookups
     user_id_cache: dict[int, str] = {}
+
+    # Diagnostic: track which columns the script actually found.
+    column_hits: dict[str, int] = {"volume": 0, "expire": 0, "days": 0}
 
     n = 0
     now = datetime.now(timezone.utc)
@@ -500,14 +623,9 @@ async def import_orders(
 
         token = (row.get("token") or "").strip()
         if not token:
-            # Use the legacy uuid as a fallback dedup key.
-            token = (row.get("uuid") or "").strip()
+            _, token = _first_nonempty(row, _UUID_COLUMNS)
         if not token:
             stats.orders_failed += 1
-            continue
-
-        if (tg, token) in imported_tokens:
-            stats.orders_skipped_duplicate += 1
             continue
 
         user_uuid = user_id_cache.get(tg)
@@ -519,9 +637,9 @@ async def import_orders(
             user_uuid = user.id
             user_id_cache[tg] = user_uuid
 
-        # Pick a single VLESS URI from the legacy `link` field. Legacy
-        # storage is a JSON array of strings; take the first.
-        legacy_link = (row.get("link") or "").strip()
+        # Pick a single VLESS URI from the legacy `link` field. Some forks
+        # store a JSON array (Mirzabot original); others store a plain string.
+        _, legacy_link = _first_nonempty(row, _LINK_COLUMNS)
         if legacy_link.startswith("["):
             try:
                 arr = json.loads(legacy_link)
@@ -530,12 +648,75 @@ async def import_orders(
             except Exception:
                 pass
 
-        expire_dt = _parse_unix(row.get("expire_date"))
+        # ── Volume + expiry resolution (the fix) ──────────────────────
+        volume_col, volume_raw = _first_nonzero_int(row, _VOLUME_COLUMNS)
+        volume_bytes = _normalize_volume_to_bytes(volume_raw)
+        if volume_col:
+            column_hits["volume"] += 1
+
         created_dt = _parse_unix(row.get("date")) or now
+        expire_dt = _resolve_expiry(row, created_dt, now)
+        if expire_dt is not None:
+            column_hits["expire"] += 1
+        else:
+            # `_resolve_expiry` might have walked through _DAYS_COLUMNS;
+            # we count whether days was specifically available.
+            _, _days_v = _first_nonzero_int(row, _DAYS_COLUMNS)
+            if _days_v > 0:
+                column_hits["days"] += 1
+
+        # Status: expired only if we actually KNOW it's past. If both
+        # expire_date and days are missing we treat it as "active" so
+        # the user at least sees the sub in their list and can migrate it.
         status = "expired" if (expire_dt is not None and expire_dt < now) else "active"
 
-        volume_gb = _parse_int(row.get("volume"), default=0)
-        volume_bytes = volume_gb * 1024**3 if volume_gb > 0 else 0
+        legacy_remark_col, legacy_remark = _first_nonempty(row, _REMARK_COLUMNS)
+        legacy_remark = legacy_remark[:128] or None
+
+        # ── Idempotent UPDATE for already-imported rows ───────────────
+        if (tg, token) in imported_tokens or legacy_link:
+            existing_sub = None
+            if legacy_link:
+                existing_sub = await session.scalar(
+                    select(Subscription).where(
+                        Subscription.user_id == user_uuid,
+                        Subscription.legacy_link == legacy_link,
+                        Subscription.source == "imported_legacy",
+                    )
+                )
+            if existing_sub is not None:
+                changed = False
+                # Fix zero volume.
+                if existing_sub.volume_bytes == 0 and volume_bytes > 0:
+                    existing_sub.volume_bytes = volume_bytes
+                    changed = True
+                # Fix missing expiry (and re-evaluate status).
+                if existing_sub.ends_at is None and expire_dt is not None:
+                    existing_sub.ends_at = expire_dt
+                    if expire_dt > now and existing_sub.status == "expired":
+                        existing_sub.status = "active"
+                        existing_sub.expired_at = None
+                    elif expire_dt <= now and existing_sub.status == "active":
+                        existing_sub.status = "expired"
+                        existing_sub.expired_at = expire_dt
+                    changed = True
+                # Fix missing remark.
+                if not existing_sub.legacy_remark and legacy_remark:
+                    existing_sub.legacy_remark = legacy_remark
+                    changed = True
+                if changed:
+                    try:
+                        async with session.begin_nested():
+                            await session.flush()
+                        stats.orders_updated += 1
+                    except Exception as exc:
+                        logger.warning("update for sub tg=%s legacy_link=%s failed: %s",
+                                       tg, legacy_link[:32], exc)
+                        stats.orders_failed += 1
+                else:
+                    stats.orders_skipped_duplicate += 1
+                imported_tokens.add((tg, token))
+                continue
 
         try:
             # SAVEPOINT per row so one bad sub doesn't wipe out earlier
@@ -554,7 +735,7 @@ async def import_orders(
                     lifetime_used_bytes=0,
                     sub_link=legacy_link or None,
                     source="imported_legacy",
-                    legacy_remark=(row.get("remark") or "").strip()[:128] or None,
+                    legacy_remark=legacy_remark,
                     legacy_link=legacy_link or None,
                 )
                 sub.created_at = created_dt
@@ -568,6 +749,14 @@ async def import_orders(
         except Exception as exc:
             logger.warning("order tg=%s token=%s failed: %s", tg, token, exc)
             stats.orders_failed += 1
+
+    if stats.orders_seen:
+        logger.info(
+            "[ORDERS] column-detection summary — volume_found=%d, "
+            "expire_date_found=%d, days_found=%d (of %d rows)",
+            column_hits["volume"], column_hits["expire"], column_hits["days"],
+            stats.orders_seen,
+        )
 
 
 async def _existing_legacy_tokens(session: AsyncSession) -> set[tuple[int, str]]:
@@ -649,8 +838,11 @@ def main() -> int:
     logger.info("  Users  | seen=%d  inserted=%d  skipped(existing)=%d  failed=%d",
                 stats.users_seen, stats.users_inserted, stats.users_skipped_existing, stats.users_failed)
     logger.info("  Wallet credited (Toman→USD): %d rows", stats.wallet_credited)
-    logger.info("  Orders | seen=%d  inserted=%d  skipped(duplicate)=%d  failed=%d",
-                stats.orders_seen, stats.orders_inserted, stats.orders_skipped_duplicate, stats.orders_failed)
+    logger.info(
+        "  Orders | seen=%d  inserted=%d  updated_in_place=%d  skipped(duplicate)=%d  failed=%d",
+        stats.orders_seen, stats.orders_inserted, stats.orders_updated,
+        stats.orders_skipped_duplicate, stats.orders_failed,
+    )
     logger.info("")
     logger.info("Next steps:")
     logger.info("  1. Restart bot containers so model code sees the new sub rows.")

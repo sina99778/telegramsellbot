@@ -164,6 +164,7 @@ async def legacy_import_receive(message: Message, state: FSMContext, bot: Bot) -
             "<b>سرویس‌ها (orders)</b>\n"
             f"  دیده‌شده: <b>{stats.orders_seen}</b>\n"
             f"  افزوده‌شده: <b>{stats.orders_inserted}</b>\n"
+            f"  اصلاح‌شده: <b>{getattr(stats, 'orders_updated', 0)}</b>\n"
             f"  تکراری: <b>{stats.orders_skipped_duplicate}</b>\n"
             f"  ناموفق: <b>{stats.orders_failed}</b>\n"
             "━━━━━━━━━━━━━━\n"
