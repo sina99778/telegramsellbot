@@ -1369,7 +1369,15 @@ async def change_inbound_pick(
         )
         .where(Subscription.id == sub_id, Subscription.user_id == user.id)
     )
-    if sub is None or sub.xui_client is None:
+    if sub is None:
+        await safe_edit_or_send(callback, "کانفیگ پیدا نشد.")
+        await state.clear()
+        return
+    # Imported-legacy subs intentionally have NO `xui_client` — the original
+    # lived on the previous bot's panels. Their migrate path provisions a
+    # fresh X-UI client. Only native subs require an existing xui_client.
+    is_imported = (sub.source == "imported_legacy")
+    if not is_imported and sub.xui_client is None:
         await safe_edit_or_send(callback, "کانفیگ پیدا نشد.")
         await state.clear()
         return
@@ -1382,7 +1390,9 @@ async def change_inbound_pick(
     if inbound is None or not inbound.is_active:
         await safe_edit_or_send(callback, "اینباند انتخاب‌شده فعال نیست.")
         return
-    if inbound.id == sub.xui_client.inbound_id:
+    # "Same inbound" guard doesn't apply to imported subs — they have
+    # nothing on our side yet, so any target is a fresh move.
+    if not is_imported and sub.xui_client is not None and inbound.id == sub.xui_client.inbound_id:
         await safe_edit_or_send(callback, "این سرویس از قبل روی همین اینباند است.")
         return
 
@@ -1400,10 +1410,16 @@ async def change_inbound_pick(
     builder.adjust(1)
 
     remaining = max(sub.volume_bytes - sub.used_bytes, 0)
-    old_label = (
-        _format_inbound_label(sub.xui_client.inbound)
-        if sub.xui_client.inbound is not None else "نامشخص"
-    )
+    if is_imported:
+        # No X-UI client on our side; the "old" inbound was the previous
+        # bot's panel. Show a hint instead of a real label.
+        old_label = "🗂 (ربات قبلی)"
+    else:
+        old_label = (
+            _format_inbound_label(sub.xui_client.inbound)
+            if sub.xui_client is not None and sub.xui_client.inbound is not None
+            else "نامشخص"
+        )
     new_label = _format_inbound_label(inbound)
 
     await safe_edit_or_send(
