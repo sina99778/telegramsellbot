@@ -118,3 +118,12 @@ class SalesChannelStates(StatesGroup):
     # Admin sends either a forwarded message from the target channel
     # OR a chat_id directly (negative numbers like -1001234567890).
     waiting_for_channel = State()
+
+
+class LegacyImportStates(StatesGroup):
+    # Admin uploads a phpMyAdmin .sql dump (the OLD bot's DB) as a
+    # Telegram document. The handler downloads it, runs scripts/
+    # import_legacy.run() against the new bot's DB, and reports back
+    # how many users + orders landed. See
+    # apps/bot/handlers/admin/legacy_import.py.
+    waiting_for_dump = State()

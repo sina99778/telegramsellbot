@@ -136,11 +136,15 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     builder.button(text="━━ 📢 اعلان‌ها ━━", callback_data="admin:settings:noop")
     builder.button(text="📢 کانال گزارش فروش", callback_data="admin:settings:sales_channel")
 
+    # ── Section: Migration tools (one-off, but always available)
+    builder.button(text="━━ 🚚 مهاجرت ━━", callback_data="admin:settings:noop")
+    builder.button(text="📥 ایمپورت دیتابیس ربات قبلی", callback_data="admin:settings:legacy_import")
+
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
-    # 1 header, 2 toggles, 1 header, 4 prices (gb / days / toman-rate / currency-mode),
-    # 1 header, 3 custom, 1 header, 3 security, 1 header, 5 gateways,
-    # 1 header, 2 appearance, 1 header, 1 sales-channel, 1 back.
-    builder.adjust(1, 2, 1, 4, 1, 3, 1, 3, 1, 5, 1, 2, 1, 1, 1)
+    # 1 header, 2 toggles, 1 header, 4 prices, 1 header, 3 custom,
+    # 1 header, 3 security, 1 header, 5 gateways, 1 header, 2 appearance,
+    # 1 header, 1 sales-channel, 1 header, 1 legacy-import, 1 back.
+    builder.adjust(1, 2, 1, 4, 1, 3, 1, 3, 1, 5, 1, 2, 1, 1, 1, 1, 1)
 
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
