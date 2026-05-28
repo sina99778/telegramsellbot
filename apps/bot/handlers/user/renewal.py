@@ -510,8 +510,9 @@ async def renew_pay_wallet(
             else:
                 await callback.message.answer(success_text)
 
-            # Notify admins
-            await _notify_renewal_admins(callback, user, renew_type, amount, price, session)
+            # Notify admins (passing `subscription=sub` enables the
+            # polished sectioned format that includes server / config name).
+            await _notify_renewal_admins(callback, user, renew_type, amount, price, session, subscription=sub)
             
         except Exception as general_exc:
             logger.error("Unexpected crash in renew_pay_wallet: %s", general_exc, exc_info=True)
@@ -804,8 +805,29 @@ async def _apply_renewal(sub, renew_type: str, amount: float, session: AsyncSess
     )
 
 
-async def _notify_renewal_admins(callback, user, renew_type, amount, price, session) -> None:
-    """Notify about a renewal — prefers the sales report channel."""
+async def _notify_renewal_admins(callback, user, renew_type, amount, price, session, *, subscription=None) -> None:
+    """Notify about a renewal — prefers the sales report channel.
+
+    Polished sectioned format via services.sales_notifications.notify_renewal.
+    If the caller doesn't pass `subscription`, we fall back to the older
+    flat string format so we don't break a caller that didn't update.
+    """
+    if subscription is not None:
+        try:
+            from services.sales_notifications import notify_renewal as _notify
+            await _notify(
+                session, callback.bot,
+                user=user,
+                subscription=subscription,
+                renew_type=renew_type,
+                amount=float(amount),
+                price_usd=price,
+                payment_method="wallet",
+            )
+            return
+        except Exception as exc:
+            logger.warning("Failed to notify about renewal: %s", exc)
+            # fall through to legacy format
     from services.notifications import notify_sales_event
     user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
     renew_type_label = "حجم" if renew_type == "volume" else "زمان"
@@ -817,10 +839,9 @@ async def _notify_renewal_admins(callback, user, renew_type, amount, price, sess
         f"💰 مبلغ: {price} USD"
     )
     try:
-        bot = callback.bot
-        await notify_sales_event(session, bot, admin_text)
+        await notify_sales_event(session, callback.bot, admin_text)
     except Exception as exc:
-        logger.warning("Failed to notify about renewal: %s", exc)
+        logger.warning("Failed to notify about renewal (fallback): %s", exc)
 
 
 async def _clear_sub_alert_keys(sub_id) -> None:

@@ -356,19 +356,19 @@ async def _handle_direct_purchase(
                 caption=f"📷 QR کد کانفیگ {config_name}",
             )
 
-        # Sales notification — prefers the dedicated channel
-        from services.notifications import notify_sales_event
-        user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
-        admin_text = (
-            "🛒 خرید جدید!\n\n"
-            f"👤 کاربر: {user.first_name or '-'} | {user_link} (ID: <code>{user.telegram_id}</code>)\n"
-            f"📦 پلن: {plan.name}\n"
-            f"💰 مبلغ: {final_price:.2f} {plan.currency}\n"
-            f"📛 کانفیگ: {config_name}\n"
-            f"💳 روش: {provider_fa}"
-        )
+        # Sales notification — polished, sectioned format. Builder lives in
+        # services/sales_notifications.py; it pulls server label, wallet
+        # balance, verified phone etc. on its own.
         try:
-            await notify_sales_event(session, bot, admin_text)
+            from services.sales_notifications import notify_purchase as _notify_sale
+            await _notify_sale(
+                session, bot,
+                user=user,
+                subscription=provisioned.subscription,
+                price_usd=final_price,
+                payment_method=payment.provider,
+                config_name=config_name,
+            )
         except Exception as exc:
             logger.warning("[PROVISION] Failed to notify about purchase: %s", exc)
 

@@ -251,27 +251,24 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
                     logger.warning("autoconfirm user notify failed: %s", exc)
 
             # 2) Post to the sales-report channel (or fall back to
-            #    admin DMs if no channel is configured).
+            #    admin DMs if no channel is configured) — polished
+            #    sectioned format via services.sales_notifications.
             if bot is not None:
                 try:
-                    from services.notifications import notify_sales_event
+                    from sqlalchemy.orm import selectinload as _sel
+                    from services.sales_notifications import notify_wallet_topup as _notify
                     from models.user import User as _U
-                    u = await session.scalar(select(_U).where(_U.id == matched_payment.user_id))
+                    u = await session.scalar(
+                        select(_U).options(_sel(_U.wallet)).where(_U.id == matched_payment.user_id)
+                    )
                     if u:
-                        from html import escape as _esc
-                        user_link = (
-                            f"@{u.username}" if u.username
-                            else f"<a href='tg://user?id={u.telegram_id}'>مشاهده پروفایل</a>"
+                        await _notify(
+                            session, bot,
+                            user=u,
+                            amount_usd=matched_payment.price_amount,
+                            payment_method="autoconfirm",
+                            tx_hash=str(tx_hash),
                         )
-                        msg = (
-                            "💳 شارژ خودکار کیف پول!\n\n"
-                            f"👤 کاربر: {_esc(u.first_name or '-')} | {user_link} "
-                            f"(ID: <code>{u.telegram_id}</code>)\n"
-                            f"💰 مبلغ: <b>{matched_payment.price_amount:.2f} USD</b>\n"
-                            f"💱 ارز: {_esc(currency)}\n"
-                            f"🔗 TX: <code>{_esc(str(tx_hash))}</code>"
-                        )
-                        await notify_sales_event(session, bot, msg)
                 except Exception as exc:
                     logger.warning("autoconfirm sales-notify failed: %s", exc)
 
