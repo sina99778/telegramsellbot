@@ -100,11 +100,15 @@ async def main() -> None:
         max_instances=1,
         coalesce=True,
     )
+    # Backup tick fires every 30 min. The job itself checks the operator-
+    # configured `system.backup_interval_hours` setting and only actually
+    # produces a backup if enough time has elapsed since the last one —
+    # so operators can change the cadence from the dashboard without
+    # restarting the worker.
     scheduler.add_job(
         run_backup_job,
         "cron",
-        hour="*/6",
-        minute=15,
+        minute="*/30",
         kwargs={"bot": bot},
         max_instances=1,
         coalesce=True,

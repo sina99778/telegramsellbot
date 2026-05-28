@@ -247,15 +247,49 @@ async def run_backup(
 ) -> None:
     """Build + send a single comprehensive backup bundle.
 
-    Routing:
-      * If `manual_requester_id` is set (admin pressed the "Backup now"
-        button), send to that one chat.
-      * Else if the operator configured a sales-report channel, send
-        there (the channel doubles as a backup archive).
-      * Else DM every admin/owner User.
+    Schedule gating:
+      The cron only runs this function every 30 min, but auto-backups
+      should fire on the *operator-configured* interval (default 6h).
+      We compare `now - system.backup_last_run_at` against
+      `system.backup_interval_hours` and skip if not enough time has
+      passed — that way operators can change the cadence at any time
+      from the dashboard with no worker restart. Manual presses
+      (manual_requester_id set) always run regardless.
+
+    Routing (priority order):
+      1. `manual_requester_id` set       → that one chat only.
+      2. `system.backup_channel_id` set  → dedicated backup channel.
+      3. `notifications.sales_channel`   → sales channel fallback.
+      4. admin DMs                       → last resort.
     """
+    repo = AppSettingsRepository(session)
     now = datetime.now(timezone.utc)
     ts = now.strftime("%Y%m%d_%H%M%S")
+
+    # Interval-gate only the auto path; manual presses always run.
+    if manual_requester_id is None:
+        try:
+            interval_hours = await repo.get_backup_interval_hours()
+            last_iso = await repo.get_backup_last_run_iso()
+        except Exception as exc:
+            logger.warning("[BACKUP] Could not read interval settings, using 6h default: %s", exc)
+            interval_hours = 6
+            last_iso = None
+        if last_iso:
+            try:
+                last = datetime.fromisoformat(last_iso)
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                elapsed_hours = (now - last).total_seconds() / 3600.0
+                if elapsed_hours < interval_hours:
+                    logger.info(
+                        "[BACKUP] Skip — only %.1f h since last backup (interval=%dh)",
+                        elapsed_hours, interval_hours,
+                    )
+                    return
+            except Exception as exc:
+                logger.warning("[BACKUP] Could not parse last_run_at=%r: %s", last_iso, exc)
+
     logger.info("[BACKUP] Starting at %s (manual=%s)", ts, bool(manual_requester_id))
 
     pg_data = await _dump_postgres()
@@ -315,27 +349,39 @@ async def run_backup(
     ]
     caption = "\n".join(caption_lines)
 
-    # Build target list.
+    # Build target list — priority order documented in the docstring above.
     targets: list[int] = []
     if manual_requester_id is not None:
         targets = [manual_requester_id]
     else:
+        # 1. Dedicated backup channel (preferred).
         try:
-            sales_chat_id = await AppSettingsRepository(session).get_sales_report_chat_id()
+            dedicated = await repo.get_backup_channel_id()
         except Exception:
-            sales_chat_id = None
-        if sales_chat_id is not None:
-            targets = [sales_chat_id]
+            dedicated = None
+        if dedicated is not None:
+            targets = [dedicated]
         else:
-            targets = list(await _get_admin_telegram_ids(session))
+            # 2. Fall back to the sales-report channel if it exists.
+            try:
+                sales_chat_id = await repo.get_sales_report_chat_id()
+            except Exception:
+                sales_chat_id = None
+            if sales_chat_id is not None:
+                targets = [sales_chat_id]
+            else:
+                # 3. Last resort: DM every admin/owner.
+                targets = list(await _get_admin_telegram_ids(session))
 
     if not targets:
         logger.warning("[BACKUP] No backup targets configured — bundle not delivered.")
         return
 
+    delivered = 0
     for tg_id in targets:
         try:
             await bot.send_document(tg_id, doc, caption=caption)
+            delivered += 1
         except Exception as exc:
             logger.error("[BACKUP] send_document failed for %s: %s", tg_id, exc)
             try:
@@ -343,7 +389,17 @@ async def run_backup(
             except Exception:
                 pass
 
-    logger.info("[BACKUP] Done — delivered to %d target(s)", len(targets))
+    # Stamp last_run only if at least one delivery succeeded — otherwise
+    # the next scheduled tick should retry immediately rather than wait
+    # another N hours just because Telegram had a hiccup.
+    if delivered > 0 and manual_requester_id is None:
+        try:
+            await repo.set_backup_last_run_now()
+            await session.commit()
+        except Exception as exc:
+            logger.warning("[BACKUP] Could not stamp last_run_at: %s", exc)
+
+    logger.info("[BACKUP] Done — delivered to %d/%d target(s)", delivered, len(targets))
 
 
 # ─── tiny helpers ────────────────────────────────────────────────────────

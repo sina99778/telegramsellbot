@@ -481,6 +481,89 @@ class AppSettingsRepository:
         self.session.add(record)
         await self.session.flush()
 
+    # ── Backup schedule (interval + dedicated channel) ───────────────────────
+    #
+    # The scheduled-backup worker job fires every 30 minutes (cheap) and
+    # ASKS this repo whether enough time has elapsed since the last run.
+    # That way the operator can change the interval at any time from the
+    # dashboard / bot and the next cycle picks it up — no worker restart.
+    #
+    # Destinations (in priority order):
+    #   1. system.backup_channel_id     — dedicated backup channel
+    #   2. notifications.sales_channel  — fall back to sales channel
+    #   3. admin DMs                    — last-resort default
+    BACKUP_INTERVAL_KEY    = "system.backup_interval_hours"
+    BACKUP_CHANNEL_KEY     = "system.backup_channel_id"
+    BACKUP_LAST_RUN_KEY    = "system.backup_last_run_at"
+
+    async def get_backup_interval_hours(self) -> int:
+        """Hours between auto-backups. Default 6. Min 1."""
+        record = await self.session.get(AppSetting, self.BACKUP_INTERVAL_KEY)
+        if record and record.value_json:
+            try:
+                hours = int(record.value_json.get("hours", 6))
+                return max(1, hours)
+            except (TypeError, ValueError):
+                return 6
+        return 6
+
+    async def set_backup_interval_hours(self, hours: int) -> None:
+        if hours < 1 or hours > 24 * 7:
+            raise ValueError("backup_interval_hours must be between 1 and 168")
+        record = await self.session.get(AppSetting, self.BACKUP_INTERVAL_KEY)
+        if record is None:
+            record = AppSetting(key=self.BACKUP_INTERVAL_KEY)
+        record.value_json = {"hours": int(hours)}
+        self.session.add(record)
+        await self.session.flush()
+
+    async def get_backup_channel_id(self) -> int | None:
+        """Dedicated chat for backup file deliveries.
+
+        Returns None if not configured — in that case the worker falls
+        back to the sales-report channel, then to admin DMs.
+        """
+        record = await self.session.get(AppSetting, self.BACKUP_CHANNEL_KEY)
+        if record is None or not record.value_json:
+            return None
+        raw = record.value_json.get("chat_id")
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
+
+    async def set_backup_channel_id(self, chat_id: int | None, title: str | None = None) -> None:
+        record = await self.session.get(AppSetting, self.BACKUP_CHANNEL_KEY)
+        if chat_id is None:
+            if record is not None:
+                record.value_json = {}
+                self.session.add(record)
+                await self.session.flush()
+            return
+        if record is None:
+            record = AppSetting(key=self.BACKUP_CHANNEL_KEY)
+        record.value_json = {"chat_id": int(chat_id), "title": (title or "")[:128]}
+        self.session.add(record)
+        await self.session.flush()
+
+    async def get_backup_last_run_iso(self) -> str | None:
+        record = await self.session.get(AppSetting, self.BACKUP_LAST_RUN_KEY)
+        if record is None or not record.value_json:
+            return None
+        v = record.value_json.get("at")
+        return str(v) if v else None
+
+    async def set_backup_last_run_now(self) -> None:
+        from datetime import datetime, timezone
+        record = await self.session.get(AppSetting, self.BACKUP_LAST_RUN_KEY)
+        if record is None:
+            record = AppSetting(key=self.BACKUP_LAST_RUN_KEY)
+        record.value_json = {"at": datetime.now(timezone.utc).isoformat()}
+        self.session.add(record)
+        await self.session.flush()
+
     # ── Payment gateway settings ─────────────────────────────────────────────
 
     GATEWAY_SETTINGS_KEY = "payment.gateways"
