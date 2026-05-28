@@ -265,24 +265,50 @@ async def get_configs(
     page_size = 20
     page = max(page, 1)
 
-    total = await session.scalar(
-        select(func.count()).select_from(Subscription).where(Subscription.user_id == user.id)
-    ) or 0
-    result = await session.execute(
-        select(Subscription)
-        .options(
-            selectinload(Subscription.plan),
-            selectinload(Subscription.xui_client)
-            .selectinload(XUIClientRecord.inbound)
-            .selectinload(XUIInboundRecord.server),
+    try:
+        total = await session.scalar(
+            select(func.count()).select_from(Subscription).where(Subscription.user_id == user.id)
+        ) or 0
+        result = await session.execute(
+            select(Subscription)
+            .options(
+                selectinload(Subscription.plan),
+                selectinload(Subscription.xui_client)
+                .selectinload(XUIClientRecord.inbound)
+                .selectinload(XUIInboundRecord.server),
+            )
+            .where(Subscription.user_id == user.id)
+            .order_by(Subscription.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
         )
-        .where(Subscription.user_id == user.id)
-        .order_by(Subscription.created_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    )
+        subs = list(result.scalars().all())
+    except Exception as exc:
+        # Most common cause: a column added recently to the Subscription
+        # model isn't in the DB yet because auto-sync didn't run. Bubble
+        # up a clear error so the operator can re-run migrations instead
+        # of seeing an empty list with no clue.
+        logger.error(
+            "[MINIAPP /configs] DB query failed for user=%s telegram_id=%s: %s",
+            user.id, getattr(user, "telegram_id", None), exc, exc_info=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail="مشکل دسترسی به سرویس‌ها. لطفاً چند ثانیه دیگر دوباره تلاش کنید.",
+        ) from exc
+
+    views: list[SubscriptionView] = []
+    for sub in subs:
+        try:
+            views.append(_subscription_to_view(sub))
+        except Exception as exc:
+            # Per-row tolerance: one bad sub shouldn't blank the whole list.
+            logger.warning(
+                "[MINIAPP /configs] could not serialize sub=%s for user=%s: %s",
+                sub.id, user.id, exc,
+            )
     return SubscriptionListResponse(
-        subscriptions=[_subscription_to_view(sub) for sub in result.scalars().all()],
+        subscriptions=views,
         total=total,
         page=page,
         page_size=page_size,

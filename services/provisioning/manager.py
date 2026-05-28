@@ -957,8 +957,23 @@ class ProvisioningManager:
         xui = None
         last_dup_exc: Exception | None = None
 
+        # Snapshot every `sub` column we read inside the retry loop, so
+        # we never have to access them again after a savepoint rollback
+        # expires the object. Without this, the next iteration's
+        # `if sub.status == "expired"` triggers an async lazy-load that
+        # blows up with `greenlet_spawn has not been called`.
+        sub_id_str = sub.id
+        sub_was_expired = (sub.status == "expired")
+
         try:
             for attempt_idx, attempt_email in enumerate(email_candidates):
+                # After a failed attempt the savepoint rolled back; any
+                # attribute we touch on `sub` after that is in expired
+                # state and will async-lazy-load. Refresh once so the
+                # column writes inside the next savepoint are clean.
+                if attempt_idx > 0:
+                    await self.session.refresh(sub)
+
                 attempt_payload = XUIClient(
                     id=client_uuid,
                     uuid=client_uuid,
@@ -968,7 +983,7 @@ class ProvisioningManager:
                     expiryTime=expiry_ms,
                     enable=True,
                     subId=sub_id,
-                    comment=f"imported-migrated:sub={sub.id}",
+                    comment=f"imported-migrated:sub={sub_id_str}",
                 )
 
                 try:
@@ -998,7 +1013,10 @@ class ProvisioningManager:
                         # We DO keep `legacy_remark` set deliberately — it
                         # documents the original name forever in case the
                         # operator audits.
-                        if sub.status == "expired":
+                        # Use the pre-loop snapshot here: reading sub.status
+                        # mid-loop would lazy-load an expired column after a
+                        # prior savepoint rollback.
+                        if sub_was_expired:
                             # Migration of an expired imported sub effectively
                             # re-provisions; flip back to active so the user
                             # can use it.
