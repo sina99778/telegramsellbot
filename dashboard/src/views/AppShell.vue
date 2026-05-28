@@ -15,6 +15,7 @@ const navItems = [
   { name: "plans",        label: "پلن‌ها",            to: "/plans",        icon: "plans" },
   { name: "discounts",    label: "کدهای تخفیف",      to: "/discounts",    icon: "tag" },
   { name: "transactions", label: "تراکنش‌ها",         to: "/transactions", icon: "money" },
+  { name: "receipts",     label: "رسیدهای در انتظار", to: "/receipts",     icon: "receipt" },
   { name: "broadcast",    label: "پیام همگانی",      to: "/broadcast",    icon: "megaphone" },
   { name: "settings",     label: "تنظیمات",          to: "/settings",     icon: "settings" },
 ] as const;
@@ -88,6 +89,10 @@ const initials = computed(() => {
           </svg>
           <svg v-else-if="item.icon === 'megaphone'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M3 11v2a1 1 0 0 0 1 1h3l8 5V5L7 10H4a1 1 0 0 0-1 1Zm15-4v10M21 9v6" />
+          </svg>
+          <svg v-else-if="item.icon === 'receipt'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Z" />
+            <path stroke-linecap="round" d="M9 8h6M9 12h6M9 16h4" />
           </svg>
           <svg v-else-if="item.icon === 'settings'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3" />

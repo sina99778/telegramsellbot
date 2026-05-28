@@ -23,6 +23,7 @@ from apps.api.routes.dashboard.broadcast import router as broadcast_router
 from apps.api.routes.dashboard.discounts import router as discounts_router
 from apps.api.routes.dashboard.overview import router as overview_router
 from apps.api.routes.dashboard.plans import router as plans_router
+from apps.api.routes.dashboard.receipts import router as receipts_router
 from apps.api.routes.dashboard.servers import router as servers_router
 from apps.api.routes.dashboard.settings import router as settings_router
 from apps.api.routes.dashboard.transactions import router as transactions_router
@@ -35,6 +36,7 @@ router.include_router(broadcast_router, prefix="/broadcast", tags=["dashboard-br
 router.include_router(discounts_router, prefix="/discounts", tags=["dashboard-discounts"])
 router.include_router(overview_router, prefix="/overview", tags=["dashboard-overview"])
 router.include_router(plans_router, prefix="/plans", tags=["dashboard-plans"])
+router.include_router(receipts_router, prefix="/receipts", tags=["dashboard-receipts"])
 router.include_router(servers_router, prefix="/servers", tags=["dashboard-servers"])
 router.include_router(settings_router, prefix="/settings", tags=["dashboard-settings"])
 router.include_router(transactions_router, prefix="/transactions", tags=["dashboard-transactions"])
