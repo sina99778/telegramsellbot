@@ -112,4 +112,7 @@ body {
   .badge-muted {
     @apply bg-slate-500/15 text-slate-400;
   }
+  .badge-info {
+    @apply bg-sky-500/15 text-sky-300;
+  }
 }

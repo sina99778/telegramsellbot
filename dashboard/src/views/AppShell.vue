@@ -12,7 +12,10 @@ const navItems = [
   { name: "overview",     label: "نمای کلی",        to: "/",             icon: "home" },
   { name: "users",        label: "مدیریت کاربران",   to: "/users",        icon: "users" },
   { name: "servers",      label: "مدیریت سرورها",    to: "/servers",      icon: "server" },
+  { name: "plans",        label: "پلن‌ها",            to: "/plans",        icon: "plans" },
+  { name: "discounts",    label: "کدهای تخفیف",      to: "/discounts",    icon: "tag" },
   { name: "transactions", label: "تراکنش‌ها",         to: "/transactions", icon: "money" },
+  { name: "broadcast",    label: "پیام همگانی",      to: "/broadcast",    icon: "megaphone" },
   { name: "settings",     label: "تنظیمات",          to: "/settings",     icon: "settings" },
 ] as const;
 
@@ -74,6 +77,17 @@ const initials = computed(() => {
             <rect x="2" y="6" width="20" height="12" rx="2" />
             <circle cx="12" cy="12" r="3" />
             <path d="M6 10v.01M18 14v.01" stroke-linecap="round" />
+          </svg>
+          <svg v-else-if="item.icon === 'plans'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="4" width="18" height="16" rx="2" />
+            <path stroke-linecap="round" d="M7 9h10M7 13h10M7 17h6" />
+          </svg>
+          <svg v-else-if="item.icon === 'tag'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M20 12 12 20l-8-8V4h8l8 8Z" />
+            <circle cx="8.5" cy="8.5" r="1.2" fill="currentColor" />
+          </svg>
+          <svg v-else-if="item.icon === 'megaphone'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 11v2a1 1 0 0 0 1 1h3l8 5V5L7 10H4a1 1 0 0 0-1 1Zm15-4v10M21 9v6" />
           </svg>
           <svg v-else-if="item.icon === 'settings'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3" />
