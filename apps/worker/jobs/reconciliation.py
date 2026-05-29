@@ -13,7 +13,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
@@ -38,6 +38,29 @@ RETRY_MAX_AGE = timedelta(hours=48)
 async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
     """Find stuck payments, auto-retry provisioning/renewal, and alert admin."""
     now = datetime.now(timezone.utc)
+
+    # ─── HOUSEKEEPING: expire abandoned unpaid invoices ───────────────
+    # Invoices stuck in waiting/confirming with nothing ever paid, older
+    # than RETRY_MAX_AGE, will NEVER complete (the user walked away). Mark
+    # them `expired` so they stop cluttering the Recovery view + counts.
+    # Bulk UPDATE — no object load, no user notification, no refund.
+    cleaned_abandoned = 0
+    try:
+        result = await session.execute(
+            update(Payment)
+            .where(
+                Payment.payment_status.in_(["waiting", "confirming"]),
+                Payment.actually_paid.is_(None),
+                Payment.created_at < (now - RETRY_MAX_AGE),
+            )
+            .values(payment_status="expired")
+        )
+        cleaned_abandoned = result.rowcount or 0
+        if cleaned_abandoned:
+            await session.flush()
+            logger.info("[RECONCILIATION] expired %d abandoned unpaid invoices", cleaned_abandoned)
+    except Exception as exc:
+        logger.warning("[RECONCILIATION] abandoned-invoice cleanup failed: %s", exc)
 
     # ─── AUTO-RETRY: paid but not provisioned (direct_purchase) ───
     stuck_purchase_result = await session.execute(

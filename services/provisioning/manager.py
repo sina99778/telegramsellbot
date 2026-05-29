@@ -912,6 +912,13 @@ class ProvisioningManager:
         sub_id = secrets.token_hex(8)
         remark = sub.legacy_remark
         username = remark  # mirrors `remark` for our internal records
+        # Capture the OLD client identity BEFORE the savepoint clears
+        # sub.legacy_link — used to delete the stale consolidated client
+        # from the panel after the new one is created (so the user doesn't
+        # end up with two clients for one config).
+        import re as _re_uuid
+        _m_old = _re_uuid.match(r"^[a-z0-9]+://([^@]+)@", (sub.legacy_link or "").strip(), _re_uuid.IGNORECASE)
+        _old_uuid = _m_old.group(1).strip() if _m_old else None
 
         # Quota that "carries over" from the legacy bot. We have no
         # usage history on our side; the volume the user purchased on
@@ -1123,6 +1130,25 @@ class ProvisioningManager:
                     )
             raise MigrationError(f"انتقال ناموفق بود: {exc}") from exc
 
+        # ── Best-effort: delete the OLD client from the panel ──────────
+        # The imported config's client (consolidated onto this panel from
+        # the legacy bot) is still sitting on its original inbound under
+        # the same email/uuid. Now that we've created the fresh migrated
+        # client, remove the stale one so the user has exactly ONE client
+        # per config. Never touches the client we just created (keep_uuid).
+        try:
+            await self._delete_stale_panel_clients(
+                server=target_server,
+                remark=remark,
+                old_uuid=_old_uuid,
+                keep_uuid=client_uuid,
+            )
+        except Exception as exc:
+            logger.warning(
+                "imported-migration: stale-client cleanup failed (non-fatal) for sub %s: %s",
+                sub.id, exc,
+            )
+
         return MigrationResult(
             subscription=sub,
             xui_client=xui,
@@ -1132,6 +1158,76 @@ class ProvisioningManager:
             new_inbound_label=new_inbound_label,
             remaining_bytes=remaining_bytes,
         )
+
+    async def _delete_stale_panel_clients(
+        self,
+        *,
+        server: XUIServerRecord,
+        remark: str | None,
+        old_uuid: str | None,
+        keep_uuid: str,
+    ) -> int:
+        """Find and delete panel clients that match this config's OLD
+        identity (email == remark, or client id == old_uuid) across ALL
+        inbounds on `server`, EXCLUDING the freshly-created client
+        (keep_uuid). Returns how many were deleted.
+
+        Bounded by a 25s asyncio timeout; best-effort. One get_inbounds +
+        N delClient calls. (A single migration, so the big-panel parse
+        cost is paid once — not per-sub.)
+        """
+        import asyncio as _asyncio
+        import json as _json
+
+        if not remark and not old_uuid:
+            return 0
+        remark_l = (remark or "").strip().lower()
+
+        async def _run() -> int:
+            async with self._get_xui_client_for_server(server) as api:
+                inbounds = await api.get_inbounds()
+                # Collect (inbound_remote_id, client_id) to delete.
+                to_delete: list[tuple[int, str]] = []
+                for ib in inbounds:
+                    settings = ib.settings or {}
+                    if isinstance(settings, str):
+                        try:
+                            settings = _json.loads(settings)
+                        except Exception:
+                            settings = {}
+                    for c in (settings.get("clients") or []):
+                        cid = str(c.get("id") or c.get("uuid") or "").strip()
+                        cemail = str(c.get("email") or "").strip().lower()
+                        if cid and cid == keep_uuid:
+                            continue  # never delete the new client
+                        matches = (
+                            (remark_l and cemail == remark_l)
+                            or (old_uuid and cid == old_uuid)
+                        )
+                        if matches and cid:
+                            to_delete.append((ib.xui_inbound_remote_id, cid))
+
+                deleted = 0
+                for inbound_remote_id, cid in to_delete:
+                    try:
+                        await api.delete_client(inbound_id=inbound_remote_id, client_id=cid)
+                        deleted += 1
+                        logger.info(
+                            "imported-migration: deleted stale client %s from inbound %s",
+                            cid, inbound_remote_id,
+                        )
+                    except Exception as del_exc:
+                        logger.warning(
+                            "imported-migration: failed to delete stale client %s: %s",
+                            cid, del_exc,
+                        )
+                return deleted
+
+        try:
+            return await _asyncio.wait_for(_run(), timeout=25.0)
+        except _asyncio.TimeoutError:
+            logger.warning("imported-migration: stale-client cleanup timed out (25s)")
+            return 0
 
     async def _recover_from_sublink_header(self, sub: "Subscription") -> tuple[int | None, int | None]:
         """Best-effort: read total + expire from the `subscription-userinfo`
