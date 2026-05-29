@@ -1275,35 +1275,9 @@ def _record_admin_action(
 
 
 async def _disable_user_configs_for_ban(session: AsyncSession, user_id: UUID) -> int:
-    result = await session.execute(
-        select(Subscription)
-        .options(
-            selectinload(Subscription.xui_client)
-            .selectinload(XUIClientRecord.inbound)
-            .selectinload(XUIInboundRecord.server)
-        )
-        .where(
-            Subscription.user_id == user_id,
-            Subscription.status.in_(["active", "pending_activation"]),
-        )
-    )
-    disabled_count = 0
-    manager = ProvisioningManager(session)
-    for subscription in result.scalars().all():
-        subscription.status = "disabled"
-        xui_record = subscription.xui_client
-        if xui_record is not None:
-            xui_record.is_active = False
-            try:
-                await manager._disable_xui_client(
-                    xui_record=xui_record,
-                    volume_bytes=subscription.volume_bytes,
-                    ends_at=subscription.ends_at,
-                )
-            except Exception as exc:
-                logger.warning("Could not disable remote config %s for banned user %s: %s", xui_record.id, user_id, exc)
-        disabled_count += 1
-    return disabled_count
+    # Delegates to the shared ProvisioningManager method so the bot, dashboard,
+    # and mini-app ban paths all disable configs with identical logic.
+    return await ProvisioningManager(session).disable_user_active_configs(user_id)
 
 
 def _serialize_ticket_for_admin(ticket: Ticket) -> dict[str, Any]:

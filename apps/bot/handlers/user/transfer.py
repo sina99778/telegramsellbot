@@ -94,18 +94,22 @@ async def _rotate_config_identity_for_transfer(
 
     try:
         server = ensure_inbound_server_loaded(xui_record.inbound)
-        async with create_xui_client_for_server(server) as xui_client:
-            await xui_client.update_client(
-                inbound_id=xui_record.inbound.xui_inbound_remote_id,
-                client_id=old_client_id,
-                client=updated_client,
-            )
         new_sub_link = build_sub_link(server, new_sub_id)
-        xui_record.client_uuid = new_uuid
-        xui_record.xui_client_remote_id = new_uuid
-        xui_record.sub_link = new_sub_link
-        sub.sub_link = new_sub_link
-        await session.flush()
+        # Savepoint, DB-first then panel (mirrors the migration paths): if the
+        # panel call fails, the savepoint rolls back the DB columns so we never
+        # leave the record pointing at a rotated-but-uncommitted identity.
+        async with session.begin_nested():
+            xui_record.client_uuid = new_uuid
+            xui_record.xui_client_remote_id = new_uuid
+            xui_record.sub_link = new_sub_link
+            sub.sub_link = new_sub_link
+            await session.flush()
+            async with create_xui_client_for_server(server) as xui_client:
+                await xui_client.update_client(
+                    inbound_id=xui_record.inbound.xui_inbound_remote_id,
+                    client_id=old_client_id,
+                    client=updated_client,
+                )
         return True
     except Exception as exc:
         logger.error("transfer: failed to rotate identity for sub %s: %s", sub.id, exc, exc_info=True)

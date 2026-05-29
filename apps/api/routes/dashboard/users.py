@@ -323,18 +323,30 @@ async def set_status(user_id: UUID, body: StatusBody, auth: AuthDep) -> dict[str
     if user is None:
         raise HTTPException(status_code=404, detail="کاربر یافت نشد.")
     user.status = body.status
+    disabled_configs = 0
+    if body.status == "banned":
+        # Cut the user's VPN too, not just their DB status (consistent with the
+        # bot + mini-app ban paths).
+        user.is_bot_blocked = True
+        from services.provisioning.manager import ProvisioningManager
+        try:
+            disabled_configs = await ProvisioningManager(session).disable_user_active_configs(user.id)
+        except Exception as exc:
+            logger.warning("set_status: failed to disable configs for user %s: %s", user.id, exc)
+    else:
+        user.is_bot_blocked = False
     try:
         await AuditLogRepository(session).log_action(
             actor_user_id=None,
             action=f"dashboard_user_{body.status}",
             entity_type="user",
             entity_id=user.id,
-            payload={"dashboard_admin": admin.username},
+            payload={"dashboard_admin": admin.username, "disabled_configs": disabled_configs},
         )
     except Exception as exc:
         logger.warning("Audit log failed: %s", exc)
     await session.commit()
-    return {"ok": True, "status": user.status}
+    return {"ok": True, "status": user.status, "disabled_configs": disabled_configs}
 
 
 class MessageBody(BaseModel):

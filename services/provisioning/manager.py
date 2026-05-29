@@ -591,6 +591,21 @@ class ProvisioningManager:
         if target_inbound is None or not target_inbound.is_active:
             raise MigrationError("اینباند هدف موجود یا فعال نیست.")
 
+        # Enforce the admin migration whitelist — the SAME rule the imported
+        # path and the UI list use. The picker only SHOWS whitelisted inbounds,
+        # but aiogram callback_data is plaintext/unsigned, so a crafted confirm
+        # callback could otherwise migrate onto a non-whitelisted (but active)
+        # inbound. An EMPTY whitelist means "no restriction" (allow any).
+        allowed_raw = await AppSettingsRepository(self.session).get_migration_target_inbound_ids()
+        allowed_ids: list[UUID] = []
+        for raw in allowed_raw:
+            try:
+                allowed_ids.append(UUID(raw))
+            except (TypeError, ValueError):
+                continue
+        if allowed_ids and target_inbound_id not in allowed_ids:
+            raise MigrationError("این اینباند برای انتقال مجاز نیست.")
+
         target_server = ensure_inbound_server_loaded(target_inbound)
         if not target_server.is_active:
             raise MigrationError("سرور اینباند هدف فعال نیست.")
@@ -853,10 +868,15 @@ class ProvisioningManager:
         # attribute access lazy-loads, which under async SQLAlchemy raises
         # `greenlet_spawn has not been called` outside of an explicit
         # greenlet context.
+        # FOR UPDATE on the sub row so a double-tapped confirm serializes:
+        # the second task blocks here, then re-reads AFTER the first commits
+        # (source is None) and falls out via the guard below instead of
+        # racing into a second panel client + orphan.
         sub = await self.session.scalar(
             select(Subscription)
             .options(selectinload(Subscription.plan))
-            .where(Subscription.id == subscription_id),
+            .where(Subscription.id == subscription_id)
+            .with_for_update(),
         )
         if sub is None:
             raise MigrationError("کانفیگ پیدا نشد.")
@@ -1269,6 +1289,37 @@ class ProvisioningManager:
                         if matches and cid:
                             to_delete.append((ib.xui_inbound_remote_id, cid))
 
+                # COLLATERAL-DELETION GUARD: the `email == legacy_remark`
+                # heuristic can match a DIFFERENT user's live config if their
+                # panel email happens to equal this sub's legacy remark. Never
+                # delete a client that one of OUR XUIClientRecords manages — the
+                # stale legacy client we actually want to remove has no record
+                # on our side (imported subs are untracked until migrated).
+                if to_delete:
+                    candidate_cids = [cid for _, cid in to_delete]
+                    managed_rows = await self.session.execute(
+                        select(XUIClientRecord.client_uuid, XUIClientRecord.xui_client_remote_id)
+                        .where(
+                            (XUIClientRecord.client_uuid.in_(candidate_cids))
+                            | (XUIClientRecord.xui_client_remote_id.in_(candidate_cids))
+                        )
+                    )
+                    managed_cids: set[str] = set()
+                    for cu, crid in managed_rows.all():
+                        if cu:
+                            managed_cids.add(str(cu))
+                        if crid:
+                            managed_cids.add(str(crid))
+                    if managed_cids:
+                        skipped = [d for d in to_delete if d[1] in managed_cids]
+                        if skipped:
+                            logger.warning(
+                                "imported-migration: skipping %d stale-client candidate(s) that "
+                                "are managed by an existing record (collateral-deletion guard): %s",
+                                len(skipped), [cid for _, cid in skipped],
+                            )
+                        to_delete = [d for d in to_delete if d[1] not in managed_cids]
+
                 deleted = 0
                 for inbound_remote_id, cid in to_delete:
                     try:
@@ -1355,6 +1406,47 @@ class ProvisioningManager:
         except Exception as exc:
             logger.warning("[SUBINFO] sub-link read failed: %s: %s", type(exc).__name__, exc)
             return None, None
+
+    async def disable_user_active_configs(self, user_id: UUID) -> int:
+        """Disable all of a user's active/pending configs on the X-UI panel.
+
+        Used by the ban flows so a banned user's VPN actually stops working,
+        not just their bot access. Sets each sub to `disabled` and best-effort
+        disables the remote client (failures are logged, not fatal). Returns
+        how many subs were affected. Shared by the bot, dashboard, and mini-app
+        ban paths so all three behave identically.
+        """
+        result = await self.session.execute(
+            select(Subscription)
+            .options(
+                selectinload(Subscription.xui_client)
+                .selectinload(XUIClientRecord.inbound)
+                .selectinload(XUIInboundRecord.server)
+            )
+            .where(
+                Subscription.user_id == user_id,
+                Subscription.status.in_(["active", "pending_activation"]),
+            )
+        )
+        disabled_count = 0
+        for subscription in result.scalars().all():
+            subscription.status = "disabled"
+            xui_record = subscription.xui_client
+            if xui_record is not None:
+                xui_record.is_active = False
+                try:
+                    await self._disable_xui_client(
+                        xui_record=xui_record,
+                        volume_bytes=subscription.volume_bytes,
+                        ends_at=subscription.ends_at,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Could not disable remote config %s for banned user %s: %s",
+                        xui_record.id, user_id, exc,
+                    )
+            disabled_count += 1
+        return disabled_count
 
     async def _disable_xui_client(
         self,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal, InvalidOperation
+from html import escape as _html_escape
 from math import ceil
 from uuid import UUID
 
@@ -418,19 +419,27 @@ async def admin_toggle_ban(
         await safe_edit_or_send(callback, AdminMessages.USER_NOT_FOUND)
         return
 
+    disabled_configs = 0
     if user.status == "banned":
         user.status = "active"
         user.is_bot_blocked = False
     else:
         user.status = "banned"
         user.is_bot_blocked = True
+        # Banning must also cut the user's VPN — otherwise their provisioned
+        # configs keep serving traffic on the panel. Mirrors the mini-app ban.
+        from services.provisioning.manager import ProvisioningManager
+        try:
+            disabled_configs = await ProvisioningManager(session).disable_user_active_configs(user.id)
+        except Exception as exc:
+            logger.warning("toggle_ban: failed to disable configs for user %s: %s", user.id, exc)
 
     await AuditLogRepository(session).log_action(
         actor_user_id=admin_user.id,
         action="toggle_ban",
         entity_type="user",
         entity_id=user.id,
-        payload={"status": user.status, "is_bot_blocked": user.is_bot_blocked},
+        payload={"status": user.status, "is_bot_blocked": user.is_bot_blocked, "disabled_configs": disabled_configs},
     )
 
     total_orders = int(
@@ -510,6 +519,7 @@ async def admin_user_toggle_admin(
     callback: CallbackQuery,
     callback_data: AdminUserActionCallback,
     session: AsyncSession,
+    admin_user: User,
 ) -> None:
     await callback.answer()
 
@@ -523,12 +533,23 @@ async def admin_user_toggle_admin(
         return
 
     from core.config import settings
-    if user.telegram_id == settings.owner_telegram_id:
+    # Protect the owner from demotion. Guard on telegram_id AND role=="owner"
+    # (matching the mini-app): the previous check only compared telegram_id, so
+    # an owner whose telegram_id differs from the configured OWNER_TELEGRAM_ID
+    # (env change / DB import) could be silently demoted to a normal user.
+    if user.telegram_id == settings.owner_telegram_id or user.role == "owner":
         await safe_edit_or_send(callback, "❌ نقش مالک اصلی ربات (owner) قابل تغییر نیست.")
         return
 
     new_role = "admin" if user.role == "user" else "user"
     user.role = new_role
+    await AuditLogRepository(session).log_action(
+        actor_user_id=admin_user.id,
+        action="toggle_admin",
+        entity_type="user",
+        entity_id=user.id,
+        payload={"new_role": new_role},
+    )
     await session.flush()
 
     total_orders = int(
@@ -617,7 +638,10 @@ def _build_user_profile_text(*, user: User, total_orders: int) -> str:
     discount = getattr(user, "personal_discount_percent", 0) or 0
     discount_text = f"\n🏷 تخفیف شخصی: <b>{discount}٪</b>" if discount > 0 else ""
     return AdminMessages.USER_PROFILE.format(
-        name=user.first_name or "-",
+        # Escape: this text is sent with parse_mode=HTML via plain message.answer
+        # in several handlers (no escape fallback). A first_name with < > & would
+        # otherwise make the whole profile fail to render.
+        name=_html_escape(user.first_name or "-"),
         telegram_id=user.telegram_id,
         status=user.status,
         wallet_balance=f"{wallet_balance:.2f}",
