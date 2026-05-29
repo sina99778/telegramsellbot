@@ -919,10 +919,12 @@ async def recover_volumes_from_panel(session: AsyncSession, stats: ImportStats, 
     from models.xui import XUIServerRecord
     from services.xui.runtime import create_xui_client_for_server
 
+    # Process ALL imported subs (not just volume==0): the panel is also
+    # authoritative for status/expiry, and configs that already got their
+    # volume on a prior run may still carry the stale dump status.
     rows = await session.execute(
         select(Subscription).where(
             Subscription.source == "imported_legacy",
-            Subscription.volume_bytes == 0,
             Subscription.legacy_remark.is_not(None),
         )
     )
@@ -930,7 +932,7 @@ async def recover_volumes_from_panel(session: AsyncSession, stats: ImportStats, 
     if limit:
         targets = targets[:limit]
     if not targets:
-        logger.info("[PANEL-VOL] no zero-volume imported subs with a remark to recover")
+        logger.info("[PANEL-VOL] no imported subs with a remark to recover")
         return
 
     srv_rows = await session.execute(
@@ -960,19 +962,8 @@ async def recover_volumes_from_panel(session: AsyncSession, stats: ImportStats, 
 
         indexed = 0
         for ib in inbounds:
-            # clientStats carries the per-client limit (`total`) + expiry.
-            for cs in (ib.client_stats or []):
-                email = str(cs.get("email") or "").strip().lower()
-                if not email:
-                    continue
-                total = cs.get("total")
-                expiry = cs.get("expiryTime")
-                by_email[email] = (
-                    int(total) if total else None,
-                    int(expiry) if expiry else None,
-                )
-                indexed += 1
-            # settings.clients carries totalGB (bytes) + expiryTime + id(uuid).
+            # settings.clients carries totalGB (bytes) + expiryTime + id(uuid)
+            # + enable. This is the authoritative per-client record.
             settings = ib.settings or {}
             if isinstance(settings, str):
                 try:
@@ -983,12 +974,33 @@ async def recover_volumes_from_panel(session: AsyncSession, stats: ImportStats, 
                 email = str(c.get("email") or "").strip().lower()
                 total = c.get("totalGB")
                 expiry = c.get("expiryTime")
-                pair = (int(total) if total else None, int(expiry) if expiry else None)
-                if email and (email not in by_email or by_email[email][0] in (None, 0)):
-                    by_email[email] = pair
+                enable = c.get("enable", True)
+                triple = (
+                    int(total) if total else None,
+                    int(expiry) if expiry else None,
+                    bool(enable),
+                )
+                if email:
+                    by_email[email] = triple
+                    indexed += 1
                 cid = str(c.get("id") or c.get("uuid") or "").strip()
                 if cid:
-                    by_uuid[cid] = pair
+                    by_uuid[cid] = triple
+            # clientStats is a fallback for panels that don't expose clients
+            # in settings — it has email, total (limit), expiryTime, enable.
+            for cs in (ib.client_stats or []):
+                email = str(cs.get("email") or "").strip().lower()
+                if not email or email in by_email:
+                    continue
+                total = cs.get("total")
+                expiry = cs.get("expiryTime")
+                enable = cs.get("enable", True)
+                by_email[email] = (
+                    int(total) if total else None,
+                    int(expiry) if expiry else None,
+                    bool(enable),
+                )
+                indexed += 1
         logger.info("[PANEL-VOL] server %s — indexed %d clients", server.name, indexed)
 
     logger.info(
@@ -1009,30 +1021,58 @@ async def recover_volumes_from_panel(session: AsyncSession, stats: ImportStats, 
                 hit = by_uuid.get(uid)
         if hit is None:
             continue
-        total, expiry_ms = hit
+        total, expiry_ms, enable = hit
         if not first_logged:
             first_logged = True
-            logger.info("[PANEL-VOL] first match — remark=%s total=%s expiry_ms=%s",
-                        sub.legacy_remark, total, expiry_ms)
+            logger.info("[PANEL-VOL] first match — remark=%s total=%s expiry_ms=%s enable=%s",
+                        sub.legacy_remark, total, expiry_ms, enable)
         changed = False
+
+        # Volume from the panel.
         if total and total > 0 and sub.volume_bytes == 0:
             sub.volume_bytes = int(total)
             changed = True
-        # expiryTime > 0  → absolute ms timestamp.
-        # expiryTime < 0  → X-UI "relative" expiry (config not yet used;
-        #                   expires |x| ms AFTER first connection). We can't
-        #                   set an absolute ends_at for those, so leave
-        #                   ends_at as-is (the dump's expire_date, set during
-        #                   import, already covers the activated ones).
-        if expiry_ms and expiry_ms > 0 and sub.ends_at is None:
-            try:
-                sub.ends_at = datetime.fromtimestamp(expiry_ms / 1000, tz=timezone.utc)
-                if sub.ends_at > now and sub.status == "expired":
-                    sub.status = "active"
-                    sub.expired_at = None
+
+        # The PANEL is authoritative for status + expiry of any config
+        # that exists on it — the dump's expire_date is stale (it's the
+        # ORIGINAL order expiry, before renewals). So override:
+        #   * disabled on panel        → keep/mark expired
+        #   * expiryTime > 0 (absolute) → active if future, else expired
+        #   * expiryTime <= 0 / None   → not-yet-used or unlimited → active
+        if not enable:
+            if sub.status != "expired":
+                sub.status = "expired"
                 changed = True
+        elif expiry_ms and expiry_ms > 0:
+            try:
+                new_end = datetime.fromtimestamp(expiry_ms / 1000, tz=timezone.utc)
+                if sub.ends_at != new_end:
+                    sub.ends_at = new_end
+                    changed = True
+                if new_end > now:
+                    if sub.status != "active":
+                        sub.status = "active"
+                        sub.expired_at = None
+                        changed = True
+                else:
+                    if sub.status != "expired":
+                        sub.status = "expired"
+                        sub.expired_at = new_end
+                        changed = True
             except (OSError, OverflowError, ValueError):
                 pass
+        else:
+            # Enabled + relative/zero expiry → it's a live, not-yet-expired
+            # config. Mark active and clear the stale dump end date.
+            if sub.status != "active":
+                sub.status = "active"
+                sub.expired_at = None
+                changed = True
+            if sub.ends_at is not None and expiry_ms is not None and expiry_ms < 0:
+                # relative (first-use) expiry — no fixed end date yet
+                sub.ends_at = None
+                changed = True
+
         if changed:
             stats.volume_recovered_from_panel += 1
             processed_since_commit += 1

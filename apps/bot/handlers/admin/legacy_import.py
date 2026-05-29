@@ -168,8 +168,8 @@ async def legacy_import_receive(message: Message, state: FSMContext, bot: Bot) -
             "<b>سرویس‌های واردشده (وضعیت فعلی دیتابیس)</b>\n"
             f"  کل سرویس‌های imported: <b>{imp_total}</b>\n"
             f"  ✅ حجم‌دار (از پنل خونده شد): <b>{imp_vol}</b>\n"
-            f"  🟢 فعال: <b>{imp_active}</b>\n"
-            f"  🔴 منقضی (روی پنل نیستن): <b>{imp_expired}</b>\n"
+            f"  🟢 فعال (طبق پنل): <b>{imp_active}</b>\n"
+            f"  🔴 منقضی/غیرفعال: <b>{imp_expired}</b>\n"
             f"  🗑 تکراری پاک‌شده این بار: <b>{getattr(stats, 'orders_deduped', 0)}</b>\n"
             f"  📡 خوانده‌شده از پنل این اجرا: <b>{getattr(stats, 'volume_recovered_from_panel', 0)}</b>\n"
         )
