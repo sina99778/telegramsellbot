@@ -308,6 +308,11 @@ class ImportStats:
     sublink_fetch_attempts: int = 0
     # Duplicate imported subs removed by the dedupe pass.
     orders_deduped: int = 0
+    # ── Cumulative DB state after this run (the honest picture) ──────
+    imported_total: int = 0            # all imported_legacy subs in DB
+    imported_with_volume: int = 0      # …that now have volume_bytes > 0
+    imported_active: int = 0           # …that are active / pending
+    imported_active_no_volume: int = 0 # active but still volume 0 (needs attention)
 
 
 async def _existing_user_telegram_ids(session: AsyncSession) -> set[int]:
@@ -1228,6 +1233,33 @@ async def run(dump_path: Path, dry_run: bool, limit: int) -> ImportStats:
                 await session.commit()  # save whatever recovery managed before the error
             except Exception:
                 await session.rollback()
+
+        # ── Cumulative DB state — the honest picture across all runs ────
+        try:
+            _active = Subscription.status.in_(("active", "pending_activation"))
+            stats.imported_total = int(await session.scalar(
+                select(func.count(Subscription.id)).where(Subscription.source == "imported_legacy")
+            ) or 0)
+            stats.imported_with_volume = int(await session.scalar(
+                select(func.count(Subscription.id)).where(
+                    Subscription.source == "imported_legacy",
+                    Subscription.volume_bytes > 0,
+                )
+            ) or 0)
+            stats.imported_active = int(await session.scalar(
+                select(func.count(Subscription.id)).where(
+                    Subscription.source == "imported_legacy", _active
+                )
+            ) or 0)
+            stats.imported_active_no_volume = int(await session.scalar(
+                select(func.count(Subscription.id)).where(
+                    Subscription.source == "imported_legacy", _active,
+                    Subscription.volume_bytes == 0,
+                )
+            ) or 0)
+        except Exception as exc:
+            logger.warning("final DB-state count failed: %s", exc)
+
         logger.info("Committed (all phases).")
     return stats
 

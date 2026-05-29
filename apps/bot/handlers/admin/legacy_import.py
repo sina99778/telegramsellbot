@@ -151,59 +151,43 @@ async def legacy_import_receive(message: Message, state: FSMContext, bot: Bot) -
         from scripts.import_legacy import run as run_import
         stats = await run_import(dump_path, dry_run=False, limit=0)
 
-        # Final summary. Keep it dense — Telegram caption-ish.
+        # Final summary — the HONEST cumulative DB picture, not per-run.
         import html as _html
-        vol_source = getattr(stats, "volume_source_column", None)
-        orders_with_volume = getattr(stats, "orders_with_volume", 0)
+        imp_total = getattr(stats, "imported_total", 0)
+        imp_vol = getattr(stats, "imported_with_volume", 0)
+        imp_active = getattr(stats, "imported_active", 0)
+        imp_active_novol = getattr(stats, "imported_active_no_volume", 0)
+        imp_expired = max(imp_total - imp_active, 0)
+
         summary = (
             "✅ <b>ایمپورت کامل شد</b>\n"
             "━━━━━━━━━━━━━━\n"
             "<b>کاربران</b>\n"
-            f"  دیده‌شده:  <b>{stats.users_seen}</b>\n"
-            f"  افزوده‌شده: <b>{stats.users_inserted}</b>\n"
-            f"  از قبل بوده: <b>{stats.users_skipped_existing}</b>\n"
-            f"  ناموفق: <b>{stats.users_failed}</b>\n"
-            f"  کیف پول تومن→دلار: <b>{stats.wallet_credited}</b> ردیف\n\n"
-            "<b>سرویس‌ها (orders)</b>\n"
-            f"  دیده‌شده: <b>{stats.orders_seen}</b>\n"
-            f"  افزوده‌شده: <b>{stats.orders_inserted}</b>\n"
-            f"  اصلاح‌شده: <b>{getattr(stats, 'orders_updated', 0)}</b>\n"
-            f"  تکراری: <b>{stats.orders_skipped_duplicate}</b>\n"
-            f"  ناموفق: <b>{stats.orders_failed}</b>\n"
-            f"  حجم پیدا شد در: <b>{orders_with_volume}</b> سرویس"
-            f" (ستون: <code>{_html.escape(str(vol_source or '—'))}</code>)\n"
-            f"  تکراری‌های پاک‌شده: <b>{getattr(stats, 'orders_deduped', 0)}</b>\n"
-            f"  حجم/زمان خوانده‌شده از پنل سنایی: <b>{getattr(stats, 'volume_recovered_from_panel', 0)}</b>"
-            f" سرویس (از <b>{getattr(stats, 'sublink_fetch_attempts', 0)}</b> سرور)\n"
+            f"  کل: <b>{stats.users_seen}</b> | جدید: <b>{stats.users_inserted}</b>"
+            f" | کیف پول شارژ شد: <b>{stats.wallet_credited}</b>\n\n"
+            "<b>سرویس‌های واردشده (وضعیت فعلی دیتابیس)</b>\n"
+            f"  کل سرویس‌های imported: <b>{imp_total}</b>\n"
+            f"  ✅ حجم‌دار (از پنل خونده شد): <b>{imp_vol}</b>\n"
+            f"  🟢 فعال: <b>{imp_active}</b>\n"
+            f"  🔴 منقضی (روی پنل نیستن): <b>{imp_expired}</b>\n"
+            f"  🗑 تکراری پاک‌شده این بار: <b>{getattr(stats, 'orders_deduped', 0)}</b>\n"
+            f"  📡 خوانده‌شده از پنل این اجرا: <b>{getattr(stats, 'volume_recovered_from_panel', 0)}</b>\n"
         )
 
-        # Surface the legacy schema only when volume couldn't be obtained
-        # from EITHER the dump column OR the panel header — so the operator
-        # can screenshot it and we add the right column without log-grepping.
-        recovered_panel = getattr(stats, "volume_recovered_from_panel", 0)
-        if orders_with_volume == 0 and recovered_panel == 0:
-            cols = getattr(stats, "orders_columns", []) or []
-            sample = getattr(stats, "orders_sample_row", {}) or {}
+        if imp_active_novol > 0:
+            # Some ACTIVE configs still have no volume — their client wasn't
+            # found on the panel (different email/uuid, or not migrated).
             summary += (
-                "\n⚠️ <b>حجم در هیچ ستونی پیدا نشد.</b>\n"
-                "این ساختار دیتابیس قدیمی توئه — لطفاً همین پیام رو اسکرین‌شات کن و بفرست:\n\n"
-                f"<b>ستون‌های orders_list:</b>\n<code>{_html.escape(', '.join(cols))}</code>\n\n"
+                f"\n⚠️ <b>{imp_active_novol}</b> سرویس فعال هنوز حجم نداره — "
+                "یعنی کلاینتشون روی پنل فعلیت پیدا نشد (یا ادغام نشده، یا اسم/uuid فرق داره).\n"
+                "بقیه‌ی سرویس‌های منقضی نیازی به حجم ندارن.\n"
             )
-            if sample:
-                # Only show short numeric-ish fields to keep it readable —
-                # those are the volume/expiry candidates.
-                compact = {
-                    k: v for k, v in sample.items()
-                    if v is not None and len(str(v)) <= 24
-                }
-                lines = "\n".join(f"  {_html.escape(str(k))} = {_html.escape(str(v))}" for k, v in compact.items())
-                summary += f"<b>یک نمونه سرویس فعال:</b>\n<code>{lines}</code>\n"
         else:
             summary += (
                 "━━━━━━━━━━━━━━\n"
-                "حالا کاربران قدیمی می‌تونن <b>/start</b> بزنن و کانفیگ‌هاشون رو "
-                "ببینن. کانفیگ‌های imported با علامت 🗂 توی لیست مشخص می‌شن و "
-                "قابلیت انتقال به اینباند جدید رو دارن (با حفظ نام)."
+                "همه‌ی سرویس‌های فعال حجمشون از پنل خونده شد. ✅\n"
+                "کاربران قدیمی با <b>/start</b> کانفیگ‌هاشون رو با حجم و زمان درست می‌بینن.\n"
+                "<i>(سرویس‌های منقضی روی پنل نیستن، پس حجمشون صفر می‌مونه — طبیعیه.)</i>"
             )
         await _safe_edit(progress, summary)
 
