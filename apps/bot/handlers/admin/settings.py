@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import json
+import re
 
 from aiogram import F, Router
 from aiogram.filters.callback_data import CallbackData
@@ -1212,12 +1213,15 @@ async def card_to_card_menu(callback: CallbackQuery, session: AsyncSession) -> N
         f"🟢 بعد از {auto.delay_minutes} دقیقه" if auto.enabled
         else "🔴 خاموش"
     )
+    jitter_label = (
+        f"🟢 تا {gw.card_amount_jitter_toman:,} تومان" if gw.card_amount_jitter_toman > 0
+        else "🔴 خاموش (مبلغ دقیق)"
+    )
     text = (
-        "مدیریت کارت به کارت\n\n"
+        "💳 <b>مدیریت کارت به کارت</b>\n\n"
         f"وضعیت: {status}\n"
-        f"شماره کارت: <code>{gw.card_number or 'تنظیم نشده'}</code>\n"
-        f"صاحب کارت: {gw.card_holder or 'تنظیم نشده'}\n"
-        f"بانک: {gw.card_bank or 'تنظیم نشده'}\n"
+        f"تعداد کارت‌های ثبت‌شده: <b>{len(gw.cards)}</b> (بین خریدارا شافل می‌شه)\n"
+        f"جیتر قیمت (مبلغ منحصربه‌فرد): {jitter_label}\n"
         f"توضیح: {gw.card_note or 'تنظیم نشده'}\n\n"
         f"تأیید خودکار رسید: {auto_label}\n"
         f"کاربران مستثنا: {len(auto.exception_telegram_ids)} نفر"
@@ -1227,14 +1231,157 @@ async def card_to_card_menu(callback: CallbackQuery, session: AsyncSession) -> N
         text="غیرفعال کردن" if gw.card_to_card_enabled else "فعال کردن",
         callback_data="admin:gw:card_toggle",
     )
-    builder.button(text="شماره کارت", callback_data="admin:gw:card_number")
-    builder.button(text="نام صاحب کارت", callback_data="admin:gw:card_holder")
-    builder.button(text="نام بانک", callback_data="admin:gw:card_bank")
+    builder.button(text="➕ افزودن کارت", callback_data="admin:gw:card_add")
+    builder.button(text="📋 لیست / حذف کارت‌ها", callback_data="admin:gw:card_list")
+    builder.button(text="🎲 جیتر قیمت", callback_data="admin:gw:card_jitter")
     builder.button(text="توضیح پرداخت", callback_data="admin:gw:card_note")
     builder.button(text="⏱ تأیید خودکار رسید", callback_data="admin:gw:card_auto")
     builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
     builder.adjust(1)
-    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup())
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+# ─── Multi-card management ──────────────────────────────────────────────
+
+
+class _CardMgmtStates(StatesGroup):
+    waiting_for_new_card = State()
+    waiting_for_jitter = State()
+
+
+@router.callback_query(F.data == "admin:gw:card_add")
+async def card_add_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(_CardMgmtStates.waiting_for_new_card)
+    await safe_edit_or_send(
+        callback,
+        "➕ <b>افزودن کارت جدید</b>\n\n"
+        "اطلاعات کارت رو در <b>یک خط</b> با این قالب بفرست:\n\n"
+        "<code>شماره کارت , نام صاحب کارت , بانک</code>\n\n"
+        "مثال:\n<code>6037997412345678 , علی رضایی , ملی</code>\n\n"
+        "نام بانک اختیاریه. برای لغو /cancel را بفرست.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(_CardMgmtStates.waiting_for_new_card)
+async def card_add_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    raw = (message.text or "").strip()
+    if not raw or raw == "/cancel":
+        await state.clear()
+        await message.answer("لغو شد.")
+        return
+    parts = [p.strip() for p in re.split(r"[,،]", raw)]
+    number = parts[0] if parts else ""
+    holder = parts[1] if len(parts) > 1 else ""
+    bank = parts[2] if len(parts) > 2 else ""
+    # Keep only digits in the card number (strip spaces / dashes).
+    digits = re.sub(r"\D", "", number)
+    if len(digits) < 12:
+        await message.answer("❌ شماره کارت نامعتبره. باید حداقل ۱۲ رقم باشه.")
+        return
+    repo = AppSettingsRepository(session)
+    gw = await repo.get_gateway_settings()
+    new_cards = list(gw.cards)
+    if any(c["number"] == digits for c in new_cards):
+        await message.answer("این کارت قبلاً ثبت شده.")
+        await state.clear()
+        return
+    new_cards.append({"number": digits, "holder": holder, "bank": bank})
+    await repo.update_gateway_settings(cards=new_cards)
+    await state.clear()
+    await message.answer(
+        f"✅ کارت اضافه شد. مجموع کارت‌ها: <b>{len(new_cards)}</b>",
+        parse_mode="HTML",
+    )
+
+
+class _CardDeleteCallback(CallbackData, prefix="carddel"):
+    idx: int
+
+
+@router.callback_query(F.data == "admin:gw:card_list")
+async def card_list(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    builder = InlineKeyboardBuilder()
+    if not gw.cards:
+        text = "📋 هیچ کارتی ثبت نشده.\nاز «➕ افزودن کارت» شروع کن."
+    else:
+        lines = ["📋 <b>کارت‌های ثبت‌شده</b>\n"]
+        for i, c in enumerate(gw.cards):
+            bank = f" — {c['bank']}" if c.get("bank") else ""
+            lines.append(f"{i+1}. <code>{c['number']}</code> ({c.get('holder') or '—'}{bank})")
+            builder.button(text=f"🗑 حذف کارت {i+1}", callback_data=_CardDeleteCallback(idx=i).pack())
+        text = "\n".join(lines)
+    builder.button(text=AdminButtons.BACK, callback_data="admin:gw:card")
+    builder.adjust(1)
+    await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(_CardDeleteCallback.filter())
+async def card_delete(callback: CallbackQuery, callback_data: _CardDeleteCallback, session: AsyncSession) -> None:
+    await callback.answer()
+    repo = AppSettingsRepository(session)
+    gw = await repo.get_gateway_settings()
+    cards = list(gw.cards)
+    if 0 <= callback_data.idx < len(cards):
+        removed = cards.pop(callback_data.idx)
+        await repo.update_gateway_settings(cards=cards)
+        logger.info("Admin removed card ending %s", removed.get("number", "")[-4:])
+    await card_list(callback, session)
+
+
+@router.callback_query(F.data == "admin:gw:card_jitter")
+async def card_jitter_start(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    await callback.answer()
+    gw = await AppSettingsRepository(session).get_gateway_settings()
+    await state.set_state(_CardMgmtStates.waiting_for_jitter)
+    await safe_edit_or_send(
+        callback,
+        "🎲 <b>جیتر قیمت کارت‌به‌کارت</b>\n\n"
+        f"مقدار فعلی: <b>{gw.card_amount_jitter_toman:,}</b> تومان\n\n"
+        "یه عدد به <b>تومان</b> بفرست — به مبلغ هر خریدار یه مقدار تصادفی بین ۱ تا همین عدد "
+        "اضافه می‌شه تا مبلغ هرکس منحصربه‌فرد بشه (برای تأیید خودکار با تطبیق مبلغ).\n\n"
+        "مثلاً <code>300</code> یعنی هرکس بین ۱ تا ۳۰۰ تومان بیشتر از قیمت پایه می‌ده.\n"
+        "<code>0</code> = خاموش (همه مبلغ دقیق می‌دن).\n\n"
+        "برای لغو /cancel را بفرست.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(_CardMgmtStates.waiting_for_jitter)
+async def card_jitter_submit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    raw = (message.text or "").strip()
+    if raw == "/cancel":
+        await state.clear()
+        await message.answer("لغو شد.")
+        return
+    try:
+        val = int(_normalize_int(raw))
+        if val < 0:
+            raise ValueError
+    except ValueError:
+        await message.answer("❌ عدد نامعتبر. یه عدد ≥ ۰ بفرست (به تومان).")
+        return
+    await AppSettingsRepository(session).update_gateway_settings(card_amount_jitter_toman=val)
+    await state.clear()
+    label = f"تا {val:,} تومان" if val > 0 else "خاموش"
+    await message.answer(f"✅ جیتر قیمت روی <b>{label}</b> تنظیم شد.", parse_mode="HTML")
+
+
+def _normalize_int(raw: str) -> str:
+    """Convert Persian/Arabic digits + strip separators for int parsing."""
+    out = []
+    for ch in raw.strip():
+        if ch.isspace() or ch in {",", "،", "٬"}:
+            continue
+        try:
+            import unicodedata
+            out.append(str(unicodedata.decimal(ch)))
+        except (TypeError, ValueError):
+            out.append(ch)
+    return "".join(out)
 
 
 # ─── Card auto-confirm submenu ──────────────────────────────────────────

@@ -529,7 +529,7 @@ async def _show_payment_method_choice(
         builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
     if gw.manual_crypto_enabled and (gw.manual_crypto_wallets or gw.manual_crypto_address):
         builder.button(text="💰 پرداخت به ولت (دستی)", callback_data="purchase:pay:manual")
-    if gw.card_to_card_enabled and gw.card_number and gw.card_holder:
+    if gw.card_to_card_enabled and (gw.cards or gw.card_number):
         builder.button(text="کارت به کارت", callback_data="purchase:pay:card")
     builder.button(text=Buttons.BACK, callback_data="purchase:cancel")
     builder.adjust(1)
@@ -595,7 +595,7 @@ async def _show_payment_method_choice_msg(
     rial_buttons = []
     if gw.tetrapay_enabled:
         rial_buttons.append(("💳 درگاه ریالی (تتراپی)", "purchase:pay:tetrapay"))
-    if gw.card_to_card_enabled and gw.card_number and gw.card_holder:
+    if gw.card_to_card_enabled and (gw.cards or gw.card_number):
         rial_buttons.append(("💵 کارت به کارت", "purchase:pay:card"))
     for label, cb in rial_buttons:
         builder.button(text=label, callback_data=cb)
@@ -808,7 +808,9 @@ async def pay_with_card_to_card(
 
     settings_repo = AppSettingsRepository(session)
     gw = await settings_repo.get_gateway_settings()
-    if not gw.card_to_card_enabled or not gw.card_number or not gw.card_holder:
+    from services.card_payments import pick_card, compute_unique_toman
+    card = pick_card(gw)
+    if not gw.card_to_card_enabled or card is None:
         await safe_edit_or_send(callback, "پرداخت کارت به کارت در حال حاضر فعال نیست.")
         return
 
@@ -821,7 +823,9 @@ async def pay_with_card_to_card(
         original_price * (Decimal(100 - discount_percent) / Decimal(100))
     ).quantize(Decimal("0.01")) if discount_percent > 0 else original_price
     toman_rate = await settings_repo.get_toman_rate()
-    toman_amount = int((final_price * toman_rate).quantize(Decimal("1")))
+    base_toman = int((final_price * toman_rate).quantize(Decimal("1")))
+    # Per-buyer unique amount so the operator can auto-confirm by amount.
+    toman_amount = await compute_unique_toman(session, base_toman, gw.card_amount_jitter_toman)
 
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     if user is None:
@@ -844,9 +848,11 @@ async def pay_with_card_to_card(
             "discount_percent": discount_percent,
             "discount_id": data.get("discount_id"),
             "purpose": "direct_purchase",
-            "card_number": gw.card_number,
-            "card_holder": gw.card_holder,
-            "card_bank": gw.card_bank,
+            "card_number": card["number"],
+            "card_holder": card["holder"],
+            "card_bank": card.get("bank"),
+            "base_toman": base_toman,
+            "jittered": toman_amount != base_toman,
         },
     )
     session.add(payment)
@@ -859,16 +865,18 @@ async def pay_with_card_to_card(
         "پرداخت کارت به کارت",
         "",
         f"پلن: {plan.name}",
-        f"مبلغ: {toman_amount:,} تومان",
-        f"شماره کارت: <code>{gw.card_number}</code>",
-        f"نام صاحب کارت: {gw.card_holder}",
+        f"مبلغ <b>دقیق</b>: <b>{toman_amount:,}</b> تومان",
+        f"شماره کارت: <code>{card['number']}</code>",
+        f"نام صاحب کارت: {card['holder']}",
     ]
-    if gw.card_bank:
-        card_lines.append(f"بانک: {gw.card_bank}")
+    if card.get("bank"):
+        card_lines.append(f"بانک: {card['bank']}")
+    if toman_amount != base_toman:
+        card_lines.append("⚠️ لطفاً <b>دقیقاً</b> همین مبلغ را واریز کن (مبلغ مخصوص حساب توست).")
     if gw.card_note:
         card_lines.extend(["", gw.card_note])
     card_lines.extend(["", "بعد از پرداخت، عکس رسید را همینجا ارسال کنید."])
-    await safe_edit_or_send(callback, "\n".join(card_lines))
+    await safe_edit_or_send(callback, "\n".join(card_lines), parse_mode="HTML")
 
 
 @router.message(PurchaseStates.waiting_for_card_receipt)

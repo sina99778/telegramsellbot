@@ -634,6 +634,14 @@ class AppSettingsRepository:
         card_holder: str | None
         card_bank: str | None
         card_note: str | None
+        # Pool of cards to rotate between buyers (each: {number, holder, bank}).
+        # When non-empty the bot shuffles among them so a single card isn't
+        # used permanently. Falls back to the single card_* fields above.
+        cards: list[dict[str, str]]
+        # Random toman added to the displayed amount so each buyer's exact
+        # total is unique (enables card auto-confirm by amount-matching).
+        # 0 = disabled (everyone pays the exact base amount).
+        card_amount_jitter_toman: int
         force_join_channel: str | None  # e.g. "@mychannel" or "-1001234567890"
         force_join_enabled: bool
 
@@ -659,6 +667,8 @@ class AppSettingsRepository:
                 card_holder=None,
                 card_bank=None,
                 card_note=None,
+                cards=[],
+                card_amount_jitter_toman=0,
                 force_join_channel=None,
                 force_join_enabled=False,
             )
@@ -671,6 +681,28 @@ class AppSettingsRepository:
                     "address": str(payload.get("manual_crypto_address")),
                 }
             ]
+        # Card pool: prefer the `cards` list; fall back to the single legacy
+        # card_* fields so existing setups keep working with no migration.
+        raw_cards = payload.get("cards") or []
+        cards: list[dict[str, str]] = []
+        if isinstance(raw_cards, list):
+            for c in raw_cards:
+                if not isinstance(c, dict):
+                    continue
+                num = str(c.get("number") or "").strip()
+                if not num:
+                    continue
+                cards.append({
+                    "number": num,
+                    "holder": str(c.get("holder") or "").strip(),
+                    "bank": str(c.get("bank") or "").strip(),
+                })
+        if not cards and payload.get("card_number"):
+            cards = [{
+                "number": str(payload.get("card_number")),
+                "holder": str(payload.get("card_holder") or ""),
+                "bank": str(payload.get("card_bank") or ""),
+            }]
         return self.GatewaySettings(
             nowpayments_enabled=bool(payload.get("nowpayments_enabled", True)),
             tetrapay_enabled=bool(payload.get("tetrapay_enabled", True)),
@@ -694,6 +726,8 @@ class AppSettingsRepository:
             card_holder=payload.get("card_holder"),
             card_bank=payload.get("card_bank"),
             card_note=payload.get("card_note"),
+            cards=cards,
+            card_amount_jitter_toman=max(int(payload.get("card_amount_jitter_toman", 0) or 0), 0),
             force_join_channel=payload.get("force_join_channel"),
             force_join_enabled=bool(payload.get("force_join_enabled", False)),
         )
@@ -719,6 +753,8 @@ class AppSettingsRepository:
         card_holder: str | None = _SENTINEL,
         card_bank: str | None = _SENTINEL,
         card_note: str | None = _SENTINEL,
+        cards: list[dict[str, str]] | None = _SENTINEL,
+        card_amount_jitter_toman: int | None = None,
         force_join_channel: str | None = _SENTINEL,
         force_join_enabled: bool | None = None,
     ) -> "AppSettingsRepository.GatewaySettings":
@@ -763,6 +799,10 @@ class AppSettingsRepository:
             payload["card_bank"] = card_bank
         if card_note is not _SENTINEL:
             payload["card_note"] = card_note
+        if cards is not _SENTINEL:
+            payload["cards"] = cards
+        if card_amount_jitter_toman is not None:
+            payload["card_amount_jitter_toman"] = max(int(card_amount_jitter_toman), 0)
         if force_join_channel is not _SENTINEL:
             payload["force_join_channel"] = force_join_channel
         if force_join_enabled is not None:

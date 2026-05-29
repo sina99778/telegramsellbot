@@ -165,7 +165,7 @@ async def topup_preset_handler(
             tronado_enabled=gw.tronado_enabled,
             manual_crypto_enabled=gw.manual_crypto_enabled and bool(gw.manual_crypto_wallets or gw.manual_crypto_address),
             manual_wallets=gw.manual_crypto_wallets,
-            card_to_card_enabled=gw.card_to_card_enabled and bool(gw.card_number and gw.card_holder),
+            card_to_card_enabled=gw.card_to_card_enabled and bool(gw.cards or gw.card_number),
         )
     )
 
@@ -209,7 +209,7 @@ async def topup_custom_amount_handler(
             tetrapay_enabled=gw.tetrapay_enabled,
             manual_crypto_enabled=gw.manual_crypto_enabled and bool(gw.manual_crypto_wallets or gw.manual_crypto_address),
             manual_wallets=gw.manual_crypto_wallets,
-            card_to_card_enabled=gw.card_to_card_enabled and bool(gw.card_number and gw.card_holder),
+            card_to_card_enabled=gw.card_to_card_enabled and bool(gw.cards or gw.card_number),
         )
     )
 
@@ -308,8 +308,10 @@ async def topup_pay_card_to_card(
         return
 
     from repositories.settings import AppSettingsRepository
+    from services.card_payments import pick_card, compute_unique_toman
     gw = await AppSettingsRepository(session).get_gateway_settings()
-    if not gw.card_to_card_enabled or not gw.card_number or not gw.card_holder:
+    card = pick_card(gw)
+    if not gw.card_to_card_enabled or card is None:
         await safe_edit_or_send(callback, "پرداخت کارت به کارت در حال حاضر فعال نیست.")
         return
 
@@ -321,7 +323,8 @@ async def topup_pay_card_to_card(
 
     amount = Decimal(amount_str)
     toman_rate = await AppSettingsRepository(session).get_toman_rate()
-    toman_amount = int((amount * toman_rate).quantize(Decimal("1")))
+    base_toman = int((amount * toman_rate).quantize(Decimal("1")))
+    toman_amount = await compute_unique_toman(session, base_toman, gw.card_amount_jitter_toman)
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     if user is None:
         await safe_edit_or_send(callback, Messages.ACCOUNT_NOT_FOUND)
@@ -339,9 +342,11 @@ async def topup_pay_card_to_card(
         pay_amount=Decimal(toman_amount),
         callback_payload={
             "purpose": "wallet_topup",
-            "card_number": gw.card_number,
-            "card_holder": gw.card_holder,
-            "card_bank": gw.card_bank,
+            "card_number": card["number"],
+            "card_holder": card["holder"],
+            "card_bank": card.get("bank"),
+            "base_toman": base_toman,
+            "jittered": toman_amount != base_toman,
         },
     )
     session.add(payment)
@@ -353,16 +358,18 @@ async def topup_pay_card_to_card(
     lines = [
         "پرداخت کارت به کارت",
         "",
-        f"مبلغ: {toman_amount:,} تومان",
-        f"شماره کارت: <code>{gw.card_number}</code>",
-        f"نام صاحب کارت: {gw.card_holder}",
+        f"مبلغ <b>دقیق</b>: <b>{toman_amount:,}</b> تومان",
+        f"شماره کارت: <code>{card['number']}</code>",
+        f"نام صاحب کارت: {card['holder']}",
     ]
-    if gw.card_bank:
-        lines.append(f"بانک: {gw.card_bank}")
+    if card.get("bank"):
+        lines.append(f"بانک: {card['bank']}")
+    if toman_amount != base_toman:
+        lines.append("⚠️ لطفاً <b>دقیقاً</b> همین مبلغ را واریز کن (مبلغ مخصوص حساب توست).")
     if gw.card_note:
         lines.extend(["", gw.card_note])
     lines.extend(["", "بعد از پرداخت، عکس رسید را همینجا ارسال کنید."])
-    await safe_edit_or_send(callback, "\n".join(lines))
+    await safe_edit_or_send(callback, "\n".join(lines), parse_mode="HTML")
 
 
 @router.message(TopUpStates.waiting_for_card_receipt)
