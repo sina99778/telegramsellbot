@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from html import escape as _html_escape
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
@@ -85,7 +86,10 @@ async def support_start(message: Message, state: FSMContext, session: AsyncSessi
         history_text += f"\n{status_badge}\n━━━━━━━━━━\n"
         for msg in messages:
             sender = "👤 شما" if msg.sender_id == user.id else "🛠 پشتیبانی"
-            content = msg.text or SupportTexts.PHOTO_MARKER
+            # Escape stored message text — the history is sent with HTML parse
+            # mode, so an angle bracket / ampersand in a past message would
+            # otherwise crash the whole history render.
+            content = _html_escape(msg.text or SupportTexts.PHOTO_MARKER)
             when = _ago(getattr(msg, "created_at", None))
             history_text += f"{sender} <i>({when})</i>:\n{content}\n\n"
 
@@ -231,12 +235,16 @@ async def support_submit(
     )
     builder.adjust(1)
     
+    # Escape user-controlled fields — the admin alert is sent with HTML parse
+    # mode (no escape fallback on bot.send_message/send_photo), so an angle
+    # bracket in the name or ticket text would make EVERY admin send fail and
+    # the ticket would silently never reach any admin.
     display_content = text or SupportTexts.PHOTO_MARKER
     alert_text = SupportTexts.ADMIN_ALERT.format(
         ticket_id=str(ticket.id)[:8],
-        name=user.first_name or "-",
+        name=_html_escape(user.first_name or "-"),
         telegram_id=user.telegram_id,
-        message=display_content.strip() if display_content else "-",
+        message=_html_escape(display_content.strip()) if display_content else "-",
     )
     
     for admin in admins:

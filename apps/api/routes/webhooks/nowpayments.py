@@ -39,21 +39,33 @@ async def handle_nowpayments_ipn(
         if settings.nowpayments_ipn_secret is not None else None
     )
 
-    # Validate signature — REJECT invalid signatures to prevent forged callbacks
-    if effective_ipn_secret is not None:
-        if not _is_valid_nowpayments_signature(raw_body=raw_body, signature=signature, ipn_secret=effective_ipn_secret):
-            logger.warning(
-                "IPN signature validation FAILED — REJECTING request. "
-                "Please check NOWPAYMENTS_IPN_SECRET matches your NowPayments dashboard setting!"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Invalid IPN signature.",
-            )
-        else:
-            logger.info("IPN signature validated OK")
-    else:
-        logger.warning("NOWPAYMENTS_IPN_SECRET not configured — skipping signature check!")
+    # Validate signature — REJECT invalid/unsigned callbacks to prevent forgery.
+    #
+    # FAIL CLOSED when no secret is configured: this endpoint finalizes a
+    # payment and credits a wallet, so processing it unauthenticated would let
+    # anyone complete a pending invoice. NowPayments only sends IPNs when an
+    # IPN secret is set in its dashboard, so a correctly-configured deployment
+    # always has one. If you hit this, set NOWPAYMENTS_IPN_SECRET (env) or the
+    # gateway override in the panel to the value from your NowPayments account.
+    if effective_ipn_secret is None:
+        logger.error(
+            "NOWPAYMENTS_IPN_SECRET not configured — REJECTING IPN (fail-closed). "
+            "Set it to the secret from your NowPayments dashboard to enable callbacks."
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="IPN secret not configured.",
+        )
+    if not _is_valid_nowpayments_signature(raw_body=raw_body, signature=signature, ipn_secret=effective_ipn_secret):
+        logger.warning(
+            "IPN signature validation FAILED — REJECTING request. "
+            "Please check NOWPAYMENTS_IPN_SECRET matches your NowPayments dashboard setting!"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid IPN signature.",
+        )
+    logger.info("IPN signature validated OK")
 
     try:
         payload = json.loads(raw_body)
@@ -140,11 +152,20 @@ async def handle_nowpayments_ipn(
         logger.info("IPN: Payment %s already processed (actually_paid=%s)", payment.id, payment.actually_paid)
         return {"status": "already_processed"}
 
-    amount_to_credit = _extract_credit_amount(payload)
-    if amount_to_credit <= Decimal("0"):
+    # SECURITY: credit the amount we INVOICED (from our DB), never the amount
+    # echoed back in the IPN body. NowPayments reports "finished" only once the
+    # invoice is fully paid, so payment.price_amount is the correct, tamper-proof
+    # figure to credit — matching the Tronado/TetraPay handlers. Trusting the
+    # payload's `price_amount` would let a forged/replayed body inflate a credit.
+    amount_to_credit = payment.price_amount
+    if amount_to_credit is None or amount_to_credit <= Decimal("0"):
+        logger.error(
+            "IPN: payment %s has an invalid invoiced amount (%s) — refusing to credit",
+            payment.id, amount_to_credit,
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid payment amount in callback payload.",
+            detail="Invalid invoiced amount on payment record.",
         )
 
     logger.info("IPN: Processing payment %s — amount_to_credit=%s", payment.id, amount_to_credit)

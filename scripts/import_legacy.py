@@ -744,6 +744,16 @@ async def import_orders(
         # this code change (older imports may have stored a different element
         # of the array), we ALSO match existing subs by (user_id, remark).
         legacy_link = legacy_link_val or ""
+        # Fallback dedup key: if the dump had no parseable VLESS/HTTP link for
+        # this order, neither the legacy_link nor (often) the remark match would
+        # fire on re-import, so the SAME order would insert a NEW duplicate sub
+        # every single run. The legacy order `token` is guaranteed non-empty
+        # (checked above) and unique per order, so use it as a stable sentinel
+        # dedup key stored in legacy_link. This is only used when there's no
+        # real link to display anyway.
+        if not legacy_link and token:
+            legacy_link = f"legacy-token:{token}"
+            legacy_link_val = legacy_link
 
         # ── Volume + expiry resolution (the fix) ──────────────────────
         volume_col, volume_raw = _first_nonzero_int(row, _VOLUME_COLUMNS)

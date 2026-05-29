@@ -1011,6 +1011,15 @@ class ProvisioningManager:
         # blows up with `greenlet_spawn has not been called`.
         sub_id_str = sub.id
         sub_was_expired = (sub.status == "expired")
+        # Snapshot the RESOLVED volume/expiry (incl. any sub-link-header
+        # recovery done above). On a retry, `await self.session.refresh(sub)`
+        # reloads these columns from the DB and reverts the recovered values —
+        # so we re-apply them inside every savepoint below. Otherwise the panel
+        # client gets the right totalGB/expiry but our DB row stays at 0/NULL,
+        # and a sub at volume_bytes=0 NEVER volume-expires (the sync job skips
+        # the cap when volume_bytes==0) while the bot shows the wrong numbers.
+        _target_volume_bytes = remaining_bytes
+        _target_ends_at = sub.ends_at
 
         # A subscription can own AT MOST ONE xui_clients row
         # (uq_xui_clients_subscription_id). Normally an imported sub has
@@ -1095,6 +1104,11 @@ class ProvisioningManager:
                         sub.sub_link = new_sub_link
                         sub.source = None
                         sub.legacy_link = None
+                        # Re-apply the resolved volume/expiry every attempt so a
+                        # prior failed attempt's refresh(sub) can't leave the DB
+                        # row out of sync with the panel client we just built.
+                        sub.volume_bytes = _target_volume_bytes
+                        sub.ends_at = _target_ends_at
                         # We DO keep `legacy_remark` set deliberately — it
                         # documents the original name forever in case the
                         # operator audits.

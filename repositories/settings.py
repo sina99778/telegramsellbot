@@ -10,6 +10,22 @@ from core.texts import MarketingTexts
 from models.app_setting import AppSetting
 
 
+def _safe_int_or_none(value: Any) -> int | None:
+    """Coerce a stored JSON value to int, tolerating malformed data.
+
+    get_gateway_settings() is on the checkout / autoconfirm / notify hot path;
+    a hand-edited or migrated AppSetting holding a non-numeric string must NOT
+    take the whole gateway-settings read down. Returns None when the value is
+    absent or non-numeric.
+    """
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalize_emoji_map(raw_map: Any) -> dict[str, str]:
     if not isinstance(raw_map, dict):
         return {}
@@ -711,10 +727,8 @@ class AppSettingsRepository:
             tetrapay_api_key=payload.get("tetrapay_api_key"),
             tronado_api_key=payload.get("tronado_api_key"),
             tronado_wallet_address=payload.get("tronado_wallet_address"),
-            tronado_wage_from_business_percentage=(
-                int(payload["tronado_wage_from_business_percentage"])
-                if payload.get("tronado_wage_from_business_percentage") is not None
-                else None
+            tronado_wage_from_business_percentage=_safe_int_or_none(
+                payload.get("tronado_wage_from_business_percentage")
             ),
             nowpayments_ipn_secret=payload.get("nowpayments_ipn_secret"),
             manual_crypto_enabled=bool(payload.get("manual_crypto_enabled", False)),
@@ -727,7 +741,7 @@ class AppSettingsRepository:
             card_bank=payload.get("card_bank"),
             card_note=payload.get("card_note"),
             cards=cards,
-            card_amount_jitter_toman=max(int(payload.get("card_amount_jitter_toman", 0) or 0), 0),
+            card_amount_jitter_toman=max(_safe_int_or_none(payload.get("card_amount_jitter_toman")) or 0, 0),
             force_join_channel=payload.get("force_join_channel"),
             force_join_enabled=bool(payload.get("force_join_enabled", False)),
         )

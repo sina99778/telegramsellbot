@@ -63,7 +63,12 @@ async def process_broadcast_queue(session: AsyncSession, bot: Bot) -> None:
 
     for job in jobs:
         job.status = "processing"
-        await session.flush()
+        # Commit the "processing" status + (below) the recipient count right
+        # away, so progress is DURABLE. The old code only flush()ed and relied
+        # on a single commit by the caller after the whole (30+ min) broadcast
+        # finished — a worker restart mid-run rolled everything back and
+        # re-spammed the entire audience. We now commit incrementally.
+        await session.commit()
 
         payload = dict(job.payload or {})
         delivered: set[str] = set(payload.get("delivered_user_ids") or [])
@@ -73,7 +78,11 @@ async def process_broadcast_queue(session: AsyncSession, bot: Bot) -> None:
         )
         users = list(user_result.scalars().all())
         job.total_recipients = len(users)
-        await session.flush()
+        await session.commit()
+
+        # Commit delivery progress every N sends so a crash loses at most N.
+        _COMMIT_EVERY = 25
+        sent_since_commit = 0
 
         for user in users:
             if str(user.id) in delivered:
@@ -105,8 +114,13 @@ async def process_broadcast_queue(session: AsyncSession, bot: Bot) -> None:
             # Persist progress incrementally so a worker crash doesn't lose it.
             payload["delivered_user_ids"] = sorted(delivered)
             job.payload = payload
-            await session.flush()
+            sent_since_commit += 1
+            if sent_since_commit >= _COMMIT_EVERY:
+                await session.commit()
+                sent_since_commit = 0
+            else:
+                await session.flush()
 
         job.status = "finished"
         job.finished_at = datetime.now(timezone.utc)
-        await session.flush()
+        await session.commit()

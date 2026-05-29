@@ -55,7 +55,10 @@ async def main() -> None:
     )
 
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(sync_pending_payments, "interval", minutes=3)
+    scheduler.add_job(
+        sync_pending_payments, "interval", minutes=3,
+        max_instances=1, coalesce=True,
+    )
     scheduler.add_job(run_sync_subscriptions, "interval", minutes=1, max_instances=1, coalesce=True)
     # Auto-confirm manual crypto topups by polling the blockchain.
     scheduler.add_job(

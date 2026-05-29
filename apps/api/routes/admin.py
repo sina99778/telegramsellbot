@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hmac
+
 from fastapi import APIRouter, Depends, Header, HTTPException
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,7 +20,10 @@ async def admin_overview(
     x_admin_api_key: str | None = Header(default=None, alias="X-Admin-API-Key"),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, int | str]:
-    if settings.admin_api_key is None or x_admin_api_key != settings.admin_api_key.get_secret_value():
+    # Constant-time compare to avoid leaking the key via response timing.
+    if settings.admin_api_key is None or not hmac.compare_digest(
+        x_admin_api_key or "", settings.admin_api_key.get_secret_value()
+    ):
         raise HTTPException(status_code=403, detail="Forbidden")
 
     users_count = await session.scalar(select(func.count()).select_from(User))

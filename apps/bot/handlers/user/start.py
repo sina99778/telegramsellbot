@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from html import escape as _html_escape
 from uuid import UUID
 
 from aiogram import Router
@@ -134,7 +135,10 @@ async def start_deep_link_handler(
         language_code=telegram_user.language_code,
     )
 
-    welcome_name = user.first_name or telegram_user.first_name or "دوست عزیز"
+    # HTML-escape: the welcome text is sent with parse_mode=HTML and wraps the
+    # name in <b>…</b>. A Telegram name containing < > & would otherwise make
+    # the send fail with "can't parse entities" — bricking /start for that user.
+    welcome_name = _html_escape(user.first_name or telegram_user.first_name or "دوست عزیز")
 
     # Process referral only for newly created users
     if is_created and referral_code:
@@ -228,7 +232,10 @@ async def start_command_handler(message: Message, session: AsyncSession) -> None
         language_code=telegram_user.language_code,
     )
 
-    welcome_name = user.first_name or telegram_user.first_name or "دوست عزیز"
+    # HTML-escape: the welcome text is sent with parse_mode=HTML and wraps the
+    # name in <b>…</b>. A Telegram name containing < > & would otherwise make
+    # the send fail with "can't parse entities" — bricking /start for that user.
+    welcome_name = _html_escape(user.first_name or telegram_user.first_name or "دوست عزیز")
 
     if is_created:
         welcome_text = Messages.WELCOME_NEW.format(name=welcome_name)

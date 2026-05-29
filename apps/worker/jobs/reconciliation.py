@@ -73,6 +73,9 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
                 Payment.callback_payload["provisioned"].as_boolean().is_(False),
             ),
         ).order_by(Payment.created_at.asc()).limit(MAX_AUTO_RETRY)
+        # Honor process_successful_payment's lock contract; skip rows a
+        # concurrent IPN is already processing so we never double-act.
+        .with_for_update(skip_locked=True)
     )
     stuck_purchases = list(stuck_purchase_result.scalars().all())
 
@@ -132,6 +135,10 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
                 Payment.callback_payload["renewal_applied"].as_boolean().is_(False),
             ),
         ).order_by(Payment.created_at.asc()).limit(MAX_AUTO_RETRY)
+        # Honor process_successful_payment's lock contract; skip rows a
+        # concurrent IPN is already processing so the renewal wallet-debit
+        # can't run twice for the same payment.
+        .with_for_update(skip_locked=True)
     )
     stuck_renewals = list(stuck_renewal_result.scalars().all())
 
