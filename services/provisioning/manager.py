@@ -972,71 +972,88 @@ class ProvisioningManager:
         # fresh client with the existing (possibly zero) volume. The
         # retry-with-suffix loop below still handles Duplicate email.
         async def _adopt_existing_client_if_any() -> tuple[int | None, int | None, str | None]:
-            """Returns (recovered_total_bytes, recovered_expiry_ms, deleted_uuid)."""
+            """Returns (recovered_total_bytes, recovered_expiry_ms, deleted_uuid).
+
+            Whole call is wrapped in a 25-second asyncio timeout so a slow or
+            hung X-UI panel doesn't block the migration indefinitely. All
+            steps log loudly so silent hangs become visible in the bot logs.
+            """
+            import asyncio as _asyncio
+            import json as _json
+            target_remote_id = target_inbound.xui_inbound_remote_id
+
+            async def _run() -> tuple[int | None, int | None, str | None]:
+                logger.info("[ADOPT] opening X-UI session for %s", target_server.name)
+                async with self._get_xui_client_for_server(target_server) as xui_api:
+                    logger.info("[ADOPT] listing inbounds...")
+                    inbounds_list = await xui_api.get_inbounds()
+                    logger.info("[ADOPT] got %d inbounds", len(inbounds_list))
+
+                    existing: dict | None = None
+                    for ib in inbounds_list:
+                        if ib.id != target_remote_id:
+                            continue
+                        ib_settings = ib.settings or {}
+                        if isinstance(ib_settings, str):
+                            try:
+                                ib_settings = _json.loads(ib_settings)
+                            except Exception:
+                                ib_settings = {}
+                        clients = ib_settings.get("clients") or []
+                        logger.info("[ADOPT] target inbound has %d clients — searching for email=%r", len(clients), remark)
+                        for client in clients:
+                            if str(client.get("email") or "") == remark:
+                                existing = client
+                                break
+                        break
+
+                    if not existing:
+                        logger.info("[ADOPT] no existing client with that email — fresh migration path")
+                        return None, None, None
+
+                    recovered_total = existing.get("totalGB")
+                    recovered_expiry = existing.get("expiryTime")
+                    client_id_to_delete = (
+                        existing.get("id") or existing.get("uuid") or existing.get("email")
+                    )
+                    logger.info(
+                        "[ADOPT] found existing client — totalGB=%s expiryTime=%s id=%s",
+                        recovered_total, recovered_expiry, client_id_to_delete,
+                    )
+
+                    if client_id_to_delete:
+                        logger.info("[ADOPT] deleting existing client %s", client_id_to_delete)
+                        try:
+                            await xui_api.delete_client(
+                                inbound_id=target_remote_id,
+                                client_id=str(client_id_to_delete),
+                            )
+                            logger.info("[ADOPT] deleted existing client %s", client_id_to_delete)
+                        except Exception as del_exc:
+                            logger.warning(
+                                "[ADOPT] could not delete existing client %s — falling back to suffix retry: %s",
+                                client_id_to_delete, del_exc,
+                            )
+                            client_id_to_delete = None
+                return (
+                    int(recovered_total) if recovered_total is not None else None,
+                    int(recovered_expiry) if recovered_expiry is not None else None,
+                    client_id_to_delete,
+                )
+
             try:
-                async with self._get_xui_client_for_server(target_server) as xui_api_lookup:
-                    inbounds_list = await xui_api_lookup.get_inbounds()
-            except Exception as lookup_exc:
+                return await _asyncio.wait_for(_run(), timeout=25.0)
+            except _asyncio.TimeoutError:
                 logger.warning(
-                    "Imported-migration: could not list inbounds on target panel: %s",
-                    lookup_exc,
+                    "[ADOPT] X-UI lookup/delete timed out after 25 s — falling through to fresh migration"
                 )
                 return None, None, None
-
-            target_remote_id = target_inbound.xui_inbound_remote_id
-            existing: dict | None = None
-            for ib in inbounds_list:
-                if ib.id != target_remote_id:
-                    continue
-                ib_settings = ib.settings or {}
-                if isinstance(ib_settings, str):
-                    import json as _json
-                    try:
-                        ib_settings = _json.loads(ib_settings)
-                    except Exception:
-                        ib_settings = {}
-                for client in (ib_settings.get("clients") or []):
-                    if str(client.get("email") or "") == remark:
-                        existing = client
-                        break
-                break
-
-            if not existing:
+            except Exception as exc:
+                logger.warning(
+                    "[ADOPT] X-UI lookup/delete failed (%s: %s) — falling through to fresh migration",
+                    type(exc).__name__, exc,
+                )
                 return None, None, None
-
-            recovered_total = existing.get("totalGB")
-            recovered_expiry = existing.get("expiryTime")
-            client_id_to_delete = (
-                existing.get("id") or existing.get("uuid") or existing.get("email")
-            )
-            logger.info(
-                "Imported-migration: found existing client on target — totalGB=%s expiryTime=%s id=%s",
-                recovered_total, recovered_expiry, client_id_to_delete,
-            )
-            # Delete the original so the new client can take its email.
-            if client_id_to_delete:
-                try:
-                    async with self._get_xui_client_for_server(target_server) as xui_api_del:
-                        await xui_api_del.delete_client(
-                            inbound_id=target_remote_id,
-                            client_id=str(client_id_to_delete),
-                        )
-                    logger.info(
-                        "Imported-migration: deleted existing client %s",
-                        client_id_to_delete,
-                    )
-                except Exception as del_exc:
-                    logger.warning(
-                        "Imported-migration: could not delete existing client %s — will rely on suffix retry: %s",
-                        client_id_to_delete, del_exc,
-                    )
-                    client_id_to_delete = None  # signal: cleanup failed, suffix needed
-
-            return (
-                int(recovered_total) if recovered_total is not None else None,
-                int(recovered_expiry) if recovered_expiry is not None else None,
-                client_id_to_delete,
-            )
 
         recovered_total, recovered_expiry, deleted_existing_uuid = await _adopt_existing_client_if_any()
 
