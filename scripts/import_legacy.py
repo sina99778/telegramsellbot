@@ -301,6 +301,10 @@ class ImportStats:
     volume_source_column: str | None = None
     # How many orders ended up with a non-zero parsed volume.
     orders_with_volume: int = 0
+    # How many subs had their volume/expiry recovered from the legacy
+    # panel's subscription-userinfo header (post-import http pass).
+    volume_recovered_from_panel: int = 0
+    sublink_fetch_attempts: int = 0
 
 
 async def _existing_user_telegram_ids(session: AsyncSession) -> set[int]:
@@ -439,6 +443,48 @@ def _first_nonempty(row: dict, columns: tuple[str, ...]) -> tuple[str | None, st
         if s:
             return matched_key, s
     return None, ""
+
+
+def _extract_links(raw: str) -> tuple[str | None, str | None]:
+    """From the legacy `link` field, return (http_sub_link, vless_uri).
+
+    The field is commonly a JSON array holding BOTH an http(s)
+    subscription URL (e.g. http://check.subconnectur.store:2082/sub/<token>)
+    AND a vless:// config URI. We want the http one because its
+    `subscription-userinfo` response header carries the REAL volume +
+    expiry from the legacy panel (the legacy bot's own DB stored
+    volume=0). We keep the vless one for display / as a fallback.
+
+    Handles: JSON array, plain http string, plain vless string,
+    newline/comma-separated lists.
+    """
+    if not raw:
+        return None, None
+    s = raw.strip()
+    candidates: list[str] = []
+    if s.startswith("["):
+        try:
+            arr = json.loads(s)
+            if isinstance(arr, list):
+                candidates = [str(x) for x in arr if x]
+        except Exception:
+            candidates = [s]
+    if not candidates:
+        # split on whitespace/newline/comma in case it's a delimited list
+        candidates = [p for p in re.split(r"[\s,]+", s) if p]
+    http_link: str | None = None
+    vless_link: str | None = None
+    for c in candidates:
+        cl = c.strip().strip('"').strip("'")
+        if not cl:
+            continue
+        if cl.startswith(("http://", "https://")):
+            if http_link is None:
+                http_link = cl
+        elif "://" in cl:  # vless:// vmess:// trojan:// ss:// …
+            if vless_link is None:
+                vless_link = cl
+    return http_link, vless_link
 
 
 def _normalize_volume_to_bytes(value: int) -> int:
@@ -676,16 +722,20 @@ async def import_orders(
             user_uuid = user.id
             user_id_cache[tg] = user_uuid
 
-        # Pick a single VLESS URI from the legacy `link` field. Some forks
-        # store a JSON array (Mirzabot original); others store a plain string.
-        _, legacy_link = _first_nonempty(row, _LINK_COLUMNS)
-        if legacy_link.startswith("["):
-            try:
-                arr = json.loads(legacy_link)
-                if isinstance(arr, list) and arr:
-                    legacy_link = str(arr[0])
-            except Exception:
-                pass
+        # Extract BOTH the http subscription URL and the vless URI from the
+        # legacy `link` field. The http one is gold: its
+        # `subscription-userinfo` header has the real volume + expiry that
+        # this bot's orders table stored as 0. We store the http link as
+        # `sub_link` (so migration can read the header) and keep the vless
+        # as `legacy_link` for display / fallback.
+        _, link_raw = _first_nonempty(row, _LINK_COLUMNS)
+        http_link, vless_link = _extract_links(link_raw)
+        sub_link_val = http_link or vless_link          # prefer http for recovery
+        legacy_link_val = vless_link or http_link         # keep vless for display
+        # `legacy_link` is the de-dup key for re-import. To stay stable across
+        # this code change (older imports may have stored a different element
+        # of the array), we ALSO match existing subs by (user_id, remark).
+        legacy_link = legacy_link_val or ""
 
         # ── Volume + expiry resolution (the fix) ──────────────────────
         volume_col, volume_raw = _first_nonzero_int(row, _VOLUME_COLUMNS)
@@ -733,49 +783,66 @@ async def import_orders(
         legacy_remark = legacy_remark[:128] or None
 
         # ── Idempotent UPDATE for already-imported rows ───────────────
-        if (tg, token) in imported_tokens or legacy_link:
-            existing_sub = None
-            if legacy_link:
-                existing_sub = await session.scalar(
-                    select(Subscription).where(
-                        Subscription.user_id == user_uuid,
-                        Subscription.legacy_link == legacy_link,
-                        Subscription.source == "imported_legacy",
-                    )
+        # Match an existing imported sub by legacy_link first, then fall
+        # back to (user_id, legacy_remark). The remark fallback is what
+        # keeps re-import stable now that we changed which link element
+        # we store — older imports may have a different legacy_link, but
+        # the remark (e.g. S3-1922655455-95027) is stable per config.
+        existing_sub = None
+        if legacy_link:
+            existing_sub = await session.scalar(
+                select(Subscription).where(
+                    Subscription.user_id == user_uuid,
+                    Subscription.legacy_link == legacy_link,
+                    Subscription.source == "imported_legacy",
                 )
-            if existing_sub is not None:
-                changed = False
-                # Fix zero volume.
-                if existing_sub.volume_bytes == 0 and volume_bytes > 0:
-                    existing_sub.volume_bytes = volume_bytes
-                    changed = True
-                # Fix missing expiry (and re-evaluate status).
-                if existing_sub.ends_at is None and expire_dt is not None:
-                    existing_sub.ends_at = expire_dt
-                    if expire_dt > now and existing_sub.status == "expired":
-                        existing_sub.status = "active"
-                        existing_sub.expired_at = None
-                    elif expire_dt <= now and existing_sub.status == "active":
-                        existing_sub.status = "expired"
-                        existing_sub.expired_at = expire_dt
-                    changed = True
-                # Fix missing remark.
-                if not existing_sub.legacy_remark and legacy_remark:
-                    existing_sub.legacy_remark = legacy_remark
-                    changed = True
-                if changed:
-                    try:
-                        async with session.begin_nested():
-                            await session.flush()
-                        stats.orders_updated += 1
-                    except Exception as exc:
-                        logger.warning("update for sub tg=%s legacy_link=%s failed: %s",
-                                       tg, legacy_link[:32], exc)
-                        stats.orders_failed += 1
-                else:
-                    stats.orders_skipped_duplicate += 1
-                imported_tokens.add((tg, token))
-                continue
+            )
+        if existing_sub is None and legacy_remark:
+            existing_sub = await session.scalar(
+                select(Subscription).where(
+                    Subscription.user_id == user_uuid,
+                    Subscription.legacy_remark == legacy_remark,
+                    Subscription.source == "imported_legacy",
+                )
+            )
+        if existing_sub is not None:
+            changed = False
+            # Fix zero volume.
+            if existing_sub.volume_bytes == 0 and volume_bytes > 0:
+                existing_sub.volume_bytes = volume_bytes
+                changed = True
+            # Upgrade sub_link to the http subscription URL (enables the
+            # migration-time `subscription-userinfo` volume recovery).
+            if sub_link_val and existing_sub.sub_link != sub_link_val and sub_link_val.startswith(("http://", "https://")):
+                existing_sub.sub_link = sub_link_val
+                changed = True
+            # Fix missing expiry (and re-evaluate status).
+            if existing_sub.ends_at is None and expire_dt is not None:
+                existing_sub.ends_at = expire_dt
+                if expire_dt > now and existing_sub.status == "expired":
+                    existing_sub.status = "active"
+                    existing_sub.expired_at = None
+                elif expire_dt <= now and existing_sub.status == "active":
+                    existing_sub.status = "expired"
+                    existing_sub.expired_at = expire_dt
+                changed = True
+            # Fix missing remark.
+            if not existing_sub.legacy_remark and legacy_remark:
+                existing_sub.legacy_remark = legacy_remark
+                changed = True
+            if changed:
+                try:
+                    async with session.begin_nested():
+                        await session.flush()
+                    stats.orders_updated += 1
+                except Exception as exc:
+                    logger.warning("update for sub tg=%s remark=%s failed: %s",
+                                   tg, legacy_remark, exc)
+                    stats.orders_failed += 1
+            else:
+                stats.orders_skipped_duplicate += 1
+            imported_tokens.add((tg, token))
+            continue
 
         try:
             # SAVEPOINT per row so one bad sub doesn't wipe out earlier
@@ -792,10 +859,10 @@ async def import_orders(
                     volume_bytes=volume_bytes,
                     used_bytes=0,
                     lifetime_used_bytes=0,
-                    sub_link=legacy_link or None,
+                    sub_link=sub_link_val or None,        # prefer http (recovery)
                     source="imported_legacy",
                     legacy_remark=legacy_remark,
-                    legacy_link=legacy_link or None,
+                    legacy_link=legacy_link_val or None,  # vless for display
                 )
                 sub.created_at = created_dt
                 # De-dup target is `legacy_link` (unique per legacy order
@@ -816,6 +883,107 @@ async def import_orders(
             column_hits["volume"], column_hits["expire"], column_hits["days"],
             stats.orders_seen,
         )
+
+
+async def recover_volumes_from_panel(session: AsyncSession, stats: ImportStats, limit: int = 0) -> None:
+    """Post-import pass: for every imported sub that still has volume_bytes=0
+    but an HTTP subscription link, fetch the link's `subscription-userinfo`
+    header (served by the legacy panel) and store the REAL total + expire.
+
+    This is the only reliable source of volume for bots (like this one)
+    that stored volume=0 in their own orders table and tracked the quota
+    solely on the X-UI / sub panel.
+
+    Bounded: 15 concurrent fetches, 8s per request. Best-effort — a sub
+    whose panel is unreachable just keeps volume_bytes=0.
+    """
+    import asyncio
+    import httpx
+
+    rows = await session.execute(
+        select(Subscription).where(
+            Subscription.source == "imported_legacy",
+            Subscription.volume_bytes == 0,
+            Subscription.sub_link.is_not(None),
+            Subscription.sub_link.like("http%"),
+        )
+    )
+    targets: list[Subscription] = list(rows.scalars().all())
+    if limit:
+        targets = targets[:limit]
+    if not targets:
+        logger.info("[PANEL-VOL] no http-linked zero-volume subs to recover")
+        return
+
+    logger.info("[PANEL-VOL] attempting volume recovery for %d subs via sub-link headers", len(targets))
+    sem = asyncio.Semaphore(15)
+    now = datetime.now(timezone.utc)
+
+    async def _fetch_one(sub: Subscription) -> tuple[Subscription, int | None, int | None]:
+        stats.sublink_fetch_attempts += 1
+        link = sub.sub_link or ""
+        async with sem:
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(8.0, connect=5.0),
+                    follow_redirects=True,
+                    verify=False,
+                ) as client:
+                    resp = await client.get(link, headers={"User-Agent": "v2rayN/6.0"})
+            except Exception as exc:
+                logger.debug("[PANEL-VOL] fetch failed for sub %s: %s", sub.id, exc)
+                return sub, None, None
+        userinfo = None
+        for hk, hv in resp.headers.items():
+            if hk.lower() == "subscription-userinfo":
+                userinfo = hv
+                break
+        if not userinfo:
+            return sub, None, None
+        parsed: dict[str, int] = {}
+        for chunk in userinfo.split(";"):
+            if "=" not in chunk:
+                continue
+            k, v = chunk.strip().split("=", 1)
+            try:
+                parsed[k.strip().lower()] = int(v.strip())
+            except ValueError:
+                continue
+        total = parsed.get("total")
+        expire_s = parsed.get("expire")
+        expire_ms = expire_s * 1000 if expire_s and expire_s > 0 else None
+        return sub, (total if total and total > 0 else None), expire_ms
+
+    results = await asyncio.gather(*[_fetch_one(s) for s in targets], return_exceptions=True)
+    first_logged = False
+    for res in results:
+        if isinstance(res, Exception):
+            continue
+        sub, total, expire_ms = res
+        if not first_logged:
+            first_logged = True
+            logger.info("[PANEL-VOL] first result — sub=%s total=%s expire_ms=%s", sub.id, total, expire_ms)
+        changed = False
+        if total and total > 0 and sub.volume_bytes == 0:
+            sub.volume_bytes = int(total)
+            changed = True
+        if expire_ms and expire_ms > 0 and sub.ends_at is None:
+            try:
+                sub.ends_at = datetime.fromtimestamp(expire_ms / 1000, tz=timezone.utc)
+                if sub.ends_at > now and sub.status == "expired":
+                    sub.status = "active"
+                    sub.expired_at = None
+                changed = True
+            except (OSError, OverflowError, ValueError):
+                pass
+        if changed:
+            stats.volume_recovered_from_panel += 1
+
+    await session.flush()
+    logger.info(
+        "[PANEL-VOL] recovered volume/expiry for %d of %d subs (%d fetches)",
+        stats.volume_recovered_from_panel, len(targets), stats.sublink_fetch_attempts,
+    )
 
 
 async def _existing_legacy_tokens(session: AsyncSession) -> set[tuple[int, str]]:
@@ -918,6 +1086,15 @@ async def run(dump_path: Path, dry_run: bool, limit: int) -> ImportStats:
         if "orders_list" in by_table:
             cols, rows = by_table["orders_list"]
             await import_orders(session, rows_as_dicts(cols, rows), stats, limit=limit)
+
+        # Post-import: recover the real volume + expiry from the legacy
+        # panel for subs whose dump volume was 0 but that have an http
+        # subscription link. This is what fixes bots that stored volume=0
+        # in their own DB (like db-backup-faiSXGMSK.sql).
+        try:
+            await recover_volumes_from_panel(session, stats, limit=limit)
+        except Exception as exc:
+            logger.warning("panel volume recovery pass failed: %s", exc, exc_info=True)
 
         if dry_run:
             await session.rollback()

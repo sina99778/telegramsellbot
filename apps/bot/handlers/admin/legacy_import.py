@@ -172,12 +172,15 @@ async def legacy_import_receive(message: Message, state: FSMContext, bot: Bot) -
             f"  ناموفق: <b>{stats.orders_failed}</b>\n"
             f"  حجم پیدا شد در: <b>{orders_with_volume}</b> سرویس"
             f" (ستون: <code>{_html.escape(str(vol_source or '—'))}</code>)\n"
+            f"  حجم بازیابی‌شده از پنل: <b>{getattr(stats, 'volume_recovered_from_panel', 0)}</b>"
+            f" (از <b>{getattr(stats, 'sublink_fetch_attempts', 0)}</b> تلاش)\n"
         )
 
-        # When volume could NOT be detected, surface the legacy schema right
-        # in the message so the operator can screenshot it — that tells us
-        # the exact volume column name without any log-grepping.
-        if orders_with_volume == 0:
+        # Surface the legacy schema only when volume couldn't be obtained
+        # from EITHER the dump column OR the panel header — so the operator
+        # can screenshot it and we add the right column without log-grepping.
+        recovered_panel = getattr(stats, "volume_recovered_from_panel", 0)
+        if orders_with_volume == 0 and recovered_panel == 0:
             cols = getattr(stats, "orders_columns", []) or []
             sample = getattr(stats, "orders_sample_row", {}) or {}
             summary += (
