@@ -191,8 +191,22 @@ async def _sync_xui_limits(
         # Resolve the IP cap: per-plan override (if set on Plan) wins.
         ip_limit = plan.effective_ip_limit(security_settings.xui_limit_ip) if plan else security_settings.xui_limit_ip
 
+        # The panel addresses a client by its remote id (URL path + body "id").
+        # For imported rows the local client_uuid can be empty, so prefer the
+        # remote id captured at provisioning/import time and fall back to the
+        # uuid. Without this the panel rejects the call with "Something went
+        # wrong (empty client ID)". The URL client_id and the body id MUST be
+        # the same value (this mirrors the proven auto-activation path).
+        client_id = xui_full.xui_client_remote_id or xui_full.client_uuid
+        if not client_id:
+            logger.warning(
+                "Skipping X-UI limit sync for sub=%s xui=%s: no client id on record",
+                subscription.id, xui_full.id,
+            )
+            return
+
         xui_client = XUIClient(
-            id=xui_full.client_uuid,
+            id=client_id,
             uuid=xui_full.client_uuid,
             email=xui_full.email,
             enable=True,
@@ -206,7 +220,7 @@ async def _sync_xui_limits(
         async with SanaeiXUIClient(config) as client:
             await client.update_client(
                 inbound_id=xui_full.inbound.xui_inbound_remote_id,
-                client_id=xui_full.client_uuid,
+                client_id=client_id,
                 client=xui_client,
             )
     except Exception as exc:

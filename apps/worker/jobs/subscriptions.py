@@ -53,7 +53,18 @@ async def sync_xui_usage_and_status(
                 traffic = await xui_client.get_client_traffic(xui_record.email)
         except XUIRequestError as exc:
             error_msg = str(exc)
-            if "No traffic stats found" in error_msg or "404" in error_msg:
+            low = error_msg.lower()
+            # The panel signals "this client no longer exists" several ways
+            # across X-UI versions: "No traffic stats found", a 404, or
+            # "Inbound Not Found For Email: <email>" (the email isn't on any
+            # inbound anymore). All three mean the config was deleted on the
+            # panel → mark the sub expired so we stop hammering the API every
+            # cycle with the same orphaned email.
+            if (
+                "no traffic stats found" in low
+                or "404" in error_msg
+                or "not found" in low  # covers "Inbound Not Found For Email"
+            ):
                 logger.warning(
                     "[SYNC] Client '%s' not found on panel — marking as deleted (sub=%s)",
                     xui_record.email, subscription.id,
@@ -494,7 +505,14 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
                     limit_ip=security_settings.xui_limit_ip,
                 )
 
-            await session.commit()
+            # NOTE: this function is only ever called from a bot request
+            # handler (my_configs view/refresh), where DatabaseSessionMiddleware
+            # commits at the end of the update. We only flush here so the usage
+            # UPDATEs are sent to the DB inside the handler's transaction —
+            # committing here would prematurely close the handler's transaction
+            # boundary (partial persistence on a later error). Do NOT switch
+            # this back to commit().
+            await session.flush()
 
             return {
                 "used_bytes": traffic.used_bytes,
