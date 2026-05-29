@@ -30,11 +30,16 @@ const isToman = computed(() => displayCurrency.value === "IRT");
 const moneyUnitLabel = computed(() => isToman.value ? "تومان" : "$");
 const moneyStep = computed(() => isToman.value ? "1000" : "0.01");
 
+// Never divide/multiply by a non-positive rate — a stale/zero toman_rate from
+// the server would otherwise turn a stored price into Infinity/NaN/0.
+function safeRate(): number {
+  return tomanRate.value > 0 ? tomanRate.value : 100000;
+}
 function usdToDisplay(usd: number): number {
-  return isToman.value ? Math.round(usd * tomanRate.value) : Math.round(usd * 100) / 100;
+  return isToman.value ? Math.round(usd * safeRate()) : Math.round(usd * 100) / 100;
 }
 function displayToUsd(v: number): number {
-  return isToman.value ? Math.round((v / tomanRate.value) * 1e8) / 1e8 : v;
+  return isToman.value ? Math.round((v / safeRate()) * 1e8) / 1e8 : v;
 }
 function fmtMoney(usd: number): string {
   const v = usdToDisplay(usd);
@@ -84,7 +89,7 @@ async function refresh() {
     items.value = r.items;
     inbounds.value = ib.items;
     displayCurrency.value = r.display_currency;
-    tomanRate.value = r.toman_rate;
+    tomanRate.value = r.toman_rate > 0 ? r.toman_rate : 100000;
   } catch (exc) {
     errorMsg.value = exc instanceof ApiError ? exc.detail : "خطا";
   } finally {

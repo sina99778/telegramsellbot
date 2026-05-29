@@ -198,7 +198,9 @@ async def approve_receipt(payment_id: UUID, auth: AuthDep) -> dict[str, Any]:
         )
     except Exception as exc:
         logger.error("dashboard approve_receipt failed for %s: %s", payment_id, exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"failed: {exc}") from exc
+        # Generic message — the raw exception (which can leak DB/internal detail)
+        # is in the server log, not the HTTP response.
+        raise HTTPException(status_code=500, detail="تأیید رسید ناموفق بود (خطای داخلی).") from exc
 
     # Stamp the dashboard admin's identity on the payload so the bot side
     # can tell that the approval came from the web UI.

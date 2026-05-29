@@ -251,7 +251,8 @@ async def adjust_balance(
         )
     except Exception as exc:
         logger.error("Dashboard balance-adjust failed for user %s: %s", user_id, exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=f"خطای کیف پول: {exc}")
+        # Generic message — raw exception stays in the server log only.
+        raise HTTPException(status_code=500, detail="خطای کیف پول (خطای داخلی).")
 
     try:
         await AuditLogRepository(session).log_action(
@@ -384,7 +385,7 @@ async def send_message(user_id: UUID, body: MessageBody, auth: AuthDep) -> dict[
         raise HTTPException(status_code=400, detail=f"خطای Telegram: {exc}")
     except Exception as exc:
         logger.error("Dashboard DM failed: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail="ارسال پیام ناموفق بود (خطای داخلی).")
     finally:
         await bot.session.close()
 

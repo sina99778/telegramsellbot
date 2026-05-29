@@ -19,17 +19,30 @@ export interface AdminProfile {
 export const useAuthStore = defineStore("auth", () => {
   const profile = ref<AdminProfile | null>(null);
   const hydrating = ref(true);
+  // Shared in-flight hydration promise. Both App.vue (onMounted) and the router
+  // guard call hydrate() on a hard deep-link load; without sharing one promise
+  // they raced — the guard could read isAuthed=false before /auth/me resolved
+  // and bounce a logged-in operator to /login. Caching the promise makes
+  // hydrate() idempotent.
+  let hydratePromise: Promise<void> | null = null;
 
   const isAuthed = computed(() => profile.value !== null);
 
   async function hydrate(): Promise<void> {
-    try {
-      profile.value = await api.get<AdminProfile>("/auth/me");
-    } catch {
-      profile.value = null;
-    } finally {
-      hydrating.value = false;
-    }
+    if (hydratePromise) return hydratePromise;
+    const p = (async () => {
+      try {
+        profile.value = await api.get<AdminProfile>("/auth/me");
+      } catch {
+        profile.value = null;
+        // Allow a retry after a transient failure (don't cache the failure).
+        hydratePromise = null;
+      } finally {
+        hydrating.value = false;
+      }
+    })();
+    hydratePromise = p;
+    return p;
   }
 
   async function login(username: string, password: string): Promise<void> {

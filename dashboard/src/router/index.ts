@@ -86,10 +86,11 @@ export const router = createRouter({
 router.beforeEach(async (to) => {
   if (to.meta.public) return true;
   const auth = useAuthStore();
-  if (auth.hydrating) {
-    // Lazy-hydrate on the very first navigation.
-    await auth.hydrate();
-  }
+  // Always await hydration. hydrate() is idempotent (shared cached promise), so
+  // this is instant after the first call but guarantees we never read isAuthed
+  // before /auth/me has resolved — which previously bounced logged-in operators
+  // to /login on a hard deep-link load.
+  await auth.hydrate();
   if (!auth.isAuthed) {
     return {
       name: "login",
