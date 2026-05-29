@@ -1064,10 +1064,30 @@ class ProvisioningManager:
         # to recover the real volume + expiry without needing creds for
         # the legacy panel.
         async def _fetch_from_legacy_sublink() -> tuple[int | None, int | None]:
+            """Read total + expire from `subscription-userinfo` HTTP header
+            on the legacy sub-link.
+
+            Pick the FIRST candidate that looks like an HTTP(S) URL.
+            `sub.legacy_link` is often a vless:// URI (the raw config),
+            which we can't fetch — `sub.sub_link` is usually the http://
+            subscription endpoint, which is what we actually want.
+            """
             import asyncio as _asyncio
             import httpx as _httpx
-            link = sub.legacy_link or sub.sub_link
+
+            candidates = [sub.sub_link, sub.legacy_link]
+            link: str | None = None
+            for c in candidates:
+                if not c:
+                    continue
+                cl = c.strip()
+                if cl.startswith(("http://", "https://")):
+                    link = cl
+                    break
+                else:
+                    logger.info("[SUBINFO] skipping non-HTTP candidate: %s", cl[:80])
             if not link:
+                logger.info("[SUBINFO] no HTTP sub-link to fetch — skipping recovery")
                 return None, None
 
             async def _do() -> tuple[int | None, int | None]:
@@ -1078,7 +1098,13 @@ class ProvisioningManager:
                     verify=False,  # legacy panels often have self-signed certs
                 ) as client:
                     resp = await client.get(link, headers={"User-Agent": "v2rayN/6.0"})
-                userinfo = resp.headers.get("subscription-userinfo") or resp.headers.get("Subscription-Userinfo")
+                # X-UI uses `subscription-userinfo`; some forks emit the
+                # title-cased variant. Match either.
+                userinfo = None
+                for hk, hv in resp.headers.items():
+                    if hk.lower() == "subscription-userinfo":
+                        userinfo = hv
+                        break
                 if not userinfo:
                     logger.info("[SUBINFO] no subscription-userinfo header on legacy sub-link")
                     return None, None
