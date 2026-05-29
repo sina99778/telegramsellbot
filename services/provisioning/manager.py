@@ -1012,6 +1012,21 @@ class ProvisioningManager:
         sub_id_str = sub.id
         sub_was_expired = (sub.status == "expired")
 
+        # A subscription can own AT MOST ONE xui_clients row
+        # (uq_xui_clients_subscription_id). Normally an imported sub has
+        # none — but a previously half-finished migration, or a row created
+        # while reconciling the import against the panel, can leave one
+        # behind. Blindly INSERTing a second row then explodes with
+        # "duplicate key value violates unique constraint
+        # uq_xui_clients_subscription_id". So look for an existing row and
+        # REUSE it (mutate in place) instead — exactly like the native
+        # migrate path does. This makes the operation safely re-runnable.
+        existing_xui = await self.session.scalar(
+            select(XUIClientRecord).where(
+                XUIClientRecord.subscription_id == sub.id
+            )
+        )
+
         try:
             for attempt_idx, attempt_email in enumerate(email_candidates):
                 # After a failed attempt the savepoint rolled back; any
@@ -1035,20 +1050,43 @@ class ProvisioningManager:
 
                 try:
                     async with self.session.begin_nested():
-                        # Create the new XUIClientRecord first; if the X-UI
-                        # panel call below fails, the savepoint rolls it back.
-                        xui = XUIClientRecord(
-                            subscription_id=sub.id,
-                            inbound_id=target_inbound.id,
-                            client_uuid=client_uuid,
-                            xui_client_remote_id=client_uuid,
-                            email=attempt_email,
-                            username=username,
-                            sub_link=new_sub_link,
-                            is_active=True,
-                            usage_bytes=0,
-                        )
-                        self.session.add(xui)
+                        # Create the tracking row (or REUSE the pre-existing
+                        # one) first; if the X-UI panel call below fails, the
+                        # savepoint rolls these changes back.
+                        # `username`, `email` AND `client_uuid` each carry a
+                        # UNIQUE constraint on xui_clients. The user-visible
+                        # name is the vless URI's #fragment (= remark, fixed
+                        # above) — these three are INTERNAL ids, so we let the
+                        # internal username follow the (possibly suffixed)
+                        # email. That way a retry actually dodges BOTH the
+                        # email and the username collision at once, without
+                        # ever changing what the customer sees.
+                        attempt_username = attempt_email[:64]
+                        if existing_xui is not None:
+                            # Mutate in place — a second INSERT would violate
+                            # uq_xui_clients_subscription_id.
+                            xui = existing_xui
+                            xui.inbound_id = target_inbound.id
+                            xui.client_uuid = client_uuid
+                            xui.xui_client_remote_id = client_uuid
+                            xui.email = attempt_email
+                            xui.username = attempt_username
+                            xui.sub_link = new_sub_link
+                            xui.is_active = True
+                            xui.usage_bytes = 0
+                        else:
+                            xui = XUIClientRecord(
+                                subscription_id=sub.id,
+                                inbound_id=target_inbound.id,
+                                client_uuid=client_uuid,
+                                xui_client_remote_id=client_uuid,
+                                email=attempt_email,
+                                username=attempt_username,
+                                sub_link=new_sub_link,
+                                is_active=True,
+                                usage_bytes=0,
+                            )
+                            self.session.add(xui)
 
                         # Flip the sub out of imported mode. Keep
                         # `lifetime_used_bytes` at whatever it was (probably
@@ -1086,15 +1124,25 @@ class ProvisioningManager:
                     break  # success — exit the retry loop
                 except Exception as inner_exc:
                     exc_text = str(inner_exc)
+                    low = exc_text.lower()
                     is_duplicate = (
-                        "Duplicate email" in exc_text
-                        or "duplicate email" in exc_text.lower()
-                        or "email already" in exc_text.lower()
+                        # X-UI panel-side rejection.
+                        "duplicate email" in low
+                        or "email already" in low
+                        # DB-side unique violation on the internal email /
+                        # username columns (asyncpg: 'duplicate key value
+                        # violates unique constraint "uq_xui_clients_email"' or
+                        # "…_username"). Both are fixed by a suffixed retry.
+                        # NOTE: deliberately NOT matching the subscription_id
+                        # constraint — that one is handled by reusing the
+                        # existing row above, and a suffix wouldn't fix it.
+                        or "uq_xui_clients_email" in low
+                        or "uq_xui_clients_username" in low
                     )
                     if is_duplicate and attempt_idx < len(email_candidates) - 1:
                         last_dup_exc = inner_exc
                         logger.warning(
-                            "X-UI rejected email=%r as duplicate, retrying with suffix…",
+                            "Migration email/username %r collided (panel or DB), retrying with suffix…",
                             attempt_email,
                         )
                         xui_call_succeeded = False  # savepoint rolled it back
