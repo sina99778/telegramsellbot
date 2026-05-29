@@ -1055,6 +1055,74 @@ class ProvisioningManager:
                 )
                 return None, None, None
 
+        # ── First, try the legacy sub-link itself ───────────────────────
+        # Even when the legacy panel is on a DIFFERENT host from our target
+        # (which is the common case — operator usually points the new bot
+        # at a fresh inbound), the legacy sub-link still responds with the
+        # standard `subscription-userinfo` HTTP header that V2RayN and
+        # every other v2ray client uses to render quota/expiry. Parse it
+        # to recover the real volume + expiry without needing creds for
+        # the legacy panel.
+        async def _fetch_from_legacy_sublink() -> tuple[int | None, int | None]:
+            import asyncio as _asyncio
+            import httpx as _httpx
+            link = sub.legacy_link or sub.sub_link
+            if not link:
+                return None, None
+
+            async def _do() -> tuple[int | None, int | None]:
+                logger.info("[SUBINFO] fetching legacy sub-link: %s", link)
+                async with _httpx.AsyncClient(
+                    timeout=_httpx.Timeout(10.0, connect=5.0),
+                    follow_redirects=True,
+                    verify=False,  # legacy panels often have self-signed certs
+                ) as client:
+                    resp = await client.get(link, headers={"User-Agent": "v2rayN/6.0"})
+                userinfo = resp.headers.get("subscription-userinfo") or resp.headers.get("Subscription-Userinfo")
+                if not userinfo:
+                    logger.info("[SUBINFO] no subscription-userinfo header on legacy sub-link")
+                    return None, None
+                logger.info("[SUBINFO] subscription-userinfo: %s", userinfo)
+                parsed: dict[str, int] = {}
+                for chunk in userinfo.split(";"):
+                    if "=" not in chunk:
+                        continue
+                    k, v = chunk.strip().split("=", 1)
+                    try:
+                        parsed[k.strip().lower()] = int(v.strip())
+                    except ValueError:
+                        continue
+                total = parsed.get("total")
+                expire_s = parsed.get("expire")
+                # `expire` is in seconds (X-UI convention); X-UI client
+                # `expiryTime` is in milliseconds — convert.
+                expire_ms = expire_s * 1000 if expire_s and expire_s > 0 else None
+                return total, expire_ms
+
+            try:
+                return await _asyncio.wait_for(_do(), timeout=12.0)
+            except _asyncio.TimeoutError:
+                logger.warning("[SUBINFO] timed out reading legacy sub-link")
+                return None, None
+            except Exception as exc:
+                logger.warning("[SUBINFO] could not parse legacy sub-link: %s: %s", type(exc).__name__, exc)
+                return None, None
+
+        sublink_total, sublink_expire_ms = await _fetch_from_legacy_sublink()
+        if sublink_total is not None and sublink_total > 0 and remaining_bytes == 0:
+            remaining_bytes = sublink_total
+            sub.volume_bytes = sublink_total
+            logger.info("[SUBINFO] recovered volume %d bytes from legacy sub-link header", sublink_total)
+        if sublink_expire_ms is not None and sublink_expire_ms > 0 and sub.ends_at is None:
+            from datetime import datetime as _dt2, timezone as _tz2
+            try:
+                sub.ends_at = _dt2.fromtimestamp(sublink_expire_ms / 1000, tz=_tz2.utc)
+                expiry_ms = sublink_expire_ms
+                logger.info("[SUBINFO] recovered expiry %d (ms) from legacy sub-link header", sublink_expire_ms)
+            except (OSError, OverflowError, ValueError):
+                pass
+
+        # ── Then, try the target panel (in case both are the same host) ─
         recovered_total, recovered_expiry, deleted_existing_uuid = await _adopt_existing_client_if_any()
 
         if recovered_total is not None and recovered_total > 0 and remaining_bytes == 0:
