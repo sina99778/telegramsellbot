@@ -172,6 +172,7 @@ async def legacy_import_receive(message: Message, state: FSMContext, bot: Bot) -
             f"  ناموفق: <b>{stats.orders_failed}</b>\n"
             f"  حجم پیدا شد در: <b>{orders_with_volume}</b> سرویس"
             f" (ستون: <code>{_html.escape(str(vol_source or '—'))}</code>)\n"
+            f"  تکراری‌های پاک‌شده: <b>{getattr(stats, 'orders_deduped', 0)}</b>\n"
             f"  حجم/زمان خوانده‌شده از پنل سنایی: <b>{getattr(stats, 'volume_recovered_from_panel', 0)}</b>"
             f" سرویس (از <b>{getattr(stats, 'sublink_fetch_attempts', 0)}</b> سرور)\n"
         )

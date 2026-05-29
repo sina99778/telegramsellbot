@@ -82,6 +82,7 @@ from core.formatting import toman_to_usd
 from models.subscription import Subscription
 from models.user import User
 from models.wallet import Wallet
+from models.xui import XUIClientRecord
 from repositories.settings import AppSettingsRepository
 
 
@@ -305,6 +306,8 @@ class ImportStats:
     # panel's subscription-userinfo header (post-import http pass).
     volume_recovered_from_panel: int = 0
     sublink_fetch_attempts: int = 0
+    # Duplicate imported subs removed by the dedupe pass.
+    orders_deduped: int = 0
 
 
 async def _existing_user_telegram_ids(session: AsyncSession) -> set[int]:
@@ -990,6 +993,7 @@ async def recover_volumes_from_panel(session: AsyncSession, stats: ImportStats, 
 
     now = datetime.now(timezone.utc)
     first_logged = False
+    processed_since_commit = 0
     for sub in targets:
         # Match by remark→email first, then by UUID from the vless link.
         key = str(sub.legacy_remark or "").strip().lower()
@@ -1009,6 +1013,12 @@ async def recover_volumes_from_panel(session: AsyncSession, stats: ImportStats, 
         if total and total > 0 and sub.volume_bytes == 0:
             sub.volume_bytes = int(total)
             changed = True
+        # expiryTime > 0  → absolute ms timestamp.
+        # expiryTime < 0  → X-UI "relative" expiry (config not yet used;
+        #                   expires |x| ms AFTER first connection). We can't
+        #                   set an absolute ends_at for those, so leave
+        #                   ends_at as-is (the dump's expire_date, set during
+        #                   import, already covers the activated ones).
         if expiry_ms and expiry_ms > 0 and sub.ends_at is None:
             try:
                 sub.ends_at = datetime.fromtimestamp(expiry_ms / 1000, tz=timezone.utc)
@@ -1020,8 +1030,15 @@ async def recover_volumes_from_panel(session: AsyncSession, stats: ImportStats, 
                 pass
         if changed:
             stats.volume_recovered_from_panel += 1
+            processed_since_commit += 1
+            # Commit in batches so progress is durable and the session's
+            # transaction doesn't balloon into a single giant final commit
+            # (which is what froze the bot on big imports).
+            if processed_since_commit >= 200:
+                await session.commit()
+                processed_since_commit = 0
 
-    await session.flush()
+    await session.commit()
     logger.info(
         "[PANEL-VOL] recovered volume/expiry for %d of %d subs (scanned %d servers)",
         stats.volume_recovered_from_panel, len(targets), stats.sublink_fetch_attempts,
@@ -1042,6 +1059,60 @@ async def _existing_legacy_tokens(session: AsyncSession) -> set[tuple[int, str]]
         .where(Subscription.source == "imported_legacy")
     )
     return {(int(r[0]), str(r[1] or "")) for r in rows.all()}
+
+
+async def dedupe_imported_subs(session: AsyncSession, stats: ImportStats) -> None:
+    """Remove duplicate imported_legacy subs created by earlier buggy
+    re-imports (when the de-dup key didn't match across code versions).
+
+    Keep ONE sub per (user_id, legacy_remark) — the oldest by created_at,
+    preferring one that already has a non-zero volume. Delete the rest.
+    Imported ghost subs have no XUIClientRecord, so deletion is safe.
+    """
+    from collections import defaultdict
+    rows = await session.execute(
+        select(Subscription).where(Subscription.source == "imported_legacy")
+    )
+    subs = list(rows.scalars().all())
+    groups: dict[tuple, list[Subscription]] = defaultdict(list)
+    for s in subs:
+        key = (s.user_id, (s.legacy_remark or "").strip().lower())
+        if not key[1]:
+            continue  # no remark → can't safely group; leave it alone
+        groups[key].append(s)
+
+    deleted = 0
+    for key, members in groups.items():
+        if len(members) < 2:
+            continue
+        # Keep the best: prefer non-zero volume, then earliest created_at.
+        members.sort(key=lambda s: (
+            0 if (s.volume_bytes or 0) > 0 else 1,
+            s.created_at or datetime.now(timezone.utc),
+        ))
+        keep = members[0]
+        for victim in members[1:]:
+            # Only delete true ghosts (no xui client mapping).
+            has_client = await session.scalar(
+                select(XUIClientRecord.id).where(XUIClientRecord.subscription_id == victim.id)
+            )
+            if has_client is not None:
+                continue
+            await session.delete(victim)
+            deleted += 1
+        # If kept has zero volume but a victim had volume, copy it over.
+        if (keep.volume_bytes or 0) == 0:
+            for m in members[1:]:
+                if (m.volume_bytes or 0) > 0:
+                    keep.volume_bytes = m.volume_bytes
+                    if keep.ends_at is None and m.ends_at is not None:
+                        keep.ends_at = m.ends_at
+                    break
+
+    if deleted:
+        await session.commit()
+        logger.info("[DEDUPE] removed %d duplicate imported subs", deleted)
+    stats.orders_deduped = deleted
 
 
 # ─── 4. Main ─────────────────────────────────────────────────────────────
@@ -1124,26 +1195,40 @@ async def run(dump_path: Path, dry_run: bool, limit: int) -> ImportStats:
         if "users" in by_table:
             cols, rows = by_table["users"]
             await import_users(session, rows_as_dicts(cols, rows), toman_rate, stats, limit=limit)
+            if not dry_run:
+                await session.commit()  # phase 1 durable
 
         if "orders_list" in by_table:
             cols, rows = by_table["orders_list"]
             await import_orders(session, rows_as_dicts(cols, rows), stats, limit=limit)
-
-        # Post-import: recover the real volume + expiry from the legacy
-        # panel for subs whose dump volume was 0 but that have an http
-        # subscription link. This is what fixes bots that stored volume=0
-        # in their own DB (like db-backup-faiSXGMSK.sql).
-        try:
-            await recover_volumes_from_panel(session, stats, limit=limit)
-        except Exception as exc:
-            logger.warning("panel volume recovery pass failed: %s", exc, exc_info=True)
+            if not dry_run:
+                await session.commit()  # phase 2 durable — imported subs saved
 
         if dry_run:
             await session.rollback()
             logger.info("DRY RUN — rolled back, no DB changes committed.")
-        else:
-            await session.commit()
-            logger.info("Committed.")
+            return stats
+
+        # Phase 3: clean up duplicate ghost subs from earlier re-imports.
+        try:
+            await dedupe_imported_subs(session, stats)
+        except Exception as exc:
+            logger.warning("dedupe pass failed: %s", exc, exc_info=True)
+            await session.rollback()
+
+        # Phase 4: read the REAL volume + expiry off the operator's X-UI
+        # panel(s) and write it into the imported subs. Commits in batches
+        # internally so a big import can't balloon into one giant final
+        # commit (the cause of the bot "freeze").
+        try:
+            await recover_volumes_from_panel(session, stats, limit=limit)
+        except Exception as exc:
+            logger.warning("panel volume recovery pass failed: %s", exc, exc_info=True)
+            try:
+                await session.commit()  # save whatever recovery managed before the error
+            except Exception:
+                await session.rollback()
+        logger.info("Committed (all phases).")
     return stats
 
 
