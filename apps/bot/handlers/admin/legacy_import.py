@@ -152,6 +152,9 @@ async def legacy_import_receive(message: Message, state: FSMContext, bot: Bot) -
         stats = await run_import(dump_path, dry_run=False, limit=0)
 
         # Final summary. Keep it dense — Telegram caption-ish.
+        import html as _html
+        vol_source = getattr(stats, "volume_source_column", None)
+        orders_with_volume = getattr(stats, "orders_with_volume", 0)
         summary = (
             "✅ <b>ایمپورت کامل شد</b>\n"
             "━━━━━━━━━━━━━━\n"
@@ -167,11 +170,37 @@ async def legacy_import_receive(message: Message, state: FSMContext, bot: Bot) -
             f"  اصلاح‌شده: <b>{getattr(stats, 'orders_updated', 0)}</b>\n"
             f"  تکراری: <b>{stats.orders_skipped_duplicate}</b>\n"
             f"  ناموفق: <b>{stats.orders_failed}</b>\n"
-            "━━━━━━━━━━━━━━\n"
-            "حالا کاربران قدیمی می‌تونن <b>/start</b> بزنن و کانفیگ‌هاشون رو "
-            "ببینن. کانفیگ‌های imported با علامت 🗂 توی لیست مشخص می‌شن و "
-            "قابلیت انتقال به اینباند جدید رو دارن (با حفظ نام)."
+            f"  حجم پیدا شد در: <b>{orders_with_volume}</b> سرویس"
+            f" (ستون: <code>{_html.escape(str(vol_source or '—'))}</code>)\n"
         )
+
+        # When volume could NOT be detected, surface the legacy schema right
+        # in the message so the operator can screenshot it — that tells us
+        # the exact volume column name without any log-grepping.
+        if orders_with_volume == 0:
+            cols = getattr(stats, "orders_columns", []) or []
+            sample = getattr(stats, "orders_sample_row", {}) or {}
+            summary += (
+                "\n⚠️ <b>حجم در هیچ ستونی پیدا نشد.</b>\n"
+                "این ساختار دیتابیس قدیمی توئه — لطفاً همین پیام رو اسکرین‌شات کن و بفرست:\n\n"
+                f"<b>ستون‌های orders_list:</b>\n<code>{_html.escape(', '.join(cols))}</code>\n\n"
+            )
+            if sample:
+                # Only show short numeric-ish fields to keep it readable —
+                # those are the volume/expiry candidates.
+                compact = {
+                    k: v for k, v in sample.items()
+                    if v is not None and len(str(v)) <= 24
+                }
+                lines = "\n".join(f"  {_html.escape(str(k))} = {_html.escape(str(v))}" for k, v in compact.items())
+                summary += f"<b>یک نمونه سرویس فعال:</b>\n<code>{lines}</code>\n"
+        else:
+            summary += (
+                "━━━━━━━━━━━━━━\n"
+                "حالا کاربران قدیمی می‌تونن <b>/start</b> بزنن و کانفیگ‌هاشون رو "
+                "ببینن. کانفیگ‌های imported با علامت 🗂 توی لیست مشخص می‌شن و "
+                "قابلیت انتقال به اینباند جدید رو دارن (با حفظ نام)."
+            )
         await _safe_edit(progress, summary)
 
     except FileNotFoundError as exc:

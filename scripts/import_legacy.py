@@ -68,7 +68,7 @@ import json
 import logging
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -291,6 +291,16 @@ class ImportStats:
     # operator see "X fixed" makes it obvious that re-runs are recovering
     # broken rows rather than no-oping.
     orders_updated: int = 0
+    # ── Diagnostics surfaced to the bot summary ──────────────────────
+    # The orders_list column names + a sample status=1 row, so when
+    # volume still resolves to 0 the operator's screenshot of the bot
+    # message tells us the exact schema (no log-grepping needed).
+    orders_columns: list[str] = field(default_factory=list)
+    orders_sample_row: dict = field(default_factory=dict)
+    # Name of the column volume was actually read from (None = not found).
+    volume_source_column: str | None = None
+    # How many orders ended up with a non-zero parsed volume.
+    orders_with_volume: int = 0
 
 
 async def _existing_user_telegram_ids(session: AsyncSession) -> set[int]:
@@ -682,6 +692,9 @@ async def import_orders(
         volume_bytes = _normalize_volume_to_bytes(volume_raw)
         if volume_col:
             column_hits["volume"] += 1
+            stats.orders_with_volume += 1
+            if stats.volume_source_column is None:
+                stats.volume_source_column = volume_col
 
         # One-shot diagnostic on the FIRST status=1 order: report which
         # column volume came from (or that NONE matched + the full row),
@@ -872,6 +885,27 @@ async def run(dump_path: Path, dry_run: bool, limit: int) -> ImportStats:
             logger.info("[SCHEMA] orders_list sample row: %s", preview)
 
     stats = ImportStats()
+    # Stash the orders_list schema on stats so the bot summary can show it.
+    if "orders_list" in by_table:
+        _cols, _rows = by_table["orders_list"]
+        stats.orders_columns = list(_cols)
+        _smp = None
+        try:
+            _sidx = _cols.index("status") if "status" in _cols else None
+        except ValueError:
+            _sidx = None
+        for _r in _rows:
+            if _sidx is not None and _sidx < len(_r) and str(_r[_sidx]).strip() == "1":
+                _smp = _r
+                break
+        if _smp is None and _rows:
+            _smp = _rows[0]
+        if _smp is not None:
+            stats.orders_sample_row = {
+                k: (str(v)[:48] if v is not None else None)
+                for k, v in dict(zip(_cols, _smp)).items()
+            }
+
     async with AsyncSessionFactory() as session:
         toman_rate = await AppSettingsRepository(session).get_toman_rate()
         logger.info("Using USD→Toman rate %s for wallet conversion", f"{toman_rate:,}")
