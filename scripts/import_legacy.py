@@ -885,91 +885,133 @@ async def import_orders(
         )
 
 
+def _uuid_from_vless(uri: str | None) -> str | None:
+    """Pull the client UUID out of a vless:// URI: vless://<uuid>@host:port?…"""
+    if not uri:
+        return None
+    m = re.match(r"^[a-z0-9]+://([^@]+)@", uri.strip(), re.IGNORECASE)
+    return m.group(1).strip() if m else None
+
+
 async def recover_volumes_from_panel(session: AsyncSession, stats: ImportStats, limit: int = 0) -> None:
-    """Post-import pass: for every imported sub that still has volume_bytes=0
-    but an HTTP subscription link, fetch the link's `subscription-userinfo`
-    header (served by the legacy panel) and store the REAL total + expire.
+    """Post-import pass: read the REAL volume + expiry straight off the
+    operator's own X-UI (Sanaei) panels.
 
-    This is the only reliable source of volume for bots (like this one)
-    that stored volume=0 in their own orders table and tracked the quota
-    solely on the X-UI / sub panel.
+    This is the authoritative source: the legacy bot stored volume=0 in
+    its DB and tracked quota only on the panel. The configs already live
+    on the X-UI servers configured in THIS bot, so we list every active
+    server's inbounds ONCE, build an index keyed by the client's email
+    (== the legacy remark, e.g. S3-1922655455-95027) and by UUID, then
+    fill in volume_bytes + ends_at for every imported sub that's still 0.
 
-    Bounded: 15 concurrent fetches, 8s per request. Best-effort — a sub
-    whose panel is unreachable just keeps volume_bytes=0.
+    Reading get_inbounds once per server (not once per sub) keeps it fast
+    even on panels with thousands of clients.
     """
-    import asyncio
-    import httpx
+    from sqlalchemy.orm import selectinload
+    from models.xui import XUIServerRecord
+    from services.xui.runtime import create_xui_client_for_server
 
     rows = await session.execute(
         select(Subscription).where(
             Subscription.source == "imported_legacy",
             Subscription.volume_bytes == 0,
-            Subscription.sub_link.is_not(None),
-            Subscription.sub_link.like("http%"),
+            Subscription.legacy_remark.is_not(None),
         )
     )
     targets: list[Subscription] = list(rows.scalars().all())
     if limit:
         targets = targets[:limit]
     if not targets:
-        logger.info("[PANEL-VOL] no http-linked zero-volume subs to recover")
+        logger.info("[PANEL-VOL] no zero-volume imported subs with a remark to recover")
         return
 
-    logger.info("[PANEL-VOL] attempting volume recovery for %d subs via sub-link headers", len(targets))
-    sem = asyncio.Semaphore(15)
-    now = datetime.now(timezone.utc)
+    srv_rows = await session.execute(
+        select(XUIServerRecord)
+        .options(selectinload(XUIServerRecord.credentials))
+        .where(XUIServerRecord.is_active.is_(True))
+    )
+    servers = list(srv_rows.scalars().all())
+    if not servers:
+        logger.warning("[PANEL-VOL] no active X-UI servers configured — can't read volume from panel")
+        return
 
-    async def _fetch_one(sub: Subscription) -> tuple[Subscription, int | None, int | None]:
+    # Build a combined index from EVERY server's inbounds:
+    #   by_email[email_lower] = (total_bytes, expiry_ms)
+    #   by_uuid[uuid]         = (total_bytes, expiry_ms)
+    by_email: dict[str, tuple[int | None, int | None]] = {}
+    by_uuid: dict[str, tuple[int | None, int | None]] = {}
+
+    for server in servers:
         stats.sublink_fetch_attempts += 1
-        link = sub.sub_link or ""
-        async with sem:
-            try:
-                async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(8.0, connect=5.0),
-                    follow_redirects=True,
-                    verify=False,
-                ) as client:
-                    resp = await client.get(link, headers={"User-Agent": "v2rayN/6.0"})
-            except Exception as exc:
-                logger.debug("[PANEL-VOL] fetch failed for sub %s: %s", sub.id, exc)
-                return sub, None, None
-        userinfo = None
-        for hk, hv in resp.headers.items():
-            if hk.lower() == "subscription-userinfo":
-                userinfo = hv
-                break
-        if not userinfo:
-            return sub, None, None
-        parsed: dict[str, int] = {}
-        for chunk in userinfo.split(";"):
-            if "=" not in chunk:
-                continue
-            k, v = chunk.strip().split("=", 1)
-            try:
-                parsed[k.strip().lower()] = int(v.strip())
-            except ValueError:
-                continue
-        total = parsed.get("total")
-        expire_s = parsed.get("expire")
-        expire_ms = expire_s * 1000 if expire_s and expire_s > 0 else None
-        return sub, (total if total and total > 0 else None), expire_ms
-
-    results = await asyncio.gather(*[_fetch_one(s) for s in targets], return_exceptions=True)
-    first_logged = False
-    for res in results:
-        if isinstance(res, Exception):
+        try:
+            async with create_xui_client_for_server(server) as client:
+                inbounds = await client.get_inbounds()
+        except Exception as exc:
+            logger.warning("[PANEL-VOL] get_inbounds failed for server %s: %s", server.name, exc)
             continue
-        sub, total, expire_ms = res
+
+        indexed = 0
+        for ib in inbounds:
+            # clientStats carries the per-client limit (`total`) + expiry.
+            for cs in (ib.client_stats or []):
+                email = str(cs.get("email") or "").strip().lower()
+                if not email:
+                    continue
+                total = cs.get("total")
+                expiry = cs.get("expiryTime")
+                by_email[email] = (
+                    int(total) if total else None,
+                    int(expiry) if expiry else None,
+                )
+                indexed += 1
+            # settings.clients carries totalGB (bytes) + expiryTime + id(uuid).
+            settings = ib.settings or {}
+            if isinstance(settings, str):
+                try:
+                    settings = json.loads(settings)
+                except Exception:
+                    settings = {}
+            for c in (settings.get("clients") or []):
+                email = str(c.get("email") or "").strip().lower()
+                total = c.get("totalGB")
+                expiry = c.get("expiryTime")
+                pair = (int(total) if total else None, int(expiry) if expiry else None)
+                if email and (email not in by_email or by_email[email][0] in (None, 0)):
+                    by_email[email] = pair
+                cid = str(c.get("id") or c.get("uuid") or "").strip()
+                if cid:
+                    by_uuid[cid] = pair
+        logger.info("[PANEL-VOL] server %s — indexed %d clients", server.name, indexed)
+
+    logger.info(
+        "[PANEL-VOL] index built: %d emails, %d uuids; matching %d subs",
+        len(by_email), len(by_uuid), len(targets),
+    )
+
+    now = datetime.now(timezone.utc)
+    first_logged = False
+    for sub in targets:
+        # Match by remark→email first, then by UUID from the vless link.
+        key = str(sub.legacy_remark or "").strip().lower()
+        hit = by_email.get(key)
+        if hit is None:
+            uid = _uuid_from_vless(sub.legacy_link)
+            if uid:
+                hit = by_uuid.get(uid)
+        if hit is None:
+            continue
+        total, expiry_ms = hit
         if not first_logged:
             first_logged = True
-            logger.info("[PANEL-VOL] first result — sub=%s total=%s expire_ms=%s", sub.id, total, expire_ms)
+            logger.info("[PANEL-VOL] first match — remark=%s total=%s expiry_ms=%s",
+                        sub.legacy_remark, total, expiry_ms)
         changed = False
         if total and total > 0 and sub.volume_bytes == 0:
             sub.volume_bytes = int(total)
             changed = True
-        if expire_ms and expire_ms > 0 and sub.ends_at is None:
+        if expiry_ms and expiry_ms > 0 and sub.ends_at is None:
             try:
-                sub.ends_at = datetime.fromtimestamp(expire_ms / 1000, tz=timezone.utc)
+                sub.ends_at = datetime.fromtimestamp(expiry_ms / 1000, tz=timezone.utc)
                 if sub.ends_at > now and sub.status == "expired":
                     sub.status = "active"
                     sub.expired_at = None
@@ -981,7 +1023,7 @@ async def recover_volumes_from_panel(session: AsyncSession, stats: ImportStats, 
 
     await session.flush()
     logger.info(
-        "[PANEL-VOL] recovered volume/expiry for %d of %d subs (%d fetches)",
+        "[PANEL-VOL] recovered volume/expiry for %d of %d subs (scanned %d servers)",
         stats.volume_recovered_from_panel, len(targets), stats.sublink_fetch_attempts,
     )
 
