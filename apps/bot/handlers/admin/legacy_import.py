@@ -72,6 +72,7 @@ async def legacy_import_start(callback: CallbackQuery, state: FSMContext) -> Non
     await state.set_state(LegacyImportStates.waiting_for_dump)
 
     builder = InlineKeyboardBuilder()
+    builder.button(text="🧹 سینک کامل با پنل (پاک‌سازی)", callback_data="admin:settings:legacy_sync")
     builder.button(text="❌ انصراف", callback_data="admin:settings:legacy_import:cancel")
     builder.adjust(1)
 
@@ -84,11 +85,73 @@ async def legacy_import_start(callback: CallbackQuery, state: FSMContext) -> Non
         "  • کاربرها بر اساس <b>telegram_id</b> match می‌شن\n"
         "  • کیف پول تومن قدیمی با نرخ فعلی به دلار تبدیل می‌شه\n"
         "  • کانفیگ‌های قدیمی با اسم اصلی حفظ می‌شن (legacy_remark)\n"
-        "  • کاربر‌ها / کانفیگ‌های موجود overwrite نمی‌شن — فقط جدیدها اضافه می‌شن\n\n"
+        "  • حجم و زمان و وضعیت از خود پنل سنایی خونده می‌شه\n\n"
+        "🧹 <b>سینک کامل با پنل</b>: هر کانفیگ واردشده که روی پنل فعلیت "
+        "هست نگه داشته می‌شه (با حجم/زمان درست) و هرکدوم که روی پنل "
+        "نیست از ربات حذف می‌شه — برای پاک‌سازی شلوغی.\n\n"
         f"⚠️ حداکثر حجم فایل: <b>{_MAX_DUMP_BYTES // (1024*1024)} MB</b>\n"
         "این عملیات قابل بازگشت نیست؛ قبلش backup گرفته باشی."
     )
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+# ── Full panel sync (reconcile imported subs against the live X-UI panel) ──
+
+
+@router.callback_query(F.data == "admin:settings:legacy_sync")
+async def legacy_sync_confirm(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.clear()
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ بله، سینک و پاک‌سازی کن", callback_data="admin:settings:legacy_sync:go")
+    builder.button(text="❌ انصراف", callback_data="admin:settings:legacy_import:cancel")
+    builder.adjust(1)
+    await safe_edit_or_send(
+        callback,
+        "🧹 <b>سینک کامل کانفیگ‌های واردشده با پنل</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "این کار:\n"
+        "  ✅ هر کانفیگ واردشده که روی پنل سنایی هست رو نگه می‌داره و حجم/زمان/وضعیتشو از پنل می‌خونه\n"
+        "  🗑 هر کانفیگ واردشده که روی پنل <b>نیست</b> رو از ربات حذف می‌کنه\n\n"
+        "<i>فقط کانفیگ‌های واردشده‌ای که هنوز کلاینت واقعی روی پنل ندارن حذف می‌شن — "
+        "کانفیگ‌های منتقل‌شده یا فروش جدید دست‌نخورده می‌مونن.</i>\n\n"
+        "ادامه می‌دی؟",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "admin:settings:legacy_sync:go")
+async def legacy_sync_run(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.clear()
+    progress = callback.message
+    await safe_edit_or_send(callback, "🧹 در حال سینک با پنل... این ممکنه چند لحظه طول بکشه.")
+    try:
+        from scripts.import_legacy import reconcile_imported_with_panel
+        from core.database import AsyncSessionFactory
+        async with AsyncSessionFactory() as session:
+            result = await reconcile_imported_with_panel(session, delete_missing=True)
+    except Exception as exc:
+        logger.error("Legacy panel sync failed: %s", exc, exc_info=True)
+        await _safe_edit(progress, f"❌ خطا در سینک: {type(exc).__name__}")
+        return
+
+    if result.get("no_panel"):
+        await _safe_edit(progress, "⚠️ هیچ سرور فعالی پیدا نشد — اول یک پنل X-UI تو «مدیریت سرورها» اضافه کن.")
+        return
+
+    msg = (
+        "✅ <b>سینک با پنل کامل شد</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        f"  کل کانفیگ‌های واردشده: <b>{result['total']}</b>\n"
+        f"  ✅ نگه‌داشته‌شده (روی پنل): <b>{result['kept']}</b>\n"
+        f"  🔄 به‌روزرسانی‌شده (حجم/زمان/وضعیت): <b>{result['updated']}</b>\n"
+        f"  🗑 حذف‌شده (روی پنل نبودن): <b>{result['deleted']}</b>\n"
+        f"  📡 سرور اسکن‌شده: <b>{result['scanned_servers']}</b>\n\n"
+        "حالا فقط کانفیگ‌های واقعی موجود روی پنل تو ربات هستن، با حجم و زمان درست."
+    )
+    await _safe_edit(progress, msg)
 
 
 @router.callback_query(F.data == "admin:settings:legacy_import:cancel")
@@ -228,12 +291,18 @@ async def legacy_import_wrong_type(message: Message) -> None:
 
 async def _safe_edit(target_message: Message, text: str) -> None:
     """Edit the progress message, fall back to a fresh send if the
-    original was deleted in the meantime."""
-    try:
-        await target_message.edit_text(text, parse_mode="HTML")
-    except Exception:
+    original was deleted in the meantime. Last resort: HTML-escape so a
+    stray '<' can never make the message silently fail to send."""
+    import html as _html
+    for body in (text, _html.escape(text)):
         try:
-            await target_message.answer(text, parse_mode="HTML")
+            await target_message.edit_text(body, parse_mode="HTML")
+            return
+        except Exception:
+            pass
+        try:
+            await target_message.answer(body, parse_mode="HTML")
+            return
         except Exception:
             pass
 

@@ -901,6 +901,179 @@ def _uuid_from_vless(uri: str | None) -> str | None:
     return m.group(1).strip() if m else None
 
 
+async def _build_panel_client_index(session: AsyncSession) -> tuple[dict, dict, int]:
+    """Scan every active X-UI server's inbounds ONCE and return two indexes
+    keyed by client identity:
+        by_email[email_lower] = (total_bytes, expiry_ms, enable)
+        by_uuid[uuid]         = (total_bytes, expiry_ms, enable)
+    plus the number of servers successfully scanned.
+    """
+    from sqlalchemy.orm import selectinload
+    from models.xui import XUIServerRecord
+    from services.xui.runtime import create_xui_client_for_server
+
+    srv_rows = await session.execute(
+        select(XUIServerRecord)
+        .options(selectinload(XUIServerRecord.credentials))
+        .where(XUIServerRecord.is_active.is_(True))
+    )
+    servers = list(srv_rows.scalars().all())
+    by_email: dict[str, tuple[int | None, int | None, bool]] = {}
+    by_uuid: dict[str, tuple[int | None, int | None, bool]] = {}
+    scanned = 0
+
+    for server in servers:
+        try:
+            async with create_xui_client_for_server(server) as client:
+                inbounds = await client.get_inbounds()
+        except Exception as exc:
+            logger.warning("[PANEL-IDX] get_inbounds failed for server %s: %s", server.name, exc)
+            continue
+        scanned += 1
+        indexed = 0
+        for ib in inbounds:
+            settings = ib.settings or {}
+            if isinstance(settings, str):
+                try:
+                    settings = json.loads(settings)
+                except Exception:
+                    settings = {}
+            for c in (settings.get("clients") or []):
+                email = str(c.get("email") or "").strip().lower()
+                total = c.get("totalGB")
+                expiry = c.get("expiryTime")
+                enable = c.get("enable", True)
+                triple = (
+                    int(total) if total else None,
+                    int(expiry) if expiry else None,
+                    bool(enable),
+                )
+                if email:
+                    by_email[email] = triple
+                    indexed += 1
+                cid = str(c.get("id") or c.get("uuid") or "").strip()
+                if cid:
+                    by_uuid[cid] = triple
+            for cs in (ib.client_stats or []):
+                email = str(cs.get("email") or "").strip().lower()
+                if not email or email in by_email:
+                    continue
+                total = cs.get("total")
+                expiry = cs.get("expiryTime")
+                enable = cs.get("enable", True)
+                by_email[email] = (
+                    int(total) if total else None,
+                    int(expiry) if expiry else None,
+                    bool(enable),
+                )
+                indexed += 1
+        logger.info("[PANEL-IDX] server %s — indexed %d clients", server.name, indexed)
+
+    logger.info("[PANEL-IDX] index built: %d emails, %d uuids from %d servers",
+                len(by_email), len(by_uuid), scanned)
+    return by_email, by_uuid, scanned
+
+
+def _apply_panel_state_to_sub(sub: "Subscription", hit: tuple, now: datetime) -> bool:
+    """Apply (total, expiry_ms, enable) from the panel onto a sub. Returns
+    True if anything changed. Panel is authoritative for volume + status +
+    expiry of any config that exists on it."""
+    total, expiry_ms, enable = hit
+    changed = False
+    if total and total > 0 and (sub.volume_bytes or 0) == 0:
+        sub.volume_bytes = int(total)
+        changed = True
+    if not enable:
+        if sub.status != "expired":
+            sub.status = "expired"
+            changed = True
+    elif expiry_ms and expiry_ms > 0:
+        try:
+            new_end = datetime.fromtimestamp(expiry_ms / 1000, tz=timezone.utc)
+            if sub.ends_at != new_end:
+                sub.ends_at = new_end
+                changed = True
+            if new_end > now:
+                if sub.status != "active":
+                    sub.status = "active"
+                    sub.expired_at = None
+                    changed = True
+            elif sub.status != "expired":
+                sub.status = "expired"
+                sub.expired_at = new_end
+                changed = True
+        except (OSError, OverflowError, ValueError):
+            pass
+    else:
+        if sub.status != "active":
+            sub.status = "active"
+            sub.expired_at = None
+            changed = True
+        if sub.ends_at is not None and expiry_ms is not None and expiry_ms < 0:
+            sub.ends_at = None
+            changed = True
+    return changed
+
+
+def _match_sub(sub: "Subscription", by_email: dict, by_uuid: dict):
+    key = str(sub.legacy_remark or "").strip().lower()
+    hit = by_email.get(key)
+    if hit is None:
+        uid = _uuid_from_vless(sub.legacy_link)
+        if uid:
+            hit = by_uuid.get(uid)
+    return hit
+
+
+async def reconcile_imported_with_panel(session: AsyncSession, *, delete_missing: bool = True) -> dict:
+    """One-shot full sync the operator asked for:
+      * imported sub EXISTS on a panel → KEEP, sync volume/expiry/status.
+      * imported sub NOT on any panel  → DELETE (ghost cleanup), but only
+        if it has no XUIClientRecord (a real provisioned client is never
+        auto-deleted).
+    Returns {kept, updated, deleted, scanned_servers, total}.
+    Commits in batches of 200.
+    """
+    by_email, by_uuid, scanned = await _build_panel_client_index(session)
+    if scanned == 0:
+        return {"kept": 0, "updated": 0, "deleted": 0, "scanned_servers": 0, "total": 0, "no_panel": True}
+
+    rows = await session.execute(
+        select(Subscription).where(Subscription.source == "imported_legacy")
+    )
+    subs = list(rows.scalars().all())
+    now = datetime.now(timezone.utc)
+    kept = updated = deleted = 0
+    batch = 0
+
+    for sub in subs:
+        hit = _match_sub(sub, by_email, by_uuid)
+        if hit is not None:
+            kept += 1
+            if _apply_panel_state_to_sub(sub, hit, now):
+                updated += 1
+                batch += 1
+        elif delete_missing:
+            has_client = await session.scalar(
+                select(XUIClientRecord.id).where(XUIClientRecord.subscription_id == sub.id)
+            )
+            if has_client is None:
+                await session.delete(sub)
+                deleted += 1
+                batch += 1
+        if batch >= 200:
+            await session.commit()
+            batch = 0
+
+    await session.commit()
+    logger.info(
+        "[RECONCILE] kept=%d updated=%d deleted=%d (scanned %d servers, %d subs)",
+        kept, updated, deleted, scanned, len(subs),
+    )
+    return {"kept": kept, "updated": updated, "deleted": deleted,
+            "scanned_servers": scanned, "total": len(subs)}
+
+
 async def recover_volumes_from_panel(session: AsyncSession, stats: ImportStats, limit: int = 0) -> None:
     """Post-import pass: read the REAL volume + expiry straight off the
     operator's own X-UI (Sanaei) panels.
