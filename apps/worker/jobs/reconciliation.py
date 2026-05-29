@@ -24,12 +24,20 @@ logger = logging.getLogger(__name__)
 
 MAX_AUTO_RETRY = 5  # Max payments to auto-retry per reconciliation run
 MAX_RETRY_COUNT = 10  # Max total retries before giving up on a payment
+# Never AUTO-RETRY a payment older than this. Retrying an ancient
+# stuck payment calls process_successful_payment, which on a provisioning
+# failure REFUNDS the wallet and DMs the user "خرید ناموفق، پول برگشت".
+# For payments from days/weeks ago that's harmful spam — and many old
+# "stuck" rows are actually already-delivered configs that simply predate
+# the `provisioned` callback flag. So anything older than this is escalated
+# to manual_review SILENTLY (no retry, no refund, no user message) and the
+# admin decides in the Recovery menu.
+RETRY_MAX_AGE = timedelta(hours=48)
 
 
 async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
     """Find stuck payments, auto-retry provisioning/renewal, and alert admin."""
     now = datetime.now(timezone.utc)
-    cutoff_24h = now - timedelta(hours=24)
 
     # ─── AUTO-RETRY: paid but not provisioned (direct_purchase) ───
     stuck_purchase_result = await session.execute(
@@ -49,20 +57,27 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
     escalated_purchase: list[Payment] = []
     for payment in stuck_purchases:
         retry_count = (payment.callback_payload or {}).get("retry_count", 0)
-        if retry_count >= MAX_RETRY_COUNT:
+        created = payment.created_at
+        if created and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        too_old = created is not None and created < (now - RETRY_MAX_AGE)
+        if retry_count >= MAX_RETRY_COUNT or too_old:
             # Stop silently retrying — flip to manual_review so an admin sees
             # this payment in Recovery and the worker stops burning cycles.
+            # Crucially: NO process_successful_payment here, so NO refund +
+            # NO "خرید ناموفق" DM to the user for ancient payments.
             payload = dict(payment.callback_payload or {})
             if not payload.get("escalated"):
                 payload["escalated"] = True
+                payload["escalated_reason"] = "too_old" if too_old else "max_retries"
                 payload["escalated_at"] = datetime.now(timezone.utc).isoformat()
                 payment.callback_payload = payload
                 payment.payment_status = "manual_review"
                 await session.flush()
                 escalated_purchase.append(payment)
                 logger.error(
-                    "[RECONCILIATION] Payment %s escalated to manual_review after %d failed retries",
-                    payment.id, retry_count,
+                    "[RECONCILIATION] Payment %s escalated to manual_review (%s)",
+                    payment.id, "too_old" if too_old else f"after {retry_count} retries",
                 )
             continue
         logger.info("[RECONCILIATION] Auto-retrying provisioning for payment %s (attempt %d)", payment.id, retry_count + 1)
@@ -101,18 +116,23 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
     escalated_renewal: list[Payment] = []
     for payment in stuck_renewals:
         retry_count = (payment.callback_payload or {}).get("retry_count", 0)
-        if retry_count >= MAX_RETRY_COUNT:
+        created = payment.created_at
+        if created and created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        too_old = created is not None and created < (now - RETRY_MAX_AGE)
+        if retry_count >= MAX_RETRY_COUNT or too_old:
             payload = dict(payment.callback_payload or {})
             if not payload.get("escalated"):
                 payload["escalated"] = True
+                payload["escalated_reason"] = "too_old" if too_old else "max_retries"
                 payload["escalated_at"] = datetime.now(timezone.utc).isoformat()
                 payment.callback_payload = payload
                 payment.payment_status = "manual_review"
                 await session.flush()
                 escalated_renewal.append(payment)
                 logger.error(
-                    "[RECONCILIATION] Renewal %s escalated to manual_review after %d failed retries",
-                    payment.id, retry_count,
+                    "[RECONCILIATION] Renewal %s escalated to manual_review (%s)",
+                    payment.id, "too_old" if too_old else f"after {retry_count} retries",
                 )
             continue
         logger.info("[RECONCILIATION] Auto-retrying renewal for payment %s (attempt %d)", payment.id, retry_count + 1)
@@ -132,86 +152,38 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
             await session.flush()
             logger.error("[RECONCILIATION] Renewal retry FAILED for payment %s: %s", payment.id, exc)
 
-    # ─── COUNTS for alerting ───
-    # Remaining stuck after retries
-    stuck_count = await session.scalar(
-        select(func.count()).select_from(Payment).where(
-            Payment.actually_paid.isnot(None),
-            Payment.kind.in_(["direct_purchase", "direct_renewal"]),
-            or_(
-                ~Payment.callback_payload.has_key("provisioned"),
-                Payment.callback_payload["provisioned"].as_boolean().is_(False),
-            ),
-            or_(
-                ~Payment.callback_payload.has_key("renewal_applied"),
-                Payment.callback_payload["renewal_applied"].as_boolean().is_(False),
-            ),
-        )
-    ) or 0
-
-    # Waiting payments older than 24h
-    stale_waiting = await session.scalar(
-        select(func.count()).select_from(Payment).where(
-            Payment.payment_status.in_(["waiting", "confirming"]),
-            Payment.actually_paid.is_(None),
-            Payment.created_at < cutoff_24h,
-        )
-    ) or 0
-
-    # Failed payments in last 24h
-    recent_failed = await session.scalar(
-        select(func.count()).select_from(Payment).where(
-            Payment.payment_status.in_(["failed", "expired"]),
-            Payment.created_at >= cutoff_24h,
-        )
-    ) or 0
-
-    # Manual crypto payments pending admin approval for >24h
-    stale_manual = await session.scalar(
-        select(func.count()).select_from(Payment).where(
-            Payment.payment_status.in_(["pending_approval", "waiting_hash"]),
-            Payment.created_at < cutoff_24h,
-        )
-    ) or 0
-
-    # Build alert
+    # ─── Decide whether to ALERT ───
+    # Only message the operator when the worker actually DID something this
+    # run (retried or newly escalated a payment). Standing counts like
+    # "208 invoices abandoned >24h" or "23 paid-but-undelivered" never
+    # change on their own, so reporting them every hour is pure spam — the
+    # operator can see them anytime in the Recovery menu. This is the noise
+    # the operator complained about (esp. with sales closed for days).
     retried_total = retried_purchase + retried_renewal
     escalations_now = len(escalated_purchase) + len(escalated_renewal)
-    if (
-        retried_total == 0
-        and escalations_now == 0
-        and stuck_count == 0
-        and stale_waiting == 0
-        and recent_failed == 0
-        and stale_manual == 0
-    ):
-        logger.info("Reconciliation: no issues found")
+
+    if retried_total == 0 and escalations_now == 0:
+        logger.info("Reconciliation: nothing actionable this run — staying silent")
         return
 
-    escalated_total = len(escalated_purchase) + len(escalated_renewal)
     lines = ["🔔 گزارش Reconciliation خودکار\n"]
     if retried_total > 0:
-        lines.append(f"🔄 Retry خودکار: {retried_purchase} provisioning + {retried_renewal} renewal")
-    if escalated_total > 0:
-        lines.append(f"🚨 ارسال به بررسی دستی پس از حداکثر retry: {escalated_total}")
-    if stuck_count > 0:
-        lines.append(f"⚠️ پرداخت موفق بدون تحویل (باقی‌مانده): {stuck_count}")
-    if stale_waiting > 0:
-        lines.append(f"⏳ پرداخت در انتظار (+24 ساعت): {stale_waiting}")
-    if recent_failed > 0:
-        lines.append(f"❌ پرداخت ناموفق (24 ساعت اخیر): {recent_failed}")
-    if stale_manual > 0:
-        lines.append(f"🔐 پرداخت دستی منتظر تأیید (+24 ساعت): {stale_manual}")
+        lines.append(f"🔄 Retry موفق: {retried_purchase} خرید + {retried_renewal} تمدید")
+    if escalations_now > 0:
+        # Note WHY they were escalated so the operator knows old payments
+        # were parked for manual review (NOT auto-refunded).
+        too_old_n = sum(
+            1 for p in (escalated_purchase + escalated_renewal)
+            if (p.callback_payload or {}).get("escalated_reason") == "too_old"
+        )
+        lines.append(f"🚨 منتقل‌شده به بررسی دستی: {escalations_now}")
+        if too_old_n:
+            lines.append(f"   ({too_old_n} مورد قدیمی‌تر از ۴۸ ساعت — بدون رفاند، فقط برای بررسی)")
     lines.append("\nاز منوی 🔧 Recovery اقدام کنید.")
-
     alert_text = "\n".join(lines)
 
-    logger.warning(
-        "Reconciliation alert: retried=%d, stuck=%d, stale_waiting=%d, recent_failed=%d",
-        retried_total, stuck_count, stale_waiting, recent_failed,
-    )
+    logger.warning("Reconciliation alert: retried=%d, escalated=%d", retried_total, escalations_now)
 
-    # Send to owner
     if settings.owner_telegram_id:
         try:
             await bot.send_message(settings.owner_telegram_id, alert_text)
