@@ -352,19 +352,27 @@ def _parse_unix(raw) -> datetime | None:
 # value wins. Same idea for expiry — `expire_date` is most common but
 # some forks only store `days` and let the client compute.
 
+# NOTE: matching is CASE-INSENSITIVE (see _ci_get), so we only need one
+# casing of each name here. The list is broad to cover the many Persian
+# VPN bot forks (Mirza, Marzban-sell, custom orders_list schemas, …).
 _VOLUME_COLUMNS = (
     "volume", "volume_bytes", "total_volume", "total_bytes",
-    "data", "data_limit", "package_data", "totalGB", "total_gb",
-    "volumeTotal", "datasize", "package_volume",
+    "data", "data_limit", "datalimit", "package_data", "totalgb", "total_gb",
+    "volumetotal", "datasize", "package_volume",
+    "traffic", "total_traffic", "limit_traffic", "traffic_limit",
+    "flow", "quota", "size", "gb", "giga", "gig", "hajm", "vol",
+    "limitvolume", "limit_volume", "volume_limit", "usage_limit",
 )
 
 _EXPIRE_COLUMNS = (
-    "expire_date", "expireDate", "expire_at", "expires_at",
-    "expiry", "expiry_time", "expireTime", "expirationDate",
+    "expire_date", "expiredate", "expire_at", "expires_at",
+    "expiry", "expiry_time", "expiretime", "expirationdate",
+    "exp", "exp_date", "exp_time", "enddate", "end_date", "end_time",
 )
 
 _DAYS_COLUMNS = (
     "days", "period", "duration", "duration_days", "package_days",
+    "day", "expire_days", "service_days", "time", "muddat",
 )
 
 _REMARK_COLUMNS = (
@@ -381,25 +389,45 @@ _UUID_COLUMNS = (
 )
 
 
+def _ci_get(row: dict, column: str):
+    """Case-insensitive column lookup.
+
+    SQL column names are case-insensitive in MySQL, but our row dict is
+    keyed by the EXACT name from the dump. So a dump column named
+    `Volume` / `VOLUME` would never match the lowercase candidate
+    `"volume"`. Match case-insensitively (and ignore surrounding spaces)
+    so column-name casing differences across bot forks don't silently
+    drop the value. Returns (matched_key, value) or (None, None).
+    """
+    if column in row:
+        return column, row[column]
+    target = column.strip().lower()
+    for k, v in row.items():
+        if str(k).strip().lower() == target:
+            return k, v
+    return None, None
+
+
 def _first_nonzero_int(row: dict, columns: tuple[str, ...]) -> tuple[str | None, int]:
     """Return (which_column_won, integer_value). 0 if none had a value."""
     for c in columns:
-        if c not in row:
+        matched_key, raw = _ci_get(row, c)
+        if matched_key is None:
             continue
-        v = _parse_int(row[c], default=0)
+        v = _parse_int(raw, default=0)
         if v != 0:  # 0 means "missing/unlimited/zero" → keep trying other cols
-            return c, v
+            return matched_key, v
     return None, 0
 
 
 def _first_nonempty(row: dict, columns: tuple[str, ...]) -> tuple[str | None, str]:
     for c in columns:
-        v = row.get(c)
-        if v is None:
+        matched_key, raw = _ci_get(row, c)
+        if matched_key is None or raw is None:
             continue
-        s = str(v).strip()
+        s = str(raw).strip()
         if s:
-            return c, s
+            return matched_key, s
     return None, ""
 
 
@@ -425,7 +453,8 @@ def _resolve_expiry(row: dict, created_dt: datetime, now: datetime) -> datetime 
     """Find the expiry from the row. Tries expire_date columns first,
     then computes from days+date. Returns None if both attempts fail."""
     for c in _EXPIRE_COLUMNS:
-        v = _parse_unix(row.get(c))
+        _, raw = _ci_get(row, c)
+        v = _parse_unix(raw)
         if v is not None:
             return v
     days_col, days = _first_nonzero_int(row, _DAYS_COLUMNS)
@@ -653,6 +682,23 @@ async def import_orders(
         volume_bytes = _normalize_volume_to_bytes(volume_raw)
         if volume_col:
             column_hits["volume"] += 1
+
+        # One-shot diagnostic on the FIRST status=1 order: report which
+        # column volume came from (or that NONE matched + the full row),
+        # so a still-zero volume is instantly diagnosable from the logs.
+        if not getattr(import_orders, "_logged_first_volume", False):
+            import_orders._logged_first_volume = True  # type: ignore[attr-defined]
+            if volume_col:
+                logger.info(
+                    "[VOLUME] detected from column %r: raw=%r → %d bytes (%.2f GB)",
+                    volume_col, volume_raw, volume_bytes, volume_bytes / (1024**3),
+                )
+            else:
+                logger.warning(
+                    "[VOLUME] NO volume column matched on first order. "
+                    "Row columns + values: %s",
+                    {k: (str(v)[:40] if v is not None else None) for k, v in row.items()},
+                )
 
         created_dt = _parse_unix(row.get("date")) or now
         expire_dt = _resolve_expiry(row, created_dt, now)
