@@ -5,12 +5,7 @@ from typing import Literal
 
 
 def format_volume_bytes(volume_bytes: int) -> str:
-    # X-UI treats totalGB=0 as UNLIMITED. Imported subs whose original
-    # volume couldn't be parsed land at 0 — the panel client is actually
-    # uncapped, so the human-facing label is "نامحدود".
-    if volume_bytes is None or volume_bytes == 0:
-        return "نامحدود"
-    if volume_bytes < 0:
+    if volume_bytes is None or volume_bytes <= 0:
         return "0 GB"
 
     gigabytes = volume_bytes / (1024**3)

@@ -146,12 +146,7 @@ const UI = (() => {
 
     // ─── Formatters ─────────────────────────────────────────────────────
     function formatBytes(bytes) {
-        // X-UI treats totalGB=0 as UNLIMITED traffic. Imported subs that
-        // landed without a known volume show up as 0 here — but the
-        // panel-side client is actually uncapped, so the right user-
-        // facing label is "نامحدود", not "0 B".
-        if (bytes === 0 || bytes === '0' || bytes === null || bytes === undefined) return 'نامحدود';
-        if (bytes < 0) return '0 B';
+        if (!bytes || bytes <= 0) return '0 B';
         const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
         const i = Math.floor(Math.log(bytes) / Math.log(1024));
         return (bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 2) + ' ' + sizes[i];

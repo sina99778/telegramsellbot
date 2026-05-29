@@ -957,6 +957,110 @@ class ProvisioningManager:
         xui = None
         last_dup_exc: Exception | None = None
 
+        # ── Recover volume + expiry + UUID from the target X-UI panel ──
+        #
+        # The legacy bot's import dropped the volume column on the floor
+        # (different schemas across forks), so `sub.volume_bytes` is 0
+        # for most imported subs. But the ORIGINAL client probably still
+        # exists on the target inbound (same panel the legacy operator
+        # used). We look it up by email==legacy_remark and pull its
+        # `totalGB` + `expiryTime` so the migrated config keeps the user's
+        # real quota — AND we delete the original on the panel so the
+        # operator doesn't end up with two clients sharing one identity.
+        #
+        # Best-effort: if any step fails, we fall back to creating a
+        # fresh client with the existing (possibly zero) volume. The
+        # retry-with-suffix loop below still handles Duplicate email.
+        async def _adopt_existing_client_if_any() -> tuple[int | None, int | None, str | None]:
+            """Returns (recovered_total_bytes, recovered_expiry_ms, deleted_uuid)."""
+            try:
+                async with self._get_xui_client_for_server(target_server) as xui_api_lookup:
+                    inbounds_list = await xui_api_lookup.get_inbounds()
+            except Exception as lookup_exc:
+                logger.warning(
+                    "Imported-migration: could not list inbounds on target panel: %s",
+                    lookup_exc,
+                )
+                return None, None, None
+
+            target_remote_id = target_inbound.xui_inbound_remote_id
+            existing: dict | None = None
+            for ib in inbounds_list:
+                if ib.id != target_remote_id:
+                    continue
+                ib_settings = ib.settings or {}
+                if isinstance(ib_settings, str):
+                    import json as _json
+                    try:
+                        ib_settings = _json.loads(ib_settings)
+                    except Exception:
+                        ib_settings = {}
+                for client in (ib_settings.get("clients") or []):
+                    if str(client.get("email") or "") == remark:
+                        existing = client
+                        break
+                break
+
+            if not existing:
+                return None, None, None
+
+            recovered_total = existing.get("totalGB")
+            recovered_expiry = existing.get("expiryTime")
+            client_id_to_delete = (
+                existing.get("id") or existing.get("uuid") or existing.get("email")
+            )
+            logger.info(
+                "Imported-migration: found existing client on target — totalGB=%s expiryTime=%s id=%s",
+                recovered_total, recovered_expiry, client_id_to_delete,
+            )
+            # Delete the original so the new client can take its email.
+            if client_id_to_delete:
+                try:
+                    async with self._get_xui_client_for_server(target_server) as xui_api_del:
+                        await xui_api_del.delete_client(
+                            inbound_id=target_remote_id,
+                            client_id=str(client_id_to_delete),
+                        )
+                    logger.info(
+                        "Imported-migration: deleted existing client %s",
+                        client_id_to_delete,
+                    )
+                except Exception as del_exc:
+                    logger.warning(
+                        "Imported-migration: could not delete existing client %s — will rely on suffix retry: %s",
+                        client_id_to_delete, del_exc,
+                    )
+                    client_id_to_delete = None  # signal: cleanup failed, suffix needed
+
+            return (
+                int(recovered_total) if recovered_total is not None else None,
+                int(recovered_expiry) if recovered_expiry is not None else None,
+                client_id_to_delete,
+            )
+
+        recovered_total, recovered_expiry, deleted_existing_uuid = await _adopt_existing_client_if_any()
+
+        if recovered_total is not None and recovered_total > 0 and remaining_bytes == 0:
+            # Recovered the real quota from the panel — this is what the
+            # user actually has, NOT "unlimited".
+            remaining_bytes = recovered_total
+            sub.volume_bytes = recovered_total
+            logger.info(
+                "Imported-migration: recovered volume %d bytes from X-UI panel",
+                recovered_total,
+            )
+        if recovered_expiry is not None and recovered_expiry > 0 and sub.ends_at is None:
+            from datetime import datetime as _dt, timezone as _tz
+            try:
+                sub.ends_at = _dt.fromtimestamp(recovered_expiry / 1000, tz=_tz.utc)
+                expiry_ms = recovered_expiry
+                logger.info(
+                    "Imported-migration: recovered expiry %d (ms) from X-UI panel",
+                    recovered_expiry,
+                )
+            except (OSError, OverflowError, ValueError):
+                pass
+
         # Snapshot every `sub` column we read inside the retry loop, so
         # we never have to access them again after a savepoint rollback
         # expires the object. Without this, the next iteration's
