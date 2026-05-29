@@ -84,9 +84,13 @@ class Settings(BaseSettings):
 
     # Compatibility flags ----------------------------------------------------
     # Allow /api/sub/{id} without a `?sig=` signature for subscriptions
-    # created BEFORE the sig was rolled out. Set to False after all legacy
-    # sub_links have been rotated / users have re-imported their links.
-    sub_legacy_unsigned_access: bool = True
+    # created BEFORE the sig was rolled out. Now defaults to False (strict):
+    # the provisioning path always mints SIGNED sub_links, so legitimately
+    # issued configs are unaffected. Only pre-signature ready-config links
+    # (if any were sold before the sig feature) are rejected — re-issue those
+    # via the bot's "change link" action. Set SUB_LEGACY_UNSIGNED_ACCESS=true
+    # in .env to temporarily re-open the grace window if needed.
+    sub_legacy_unsigned_access: bool = False
     # Same idea for TetraPay invoices: existing pending invoices were
     # created with callback URLs that don't carry a `?t=` signature.
     # Keep True for the first deploy to drain in-flight invoices, then

@@ -22,12 +22,94 @@ from apps.bot.utils.messaging import safe_edit_or_send
 from models.audit import AuditLog
 from models.subscription import Subscription
 from models.user import User
+from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.settings import AppSettingsRepository
 from repositories.user import UserRepository
 
 logger = logging.getLogger(__name__)
 
 router = Router(name="user-transfer")
+
+
+async def _rotate_config_identity_for_transfer(
+    session: AsyncSession, sub: Subscription
+) -> bool:
+    """Rotate the X-UI client's UUID + subId so the SENDER's old links die.
+
+    Returns True on success (or when there's nothing to rotate, e.g. an
+    imported_legacy sub with no panel client on our side), False when a
+    panel client exists but the rotation failed — in which case the caller
+    MUST abort the transfer so we never hand a config to the recipient while
+    the sender still holds working credentials.
+
+    The `sub` must be loaded with xui_client → inbound → server → credentials
+    eager-loaded (no lazy-load inside this async path).
+    """
+    xui_record = sub.xui_client
+    if xui_record is None:
+        # Imported/legacy sub: the live client lives on the previous
+        # operator's panel; we have nothing to rotate. Ownership transfer is
+        # still allowed (the user must migrate it to gain a managed link).
+        return True
+    if not xui_record.inbound or not xui_record.inbound.server:
+        logger.warning("transfer: sub %s has an xui_client with no inbound/server", sub.id)
+        return False
+
+    server_obj = xui_record.inbound.server
+    if server_obj.health_status == "deleted" or not server_obj.is_active:
+        logger.warning("transfer: sub %s server is down/deleted — cannot rotate", sub.id)
+        return False
+
+    import uuid as _uuid
+    from schemas.internal.xui import XUIClient
+    from services.xui.runtime import (
+        build_sub_link,
+        create_xui_client_for_server,
+        ensure_inbound_server_loaded,
+    )
+
+    new_uuid = str(_uuid.uuid4())
+    new_sub_id = _uuid.uuid4().hex[:16]
+    expiry_ms = int(sub.ends_at.timestamp() * 1000) if sub.ends_at else 0
+    security_settings = await AppSettingsRepository(session).get_service_security_settings()
+
+    # The URL path addresses the client by its CURRENT id; the body carries
+    # the NEW identity.
+    old_client_id = xui_record.xui_client_remote_id or xui_record.client_uuid
+    if not old_client_id:
+        logger.warning("transfer: sub %s xui_client has no addressable id", sub.id)
+        return False
+
+    updated_client = XUIClient(
+        id=new_uuid,
+        uuid=new_uuid,
+        email=xui_record.email,
+        limitIp=security_settings.xui_limit_ip,
+        totalGB=sub.volume_bytes,
+        expiryTime=expiry_ms,
+        enable=xui_record.is_active,
+        subId=new_sub_id,
+        comment=xui_record.username or "",
+    )
+
+    try:
+        server = ensure_inbound_server_loaded(xui_record.inbound)
+        async with create_xui_client_for_server(server) as xui_client:
+            await xui_client.update_client(
+                inbound_id=xui_record.inbound.xui_inbound_remote_id,
+                client_id=old_client_id,
+                client=updated_client,
+            )
+        new_sub_link = build_sub_link(server, new_sub_id)
+        xui_record.client_uuid = new_uuid
+        xui_record.xui_client_remote_id = new_uuid
+        xui_record.sub_link = new_sub_link
+        sub.sub_link = new_sub_link
+        await session.flush()
+        return True
+    except Exception as exc:
+        logger.error("transfer: failed to rotate identity for sub %s: %s", sub.id, exc, exc_info=True)
+        return False
 
 
 class TransferStates(StatesGroup):
@@ -192,15 +274,36 @@ async def transfer_confirmed(
 
     sub = await session.scalar(
         select(Subscription)
-        .options(selectinload(Subscription.xui_client))
+        .options(
+            selectinload(Subscription.xui_client)
+            .selectinload(XUIClientRecord.inbound)
+            .selectinload(XUIInboundRecord.server)
+            .selectinload(XUIServerRecord.credentials),
+        )
         .where(
             Subscription.id == UUID(sub_id_str),
             Subscription.user_id == sender.id,
             Subscription.status.in_(["active", "pending_activation"]),
         )
+        .with_for_update()
     )
     if sub is None:
         await safe_edit_or_send(callback, "❌ سرویس معتبر برای انتقال یافت نشد.")
+        return
+
+    # ── Rotate the config's identity on the panel so the SENDER's existing
+    # links stop working. The confirm screen promised "دسترسی شما حذف می‌شود"
+    # — without rotating the UUID/sub_id the original owner keeps a fully
+    # working vless link (a sharing/abuse vector). We rotate exactly like the
+    # "change link" action does. For imported_legacy subs there's no panel
+    # client on our side (xui_client is None) — nothing to rotate, so we just
+    # reassign ownership (their link lives on the old operator's panel).
+    if not await _rotate_config_identity_for_transfer(session, sub):
+        await safe_edit_or_send(
+            callback,
+            "❌ انتقال انجام نشد: تغییر لینک کانفیگ روی سرور ناموفق بود. "
+            "ممکن است سرور موقتاً در دسترس نباشد — بعداً دوباره تلاش کنید.",
+        )
         return
 
     # Transfer ownership

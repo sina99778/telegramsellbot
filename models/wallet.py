@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Numeric, String, Text, text as _sa_text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -57,6 +57,25 @@ class Wallet(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 class WalletTransaction(UUIDPrimaryKeyMixin, Base):
     __tablename__ = "wallet_transactions"
+    __table_args__ = (
+        # Defence-in-depth against double-crediting a gateway payment. The
+        # primary guard is the FOR UPDATE lock + payment.actually_paid flag in
+        # process_successful_payment; this partial UNIQUE index makes a second
+        # deposit-credit for the same payment a hard DB error instead of silent
+        # money loss. Scoped tightly so it never touches the renewal DEBIT
+        # (type='renewal'), refunds (type='refund'), or admin credits — only
+        # the one "deposit credit per payment" row. Mirrored for existing DBs
+        # by scripts/migrations/004_wallet_tx_unique_credit.py.
+        Index(
+            "uq_wallet_tx_payment_deposit_credit",
+            "reference_id",
+            unique=True,
+            postgresql_where=_sa_text(
+                "reference_type = 'payment' AND \"type\" = 'deposit' "
+                "AND direction = 'credit' AND reference_id IS NOT NULL"
+            ),
+        ),
+    )
 
     wallet_id: Mapped[UUID] = mapped_column(
         ForeignKey("wallets.id", ondelete="CASCADE"),
