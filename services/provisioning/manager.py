@@ -957,220 +957,45 @@ class ProvisioningManager:
         xui = None
         last_dup_exc: Exception | None = None
 
-        # ── Recover volume + expiry + UUID from the target X-UI panel ──
+        # ── Recover real volume + expiry (best-effort, bounded) ─────────
         #
-        # The legacy bot's import dropped the volume column on the floor
-        # (different schemas across forks), so `sub.volume_bytes` is 0
-        # for most imported subs. But the ORIGINAL client probably still
-        # exists on the target inbound (same panel the legacy operator
-        # used). We look it up by email==legacy_remark and pull its
-        # `totalGB` + `expiryTime` so the migrated config keeps the user's
-        # real quota — AND we delete the original on the panel so the
-        # operator doesn't end up with two clients sharing one identity.
+        # Imports done before the smart-parser fix stored `volume_bytes=0`.
+        # The AUTHORITATIVE fix is re-running the legacy import (the parser
+        # now reads the volume column correctly and UPDATEs existing rows).
         #
-        # Best-effort: if any step fails, we fall back to creating a
-        # fresh client with the existing (possibly zero) volume. The
-        # retry-with-suffix loop below still handles Duplicate email.
-        async def _adopt_existing_client_if_any() -> tuple[int | None, int | None, str | None]:
-            """Returns (recovered_total_bytes, recovered_expiry_ms, deleted_uuid).
-
-            Whole call is wrapped in a 25-second asyncio timeout so a slow or
-            hung X-UI panel doesn't block the migration indefinitely. All
-            steps log loudly so silent hangs become visible in the bot logs.
-            """
-            import asyncio as _asyncio
-            import json as _json
-            target_remote_id = target_inbound.xui_inbound_remote_id
-
-            async def _run() -> tuple[int | None, int | None, str | None]:
-                logger.info("[ADOPT] opening X-UI session for %s", target_server.name)
-                async with self._get_xui_client_for_server(target_server) as xui_api:
-                    logger.info("[ADOPT] listing inbounds...")
-                    inbounds_list = await xui_api.get_inbounds()
-                    logger.info("[ADOPT] got %d inbounds", len(inbounds_list))
-
-                    existing: dict | None = None
-                    for ib in inbounds_list:
-                        if ib.id != target_remote_id:
-                            continue
-                        ib_settings = ib.settings or {}
-                        if isinstance(ib_settings, str):
-                            try:
-                                ib_settings = _json.loads(ib_settings)
-                            except Exception:
-                                ib_settings = {}
-                        clients = ib_settings.get("clients") or []
-                        logger.info("[ADOPT] target inbound has %d clients — searching for email=%r", len(clients), remark)
-                        for client in clients:
-                            if str(client.get("email") or "") == remark:
-                                existing = client
-                                break
-                        break
-
-                    if not existing:
-                        logger.info("[ADOPT] no existing client with that email — fresh migration path")
-                        return None, None, None
-
-                    recovered_total = existing.get("totalGB")
-                    recovered_expiry = existing.get("expiryTime")
-                    client_id_to_delete = (
-                        existing.get("id") or existing.get("uuid") or existing.get("email")
-                    )
-                    logger.info(
-                        "[ADOPT] found existing client — totalGB=%s expiryTime=%s id=%s",
-                        recovered_total, recovered_expiry, client_id_to_delete,
-                    )
-
-                    if client_id_to_delete:
-                        logger.info("[ADOPT] deleting existing client %s", client_id_to_delete)
-                        try:
-                            await xui_api.delete_client(
-                                inbound_id=target_remote_id,
-                                client_id=str(client_id_to_delete),
-                            )
-                            logger.info("[ADOPT] deleted existing client %s", client_id_to_delete)
-                        except Exception as del_exc:
-                            logger.warning(
-                                "[ADOPT] could not delete existing client %s — falling back to suffix retry: %s",
-                                client_id_to_delete, del_exc,
-                            )
-                            client_id_to_delete = None
-                return (
-                    int(recovered_total) if recovered_total is not None else None,
-                    int(recovered_expiry) if recovered_expiry is not None else None,
-                    client_id_to_delete,
-                )
-
-            try:
-                return await _asyncio.wait_for(_run(), timeout=25.0)
-            except _asyncio.TimeoutError:
-                logger.warning(
-                    "[ADOPT] X-UI lookup/delete timed out after 25 s — falling through to fresh migration"
-                )
-                return None, None, None
-            except Exception as exc:
-                logger.warning(
-                    "[ADOPT] X-UI lookup/delete failed (%s: %s) — falling through to fresh migration",
-                    type(exc).__name__, exc,
-                )
-                return None, None, None
-
-        # ── First, try the legacy sub-link itself ───────────────────────
-        # Even when the legacy panel is on a DIFFERENT host from our target
-        # (which is the common case — operator usually points the new bot
-        # at a fresh inbound), the legacy sub-link still responds with the
-        # standard `subscription-userinfo` HTTP header that V2RayN and
-        # every other v2ray client uses to render quota/expiry. Parse it
-        # to recover the real volume + expiry without needing creds for
-        # the legacy panel.
-        async def _fetch_from_legacy_sublink() -> tuple[int | None, int | None]:
-            """Read total + expire from `subscription-userinfo` HTTP header
-            on the legacy sub-link.
-
-            Pick the FIRST candidate that looks like an HTTP(S) URL.
-            `sub.legacy_link` is often a vless:// URI (the raw config),
-            which we can't fetch — `sub.sub_link` is usually the http://
-            subscription endpoint, which is what we actually want.
-            """
-            import asyncio as _asyncio
-            import httpx as _httpx
-
-            candidates = [sub.sub_link, sub.legacy_link]
-            link: str | None = None
-            for c in candidates:
-                if not c:
-                    continue
-                cl = c.strip()
-                if cl.startswith(("http://", "https://")):
-                    link = cl
-                    break
-                else:
-                    logger.info("[SUBINFO] skipping non-HTTP candidate: %s", cl[:80])
-            if not link:
-                logger.info("[SUBINFO] no HTTP sub-link to fetch — skipping recovery")
-                return None, None
-
-            async def _do() -> tuple[int | None, int | None]:
-                logger.info("[SUBINFO] fetching legacy sub-link: %s", link)
-                async with _httpx.AsyncClient(
-                    timeout=_httpx.Timeout(10.0, connect=5.0),
-                    follow_redirects=True,
-                    verify=False,  # legacy panels often have self-signed certs
-                ) as client:
-                    resp = await client.get(link, headers={"User-Agent": "v2rayN/6.0"})
-                # X-UI uses `subscription-userinfo`; some forks emit the
-                # title-cased variant. Match either.
-                userinfo = None
-                for hk, hv in resp.headers.items():
-                    if hk.lower() == "subscription-userinfo":
-                        userinfo = hv
-                        break
-                if not userinfo:
-                    logger.info("[SUBINFO] no subscription-userinfo header on legacy sub-link")
-                    return None, None
-                logger.info("[SUBINFO] subscription-userinfo: %s", userinfo)
-                parsed: dict[str, int] = {}
-                for chunk in userinfo.split(";"):
-                    if "=" not in chunk:
-                        continue
-                    k, v = chunk.strip().split("=", 1)
-                    try:
-                        parsed[k.strip().lower()] = int(v.strip())
-                    except ValueError:
-                        continue
-                total = parsed.get("total")
-                expire_s = parsed.get("expire")
-                # `expire` is in seconds (X-UI convention); X-UI client
-                # `expiryTime` is in milliseconds — convert.
-                expire_ms = expire_s * 1000 if expire_s and expire_s > 0 else None
-                return total, expire_ms
-
-            try:
-                return await _asyncio.wait_for(_do(), timeout=12.0)
-            except _asyncio.TimeoutError:
-                logger.warning("[SUBINFO] timed out reading legacy sub-link")
-                return None, None
-            except Exception as exc:
-                logger.warning("[SUBINFO] could not parse legacy sub-link: %s: %s", type(exc).__name__, exc)
-                return None, None
-
-        sublink_total, sublink_expire_ms = await _fetch_from_legacy_sublink()
-        if sublink_total is not None and sublink_total > 0 and remaining_bytes == 0:
-            remaining_bytes = sublink_total
-            sub.volume_bytes = sublink_total
-            logger.info("[SUBINFO] recovered volume %d bytes from legacy sub-link header", sublink_total)
-        if sublink_expire_ms is not None and sublink_expire_ms > 0 and sub.ends_at is None:
+        # As a lightweight secondary path, if the sub still has an HTTP
+        # subscription link we read its standard `subscription-userinfo`
+        # header to recover total + expire. This is fully bounded (12s
+        # asyncio timeout) and skips vless:// links instantly.
+        #
+        # We deliberately DO NOT call get_inbounds() on the target panel:
+        # on a panel with thousands of clients that response is huge and
+        # parsing it synchronously blocks the bot event loop — that was the
+        # "bot went silent / locked up" hang the operator reported.
+        r_total, r_expire_ms = await self._recover_from_sublink_header(sub)
+        if r_total and r_total > 0 and remaining_bytes == 0:
+            remaining_bytes = r_total
+            sub.volume_bytes = r_total
+            logger.info("[SUBINFO] recovered volume %d bytes from sub-link header", r_total)
+        if r_expire_ms and r_expire_ms > 0 and sub.ends_at is None:
             from datetime import datetime as _dt2, timezone as _tz2
             try:
-                sub.ends_at = _dt2.fromtimestamp(sublink_expire_ms / 1000, tz=_tz2.utc)
-                expiry_ms = sublink_expire_ms
-                logger.info("[SUBINFO] recovered expiry %d (ms) from legacy sub-link header", sublink_expire_ms)
+                sub.ends_at = _dt2.fromtimestamp(r_expire_ms / 1000, tz=_tz2.utc)
+                expiry_ms = r_expire_ms
+                logger.info("[SUBINFO] recovered expiry %d (ms) from sub-link header", r_expire_ms)
             except (OSError, OverflowError, ValueError):
                 pass
 
-        # ── Then, try the target panel (in case both are the same host) ─
-        recovered_total, recovered_expiry, deleted_existing_uuid = await _adopt_existing_client_if_any()
-
-        if recovered_total is not None and recovered_total > 0 and remaining_bytes == 0:
-            # Recovered the real quota from the panel — this is what the
-            # user actually has, NOT "unlimited".
-            remaining_bytes = recovered_total
-            sub.volume_bytes = recovered_total
-            logger.info(
-                "Imported-migration: recovered volume %d bytes from X-UI panel",
-                recovered_total,
+        # Guard: NEVER silently provision an UNLIMITED client for an
+        # imported sub whose volume we couldn't determine. On X-UI,
+        # totalGB=0 means unlimited — a financial loss for the operator.
+        # Point them at the bulk fix (re-import) instead of guessing.
+        if remaining_bytes <= 0:
+            raise MigrationError(
+                "حجم این کانفیگ نامشخص است (۰). برای جلوگیری از ساخت کانفیگ نامحدود، "
+                "اول از «پنل مدیریت ← تنظیمات ← ایمپورت دیتابیس ربات قبلی» همان فایل بکاپ را "
+                "دوباره بفرست تا حجم همه‌ی کانفیگ‌های واردشده اصلاح شود، بعد دوباره انتقال بزن."
             )
-        if recovered_expiry is not None and recovered_expiry > 0 and sub.ends_at is None:
-            from datetime import datetime as _dt, timezone as _tz
-            try:
-                sub.ends_at = _dt.fromtimestamp(recovered_expiry / 1000, tz=_tz.utc)
-                expiry_ms = recovered_expiry
-                logger.info(
-                    "Imported-migration: recovered expiry %d (ms) from X-UI panel",
-                    recovered_expiry,
-                )
-            except (OSError, OverflowError, ValueError):
-                pass
 
         # Snapshot every `sub` column we read inside the retry loop, so
         # we never have to access them again after a savepoint rollback
@@ -1307,6 +1132,71 @@ class ProvisioningManager:
             new_inbound_label=new_inbound_label,
             remaining_bytes=remaining_bytes,
         )
+
+    async def _recover_from_sublink_header(self, sub: "Subscription") -> tuple[int | None, int | None]:
+        """Best-effort: read total + expire from the `subscription-userinfo`
+        HTTP header on the sub's subscription link.
+
+        Returns (total_bytes, expire_ms) — either may be None. Fully
+        bounded by a 12s asyncio timeout; never raises. Picks the first
+        candidate that is an HTTP(S) URL (a vless:// URI can't be fetched
+        and is skipped instantly).
+        """
+        import asyncio as _asyncio
+        import httpx as _httpx
+
+        link: str | None = None
+        for candidate in (sub.sub_link, sub.legacy_link):
+            if not candidate:
+                continue
+            c = candidate.strip()
+            if c.startswith(("http://", "https://")):
+                link = c
+                break
+            logger.info("[SUBINFO] skipping non-HTTP candidate: %s", c[:80])
+        if not link:
+            logger.info("[SUBINFO] no HTTP sub-link to read — relying on DB volume / re-import")
+            return None, None
+
+        async def _do() -> tuple[int | None, int | None]:
+            logger.info("[SUBINFO] fetching sub-link: %s", link)
+            async with _httpx.AsyncClient(
+                timeout=_httpx.Timeout(10.0, connect=5.0),
+                follow_redirects=True,
+                verify=False,  # legacy panels frequently use self-signed certs
+            ) as client:
+                resp = await client.get(link, headers={"User-Agent": "v2rayN/6.0"})
+            userinfo = None
+            for hk, hv in resp.headers.items():
+                if hk.lower() == "subscription-userinfo":
+                    userinfo = hv
+                    break
+            if not userinfo:
+                logger.info("[SUBINFO] no subscription-userinfo header present")
+                return None, None
+            logger.info("[SUBINFO] subscription-userinfo: %s", userinfo)
+            parsed: dict[str, int] = {}
+            for chunk in userinfo.split(";"):
+                if "=" not in chunk:
+                    continue
+                k, v = chunk.strip().split("=", 1)
+                try:
+                    parsed[k.strip().lower()] = int(v.strip())
+                except ValueError:
+                    continue
+            total = parsed.get("total")
+            expire_s = parsed.get("expire")
+            expire_ms = expire_s * 1000 if expire_s and expire_s > 0 else None
+            return total, expire_ms
+
+        try:
+            return await _asyncio.wait_for(_do(), timeout=12.0)
+        except _asyncio.TimeoutError:
+            logger.warning("[SUBINFO] sub-link read timed out (12s)")
+            return None, None
+        except Exception as exc:
+            logger.warning("[SUBINFO] sub-link read failed: %s: %s", type(exc).__name__, exc)
+            return None, None
 
     async def _disable_xui_client(
         self,

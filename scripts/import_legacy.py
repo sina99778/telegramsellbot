@@ -792,6 +792,39 @@ async def run(dump_path: Path, dry_run: bool, limit: int) -> ImportStats:
     logger.info("Parsed tables: %s",
                 ", ".join(f"{t}={len(rows)}" for t, (_, rows) in by_table.items()))
 
+    # ── Schema diagnostics ───────────────────────────────────────────────
+    # Print the FULL column list + a sample row of orders_list so we can see
+    # exactly what the legacy dump calls each field. When volume lands at 0
+    # after an import, this is what tells us which column actually holds the
+    # quota (so we can add it to _VOLUME_COLUMNS if it's a name we don't
+    # already recognise).
+    if "orders_list" in by_table:
+        cols, rows = by_table["orders_list"]
+        logger.info("[SCHEMA] orders_list columns (%d): %s", len(cols), ", ".join(cols))
+        # Find the first row whose status==1 (a real provisioned order) for
+        # the sample, falling back to the very first row.
+        sample = None
+        try:
+            status_idx = cols.index("status") if "status" in cols else None
+        except ValueError:
+            status_idx = None
+        for r in rows:
+            if status_idx is not None and status_idx < len(r):
+                if str(r[status_idx]).strip() == "1":
+                    sample = r
+                    break
+        if sample is None and rows:
+            sample = rows[0]
+        if sample is not None:
+            sample_dict = dict(zip(cols, sample))
+            # Truncate long values (e.g. the vless link JSON) so the log
+            # stays readable.
+            preview = {
+                k: (str(v)[:60] + "…" if v is not None and len(str(v)) > 60 else v)
+                for k, v in sample_dict.items()
+            }
+            logger.info("[SCHEMA] orders_list sample row: %s", preview)
+
     stats = ImportStats()
     async with AsyncSessionFactory() as session:
         toman_rate = await AppSettingsRepository(session).get_toman_rate()
