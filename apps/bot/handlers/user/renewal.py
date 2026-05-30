@@ -286,9 +286,14 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
             text="💳 درگاه ریالی (تتراپی)",
             callback_data=RenewPayCallback(m="t", s=sub_id.hex, t=(renew_type[:1] or "v"), a=str(amount)).pack()
         )
+    if gw.card_to_card_enabled and (gw.cards or gw.card_number):
+        builder.button(
+            text="💵 کارت به کارت",
+            callback_data=RenewPayCallback(m="c", s=sub_id.hex, t=(renew_type[:1] or "v"), a=str(amount)).pack()
+        )
     if gw.tronado_enabled:
         builder.button(
-            text="درگاه ترونادو",
+            text="🪙 درگاه ترونادو",
             callback_data=RenewPayCallback(m="tr", s=sub_id.hex, t=(renew_type[:1] or "v"), a=str(amount)).pack()
         )
     if gw.nowpayments_enabled:
@@ -847,6 +852,97 @@ async def renew_pay_manual(
 
     from apps.bot.handlers.user.topup import topup_pay_manual
     await topup_pay_manual(callback, state, session)
+
+
+@router.callback_query(RenewPayCallback.filter(F.m == "c"))
+async def renew_pay_card(
+    callback: CallbackQuery,
+    callback_data: RenewPayCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Pay a renewal via card-to-card.
+
+    Creates a `direct_renewal` card payment (so the renewal is applied
+    automatically on approval, exactly like the gateway renewals) and reuses
+    the purchase flow's card-receipt handler — the user uploads the receipt,
+    an admin approves, and process_successful_payment renews the sub.
+    """
+    if callback.from_user is None:
+        return
+    await callback.answer()
+
+    rd = await _get_renewal_data(callback_data, session, callback.from_user.id)
+    if rd is None:
+        await safe_edit_or_send(callback, "❌ اطلاعات تمدید نامعتبر است.")
+        return
+
+    user = rd["user"]
+    price = rd["price"]
+
+    settings_repo = AppSettingsRepository(session)
+    gw = await settings_repo.get_gateway_settings()
+    from services.card_payments import pick_card, compute_unique_toman
+    card = pick_card(gw)
+    if not gw.card_to_card_enabled or card is None:
+        await safe_edit_or_send(callback, "پرداخت کارت به کارت در حال حاضر فعال نیست.")
+        return
+
+    toman_rate = await settings_repo.get_toman_rate()
+    if not toman_rate or toman_rate <= 0:
+        await safe_edit_or_send(callback, "❌ نرخ تبدیل تومان تنظیم نشده.")
+        return
+
+    base_toman = int((price * toman_rate).quantize(Decimal("1")))
+    # Per-payer unique amount so the operator can auto-confirm by exact amount.
+    toman_amount = await compute_unique_toman(session, base_toman, gw.card_amount_jitter_toman)
+
+    from models.payment import Payment
+    payment = Payment(
+        user_id=user.id,
+        provider="card_to_card",
+        kind="direct_renewal",
+        order_id=str(uuid4()),
+        payment_status="waiting_receipt",
+        pay_currency="IRT",
+        price_currency="USD",
+        price_amount=price,
+        pay_amount=Decimal(toman_amount),
+        callback_payload={
+            "purpose": "renewal",
+            "sub_id": str(rd["sub_id"]),
+            "renew_type": rd["renew_type"],
+            "renew_amount": rd["amount"],
+            "card_number": card["number"],
+            "card_holder": card["holder"],
+            "card_bank": card.get("bank"),
+            "base_toman": base_toman,
+            "jittered": toman_amount != base_toman,
+        },
+    )
+    session.add(payment)
+    await session.flush()
+
+    # Reuse the purchase card-receipt flow (state + handler are kind-agnostic).
+    from apps.bot.states.purchase import PurchaseStates
+    await state.set_state(PurchaseStates.waiting_for_card_receipt)
+    await state.update_data(card_payment_id=str(payment.id))
+
+    card_lines = [
+        "💵 پرداخت کارت به کارت (تمدید سرویس)",
+        "",
+        f"مبلغ <b>دقیق</b>: <b>{toman_amount:,}</b> تومان",
+        f"شماره کارت: <code>{card['number']}</code>",
+        f"نام صاحب کارت: {card['holder']}",
+    ]
+    if card.get("bank"):
+        card_lines.append(f"بانک: {card['bank']}")
+    if toman_amount != base_toman:
+        card_lines.append("⚠️ لطفاً <b>دقیقاً</b> همین مبلغ را واریز کن (مبلغ مخصوص حساب توست).")
+    if gw.card_note:
+        card_lines.extend(["", gw.card_note])
+    card_lines.extend(["", "بعد از پرداخت، عکس رسید را همینجا ارسال کنید."])
+    await safe_edit_or_send(callback, "\n".join(card_lines), parse_mode="HTML")
 
 
 # ─── Partial-payment routes (wallet + gateway split) ─────────────────────────

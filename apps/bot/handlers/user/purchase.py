@@ -529,13 +529,13 @@ async def _show_payment_method_choice(
     if gw.tetrapay_enabled:
         builder.button(text="💳 درگاه ریالی (تتراپی)", callback_data="purchase:pay:tetrapay")
     if gw.tronado_enabled:
-        builder.button(text="درگاه ترونادو", callback_data="purchase:pay:tronado")
+        builder.button(text="🪙 درگاه ترونادو", callback_data="purchase:pay:tronado")
     if gw.nowpayments_enabled:
         builder.button(text="💎 درگاه ارزی (NOWPayments)", callback_data="purchase:pay:gateway")
     if gw.manual_crypto_enabled and (gw.manual_crypto_wallets or gw.manual_crypto_address):
         builder.button(text="💰 پرداخت به ولت (دستی)", callback_data="purchase:pay:manual")
     if gw.card_to_card_enabled and (gw.cards or gw.card_number):
-        builder.button(text="کارت به کارت", callback_data="purchase:pay:card")
+        builder.button(text="💵 کارت به کارت", callback_data="purchase:pay:card")
     builder.button(text=Buttons.BACK, callback_data="purchase:cancel")
     builder.adjust(1)
 
@@ -922,9 +922,11 @@ async def purchase_card_receipt_submitted(
     await session.flush()
     await state.clear()
 
-    await message.answer(
-        "رسید شما ثبت شد و برای مدیر ارسال شد. بعد از تایید، کانفیگ به صورت خودکار ارسال می‌شود."
-    )
+    if payload.get("purpose") == "renewal":
+        confirm_text = "رسید شما ثبت شد و برای مدیر ارسال شد. بعد از تایید، تمدید به صورت خودکار اعمال می‌شود."
+    else:
+        confirm_text = "رسید شما ثبت شد و برای مدیر ارسال شد. بعد از تایید، کانفیگ به صورت خودکار ارسال می‌شود."
+    await message.answer(confirm_text)
     await _notify_admins_about_card_purchase(message, session, payment, receipt_file_id)
 
 
@@ -947,18 +949,36 @@ async def _notify_admins_about_card_purchase(
     result = await session.execute(sel(User.telegram_id).where(User.role.in_(["admin", "owner"])))
     admin_ids.update(result.scalars().all())
 
+    is_renewal = payload.get("purpose") == "renewal"
     builder = InlineKeyboardBuilder()
-    builder.button(text="تایید و تحویل کانفیگ", callback_data=f"mp:ok:{payment.id}")
-    builder.button(text="رد پرداخت", callback_data=f"mp:no:{payment.id}")
+    builder.button(
+        text="✅ تایید و تمدید" if is_renewal else "✅ تایید و تحویل کانفیگ",
+        callback_data=f"mp:ok:{payment.id}",
+    )
+    builder.button(text="❌ رد پرداخت", callback_data=f"mp:no:{payment.id}")
     builder.adjust(1)
 
+    from html import escape as _esc
+    user_name = _esc(user.first_name) if user and user.first_name else "-"
+    if is_renewal:
+        title = "💵 درخواست تمدید (کارت به کارت)"
+        details = (
+            f"سرویس: <code>{_esc(str(payload.get('sub_id', '-')))}</code>\n"
+            f"نوع تمدید: {'حجم' if payload.get('renew_type') == 'volume' else 'زمان'}\n"
+            f"مقدار: {_esc(str(payload.get('renew_amount', '-')))}\n"
+        )
+    else:
+        title = "💵 درخواست کارت به کارت"
+        details = (
+            f"پلن: {_esc(str(payload.get('plan_id', '-')))}\n"
+            f"نام کانفیگ: {_esc(str(payload.get('config_name', '-')))}\n"
+        )
     caption = (
-        "درخواست کارت به کارت\n\n"
-        f"کاربر: {user.first_name if user else '-'}\n"
+        f"{title}\n\n"
+        f"کاربر: {user_name}\n"
         f"Telegram ID: <code>{message.from_user.id}</code>\n"
         f"مبلغ: <b>{payment.pay_amount:,.0f} تومان</b>\n"
-        f"پلن: {payload.get('plan_id')}\n"
-        f"نام کانفیگ: {payload.get('config_name', '-')}\n\n"
+        f"{details}\n"
         "بعد از بررسی رسید، تایید یا رد کنید."
     )
 
