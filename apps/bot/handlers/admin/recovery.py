@@ -14,8 +14,11 @@ import logging
 from decimal import Decimal
 from uuid import UUID
 
+from html import escape as _esc
+
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.filters import Command
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -23,6 +26,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select, func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+
+from models.xui import XUIServerRecord
 
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.utils.messaging import safe_edit_or_send
@@ -117,6 +122,10 @@ async def recovery_main_menu(callback: CallbackQuery, session: AsyncSession) -> 
     builder.button(
         text="🔍 جستجوی سراسری",
         callback_data="admin:search",
+    )
+    builder.button(
+        text="🔧 اصلاح حجم کانفیگ‌های منتقل‌شده",
+        callback_data="fixvol:check",
     )
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
     builder.adjust(1)
@@ -883,3 +892,136 @@ async def global_search_execute(
     builder.adjust(1)
 
     await message.answer(text, reply_markup=builder.as_markup())
+
+
+# ─── Migrated-config volume reconciliation (manual trigger + diagnostics) ─────
+#
+# Fixes configs migrated from the legacy bot that got their FULL volume back
+# (the bot didn't subtract what the user already used on the old client). This
+# command READS the panel, shows exactly what it found, and lets the admin
+# apply the fix with one tap. The computation is idempotent (it uses the OLD
+# client's own panel quota minus its usage), so it's safe to run repeatedly.
+
+
+def _gb(num: object) -> str:
+    try:
+        return f"{int(num) / (1024 ** 3):.2f}GB"
+    except (TypeError, ValueError):
+        return "?"
+
+
+def _format_fixvol_report(agg: dict, *, applied: bool) -> str:
+    head = (
+        "✅ اصلاح حجم کانفیگ‌های منتقل‌شده — اعمال شد"
+        if applied
+        else "🔧 بررسی حجم کانفیگ‌های منتقل‌شده (آزمایشی — هنوز اعمال نشده)"
+    )
+    lines = [
+        head,
+        "",
+        f"بررسی‌شده: <b>{agg['checked']}</b>",
+        ("اصلاح‌شده" if applied else "قابل اصلاح") + f": <b>{agg['fixed']}</b>",
+        f"کلاینت قدیمی پیدا نشد: <b>{agg['no_data']}</b>",
+    ]
+    fixes = [d for d in agg["details"] if d.get("result") in ("would_fix", "fixed")][:8]
+    if fixes:
+        lines.append("\n<b>نمونه اصلاحات:</b>")
+        for d in fixes:
+            lines.append(
+                f"• {_esc(str(d.get('remark', '-')))}: کل {_gb(d.get('old_total'))}، "
+                f"مصرف {_gb(d.get('old_used'))} ← باقی‌مانده {_gb(d.get('new_total'))}"
+            )
+    nodata = [d for d in agg["details"] if d.get("result") in ("no_old_client", "old_unlimited")][:6]
+    if nodata:
+        lines.append("\n<b>پیدا نشد (نمونه نام‌ها):</b>")
+        for d in nodata:
+            lines.append(f"• {_esc(str(d.get('remark', '-')))}")
+        if agg.get("panel_emails"):
+            lines.append("\n<b>نمونه نام/ایمیل کلاینت‌های روی پنل:</b>")
+            lines.append(_esc(", ".join(str(e) for e in agg["panel_emails"][:15])))
+            lines.append(
+                "\nاگر نام کانفیگ‌های بالا با ایمیل‌های پنل فرق دارد، یعنی مشکل از تطبیق نام است — "
+                "همین گزارش را برای پشتیبانی بفرست."
+            )
+    return "\n".join(lines)
+
+
+async def _run_fixvol(session: AsyncSession, *, apply: bool) -> dict:
+    from services.provisioning.manager import ProvisioningManager
+
+    servers = list(
+        (
+            await session.execute(
+                select(XUIServerRecord)
+                .options(selectinload(XUIServerRecord.credentials))
+                .where(XUIServerRecord.is_active.is_(True))
+            )
+        ).scalars().all()
+    )
+    manager = ProvisioningManager(session)
+    agg: dict = {"checked": 0, "fixed": 0, "no_data": 0, "skipped": 0, "details": [], "panel_emails": []}
+    for server in servers:
+        try:
+            res = await manager.reconcile_migrated_usage_for_server(
+                server, limit=2000, force=True, dry_run=not apply,
+            )
+            if apply:
+                await session.commit()
+            for k in ("checked", "fixed", "no_data", "skipped"):
+                agg[k] += res.get(k, 0)
+            agg["details"].extend(res.get("details", []))
+            if not agg["panel_emails"]:
+                agg["panel_emails"] = res.get("panel_emails", [])
+        except Exception as exc:
+            if apply:
+                await session.rollback()
+            logger.error("[FIXVOL] failed for server %s: %s", getattr(server, "name", server.id), exc, exc_info=True)
+    return agg
+
+
+def _fixvol_dryrun_keyboard(agg: dict) -> InlineKeyboardBuilder:
+    builder = InlineKeyboardBuilder()
+    if agg["fixed"] > 0:
+        builder.button(text=f"✅ اعمال روی {agg['fixed']} کانفیگ", callback_data="fixvol:apply")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:recovery")
+    builder.adjust(1)
+    return builder
+
+
+@router.message(Command("fixvol"))
+async def fixvol_command(message: Message, session: AsyncSession) -> None:
+    await message.answer("⏳ در حال خواندن پنل و بررسی کانفیگ‌های منتقل‌شده... (تا حدود یک دقیقه)")
+    agg = await _run_fixvol(session, apply=False)
+    await message.answer(
+        _format_fixvol_report(agg, applied=False),
+        reply_markup=_fixvol_dryrun_keyboard(agg).as_markup(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "fixvol:check")
+async def fixvol_check_callback(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer("⏳ در حال بررسی پنل...")
+    await safe_edit_or_send(callback, "⏳ در حال خواندن پنل و بررسی کانفیگ‌های منتقل‌شده... (تا حدود یک دقیقه)")
+    agg = await _run_fixvol(session, apply=False)
+    await safe_edit_or_send(
+        callback,
+        _format_fixvol_report(agg, applied=False),
+        reply_markup=_fixvol_dryrun_keyboard(agg).as_markup(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "fixvol:apply")
+async def fixvol_apply(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer("⏳ در حال اعمال...")
+    agg = await _run_fixvol(session, apply=True)
+    builder = InlineKeyboardBuilder()
+    builder.button(text=AdminButtons.BACK, callback_data="admin:recovery")
+    builder.adjust(1)
+    await safe_edit_or_send(
+        callback,
+        _format_fixvol_report(agg, applied=True),
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )

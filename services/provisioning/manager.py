@@ -1393,20 +1393,43 @@ class ProvisioningManager:
             return 0
 
     async def reconcile_migrated_usage_for_server(
-        self, server: XUIServerRecord, *, limit: int = 200,
-    ) -> dict[str, int]:
+        self,
+        server: XUIServerRecord,
+        *,
+        limit: int = 500,
+        force: bool = False,
+        dry_run: bool = False,
+    ) -> dict:
         """Backfill fix for configs migrated BEFORE the usage-subtraction fix.
 
-        Those configs were provisioned with their FULL purchased volume even
-        though the user had already consumed part of it on the old client. This
-        reads each migrated sub's OLD usage from the panel (one get_inbounds,
-        matched by email == legacy_remark on a DIFFERENT inbound than the new
-        client) and reduces both the panel quota and the DB volume to the true
-        remaining. Idempotent via `migration_usage_reconciled` and per-sub
-        savepoints. Returns {checked, fixed, no_data}.
+        Those were provisioned with their FULL purchased volume even though the
+        user had already consumed part of it on the old client. We find each
+        migrated config's OLD client on the panel (one get_inbounds, matched by
+        email == legacy_remark, case-insensitive, on a DIFFERENT inbound than
+        the new client) and set the NEW client's quota to the OLD client's REAL
+        remaining = old.totalGB - old.used.
+
+        IDEMPOTENT: the result is computed purely from the OLD client's frozen
+        panel counters (an absolute value), NOT from the current DB volume — so
+        re-running converges to the same correct value and can NEVER double-
+        subtract. Safe to run repeatedly / with force.
+
+        `force`   — ignore the reconciled marker and re-check every migrated sub.
+        `dry_run` — read + report only, change nothing (no panel write, no DB).
+
+        Returns a dict with counts + a `details` list (per-sub diagnostics) +
+        a `panel_emails` sample (to debug name mismatches).
         """
         import asyncio as _asyncio
         from collections import defaultdict
+
+        cond = [
+            Subscription.source.is_(None),
+            Subscription.legacy_remark.isnot(None),
+            XUIInboundRecord.server_id == server.id,
+        ]
+        if not force:
+            cond.append(Subscription.migration_usage_reconciled.is_(False))
 
         rows = await self.session.execute(
             select(Subscription)
@@ -1416,109 +1439,117 @@ class ProvisioningManager:
             )
             .join(XUIClientRecord, XUIClientRecord.subscription_id == Subscription.id)
             .join(XUIInboundRecord, XUIInboundRecord.id == XUIClientRecord.inbound_id)
-            .where(
-                Subscription.source.is_(None),
-                Subscription.legacy_remark.isnot(None),
-                Subscription.migration_usage_reconciled.is_(False),
-                XUIInboundRecord.server_id == server.id,
-            )
+            .where(*cond)
             .limit(limit)
         )
         subs = list(rows.scalars().all())
+        out: dict = {"checked": 0, "fixed": 0, "no_data": 0, "skipped": 0, "details": [], "panel_emails": []}
         if not subs:
-            return {"checked": 0, "fixed": 0, "no_data": 0}
+            return out
 
         global_ip_limit = (await AppSettingsRepository(self.session).get_service_security_settings()).xui_limit_ip
 
-        # ONE get_inbounds for the whole server; build email -> [(inbound_id, used)].
-        email_usage: dict[str, list[tuple[int, int]]] = defaultdict(list)
+        # ONE get_inbounds → map normalized-email -> [{inbound, total, used, email}].
+        clients_by_email: dict[str, list[dict]] = defaultdict(list)
 
         async def _load_map(api) -> None:
             inbounds = await api.get_inbounds()
             for ib in inbounds:
-                ib_remote_id = ib.id
                 for cs in (ib.client_stats or []):
                     if not isinstance(cs, dict):
                         continue
-                    email = str(cs.get("email") or "").strip()
-                    if not email:
+                    email_raw = str(cs.get("email") or "").strip()
+                    if not email_raw:
                         continue
-                    used = int(cs.get("up") or 0) + int(cs.get("down") or 0)
-                    if used > 0:
-                        email_usage[email].append((int(ib_remote_id), used))
+                    clients_by_email[email_raw.lower()].append({
+                        "inbound": int(ib.id),
+                        "total": int(cs.get("total") or 0),
+                        "used": int(cs.get("up") or 0) + int(cs.get("down") or 0),
+                        "email": email_raw,
+                    })
 
-        fixed = 0
-        no_data = 0
         async with self._get_xui_client_for_server(server) as api:
-            # get_inbounds can be large on a busy panel; bound it generously.
-            await _asyncio.wait_for(_load_map(api), timeout=60.0)
+            await _asyncio.wait_for(_load_map(api), timeout=90.0)
+            out["panel_emails"] = sorted(clients_by_email.keys())[:20]
 
             for sub in subs:
+                out["checked"] += 1
                 xc = sub.xui_client
                 if xc is None or xc.inbound is None:
+                    out["skipped"] += 1
                     continue
-                new_inbound_remote = xc.inbound.xui_inbound_remote_id
-                remark = (sub.legacy_remark or "").strip()
-                # Old usage = clients with this email on a DIFFERENT inbound than
-                # the freshly-migrated one (so we never count the new client).
-                old_used = sum(
-                    used for (ib_id, used) in email_usage.get(remark, [])
-                    if ib_id != new_inbound_remote
-                )
+                new_inbound = xc.inbound.xui_inbound_remote_id
+                remark_norm = (sub.legacy_remark or "").strip().lower()
+                # Old client = same email on a DIFFERENT inbound than the new
+                # one (never the migrated client). If several, take the one with
+                # the largest quota (the real original config).
+                candidates = [
+                    c for c in clients_by_email.get(remark_norm, [])
+                    if c["inbound"] != new_inbound
+                ]
+                old = max(candidates, key=lambda c: c["total"], default=None)
+                detail = {
+                    "remark": sub.legacy_remark,
+                    "new_email": xc.email,
+                }
+                if old is None or old["total"] <= 0:
+                    detail["result"] = "no_old_client" if old is None else "old_unlimited"
+                    out["no_data"] += 1
+                    # Deliberately do NOT mark reconciled here. If the old client
+                    # can't be matched (name mismatch / not yet readable), leaving
+                    # it unmarked means a later run (with a fix, or after the
+                    # operator renames) retries it — instead of permanently
+                    # "burning" the config as done-but-unfixed.
+                    out["details"].append(detail)
+                    continue
+
+                new_total = old["total"] - old["used"]
+                if new_total <= 0:
+                    new_total = 1  # depleted; never 0 == unlimited
+                detail.update({"old_total": old["total"], "old_used": old["used"], "new_total": new_total})
+                if dry_run:
+                    # Report only — touch neither the DB nor the panel.
+                    detail["result"] = "would_fix"
+                    out["fixed"] += 1
+                    out["details"].append(detail)
+                    continue
                 try:
                     async with self.session.begin_nested():
-                        if old_used > 0:
-                            total_purchased = int(sub.volume_bytes or 0)
-                            new_total = total_purchased - old_used
-                            if new_total <= 0:
-                                new_total = 1  # depleted; never 0 == unlimited
-                            sub.volume_bytes = new_total
-                            sub.lifetime_used_bytes = (sub.lifetime_used_bytes or 0) + old_used
-                            sub.migration_usage_reconciled = True
-                            await self.session.flush()
-
-                            client_id = xc.xui_client_remote_id or xc.client_uuid
-                            sub_id_str = ""
-                            link = sub.sub_link or xc.sub_link or ""
-                            if "/" in link:
-                                sub_id_str = link.rsplit("/", 1)[-1]
-                            ip_limit = (
-                                sub.plan.effective_ip_limit(global_ip_limit)
-                                if sub.plan is not None else global_ip_limit
-                            )
-                            expiry_ms = int(sub.ends_at.timestamp() * 1000) if sub.ends_at else 0
-                            payload = XUIClient(
-                                id=client_id,
-                                uuid=xc.client_uuid,
-                                email=xc.email,
-                                limitIp=ip_limit,
-                                totalGB=new_total,
-                                expiryTime=expiry_ms,
-                                enable=xc.is_active,
-                                subId=sub_id_str,
-                                comment=xc.username or "",
-                            )
-                            await api.update_client(
-                                inbound_id=new_inbound_remote,
-                                client_id=client_id,
-                                client=payload,
-                            )
-                            fixed += 1
-                            logger.info(
-                                "[MIGRATE-USAGE] reconciled sub=%s: old_used=%d, total=%d → new_total=%d",
-                                sub.id, old_used, total_purchased, new_total,
-                            )
-                        else:
-                            # Panel read succeeded but no legacy usage found for
-                            # this remark (old client already deleted, or it
-                            # genuinely used nothing). Mark done so we don't keep
-                            # rechecking it forever.
-                            sub.migration_usage_reconciled = True
-                            no_data += 1
+                        sub.volume_bytes = new_total
+                        sub.lifetime_used_bytes = max(int(sub.lifetime_used_bytes or 0), old["used"])
+                        sub.migration_usage_reconciled = True
+                        await self.session.flush()
+                        client_id = xc.xui_client_remote_id or xc.client_uuid
+                        sub_id_str = ""
+                        link = sub.sub_link or xc.sub_link or ""
+                        if "/" in link:
+                            sub_id_str = link.rsplit("/", 1)[-1]
+                        ip_limit = (
+                            sub.plan.effective_ip_limit(global_ip_limit)
+                            if sub.plan is not None else global_ip_limit
+                        )
+                        expiry_ms = int(sub.ends_at.timestamp() * 1000) if sub.ends_at else 0
+                        await api.update_client(
+                            inbound_id=new_inbound,
+                            client_id=client_id,
+                            client=XUIClient(
+                                id=client_id, uuid=xc.client_uuid, email=xc.email,
+                                limitIp=ip_limit, totalGB=new_total, expiryTime=expiry_ms,
+                                enable=xc.is_active, subId=sub_id_str, comment=xc.username or "",
+                            ),
+                        )
+                    detail["result"] = "fixed"
+                    out["fixed"] += 1
+                    logger.info(
+                        "[MIGRATE-USAGE] fixed sub=%s: old_total=%d old_used=%d → new=%d",
+                        sub.id, old["total"], old["used"], new_total,
+                    )
                 except Exception as exc:
+                    detail["result"] = f"error: {str(exc)[:80]}"
                     logger.warning("[MIGRATE-USAGE] failed to reconcile sub %s: %s", sub.id, exc)
+                out["details"].append(detail)
 
-        return {"checked": len(subs), "fixed": fixed, "no_data": no_data}
+        return out
 
     async def _recover_from_sublink_header(self, sub: "Subscription") -> tuple[int | None, int | None]:
         """Best-effort: read total + expire from the `subscription-userinfo`
