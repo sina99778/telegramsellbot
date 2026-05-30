@@ -923,6 +923,10 @@ def _format_fixvol_report(agg: dict, *, applied: bool) -> str:
         ("اصلاح‌شده" if applied else "قابل اصلاح") + f": <b>{agg['fixed']}</b>",
         f"کلاینت قدیمی پیدا نشد: <b>{agg['no_data']}</b>",
     ]
+    if agg.get("errors"):
+        lines.append("\n<b>⚠️ خطا حین اجرا:</b>")
+        for e in agg["errors"][:5]:
+            lines.append(f"• {_esc(str(e))}")
     fixes = [d for d in agg["details"] if d.get("result") in ("would_fix", "fixed")][:8]
     if fixes:
         lines.append("\n<b>نمونه اصلاحات:</b>")
@@ -959,7 +963,7 @@ async def _run_fixvol(session: AsyncSession, *, apply: bool) -> dict:
         ).scalars().all()
     )
     manager = ProvisioningManager(session)
-    agg: dict = {"checked": 0, "fixed": 0, "no_data": 0, "skipped": 0, "details": [], "panel_emails": []}
+    agg: dict = {"checked": 0, "fixed": 0, "no_data": 0, "skipped": 0, "details": [], "panel_emails": [], "errors": []}
     for server in servers:
         try:
             res = await manager.reconcile_migrated_usage_for_server(
@@ -976,6 +980,7 @@ async def _run_fixvol(session: AsyncSession, *, apply: bool) -> dict:
             if apply:
                 await session.rollback()
             logger.error("[FIXVOL] failed for server %s: %s", getattr(server, "name", server.id), exc, exc_info=True)
+            agg["errors"].append(f"{getattr(server, 'name', '?')}: {type(exc).__name__}: {str(exc)[:160]}")
     return agg
 
 
@@ -991,7 +996,12 @@ def _fixvol_dryrun_keyboard(agg: dict) -> InlineKeyboardBuilder:
 @router.message(Command("fixvol"))
 async def fixvol_command(message: Message, session: AsyncSession) -> None:
     await message.answer("⏳ در حال خواندن پنل و بررسی کانفیگ‌های منتقل‌شده... (تا حدود یک دقیقه)")
-    agg = await _run_fixvol(session, apply=False)
+    try:
+        agg = await _run_fixvol(session, apply=False)
+    except Exception as exc:
+        logger.error("[FIXVOL] dry-run crashed: %s", exc, exc_info=True)
+        await message.answer(f"❌ خطا: {type(exc).__name__}: {_esc(str(exc)[:300])}")
+        return
     await message.answer(
         _format_fixvol_report(agg, applied=False),
         reply_markup=_fixvol_dryrun_keyboard(agg).as_markup(),
@@ -1003,7 +1013,12 @@ async def fixvol_command(message: Message, session: AsyncSession) -> None:
 async def fixvol_check_callback(callback: CallbackQuery, session: AsyncSession) -> None:
     await callback.answer("⏳ در حال بررسی پنل...")
     await safe_edit_or_send(callback, "⏳ در حال خواندن پنل و بررسی کانفیگ‌های منتقل‌شده... (تا حدود یک دقیقه)")
-    agg = await _run_fixvol(session, apply=False)
+    try:
+        agg = await _run_fixvol(session, apply=False)
+    except Exception as exc:
+        logger.error("[FIXVOL] dry-run crashed: %s", exc, exc_info=True)
+        await safe_edit_or_send(callback, f"❌ خطا: {type(exc).__name__}: {_esc(str(exc)[:300])}")
+        return
     await safe_edit_or_send(
         callback,
         _format_fixvol_report(agg, applied=False),
@@ -1015,7 +1030,12 @@ async def fixvol_check_callback(callback: CallbackQuery, session: AsyncSession) 
 @router.callback_query(F.data == "fixvol:apply")
 async def fixvol_apply(callback: CallbackQuery, session: AsyncSession) -> None:
     await callback.answer("⏳ در حال اعمال...")
-    agg = await _run_fixvol(session, apply=True)
+    try:
+        agg = await _run_fixvol(session, apply=True)
+    except Exception as exc:
+        logger.error("[FIXVOL] apply crashed: %s", exc, exc_info=True)
+        await safe_edit_or_send(callback, f"❌ خطا: {type(exc).__name__}: {_esc(str(exc)[:300])}")
+        return
     builder = InlineKeyboardBuilder()
     builder.button(text=AdminButtons.BACK, callback_data="admin:recovery")
     builder.adjust(1)

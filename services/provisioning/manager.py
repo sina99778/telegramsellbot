@@ -1447,6 +1447,19 @@ class ProvisioningManager:
         if not subs:
             return out
 
+        # Re-fetch the server WITH credentials eager-loaded. build_xui_client_config
+        # reads server.credentials; if the caller passed a server without that
+        # relationship loaded, accessing it inside the async panel context would
+        # raise MissingGreenlet (a lazy load mid-await). Guarantee it here.
+        server = await self.session.scalar(
+            select(XUIServerRecord)
+            .options(selectinload(XUIServerRecord.credentials))
+            .where(XUIServerRecord.id == server.id)
+        )
+        if server is None or server.credentials is None:
+            out["skipped"] = len(subs)
+            return out
+
         global_ip_limit = (await AppSettingsRepository(self.session).get_service_security_settings()).xui_limit_ip
 
         # ONE get_inbounds → map normalized-email -> [{inbound, total, used, email}].
