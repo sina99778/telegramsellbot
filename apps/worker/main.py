@@ -33,6 +33,7 @@ from apps.worker.jobs.backup import run_backup
 from apps.worker.jobs.card_autoconfirm import run_card_autoconfirm
 from apps.worker.jobs.crypto_autoconfirm import run_crypto_autoconfirm
 from apps.worker.jobs.reconciliation import run_reconciliation
+from apps.worker.jobs.migration_usage import run_reconcile_migrated_usage
 from core.config import settings
 from core.database import AsyncSessionFactory
 
@@ -133,6 +134,17 @@ async def main() -> None:
         hour="*/3",
         minute=45,
         kwargs={"bot": bot},
+        max_instances=1,
+        coalesce=True,
+    )
+    # Backfill: for configs migrated BEFORE the usage-subtraction fix, subtract
+    # the volume the user already consumed on their old client. Runs every
+    # 15 min; cheap no-op once the backlog clears (it checks a pending count
+    # before touching the panel). Manages its own session — no bot kwarg.
+    scheduler.add_job(
+        run_reconcile_migrated_usage,
+        "interval",
+        minutes=15,
         max_instances=1,
         coalesce=True,
     )

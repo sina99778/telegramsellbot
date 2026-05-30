@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -69,6 +69,13 @@ class Subscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # full JSON arrays from old.orders_list.link can be long.
     legacy_link: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_usage_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # True once the imported→inbound migration has subtracted the volume the
+    # user already consumed on their OLD legacy client. NULL/false for native
+    # subs and for migrated subs created before this fix (the background
+    # backfill job, reconcile_migrated_usage, processes those and flips this).
+    migration_usage_reconciled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
     # User-attached label. Visible to the user on the my-configs list and to
     # the admin in the dashboard. Faoxima parity for `note` per-service.
     # Nullable so the column is harmless on the auto-sync migration path.
