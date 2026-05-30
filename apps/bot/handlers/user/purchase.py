@@ -166,12 +166,17 @@ async def show_available_plans(message: Message, session: AsyncSession, state: F
         await message.answer(Messages.NO_PLANS_AVAILABLE)
         return
 
+    settings_repo = AppSettingsRepository(session)
+    display_currency = await settings_repo.get_display_currency()
+    toman_rate = int(await settings_repo.get_toman_rate())
     await message.answer(
         Messages.CHOOSE_PLAN,
         reply_markup=build_plan_selection_keyboard(
             plans,
             stock_by_plan_id,
             include_custom_purchase=custom_available,
+            display_mode=display_currency,
+            toman_rate=toman_rate,
         ),
     )
 

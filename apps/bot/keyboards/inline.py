@@ -8,6 +8,7 @@ from uuid import UUID
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from core.formatting import format_money
 from core.texts import Buttons
 from models.plan import Plan
 
@@ -17,6 +18,8 @@ def build_plan_selection_keyboard(
     stock_by_plan_id: Mapping[UUID, object] | None = None,
     *,
     include_custom_purchase: bool = False,
+    display_mode: str = "USD",
+    toman_rate: int = 100000,
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
 
@@ -49,6 +52,8 @@ def build_plan_selection_keyboard(
                 volume_bytes=getattr(plan, "volume_bytes", 0),
                 duration_days=getattr(plan, "duration_days", 0),
                 recommended=recommended,
+                display_mode=display_mode,
+                toman_rate=toman_rate,
             ),
             callback_data=f"plan:select:{plan.id}",
         )
@@ -175,6 +180,8 @@ def _format_plan_button_text(
     volume_bytes: int = 0,
     duration_days: int = 0,
     recommended: bool = False,
+    display_mode: str = "USD",
+    toman_rate: int = 100000,
 ) -> str:
     """Plan button text: includes volume + duration so the user doesn't
     have to open the plan just to see what they're getting."""
@@ -189,7 +196,9 @@ def _format_plan_button_text(
             bits.append(f"{months} ماه")
         else:
             bits.append(f"{duration_days} روز")
-    bits.append(f"{price:.2f} {currency}")
+    # Render the price in the operator's chosen display currency (USD or Toman)
+    # so the plan list matches every other price the customer sees.
+    bits.append(format_money(price, mode=display_mode, toman_rate=toman_rate))
     summary = " • ".join(bits)
     prefix = "⭐ " if recommended else ""
     suffix = f" • {stock_label}" if stock_label else ""
