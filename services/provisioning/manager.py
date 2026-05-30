@@ -1422,30 +1422,9 @@ class ProvisioningManager:
         """
         import asyncio as _asyncio
         from collections import defaultdict
+        from sqlalchemy import update as _sa_update
 
-        cond = [
-            Subscription.source.is_(None),
-            Subscription.legacy_remark.isnot(None),
-            XUIInboundRecord.server_id == server.id,
-        ]
-        if not force:
-            cond.append(Subscription.migration_usage_reconciled.is_(False))
-
-        rows = await self.session.execute(
-            select(Subscription)
-            .options(
-                selectinload(Subscription.xui_client).selectinload(XUIClientRecord.inbound),
-                selectinload(Subscription.plan),
-            )
-            .join(XUIClientRecord, XUIClientRecord.subscription_id == Subscription.id)
-            .join(XUIInboundRecord, XUIInboundRecord.id == XUIClientRecord.inbound_id)
-            .where(*cond)
-            .limit(limit)
-        )
-        subs = list(rows.scalars().all())
         out: dict = {"checked": 0, "fixed": 0, "no_data": 0, "skipped": 0, "details": [], "panel_emails": []}
-        if not subs:
-            return out
 
         # Re-fetch the server WITH credentials eager-loaded. build_xui_client_config
         # reads server.credentials; if the caller passed a server without that
@@ -1457,7 +1436,44 @@ class ProvisioningManager:
             .where(XUIServerRecord.id == server.id)
         )
         if server is None or server.credentials is None:
-            out["skipped"] = len(subs)
+            return out
+
+        cond = [
+            Subscription.source.is_(None),
+            Subscription.legacy_remark.isnot(None),
+            XUIInboundRecord.server_id == server.id,
+        ]
+        if not force:
+            cond.append(Subscription.migration_usage_reconciled.is_(False))
+
+        # IMPORTANT: select COLUMNS, not ORM objects. Loading Subscription rows
+        # with relationships and then reading xc.inbound / sub.plan inside the
+        # async panel block is what raised MissingGreenlet (a lazy load mid
+        # await). Row tuples carry no relationships, so nothing can lazy-load.
+        rows = await self.session.execute(
+            select(
+                Subscription.id.label("sub_id"),
+                Subscription.legacy_remark,
+                Subscription.lifetime_used_bytes,
+                Subscription.ends_at,
+                Subscription.sub_link,
+                XUIClientRecord.client_uuid,
+                XUIClientRecord.xui_client_remote_id,
+                XUIClientRecord.email,
+                XUIClientRecord.username,
+                XUIClientRecord.is_active,
+                XUIClientRecord.sub_link.label("xc_sub_link"),
+                XUIInboundRecord.xui_inbound_remote_id.label("new_inbound"),
+                Plan.ip_limit.label("plan_ip_limit"),
+            )
+            .join(XUIClientRecord, XUIClientRecord.subscription_id == Subscription.id)
+            .join(XUIInboundRecord, XUIInboundRecord.id == XUIClientRecord.inbound_id)
+            .outerjoin(Plan, Plan.id == Subscription.plan_id)
+            .where(*cond)
+            .limit(limit)
+        )
+        subs = rows.all()
+        if not subs:
             return out
 
         global_ip_limit = (await AppSettingsRepository(self.session).get_service_security_settings()).xui_limit_ip
@@ -1485,14 +1501,10 @@ class ProvisioningManager:
             await _asyncio.wait_for(_load_map(api), timeout=90.0)
             out["panel_emails"] = sorted(clients_by_email.keys())[:20]
 
-            for sub in subs:
+            for r in subs:
                 out["checked"] += 1
-                xc = sub.xui_client
-                if xc is None or xc.inbound is None:
-                    out["skipped"] += 1
-                    continue
-                new_inbound = xc.inbound.xui_inbound_remote_id
-                remark_norm = (sub.legacy_remark or "").strip().lower()
+                new_inbound = r.new_inbound
+                remark_norm = (r.legacy_remark or "").strip().lower()
                 # Old client = same email on a DIFFERENT inbound than the new
                 # one (never the migrated client). If several, take the one with
                 # the largest quota (the real original config).
@@ -1501,18 +1513,10 @@ class ProvisioningManager:
                     if c["inbound"] != new_inbound
                 ]
                 old = max(candidates, key=lambda c: c["total"], default=None)
-                detail = {
-                    "remark": sub.legacy_remark,
-                    "new_email": xc.email,
-                }
+                detail = {"remark": r.legacy_remark, "new_email": r.email}
                 if old is None or old["total"] <= 0:
                     detail["result"] = "no_old_client" if old is None else "old_unlimited"
                     out["no_data"] += 1
-                    # Deliberately do NOT mark reconciled here. If the old client
-                    # can't be matched (name mismatch / not yet readable), leaving
-                    # it unmarked means a later run (with a fix, or after the
-                    # operator renames) retries it — instead of permanently
-                    # "burning" the config as done-but-unfixed.
                     out["details"].append(detail)
                     continue
 
@@ -1521,45 +1525,46 @@ class ProvisioningManager:
                     new_total = 1  # depleted; never 0 == unlimited
                 detail.update({"old_total": old["total"], "old_used": old["used"], "new_total": new_total})
                 if dry_run:
-                    # Report only — touch neither the DB nor the panel.
                     detail["result"] = "would_fix"
                     out["fixed"] += 1
                     out["details"].append(detail)
                     continue
                 try:
                     async with self.session.begin_nested():
-                        sub.volume_bytes = new_total
-                        sub.lifetime_used_bytes = max(int(sub.lifetime_used_bytes or 0), old["used"])
-                        sub.migration_usage_reconciled = True
-                        await self.session.flush()
-                        client_id = xc.xui_client_remote_id or xc.client_uuid
+                        await self.session.execute(
+                            _sa_update(Subscription)
+                            .where(Subscription.id == r.sub_id)
+                            .values(
+                                volume_bytes=new_total,
+                                lifetime_used_bytes=max(int(r.lifetime_used_bytes or 0), old["used"]),
+                                migration_usage_reconciled=True,
+                            )
+                        )
+                        client_id = r.xui_client_remote_id or r.client_uuid
                         sub_id_str = ""
-                        link = sub.sub_link or xc.sub_link or ""
+                        link = r.sub_link or r.xc_sub_link or ""
                         if "/" in link:
                             sub_id_str = link.rsplit("/", 1)[-1]
-                        ip_limit = (
-                            sub.plan.effective_ip_limit(global_ip_limit)
-                            if sub.plan is not None else global_ip_limit
-                        )
-                        expiry_ms = int(sub.ends_at.timestamp() * 1000) if sub.ends_at else 0
+                        ip_limit = int(r.plan_ip_limit) if r.plan_ip_limit is not None else global_ip_limit
+                        expiry_ms = int(r.ends_at.timestamp() * 1000) if r.ends_at else 0
                         await api.update_client(
                             inbound_id=new_inbound,
                             client_id=client_id,
                             client=XUIClient(
-                                id=client_id, uuid=xc.client_uuid, email=xc.email,
+                                id=client_id, uuid=r.client_uuid, email=r.email,
                                 limitIp=ip_limit, totalGB=new_total, expiryTime=expiry_ms,
-                                enable=xc.is_active, subId=sub_id_str, comment=xc.username or "",
+                                enable=r.is_active, subId=sub_id_str, comment=r.username or "",
                             ),
                         )
                     detail["result"] = "fixed"
                     out["fixed"] += 1
                     logger.info(
                         "[MIGRATE-USAGE] fixed sub=%s: old_total=%d old_used=%d → new=%d",
-                        sub.id, old["total"], old["used"], new_total,
+                        r.sub_id, old["total"], old["used"], new_total,
                     )
                 except Exception as exc:
                     detail["result"] = f"error: {str(exc)[:80]}"
-                    logger.warning("[MIGRATE-USAGE] failed to reconcile sub %s: %s", sub.id, exc)
+                    logger.warning("[MIGRATE-USAGE] failed to reconcile sub %s: %s", r.sub_id, exc)
                 out["details"].append(detail)
 
         return out
