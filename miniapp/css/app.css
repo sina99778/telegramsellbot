@@ -1,12 +1,12 @@
 /* ============================================================================
-   V2rays Emergency — Mini App
-   Design system v3 (2026-05-20) — full visual rebuild.
+   V2rays Emergency â€” Mini App
+   Design system v3 (2026-05-20) â€” full visual rebuild.
 
    Goals
    -----
    1. Calmer, denser hierarchy: clearer headings, fewer competing accents.
    2. Native-feel taps: haptic + scale + ripple on every actionable surface.
-   3. Honest loading / empty / error states — never blank cards.
+   3. Honest loading / empty / error states â€” never blank cards.
    4. WCAG AA contrast (4.5:1 body) on every text/background pair.
    5. RTL-first: every margin/padding/border uses logical properties.
    6. Telegram theme integration via `var(--tg-theme-*)` with safe fallbacks.
@@ -22,9 +22,9 @@
    7. Motion + a11y (reduced-motion fallbacks)
 ============================================================================ */
 
-/* ─── 1. Tokens ────────────────────────────────────────────────────────── */
+/* â”€â”€â”€ 1. Tokens â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 :root {
-    /* Surfaces — this app is DARK-ONLY (color-scheme: dark). We intentionally
+    /* Surfaces â€” this app is DARK-ONLY (color-scheme: dark). We intentionally
        do NOT read --tg-theme-bg-color here: a user on a LIGHT Telegram theme
        would otherwise get a white body behind our dark cards. Fixed value also
        matches the native header/background set in app.js + the theme-color
@@ -41,7 +41,7 @@
     --border-strong: rgba(255, 255, 255, 0.10);
     --border-accent: rgba(54, 209, 224, 0.40);
 
-    /* Text — fixed (dark-only app); not the Telegram theme text color, which
+    /* Text â€” fixed (dark-only app); not the Telegram theme text color, which
        would be dark/unreadable under a light client theme. */
     --text:        #f4f6fb;
     --text-soft:   rgba(244, 246, 251, 0.88);
@@ -73,7 +73,7 @@
     --grad-soft:   linear-gradient(135deg, rgba(54,209,224,0.10), rgba(41,196,122,0.06));
     --grad-violet: linear-gradient(135deg, var(--violet), var(--cyan-2));
 
-    /* Spacing — 4-pt scale */
+    /* Spacing â€” 4-pt scale */
     --space-1: 4px;
     --space-2: 8px;
     --space-3: 12px;
@@ -118,7 +118,7 @@
     --z-modal:  200;
     --z-toast:  300;
 
-    /* Typography stack — Vazirmatn ships great Persian + numerics. iOS/macOS
+    /* Typography stack â€” Vazirmatn ships great Persian + numerics. iOS/macOS
        Telegram never has it locally, so we always pull it from Google Fonts
        in index.html. The system fallback chain catches the case where the
        network is unreachable. SF Pro / system-ui at 16px + 1.6 line-height
@@ -132,7 +132,7 @@
     --leading-relaxed: 1.75;
 }
 
-/* ─── 2. Reset + typography ────────────────────────────────────────────── */
+/* â”€â”€â”€ 2. Reset + typography â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 *, *::before, *::after { box-sizing: border-box; }
 
 html, body {
@@ -156,7 +156,7 @@ body {
     min-height: 100dvh;
 }
 
-/* Numbers always Latin-shaped (Persian text body, LTR numerals — works
+/* Numbers always Latin-shaped (Persian text body, LTR numerals â€” works
    well for prices, percentages, timestamps where Persian digits look
    off mid-RTL). Override per-element by setting font-feature-settings
    on a wrapper if you ever want Persian digits. */
@@ -185,7 +185,7 @@ button { font: inherit; color: inherit; }
 
 ::selection { background: var(--accent-soft); color: var(--text); }
 
-/* ─── 3. Layout primitives ────────────────────────────────────────────── */
+/* â”€â”€â”€ 3. Layout primitives â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 #app {
     position: relative;
     min-height: 100dvh;
@@ -265,7 +265,7 @@ button { font: inherit; color: inherit; }
     flex-shrink: 0;
 }
 
-/* ─── 4. Header ───────────────────────────────────────────────────────── */
+/* â”€â”€â”€ 4. Header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .app-header {
     position: sticky;
     top: 0;
@@ -340,7 +340,7 @@ button { font: inherit; color: inherit; }
     text-align: start;
 }
 
-/* ─── 5. Bottom navigation ───────────────────────────────────────────── */
+/* â”€â”€â”€ 5. Bottom navigation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .bottom-nav {
     position: fixed;
     inset-inline: 0;
@@ -396,7 +396,7 @@ button { font: inherit; color: inherit; }
     color: var(--cyan);
 }
 
-/* ─── 6. Buttons ───────────────────────────────────────────────────────── */
+/* â”€â”€â”€ 6. Buttons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .btn {
     appearance: none;
     border: 1px solid transparent;
@@ -494,7 +494,7 @@ button { font: inherit; color: inherit; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ─── 7. Cards ───────────────────────────────────────────────────────── */
+/* â”€â”€â”€ 7. Cards â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .card {
     background: var(--bg-elevated);
     border: 1px solid var(--border);
@@ -507,7 +507,7 @@ button { font: inherit; color: inherit; }
 .card.is-tappable { cursor: pointer; }
 .card.is-tappable:active { background: var(--bg-surface); }
 
-/* ─── 8. Hero ────────────────────────────────────────────────────────── */
+/* â”€â”€â”€ 8. Hero â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .home-hero {
     position: relative;
     padding: var(--space-6) var(--space-5);
@@ -554,7 +554,7 @@ button { font: inherit; color: inherit; }
     line-height: 1.7;
 }
 
-/* ─── 9. Quick actions ────────────────────────────────────────────────── */
+/* â”€â”€â”€ 9. Quick actions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .quick-actions {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -595,7 +595,7 @@ button { font: inherit; color: inherit; }
     margin-block-start: auto;
 }
 
-/* ─── 10. Stats grid ─────────────────────────────────────────────────── */
+/* â”€â”€â”€ 10. Stats grid â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .stats-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -645,14 +645,14 @@ button { font: inherit; color: inherit; }
     margin-block-start: auto;
 }
 
-/* ─── 11. Plans grid ─────────────────────────────────────────────────── */
+/* â”€â”€â”€ 11. Plans grid â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .plans-grid {
     display: grid;
     grid-template-columns: 1fr;
     gap: var(--space-3);
 }
 @media (min-width: 460px) {
-    .plans-grid { grid-template-columns: repeat(2, 1fr); }
+    .plans-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 .plan-card {
@@ -675,7 +675,7 @@ button { font: inherit; color: inherit; }
     background: linear-gradient(135deg, var(--bg-elevated), rgba(54,209,224,0.06));
 }
 .plan-card.is-recommended::after {
-    content: "⭐ پیشنهادی";
+    content: "â­ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ÛŒ";
     position: absolute;
     inset-block-start: 12px;
     inset-inline-end: 12px;
@@ -728,7 +728,7 @@ button { font: inherit; color: inherit; }
     color: var(--text-muted);
 }
 
-/* ─── 12. Configs list ───────────────────────────────────────────────── */
+/* â”€â”€â”€ 12. Configs list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .configs-list {
     display: flex;
     flex-direction: column;
@@ -797,7 +797,7 @@ button { font: inherit; color: inherit; }
     border: 1px solid transparent;
 }
 .config-status::before {
-    content: "●";
+    content: "â—";
     margin-inline-end: 4px;
     font-size: 8px;
     vertical-align: middle;
@@ -855,7 +855,7 @@ button { font: inherit; color: inherit; }
 
 .config-meta-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: var(--space-2);
     margin-block-start: var(--space-3);
 }
@@ -907,7 +907,7 @@ button { font: inherit; color: inherit; }
 }
 .config-actions .btn { flex: 1 1 0; min-width: 100px; }
 
-/* ─── 13. Wallet ─────────────────────────────────────────────────────── */
+/* â”€â”€â”€ 13. Wallet â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .wallet-card {
     position: relative;
     padding: var(--space-6) var(--space-5);
@@ -952,7 +952,7 @@ button { font: inherit; color: inherit; }
 }
 .wallet-actions {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: var(--space-2);
     position: relative;
 }
@@ -1000,7 +1000,7 @@ button { font: inherit; color: inherit; }
 .tx-amount.credit { color: var(--emerald); }
 .tx-amount.debit  { color: var(--coral); }
 .tx-amount.credit::before { content: "+"; margin-inline-end: 2px; }
-.tx-amount.debit::before  { content: "−"; margin-inline-end: 2px; }
+.tx-amount.debit::before  { content: "âˆ’"; margin-inline-end: 2px; }
 
 .payment-item > div:last-child {
     display: flex;
@@ -1009,7 +1009,7 @@ button { font: inherit; color: inherit; }
     flex-shrink: 0;
 }
 
-/* ─── 14. Support / chat ─────────────────────────────────────────────── */
+/* â”€â”€â”€ 14. Support / chat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .support-page-scroll {
     display: flex;
     flex-direction: column;
@@ -1144,7 +1144,7 @@ button { font: inherit; color: inherit; }
     color: var(--cyan);
 }
 
-/* ─── 15. Inputs (forms) ────────────────────────────────────────────── */
+/* â”€â”€â”€ 15. Inputs (forms) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .form-field { margin-block-end: var(--space-3); }
 .form-label {
     display: block;
@@ -1179,7 +1179,7 @@ input:focus, textarea:focus, select:focus {
     line-height: 1.6;
 }
 
-/* ─── 16. Copy box ───────────────────────────────────────────────────── */
+/* â”€â”€â”€ 16. Copy box â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .copy-box {
     background: var(--bg-canvas);
     border: 1px dashed var(--border-strong);
@@ -1198,7 +1198,7 @@ input:focus, textarea:focus, select:focus {
     border-color: var(--cyan);
 }
 
-/* ─── 17. Empty states ───────────────────────────────────────────────── */
+/* â”€â”€â”€ 17. Empty states â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .empty-state {
     padding: var(--space-7) var(--space-4);
     text-align: center;
@@ -1232,7 +1232,7 @@ input:focus, textarea:focus, select:focus {
     max-width: 260px;
 }
 
-/* ─── 18. Loading skeletons ──────────────────────────────────────────── */
+/* â”€â”€â”€ 18. Loading skeletons â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .skeleton {
     background: linear-gradient(90deg, var(--bg-elevated) 25%, var(--bg-surface) 50%, var(--bg-elevated) 75%);
     background-size: 200% 100%;
@@ -1271,11 +1271,15 @@ input:focus, textarea:focus, select:focus {
     font-weight: 700;
 }
 
-/* ─── 19. Toast ───────────────────────────────────────────────────────── */
+/* â”€â”€â”€ 19. Toast â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .toast {
     position: fixed;
     inset-block-end: calc(var(--nav-h) + 16px + env(safe-area-inset-bottom, 0px));
-    inset-inline: 50%;
+    /* `inset-inline: 50%` set BOTH edges to 50%, collapsing the box to 0 width
+       so every message wrapped to one word per line (a broken vertical strip).
+       Pin only the left edge and center with the transform. */
+    left: 50%;
+    right: auto;
     transform: translate(-50%, calc(100% + 24px));
     background: var(--bg-surface);
     color: var(--text);
@@ -1314,7 +1318,7 @@ input:focus, textarea:focus, select:focus {
     color: #d8e6ff;
 }
 
-/* ─── 20. Modal ───────────────────────────────────────────────────────── */
+/* â”€â”€â”€ 20. Modal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .modal-overlay {
     position: fixed;
     inset: 0;
@@ -1383,7 +1387,7 @@ input:focus, textarea:focus, select:focus {
     margin: 0 auto var(--space-3);
 }
 
-/* ─── 21. Pager ──────────────────────────────────────────────────────── */
+/* â”€â”€â”€ 21. Pager â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .pager-row {
     display: flex;
     align-items: center;
@@ -1399,7 +1403,7 @@ input:focus, textarea:focus, select:focus {
 }
 .pager-row .btn { min-height: 36px; padding: 6px 12px; }
 
-/* ─── 22. Renewal tabs ──────────────────────────────────────────────── */
+/* â”€â”€â”€ 22. Renewal tabs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .renewal-tab {
     color: var(--text-muted);
     background: transparent;
@@ -1421,15 +1425,15 @@ input:focus, textarea:focus, select:focus {
     box-shadow: var(--shadow-accent);
 }
 
-/* ─── 23. Referral ───────────────────────────────────────────────────── */
+/* â”€â”€â”€ 23. Referral â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .referral-stat-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-2);
     margin-block-end: var(--space-3);
 }
 
-/* ─── 24. Admin overview ─────────────────────────────────────────────── */
+/* â”€â”€â”€ 24. Admin overview â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .admin-overview {
     background: var(--bg-elevated);
     border: 1px solid var(--border);
@@ -1437,11 +1441,11 @@ input:focus, textarea:focus, select:focus {
     padding: var(--space-4);
     margin-block-end: var(--space-4);
 }
-/* Admin home container — we treat it as a vertical block. The two
+/* Admin home container â€” we treat it as a vertical block. The two
    internal sections (.admin-tile-grid for modules, and any inline
    subpage content like .admin-list / .admin-form) handle their own
    layout. Earlier this was a 2-column grid, which made every direct
-   child take only half the width — including the .admin-tile-grid,
+   child take only half the width â€” including the .admin-tile-grid,
    which is itself a grid. The visual symptom was tiles clipped at
    the edge and a horizontal scroll bar. */
 .admin-modules {
@@ -1467,7 +1471,7 @@ input:focus, textarea:focus, select:focus {
 .admin-module:active { transform: scale(0.97); }
 .admin-module:hover { border-color: var(--cyan); background: var(--bg-surface); }
 
-/* ─── 25. Inline icons utility ───────────────────────────────────────── */
+/* â”€â”€â”€ 25. Inline icons utility â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .inline-icon, .nav-svg, [data-icon] svg {
     width: 1.05em;
     height: 1.05em;
@@ -1476,13 +1480,13 @@ input:focus, textarea:focus, select:focus {
     flex-shrink: 0;
 }
 
-/* ─── 25a. Plan card rendered by pages.js ─────────────────────────────── */
+/* â”€â”€â”€ 25a. Plan card rendered by pages.js â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .plan-card.popular {
     border-color: var(--border-accent);
     background: linear-gradient(135deg, var(--bg-elevated), rgba(54,209,224,0.06));
 }
 .plan-card.popular::after {
-    content: "⭐ پیشنهادی";
+    content: "â­ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ÛŒ";
     position: absolute;
     inset-block-start: 12px;
     inset-inline-end: 12px;
@@ -1513,7 +1517,7 @@ input:focus, textarea:focus, select:focus {
     width: 100%;
 }
 
-/* ─── 25c. Ticket / chat extras ──────────────────────────────────────── */
+/* â”€â”€â”€ 25c. Ticket / chat extras â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .bubble-sender {
     font-size: 10.5px;
     font-weight: 700;
@@ -1619,7 +1623,7 @@ input:focus, textarea:focus, select:focus {
     border-radius: var(--radius-md);
 }
 
-/* ─── 25f. Admin subpage header + polished item rows ────────────────── */
+/* â”€â”€â”€ 25f. Admin subpage header + polished item rows â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .admin-subpage-head {
     display: flex;
     align-items: center;
@@ -1650,7 +1654,7 @@ input:focus, textarea:focus, select:focus {
     color: var(--text-soft);
 }
 /* In RTL, the chevron should point to the right (toward where the user
-   came from on the start side). The font character `›` already points
+   came from on the start side). The font character `â€º` already points
    right; flip when explicitly LTR. */
 [dir="ltr"] .admin-back-chev { transform: scaleX(-1); }
 
@@ -1687,7 +1691,7 @@ input:focus, textarea:focus, select:focus {
     white-space: nowrap;
 }
 
-/* Polished admin item rows — body (icon + text) above, actions below */
+/* Polished admin item rows â€” body (icon + text) above, actions below */
 .admin-item {
     flex-direction: column;
     align-items: stretch;
@@ -1762,7 +1766,7 @@ input:focus, textarea:focus, select:focus {
     min-width: 86px;
 }
 
-/* ─── 25g. Config detail modal — QR + link blocks ────────────────────── */
+/* â”€â”€â”€ 25g. Config detail modal â€” QR + link blocks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .config-detail-links {
     margin-block-start: var(--space-4);
     padding: var(--space-4);
@@ -1795,12 +1799,12 @@ input:focus, textarea:focus, select:focus {
 }
 .config-detail-actions {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: var(--space-2);
 }
 .config-detail-actions .btn { width: 100%; }
 
-/* ─── 25e. Admin home — hero + tile grid (new v5 design) ─────────────── */
+/* â”€â”€â”€ 25e. Admin home â€” hero + tile grid (new v5 design) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .admin-hero {
     background: linear-gradient(135deg, var(--bg-elevated), rgba(54, 209, 224, 0.08));
     border: 1px solid var(--border-strong);
@@ -1836,11 +1840,11 @@ input:focus, textarea:focus, select:focus {
     align-items: flex-end;
     gap: 4px;
 }
-.admin-hero-stat .stat-value { font-size: 36px; line-height: 1; }
+.admin-hero-stat .stat-value { font-size: 34px; line-height: 1; white-space: nowrap; }
 
 .admin-stats-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-2);
     margin-block-end: var(--space-3);
 }
@@ -1867,16 +1871,19 @@ input:focus, textarea:focus, select:focus {
 .admin-stat-card.violet::before  { background: var(--violet); }
 .admin-stat-card.amber::before   { background: var(--amber); }
 .admin-stat-card.rose::before    { background: var(--rose); }
-.admin-stat-card .stat-value { font-size: 22px; }
+.admin-stat-card .stat-value { font-size: 22px; white-space: nowrap; }
 
 /* Tile grid: 2 cols phone, 3 cols tablet */
 .admin-tile-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    /* minmax(0, 1fr) â€” NOT 1fr. Plain 1fr has a min of min-content, so a tile
+       wider than its share blows the grid past the screen (clipping the left
+       column in RTL). minmax(0,â€¦) lets columns shrink. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-2);
 }
 @media (min-width: 480px) {
-    .admin-tile-grid { grid-template-columns: repeat(3, 1fr); }
+    .admin-tile-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
 .admin-tile {
@@ -1946,7 +1953,7 @@ input:focus, textarea:focus, select:focus {
 .admin-tile[data-accent="amber"]   .admin-tile-icon { background: rgba(244,183,64,0.14);  color: var(--amber); }
 .admin-tile[data-accent="rose"]    .admin-tile-icon { background: rgba(242,94,136,0.14);  color: var(--rose); }
 
-/* ─── 25d. Admin section extras ──────────────────────────────────────── */
+/* â”€â”€â”€ 25d. Admin section extras â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .admin-stat {
     display: flex;
     flex-direction: column;
@@ -1983,7 +1990,7 @@ input:focus, textarea:focus, select:focus {
 }
 .form-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: var(--space-2);
 }
 .admin-search-row {
@@ -2009,7 +2016,7 @@ input:focus, textarea:focus, select:focus {
 }
 .admin-profile-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-2);
     margin-block: var(--space-3);
 }
@@ -2039,7 +2046,7 @@ input:focus, textarea:focus, select:focus {
 /* Referral nice extras */
 .ref-stats {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-2);
     margin-block-end: var(--space-3);
 }
@@ -2070,11 +2077,24 @@ input:focus, textarea:focus, select:focus {
     margin-block: var(--space-3);
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    font-size: 13px;
+    gap: var(--space-2);
+    font-size: 13.5px;
     color: var(--text-soft);
 }
-.checkout-summary strong { color: var(--text); }
+/* Each row: label on one side, value on the other (was crammed together,
+   e.g. "Ø­Ø¬Ù…Û±Û° GB"). */
+.checkout-summary > div {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+}
+.checkout-summary > div + div {
+    padding-block-start: var(--space-2);
+    border-block-start: 1px solid var(--border);
+}
+.checkout-summary span { color: var(--text-muted); }
+.checkout-summary strong { color: var(--text); font-weight: 700; direction: ltr; }
 
 /* Compact variants */
 .compact { padding: var(--space-3); }
@@ -2086,7 +2106,7 @@ input:focus, textarea:focus, select:focus {
 }
 .wide { grid-column: 1 / -1; }
 
-/* ─── 25b. Legacy compat classes (used by pages.js render templates) ─── */
+/* â”€â”€â”€ 25b. Legacy compat classes (used by pages.js render templates) â”€â”€â”€ */
 .modal-title {
     font-size: 17px;
     font-weight: 600;
@@ -2100,7 +2120,7 @@ input:focus, textarea:focus, select:focus {
 
 .renewal-tabs {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: var(--space-2);
     margin-block-end: var(--space-3);
 }
@@ -2179,7 +2199,7 @@ input:focus, textarea:focus, select:focus {
     line-height: 1.5;
 }
 
-/* ─── 26. Misc utilities ─────────────────────────────────────────────── */
+/* â”€â”€â”€ 26. Misc utilities â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .text-muted { color: var(--text-muted); }
 .text-success { color: var(--emerald); }
 .text-danger  { color: var(--coral); }
@@ -2195,7 +2215,7 @@ input:focus, textarea:focus, select:focus {
 .mt-1 { margin-block-start: var(--space-1); } .mt-2 { margin-block-start: var(--space-2); } .mt-3 { margin-block-start: var(--space-3); }
 .mb-1 { margin-block-end: var(--space-1); } .mb-2 { margin-block-end: var(--space-2); } .mb-3 { margin-block-end: var(--space-3); }
 
-/* ─── 27. Focus ──────────────────────────────────────────────────────── */
+/* â”€â”€â”€ 27. Focus â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .btn:focus-visible,
 .nav-btn:focus-visible,
 .quick-action:focus-visible,
@@ -2208,7 +2228,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
     box-shadow: 0 0 0 4px rgba(54, 209, 224, 0.18);
 }
 
-/* ─── 27.5. Utility classes (cleanup of inline styles in pages.js) ───── */
+/* â”€â”€â”€ 27.5. Utility classes (cleanup of inline styles in pages.js) â”€â”€â”€â”€â”€ */
 
 /* Big LTR percentage used on the dashboard usage card. Was inline:
    font-size:30px;font-weight:900;direction:ltr;color:<ternary>. */
@@ -2225,7 +2245,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .usage-headline.is-warn   { color: var(--amber); }
 .usage-headline.is-danger { color: var(--coral); }
 
-/* Compact stat value (bytes line under "مصرف مجموع N سرویس"). */
+/* Compact stat value (bytes line under "Ù…ØµØ±Ù Ù…Ø¬Ù…ÙˆØ¹ N Ø³Ø±ÙˆÛŒØ³"). */
 .stat-value--compact {
     font-size: 18px;
     direction: ltr;
@@ -2264,7 +2284,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
    percentage. Used to be inline display:grid;grid-template-columns:1fr 1fr. */
 .modal-stats-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: var(--space-3);
     font-size: 13px;
 }
@@ -2287,7 +2307,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
     flex: 0 0 auto;
 }
 
-/* Sales-closed banner — was inline border-color + background. */
+/* Sales-closed banner â€” was inline border-color + background. */
 .empty-state.is-closed {
     border-color: rgba(239, 111, 97, 0.4);
     background: rgba(239, 111, 97, 0.06);
@@ -2302,7 +2322,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
     font-size: 15px;
 }
 
-/* ─── 28. Reduced motion ─────────────────────────────────────────────── */
+/* â”€â”€â”€ 28. Reduced motion â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after {
         animation-duration: 0.001ms !important;
