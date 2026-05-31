@@ -91,7 +91,7 @@ from services.plan_inventory import (
 )
 from services.phone_verification import get_verified_phone
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
-from services.renewal import apply_renewal, calculate_renewal_price
+from services.renewal import apply_renewal, average_active_plan_renewal_rates, calculate_renewal_price
 from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
 from services.tronado.payments import create_tronado_invoice
 from services.wallet.manager import InsufficientBalanceError, WalletManager
@@ -2338,11 +2338,17 @@ async def get_renewal_quote(
     if subscription.plan_id is not None:
         from models.plan import Plan as _Plan
         plan = await session.scalar(select(_Plan).where(_Plan.id == subscription.plan_id))
+    # Plan-less (migrated/imported) configs price at the average of active plans.
+    _def_gb = _def_day = None
+    if plan is None:
+        _def_gb, _def_day = await average_active_plan_renewal_rates(session, renewal_settings)
     price = calculate_renewal_price(
         renew_type=body.renew_type,
         amount=body.amount,
         settings=renewal_settings,
         plan=plan,
+        default_per_gb=_def_gb,
+        default_per_day=_def_day,
     )
     return RenewalQuoteResponse(
         renew_type=body.renew_type,
@@ -2375,11 +2381,17 @@ async def renew_subscription(
     if subscription.plan_id is not None:
         from models.plan import Plan as _Plan
         plan = await session.scalar(select(_Plan).where(_Plan.id == subscription.plan_id))
+    # Plan-less (migrated/imported) configs price at the average of active plans.
+    _def_gb = _def_day = None
+    if plan is None:
+        _def_gb, _def_day = await average_active_plan_renewal_rates(session, renewal_settings)
     price = calculate_renewal_price(
         renew_type=body.renew_type,
         amount=body.amount,
         settings=renewal_settings,
         plan=plan,
+        default_per_gb=_def_gb,
+        default_per_day=_def_day,
     )
 
     renewal_meta = {

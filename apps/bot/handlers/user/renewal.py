@@ -209,6 +209,14 @@ async def renew_preset_selected(
     await renew_value_entered(_Pseudo(), state, session)
 
 
+async def _migrated_config_renewal_rates(session: AsyncSession, renewal_settings) -> tuple[float, float]:
+    """Renewal (per_gb, per_day) for configs WITHOUT a plan (migrated/imported):
+    the AVERAGE of the active plans' renewal rates. Thin wrapper over the shared
+    implementation so the bot and mini-app price these configs identically."""
+    from services.renewal import average_active_plan_renewal_rates
+    return await average_active_plan_renewal_rates(session, renewal_settings)
+
+
 @router.message(RenewStates.waiting_for_volume)
 @router.message(RenewStates.waiting_for_time)
 async def renew_value_entered(message: Message, state: FSMContext, session: AsyncSession) -> None:
@@ -248,12 +256,17 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
     volume_added = 0.0
     time_added_days = 0.0
 
+    # Configs without a plan (migrated/imported) are priced at the AVERAGE of
+    # the active plans' renewal rates instead of the bare global rate.
+    if plan is None:
+        _avg_gb, _avg_day = await _migrated_config_renewal_rates(session, renewal_settings)
+
     if renew_type == "volume":
-        per_gb = plan.effective_renewal_price_per_gb(renewal_settings.price_per_gb) if plan else renewal_settings.price_per_gb
+        per_gb = plan.effective_renewal_price_per_gb(renewal_settings.price_per_gb) if plan else _avg_gb
         price = amount * per_gb
         volume_added = amount
     elif renew_type == "time":
-        per_day = plan.effective_renewal_price_per_day(renewal_settings.price_per_10_days) if plan else (renewal_settings.price_per_10_days / 10.0)
+        per_day = plan.effective_renewal_price_per_day(renewal_settings.price_per_10_days) if plan else _avg_day
         price = amount * per_day
         time_added_days = amount
 
@@ -343,11 +356,16 @@ async def _get_renewal_data(callback_data: RenewPayCallback, session: AsyncSessi
     plan = await session.scalar(
         select(Plan).join(Subscription, Subscription.plan_id == Plan.id).where(Subscription.id == sub_id)
     )
+    # No plan (migrated/imported config) → average of active plans' rates,
+    # matching the invoice shown in `renew_value_entered`.
+    if plan is None:
+        _avg_gb, _avg_day = await _migrated_config_renewal_rates(session, renewal_settings)
+
     if renew_type == "volume":
-        per_gb = plan.effective_renewal_price_per_gb(renewal_settings.price_per_gb) if plan else renewal_settings.price_per_gb
+        per_gb = plan.effective_renewal_price_per_gb(renewal_settings.price_per_gb) if plan else _avg_gb
         price = amount * per_gb
     else:
-        per_day = plan.effective_renewal_price_per_day(renewal_settings.price_per_10_days) if plan else (renewal_settings.price_per_10_days / 10.0)
+        per_day = plan.effective_renewal_price_per_day(renewal_settings.price_per_10_days) if plan else _avg_day
         price = amount * per_day
 
     # Apply personal discount

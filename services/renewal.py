@@ -22,33 +22,62 @@ class RenewalXUISyncError(Exception):
     """Raised when renewal was computed but X-UI panel sync failed."""
 
 
+async def average_active_plan_renewal_rates(
+    session: AsyncSession, settings: RenewalSettings
+) -> tuple[float, float]:
+    """Return (per_gb, per_day) = the AVERAGE of the currently-active plans'
+    effective renewal rates.
+
+    Used to price configs that have NO plan (migrated / imported from the legacy
+    bot): per the operator's choice they renew at the average of the active
+    catalogue's rates rather than the bare global rate. Each plan contributes
+    its own per-gb/per-day override, or the global rate when it hasn't set one.
+    Falls back to the global rate when there are no active plans.
+    """
+    plans = list(
+        (await session.execute(select(Plan).where(Plan.is_active.is_(True)))).scalars().all()
+    )
+    if not plans:
+        return (float(settings.price_per_gb), float(settings.price_per_10_days) / 10.0)
+    gb_vals = [p.effective_renewal_price_per_gb(settings.price_per_gb) for p in plans]
+    day_vals = [p.effective_renewal_price_per_day(settings.price_per_10_days) for p in plans]
+    return (sum(gb_vals) / len(gb_vals), sum(day_vals) / len(day_vals))
+
+
 def calculate_renewal_price(
     *,
     renew_type: str,
     amount: float,
     settings: RenewalSettings,
     plan: Plan | None = None,
+    default_per_gb: float | None = None,
+    default_per_day: float | None = None,
 ) -> Decimal:
     """Compute renewal price.
 
-    If `plan` is provided AND has the matching per-plan override set,
-    we prefer it over the global `settings` defaults. The plan override
-    is per-day; the global default is per-10-days (divided by 10).
+    If `plan` is provided AND has the matching per-plan override set, we prefer
+    it. Otherwise, for plan-less configs, `default_per_gb` / `default_per_day`
+    (e.g. the average of active plans for migrated configs) are used when given;
+    falling back to the global `settings` defaults (per-10-days / 10).
     """
     if amount <= 0:
         raise ValueError("Renewal amount must be positive.")
     if renew_type == "volume":
         if plan is not None:
             per_gb = plan.effective_renewal_price_per_gb(settings.price_per_gb)
+        elif default_per_gb is not None:
+            per_gb = default_per_gb
         else:
             per_gb = settings.price_per_gb
         price = Decimal(str(amount)) * Decimal(str(per_gb))
     elif renew_type == "time":
         if plan is not None:
             per_day = plan.effective_renewal_price_per_day(settings.price_per_10_days)
-            price = Decimal(str(amount)) * Decimal(str(per_day))
+        elif default_per_day is not None:
+            per_day = default_per_day
         else:
-            price = (Decimal(str(amount)) / Decimal("10")) * Decimal(str(settings.price_per_10_days))
+            per_day = float(settings.price_per_10_days) / 10.0
+        price = Decimal(str(amount)) * Decimal(str(per_day))
     else:
         raise ValueError("Invalid renewal type.")
     return price.quantize(Decimal("0.01"))
