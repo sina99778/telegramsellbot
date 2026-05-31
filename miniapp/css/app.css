@@ -24,8 +24,12 @@
 
 /* ─── 1. Tokens ────────────────────────────────────────────────────────── */
 :root {
-    /* Surfaces — Telegram theme params, with sensible dark fallbacks. */
-    --bg-app:        var(--tg-theme-bg-color, #0b0d12);
+    /* Surfaces — this app is DARK-ONLY (color-scheme: dark). We intentionally
+       do NOT read --tg-theme-bg-color here: a user on a LIGHT Telegram theme
+       would otherwise get a white body behind our dark cards. Fixed value also
+       matches the native header/background set in app.js + the theme-color
+       meta, so there's no seam at the top of the screen. */
+    --bg-app:        #0b0d12;
     --bg-canvas:    #06080c;
     --bg-elevated:  #11151c;
     --bg-surface:   #161b24;
@@ -37,11 +41,12 @@
     --border-strong: rgba(255, 255, 255, 0.10);
     --border-accent: rgba(54, 209, 224, 0.40);
 
-    /* Text */
-    --text:        var(--tg-theme-text-color, #f4f6fb);
-    --text-soft:   rgba(244, 246, 251, 0.86);
-    --text-muted:  rgba(244, 246, 251, 0.58);
-    --text-faint:  rgba(244, 246, 251, 0.40);
+    /* Text — fixed (dark-only app); not the Telegram theme text color, which
+       would be dark/unreadable under a light client theme. */
+    --text:        #f4f6fb;
+    --text-soft:   rgba(244, 246, 251, 0.88);
+    --text-muted:  rgba(244, 246, 251, 0.68);
+    --text-faint:  rgba(244, 246, 251, 0.46);
     --text-on-accent: #04111a;
 
     /* Brand + state */
@@ -92,6 +97,7 @@
     --shadow-md:  0 6px 18px rgba(0, 0, 0, 0.26);
     --shadow-lg:  0 14px 38px rgba(0, 0, 0, 0.32);
     --shadow-accent: 0 8px 24px rgba(54, 209, 224, 0.22);
+    --shadow-glow: var(--shadow-accent);  /* alias used by JS-inline styles */
 
     /* Layout */
     --header-h: 64px;
@@ -266,8 +272,8 @@ button { font: inherit; color: inherit; }
     z-index: var(--z-sticky);
     padding: max(var(--space-3), env(safe-area-inset-top, 0px)) var(--space-4) var(--space-3);
     background: var(--bg-glass);
-    backdrop-filter: saturate(180%) blur(20px);
-    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    backdrop-filter: saturate(150%) blur(14px);
+    -webkit-backdrop-filter: saturate(150%) blur(14px);
     border-block-end: 1px solid var(--border);
 }
 
@@ -345,8 +351,8 @@ button { font: inherit; color: inherit; }
     gap: 2px;
     padding: var(--space-2) var(--space-2) calc(var(--space-2) + env(safe-area-inset-bottom, 0px));
     background: var(--bg-glass);
-    backdrop-filter: saturate(180%) blur(20px);
-    -webkit-backdrop-filter: saturate(180%) blur(20px);
+    backdrop-filter: saturate(150%) blur(14px);
+    -webkit-backdrop-filter: saturate(150%) blur(14px);
     border-block-start: 1px solid var(--border);
 }
 
@@ -1101,6 +1107,11 @@ button { font: inherit; color: inherit; }
 
 /* Ticket history list */
 .ticket-history-card {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    width: 100%;
+    text-align: start;
     background: var(--bg-elevated);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
@@ -1518,21 +1529,18 @@ input:focus, textarea:focus, select:focus {
     font-size: 10px;
 }
 .chat-date-sep {
-    text-align: center;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
     color: var(--text-muted);
     font-size: 11px;
     margin: var(--space-3) 0;
-    position: relative;
 }
 .chat-date-sep::before, .chat-date-sep::after {
     content: "";
     flex: 1;
-    display: inline-block;
-    width: 22%;
     height: 1px;
     background: var(--border);
-    vertical-align: middle;
-    margin: 0 8px;
 }
 .ticket-thread {
     background: var(--bg-canvas);
@@ -1559,6 +1567,14 @@ input:focus, textarea:focus, select:focus {
     background: var(--accent-soft);
     color: var(--cyan);
 }
+.ticket-status-badge.answered {
+    background: var(--success-soft);
+    color: #8ef0bf;
+}
+.ticket-status-badge.open {
+    background: var(--warn-soft);
+    color: #ffe1a8;
+}
 .ticket-status-badge.closed {
     background: var(--bg-muted);
     color: var(--text-muted);
@@ -1566,13 +1582,18 @@ input:focus, textarea:focus, select:focus {
 .ticket-id { font-size: 11.5px; color: var(--text-muted); }
 .ticket-history { display: flex; flex-direction: column; gap: var(--space-2); }
 .ticket-history-icon {
-    width: 36px; height: 36px; flex-shrink: 0;
+    width: 38px; height: 38px; flex-shrink: 0;
     background: var(--accent-soft);
     color: var(--cyan);
     border-radius: var(--radius-md);
     display: grid; place-items: center;
 }
-.ticket-history-info { flex: 1; min-width: 0; }
+.ticket-history-icon svg { width: 18px; height: 18px; }
+.ticket-history-icon.answered { background: var(--success-soft); color: #8ef0bf; }
+.ticket-history-icon.closed { background: var(--bg-muted); color: var(--text-muted); }
+.ticket-history-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ticket-history-info strong { font-size: 13.5px; font-weight: 600; }
+.ticket-history-info span { font-size: 11.5px; color: var(--text-muted); }
 .support-empty {
     text-align: center;
     padding: var(--space-7) var(--space-4);
@@ -2038,6 +2059,7 @@ input:focus, textarea:focus, select:focus {
     cursor: pointer;
 }
 .ref-code-box .btn { flex-shrink: 0; }
+.ref-code-box span { min-width: 0; word-break: break-all; }
 
 /* Checkout summary in modals */
 .checkout-summary {
@@ -2122,7 +2144,8 @@ input:focus, textarea:focus, select:focus {
 .wallet-actions .btn { padding: 11px 14px; font-size: 13px; }
 
 /* Payment items provide their own action row */
-.payment-item .btn { padding: 6px 10px; min-height: 32px; font-size: 12px; }
+.payment-item .btn { padding: 7px 12px; min-height: 38px; font-size: 12px; }
+.payment-actions { display: flex; gap: var(--space-2); align-items: center; flex-shrink: 0; }
 
 /* Referral specific */
 .referral-card {

@@ -313,18 +313,18 @@ const Pages = (() => {
                     ${rawSub ? `
                     <div class="config-detail-link-block">
                         <p class="form-label">🔗 لینک اشتراک (Sub-Link)</p>
-                        <div class="copy-box" onclick="UI.copyToClipboard('${rawSub.replace(/'/g, "\\'")}')">${escapeHtml(rawSub)}</div>
+                        <div class="copy-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(rawSub)}'))">${escapeHtml(rawSub)}</div>
                     </div>` : ''}
 
                     ${rawVless ? `
                     <div class="config-detail-link-block">
                         <p class="form-label">📋 کانفیگ مستقیم (VLESS)</p>
-                        <div class="copy-box" onclick="UI.copyToClipboard('${rawVless.replace(/'/g, "\\'")}')">${escapeHtml(rawVless)}</div>
+                        <div class="copy-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(rawVless)}'))">${escapeHtml(rawVless)}</div>
                     </div>` : ''}
 
                     <div class="config-detail-actions">
-                        ${rawSub ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard('${rawSub.replace(/'/g, "\\'")}')">${UI.icon('copy')} کپی ساب</button>` : ''}
-                        ${rawVless ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard('${rawVless.replace(/'/g, "\\'")}')">${UI.icon('copy')} کپی VLESS</button>` : ''}
+                        ${rawSub ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(rawSub)}'))">${UI.icon('copy')} کپی ساب</button>` : ''}
+                        ${rawVless ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(rawVless)}'))">${UI.icon('copy')} کپی VLESS</button>` : ''}
                         ${rawSub ? `<a href="v2rayng://install-sub/?url=${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">V2rayNG</a>` : ''}
                         ${rawSub ? `<a href="v2box://install-sub/?url=${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">V2Box</a>` : ''}
                         ${rawSub ? `<a href="streisand://import/${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">Streisand</a>` : ''}
@@ -780,7 +780,7 @@ const Pages = (() => {
             const paymentData = await API.getPayments(1);
             renderPayments(paymentData.payments || []);
             const txData = await API.getTransactions(1);
-            renderTransactions(txData.transactions);
+            renderTransactions(txData.transactions || []);
         } catch (e) {
             UI.toast('خطا: ' + e.message, 'error');
         }
@@ -829,8 +829,8 @@ const Pages = (() => {
                             <span dir="ltr">${amount}</span> · ${escapeHtml(UI.formatRelative(payment.created_at))}
                         </span>
                     </div>
-                    <div>
-                        ${payment.invoice_url && canRefresh ? `<button class="btn btn-primary btn-sm" onclick="Pages.openInvoice(decodeURIComponent('${encodeURIComponent(payment.invoice_url)}'))">پرداخت</button>` : ''}
+                    <div class="payment-actions">
+                        ${payment.invoice_url ? `<button class="btn btn-primary btn-sm" onclick="Pages.openInvoice(decodeURIComponent('${encodeURIComponent(payment.invoice_url)}'))">پرداخت</button>` : ''}
                         ${canRefresh ? `<button class="btn btn-secondary btn-sm" onclick="Pages.refreshPayment('${payment.id}')">${UI.icon('refresh')}</button>` : ''}
                     </div>
                 </div>
@@ -904,12 +904,17 @@ const Pages = (() => {
         setTimeout(() => document.getElementById('topup-amount')?.focus(), 100);
     }
 
+    let _topupSubmitting = false;
     async function submitTopup(paymentMethod) {
+        if (_topupSubmitting) return;  // guard against double-tap → duplicate invoices
         const amount = parseFloat(document.getElementById('topup-amount')?.value || '0');
         if (!amount || amount <= 0) {
             UI.toast('مبلغ شارژ معتبر نیست', 'error');
             return;
         }
+        _topupSubmitting = true;
+        const methodBtns = document.querySelectorAll('.checkout-methods .btn');
+        methodBtns.forEach(b => { b.disabled = true; b.classList.add('is-loading'); });
         try {
             UI.toast('در حال ساخت فاکتور...');
             const result = await API.createTopup({ amount, payment_method: paymentMethod });
@@ -922,6 +927,11 @@ const Pages = (() => {
             `);
         } catch (e) {
             UI.toast(e.message, 'error');
+            // Re-enable on failure so the user can retry (on success the modal
+            // is replaced, so the buttons are gone anyway).
+            methodBtns.forEach(b => { b.disabled = false; b.classList.remove('is-loading'); });
+        } finally {
+            _topupSubmitting = false;
         }
     }
 
@@ -1261,8 +1271,9 @@ const Pages = (() => {
             const data = await API.searchAdminUsers(q, page);
             const container = document.getElementById('admin-users-results');
             if (!container) return;
+            const items = data.items || [];
             container.innerHTML = `
-                ${data.items.length ? data.items.map(item => renderAdminUserSummary(item)).join('') : '<div class="empty-state"><p>نتیجه‌ای پیدا نشد</p></div>'}
+                ${items.length ? items.map(item => renderAdminUserSummary(item)).join('') : '<div class="empty-state"><p>نتیجه‌ای پیدا نشد</p></div>'}
                 <div class="admin-pager">
                     <button class="btn btn-secondary btn-sm" ${data.page <= 1 ? 'disabled' : ''} onclick="Pages.searchAdminUsers(${data.page - 1})">قبلی</button>
                     <span>${data.page} / ${Math.max(1, Math.ceil(data.total / data.page_size))}</span>
@@ -1848,12 +1859,12 @@ const Pages = (() => {
             ${data.ref_code ? `
                 <div class="referral-card">
                     <div class="form-label">لینک دعوت اختصاصی شما</div>
-                    <div class="ref-code-box" onclick="UI.copyToClipboard('${refLink}')" title="برای کپی، بزنید">
+                    <div class="ref-code-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(refLink)}'))" title="برای کپی، بزنید">
                         <span>${escapeHtml(refLink)}</span>
                         <span class="btn btn-ghost btn-sm">${UI.icon('copy')}</span>
                     </div>
                     <p class="form-hint">برای کپی روی متن بزنید.</p>
-                    <button class="btn btn-primary btn-block" style="margin-block-start:var(--space-3)" onclick="shareRefLink('${refLink}')">
+                    <button class="btn btn-primary btn-block" style="margin-block-start:var(--space-3)" onclick="shareRefLink(decodeURIComponent('${encodeURIComponent(refLink)}'))">
                         ${UI.icon('share')} اشتراک‌گذاری در تلگرام
                     </button>
                 </div>

@@ -60,8 +60,14 @@ const API = (() => {
 
         const res = await fetch(url, opts);
         if (!res.ok) {
-            const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
-            throw new Error(err.detail || `HTTP ${res.status}`);
+            const err = await res.json().catch(() => ({ detail: 'خطای ناشناخته' }));
+            let detail = err.detail;
+            // FastAPI 422 returns `detail` as an array of {msg, loc, ...};
+            // new Error([...]) would render "[object Object]" in the toast.
+            if (Array.isArray(detail)) {
+                detail = detail.map(d => (d && d.msg) ? d.msg : '').filter(Boolean).join('، ');
+            }
+            throw new Error(detail || `خطای سرور (${res.status})`);
         }
         return res.json();
     }
