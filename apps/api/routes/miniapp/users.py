@@ -1192,6 +1192,86 @@ async def send_admin_user_message(
     finally:
         await bot.session.close()
 
+
+@router.post("/admin/users/{source_user_id}/transfer-configs")
+async def admin_transfer_user_configs(
+    source_user_id: UUID,
+    body: dict[str, Any],
+    auth: tuple[User, AsyncSession] = Depends(_get_current_user),
+) -> dict[str, Any]:
+    """Move a customer's config(s) to another account.
+
+    body: { target: "<telegram_id|@username>", all: bool, subscription_id?: UUID }
+    When all=false, subscription_id is required (single config). The heavy
+    lifting + validation lives in services.admin_transfer (shared with the
+    bot + dashboard surfaces).
+    """
+    admin, session = auth
+    _require_admin(admin)
+    from services.admin_transfer import (
+        AdminTransferError,
+        admin_transfer_configs,
+        resolve_target_user,
+    )
+
+    target_query = str(body.get("target") or "").strip()
+    if not target_query:
+        raise HTTPException(status_code=400, detail="اکانت مقصد را وارد کنید.")
+    target = await resolve_target_user(session, target_query)
+    if target is None:
+        raise HTTPException(status_code=404, detail="کاربر مقصد پیدا نشد.")
+
+    transfer_all = bool(body.get("all"))
+    sub_ids: list[UUID] | None = None
+    if not transfer_all:
+        raw = body.get("subscription_id")
+        if not raw:
+            raise HTTPException(status_code=400, detail="کانفیگی برای انتقال انتخاب نشده است.")
+        try:
+            sub_ids = [UUID(str(raw))]
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="شناسه کانفیگ نامعتبر است.") from exc
+
+    try:
+        result = await admin_transfer_configs(
+            session,
+            source_user_id=source_user_id,
+            target_user_id=target.id,
+            subscription_ids=sub_ids,
+            actor_label=f"miniapp_admin:{admin.telegram_id}",
+            actor_user_id=admin.id,
+        )
+    except AdminTransferError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await session.flush()
+
+    # Best-effort: notify the new owner. Never fails the request.
+    try:
+        bot = PremiumEmojiBot(
+            token=settings.bot_token.get_secret_value(),
+            default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
+        )
+        try:
+            await bot.send_message(
+                result["target_telegram_id"],
+                f"🎁 {result['count']} کانفیگ توسط پشتیبانی به حساب شما اضافه شد.\n\n"
+                "از بخش «سرویس‌های من» می‌توانید مشاهده کنید.",
+                parse_mode=None,
+            )
+        finally:
+            await bot.session.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("transfer recipient notify failed: %s", exc)
+
+    return {
+        "ok": True,
+        "message": f"{result['count']} کانفیگ به {result['target_name']} منتقل شد.",
+        "count": result["count"],
+        "target_name": result["target_name"],
+        "target_telegram_id": result["target_telegram_id"],
+    }
+
     _record_admin_action(session, admin, "send_message", "user", target.id, {"telegram_id": target.telegram_id})
     await session.flush()
     return {"ok": True, "message": "پیام برای کاربر ارسال شد."}

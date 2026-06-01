@@ -118,6 +118,7 @@ const API = (() => {
         getAdminUser:   (id)          => request('GET', `/admin/users/${encodeURIComponent(id)}`),
         adjustAdminUserBalance:(id, amount) => request('POST', `/admin/users/${encodeURIComponent(id)}/balance`, { amount }),
         sendAdminUserMessage:(id, text) => request('POST', `/admin/users/${encodeURIComponent(id)}/message`, { text }),
+        transferUserConfigs:(id, payload) => request('POST', `/admin/users/${encodeURIComponent(id)}/transfer-configs`, payload),
         runAdminAction: (payload)     => request('POST', '/admin/action', payload),
         grantAdminGift:(payload)      => request('POST', '/admin/gifts', payload),
         getAdminCustomerReport:(period = 'daily', userId = '') => request('GET', `/admin/reports/customers?period=${encodeURIComponent(period)}${userId ? `&user_id=${encodeURIComponent(userId)}` : ''}`),

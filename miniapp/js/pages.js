@@ -1454,6 +1454,12 @@ const Pages = (() => {
                 <textarea id="admin-user-message" class="admin-ticket-reply" rows="4" placeholder="متن پیام..."></textarea>
                 <button class="btn btn-primary btn-block" onclick="Pages.sendAdminUserMessage('${user.id}')">ارسال پیام</button>
             </div>
+            <div class="admin-form">
+                <strong>🔄 انتقال کانفیگ‌ها به اکانت دیگر</strong>
+                <input id="admin-transfer-target" class="form-input" dir="ltr" placeholder="آی‌دی عددی یا یوزرنیم اکانت مقصد">
+                <p class="form-hint">لینکِ کانفیگ تغییر نمی‌کند؛ فقط مالکیت منتقل می‌شود. برای انتقالِ تکی، دکمه‌ی «انتقال» کنارِ هر سرویس را بزنید.</p>
+                <button class="btn btn-secondary btn-block" onclick="Pages.transferUserConfigs('${user.id}', null, true)">📦 انتقال همه (${subs.length})</button>
+            </div>
             <h3 class="section-title compact-title">سرویس‌های کاربر</h3>
             <div class="admin-list">
                 ${subs.length ? subs.map(sub => `
@@ -1462,11 +1468,40 @@ const Pages = (() => {
                             <strong>${escapeHtml(sub.config_name || sub.plan_name || 'سرویس')}</strong>
                             <span>${escapeHtml(sub.status)} | ${UI.formatBytes(sub.used_bytes)} / ${UI.formatBytes(sub.volume_bytes)} | ${UI.daysLeft(sub.ends_at)}</span>
                         </div>
-                        ${sub.sub_link ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(sub.sub_link)}'))">کپی</button>` : ''}
+                        <div style="display:flex;gap:6px;flex-shrink:0">
+                            <button class="btn btn-secondary btn-sm" onclick="Pages.transferUserConfigs('${user.id}', '${escapeHtml(sub.id)}', false)">انتقال</button>
+                            ${sub.sub_link ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(sub.sub_link)}'))">کپی</button>` : ''}
+                        </div>
                     </div>
                 `).join('') : '<div class="empty-state compact"><p>سرویسی برای این کاربر ثبت نشده</p></div>'}
             </div>
         `;
+    }
+
+    async function transferUserConfigs(userId, subId, all) {
+        const input = document.getElementById('admin-transfer-target');
+        const target = (input?.value || '').trim();
+        if (!target) {
+            UI.toast('اکانت مقصد را وارد کنید (آی‌دی عددی یا یوزرنیم)', 'error');
+            input?.focus();
+            return;
+        }
+        const what = all ? 'همه‌ی کانفیگ‌های این کاربر' : 'این کانفیگ';
+        const ok = await UI.confirm({
+            title: 'انتقال کانفیگ',
+            message: `${what} به «${target}» منتقل شود؟ لینکِ کانفیگ تغییر نمی‌کند.`,
+            confirmText: 'انتقال',
+            danger: true,
+        });
+        if (!ok) return;
+        try {
+            const payload = all ? { target, all: true } : { target, subscription_id: subId };
+            const result = await API.transferUserConfigs(userId, payload);
+            UI.toast(result.message || 'انتقال انجام شد', 'success');
+            await openAdminUser(userId);  // refresh — moved configs leave this user's list
+        } catch (e) {
+            UI.toast(e.message, 'error');
+        }
     }
 
     function renderReadyConfigTools(items) {
@@ -2009,7 +2044,7 @@ const Pages = (() => {
         loadCustomerReport, showPlanNameEditor, submitPlanName, setServerSubScheme,
         showPlanDurationEditor, submitPlanDuration, showPlanPriceEditor, submitPlanPrice, showPlanStockEditor, submitPlanStock,
         toggleCustomPurchase, showCustomPurchasePriceEditor, submitCustomPurchasePrice,
-        searchAdminUsers, openAdminUser, runAdminUserAction, adjustAdminUserBalance, sendAdminUserMessage,
+        searchAdminUsers, openAdminUser, runAdminUserAction, adjustAdminUserBalance, sendAdminUserMessage, transferUserConfigs,
         createReadyConfigPlan, addReadyConfigItems, submitAdminGift, openBotAdmin, openBotChat,
     };
 })();

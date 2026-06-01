@@ -7,6 +7,7 @@ import {
   setCreditLimit,
   setUserStatus,
   sendMessage,
+  transferConfigs,
   type UserDetailResponse,
 } from "@/api/users";
 import { ApiError } from "@/api/client";
@@ -26,6 +27,7 @@ const adjustAmount = ref<string>("");
 const adjustDesc = ref<string>("");
 const creditLimit = ref<string>("");
 const msgText = ref<string>("");
+const transferTarget = ref<string>("");
 const busy = ref<string>(""); // which action is in-flight
 
 async function refresh() {
@@ -112,6 +114,32 @@ async function doSendMessage() {
     await sendMessage(props.id, msgText.value);
     msgText.value = "";
     flash("پیام ارسال شد.");
+  } catch (exc) {
+    flash(exc instanceof ApiError ? exc.detail : "خطا", "warn");
+  } finally {
+    busy.value = "";
+  }
+}
+
+async function doTransfer(subId: string | null, all: boolean) {
+  const target = transferTarget.value.trim();
+  if (!target) {
+    flash("اکانت مقصد را وارد کنید (آی‌دی عددی یا یوزرنیم).", "warn");
+    return;
+  }
+  const what = all ? "همه‌ی کانفیگ‌های این کاربر" : "این کانفیگ";
+  if (!window.confirm(`${what} به «${target}» منتقل شود؟\nلینکِ کانفیگ تغییر نمی‌کند؛ فقط مالکیت منتقل می‌شود.`)) {
+    return;
+  }
+  busy.value = all ? "transfer-all" : `transfer-${subId}`;
+  try {
+    const payload = all
+      ? { target, all: true }
+      : { target, subscription_id: subId as string };
+    const r = await transferConfigs(props.id, payload);
+    flash(r.message || "انتقال انجام شد.");
+    transferTarget.value = "";
+    refresh();
   } catch (exc) {
     flash(exc instanceof ApiError ? exc.detail : "خطا", "warn");
   } finally {
@@ -257,6 +285,23 @@ function subStatusBadge(s: string): string {
               </button>
             </div>
           </div>
+
+          <!-- Transfer configs -->
+          <div class="border-t border-bg-border pt-4">
+            <label class="label">🔄 انتقال کانفیگ‌ها به اکانت دیگر</label>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+              <div class="md:col-span-2">
+                <input v-model="transferTarget" class="input" type="text" dir="ltr"
+                       placeholder="آی‌دی عددی یا یوزرنیم اکانت مقصد" />
+              </div>
+              <button class="btn btn-secondary" :disabled="busy === 'transfer-all'" @click="doTransfer(null, true)">
+                {{ busy === 'transfer-all' ? '...' : 'انتقال همه (' + data.subscriptions.length + ')' }}
+              </button>
+            </div>
+            <p class="text-[11px] text-slate-500 mt-1">
+              لینکِ کانفیگ تغییر نمی‌کند؛ فقط مالکیت منتقل می‌شود. برای انتقال تکی، دکمه‌ی «انتقال» کنار هر سرویس را بزنید.
+            </p>
+          </div>
         </div>
       </section>
 
@@ -282,6 +327,13 @@ function subStatusBadge(s: string): string {
             <div class="text-[11px] text-slate-400 font-mono mt-1">
               {{ fmtBytes(s.used_bytes) }} / {{ fmtBytes(s.volume_bytes) }}
               <span v-if="s.ends_at" class="ms-2">• تا {{ s.ends_at.slice(0, 10) }}</span>
+            </div>
+            <div class="mt-2 flex justify-end">
+              <button class="btn btn-ghost text-xs px-2 py-1"
+                      :disabled="busy === 'transfer-' + s.id"
+                      @click="doTransfer(s.id, false)">
+                {{ busy === 'transfer-' + s.id ? '...' : 'انتقال' }}
+              </button>
             </div>
           </li>
         </ul>

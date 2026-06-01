@@ -48,6 +48,12 @@ class AdminUserListPageCallback(CallbackData, prefix="admin_userlist"):
     page: int
 
 
+class AdminXferPickCallback(CallbackData, prefix="adm_xfer"):
+    # scope="all" → move every config of the source user; scope="one" → just sub_id
+    scope: str
+    sub_id: UUID | None = None
+
+
 # ─── Users Menu ───────────────────────────────────────────────────────────────
 
 
@@ -627,6 +633,199 @@ async def view_user_configs(
     )
 
 
+# ─── Transfer configs to another account ──────────────────────────────────────
+
+
+@router.callback_query(AdminUserActionCallback.filter(F.action == "transfer_configs"))
+async def admin_transfer_pick_menu(
+    callback: CallbackQuery,
+    callback_data: AdminUserActionCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Show the source user's configs so the admin can move one — or all."""
+    from services.admin_transfer import config_label, list_transferable_configs
+
+    await callback.answer()
+    source_id = callback_data.user_id
+    subs = await list_transferable_configs(session, source_id)
+    if not subs:
+        await safe_edit_or_send(callback, "این کاربر هیچ کانفیگی برای انتقال ندارد.")
+        return
+
+    await state.clear()
+    await state.update_data(xfer_source_user_id=str(source_id))
+
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text=f"📦 انتقال همه ({len(subs)} کانفیگ)",
+        callback_data=AdminXferPickCallback(scope="all").pack(),
+    )
+    for sub in subs[:25]:
+        builder.button(
+            text=f"🔁 {config_label(sub)}"[:64],
+            callback_data=AdminXferPickCallback(scope="one", sub_id=sub.id).pack(),
+        )
+    builder.button(
+        text=AdminButtons.BACK,
+        callback_data=AdminUserActionCallback(action="profile", user_id=source_id).pack(),
+    )
+    builder.adjust(1)
+    await safe_edit_or_send(
+        callback,
+        "🔄 <b>انتقال کانفیگ‌ها</b>\n\nکدام کانفیگ را به اکانت دیگری منتقل می‌کنی؟",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(AdminXferPickCallback.filter())
+async def admin_transfer_target_prompt(
+    callback: CallbackQuery,
+    callback_data: AdminXferPickCallback,
+    state: FSMContext,
+) -> None:
+    """After picking scope, ask for the destination account identifier."""
+    await callback.answer()
+    data = await state.get_data()
+    if not data.get("xfer_source_user_id"):
+        await safe_edit_or_send(callback, "⌛ نشست انتقال منقضی شد. دوباره از پروفایل کاربر شروع کن.")
+        return
+
+    await state.update_data(
+        xfer_scope=callback_data.scope,
+        xfer_sub_id=(str(callback_data.sub_id) if callback_data.sub_id else None),
+    )
+    await state.set_state(ManageUserStates.waiting_for_transfer_target)
+
+    scope_text = "همه‌ی کانفیگ‌ها" if callback_data.scope == "all" else "این کانفیگ"
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ لغو", callback_data="admxfer:cancel")
+    await safe_edit_or_send(
+        callback,
+        f"🔄 انتقالِ <b>{scope_text}</b>\n\n"
+        "آی‌دی عددی تلگرام یا یوزرنیم (بدون @) اکانتِ <b>مقصد</b> را بفرست.\n\n"
+        "⚠️ اکانت مقصد باید عضو ربات باشد.",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "admxfer:cancel")
+async def admin_transfer_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.clear()
+    await safe_edit_or_send(callback, "❌ انتقال لغو شد.")
+
+
+@router.message(ManageUserStates.waiting_for_transfer_target)
+async def admin_transfer_target_entered(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    """Admin entered the destination account; resolve it and ask to confirm."""
+    from services.admin_transfer import resolve_target_user
+
+    if not message.text:
+        return
+    if message.text.strip().lower() == "/cancel":
+        await state.clear()
+        await message.answer("❌ انتقال لغو شد.")
+        return
+
+    data = await state.get_data()
+    source_id = data.get("xfer_source_user_id")
+    scope = data.get("xfer_scope")
+    if not source_id or not scope:
+        await state.clear()
+        await message.answer("❌ اطلاعات انتقال یافت نشد. دوباره تلاش کن.")
+        return
+
+    target = await resolve_target_user(session, message.text)
+    if target is None:
+        await message.answer("❌ کاربری با این مشخصات پیدا نشد. دوباره بفرست یا /cancel.")
+        return
+    if str(target.id) == str(source_id):
+        await message.answer("❌ کاربر مبدأ و مقصد یکی هستند. یک اکانت دیگر بفرست.")
+        return
+
+    await state.update_data(xfer_target_user_id=str(target.id))
+
+    scope_text = "همه‌ی کانفیگ‌ها" if scope == "all" else "این کانفیگ"
+    target_display = f"@{target.username}" if target.username else f"ID: <code>{target.telegram_id}</code>"
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ تأیید انتقال", callback_data="admxfer:confirm")
+    builder.button(text="❌ لغو", callback_data="admxfer:cancel")
+    builder.adjust(1)
+    await message.answer(
+        "🔄 <b>تأیید انتقال</b>\n\n"
+        f"📦 موضوع: <b>{scope_text}</b>\n"
+        f"👤 مقصد: {target_display} ({_html_escape(target.first_name or '-')})\n\n"
+        "ℹ️ لینکِ کانفیگ <u>تغییر نمی‌کند</u>؛ فقط مالکیت به اکانت مقصد منتقل می‌شود.\n\n"
+        "تأیید می‌کنی؟",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "admxfer:confirm")
+async def admin_transfer_confirm(
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    admin_user: User,
+) -> None:
+    from services.admin_transfer import AdminTransferError, admin_transfer_configs
+
+    await callback.answer()
+    data = await state.get_data()
+    await state.clear()
+
+    source_id = data.get("xfer_source_user_id")
+    target_id = data.get("xfer_target_user_id")
+    scope = data.get("xfer_scope")
+    sub_id = data.get("xfer_sub_id")
+    if not source_id or not target_id or not scope:
+        await safe_edit_or_send(callback, "❌ اطلاعات انتقال یافت نشد.")
+        return
+
+    sub_ids = None if scope == "all" else [UUID(str(sub_id))]
+    try:
+        result = await admin_transfer_configs(
+            session,
+            source_user_id=UUID(str(source_id)),
+            target_user_id=UUID(str(target_id)),
+            subscription_ids=sub_ids,
+            actor_label=f"bot_admin:{admin_user.telegram_id}",
+            actor_user_id=admin_user.id,
+        )
+    except AdminTransferError as exc:
+        await safe_edit_or_send(callback, f"❌ {exc}")
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.error("admin transfer failed: %s", exc, exc_info=True)
+        await safe_edit_or_send(callback, "❌ خطا در انتقال. لطفاً دوباره تلاش کن.")
+        return
+
+    await safe_edit_or_send(
+        callback,
+        "✅ <b>انتقال موفق</b>\n\n"
+        f"<b>{result['count']}</b> کانفیگ به <b>{_html_escape(result['target_name'])}</b> منتقل شد.",
+        parse_mode="HTML",
+    )
+
+    # Best-effort: tell the new owner.
+    try:
+        await callback.bot.send_message(
+            result["target_telegram_id"],
+            f"🎁 <b>{result['count']} کانفیگ</b> توسط پشتیبانی به حساب شما اضافه شد.\n\n"
+            "از بخش «📋 سرویس‌های من» می‌توانید مشاهده کنید.",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("notify transfer recipient failed: %s", exc)
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -666,6 +865,10 @@ def _build_user_profile_keyboard(user_id: UUID, status: str):
     builder.button(
         text=AdminButtons.VIEW_CONFIGS,
         callback_data=AdminUserActionCallback(action="view_configs", user_id=user_id).pack(),
+    )
+    builder.button(
+        text="🔄 انتقال کانفیگ‌ها",
+        callback_data=AdminUserActionCallback(action="transfer_configs", user_id=user_id).pack(),
     )
     builder.button(
         text="📩 ارسال پیام",

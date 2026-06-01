@@ -43,6 +43,7 @@ class ManageUserStates(StatesGroup):
     waiting_for_balance_adjustment = State()
     waiting_for_message_to_user = State()
     waiting_for_personal_discount = State()
+    waiting_for_transfer_target = State()
 
 
 

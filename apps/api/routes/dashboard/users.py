@@ -401,3 +401,79 @@ async def send_message(user_id: UUID, body: MessageBody, auth: AuthDep) -> dict[
         logger.warning("Audit log failed: %s", exc)
     await session.commit()
     return {"ok": True}
+
+
+# ─── Transfer config(s) to another account ───────────────────────────────
+
+
+class TransferConfigsBody(BaseModel):
+    target: str = Field(..., min_length=1, max_length=64)
+    all: bool = False
+    subscription_id: UUID | None = None
+
+
+@router.post("/{user_id}/transfer-configs")
+async def transfer_configs(user_id: UUID, body: TransferConfigsBody, auth: AuthDep) -> dict[str, Any]:
+    """Move a customer's config(s) to another account.
+
+    Shares the exact logic the bot + mini-app use (services.admin_transfer):
+    only DB ownership changes; the X-UI link is left untouched.
+    """
+    admin, session = auth
+    from services.admin_transfer import (
+        AdminTransferError,
+        admin_transfer_configs,
+        resolve_target_user,
+    )
+
+    target = await resolve_target_user(session, body.target)
+    if target is None:
+        raise HTTPException(status_code=404, detail="کاربر مقصد یافت نشد.")
+
+    sub_ids: list[UUID] | None = None
+    if not body.all:
+        if body.subscription_id is None:
+            raise HTTPException(status_code=400, detail="کانفیگی برای انتقال انتخاب نشده است.")
+        sub_ids = [body.subscription_id]
+
+    try:
+        result = await admin_transfer_configs(
+            session,
+            source_user_id=user_id,
+            target_user_id=target.id,
+            subscription_ids=sub_ids,
+            actor_label=f"dashboard_admin:{admin.username}",
+            actor_user_id=None,
+        )
+    except AdminTransferError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await session.commit()
+
+    # Best-effort: notify the new owner. Never fails the request.
+    try:
+        from aiogram import Bot
+        from aiogram.client.default import DefaultBotProperties
+        from core.config import settings
+
+        bot = Bot(
+            token=settings.bot_token.get_secret_value(),
+            default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
+        )
+        try:
+            await bot.send_message(
+                result["target_telegram_id"],
+                f"🎁 {result['count']} کانفیگ توسط پشتیبانی به حساب شما اضافه شد.\n\n"
+                "از بخش «سرویس‌های من» می‌توانید مشاهده کنید.",
+            )
+        finally:
+            await bot.session.close()
+    except Exception as exc:
+        logger.warning("transfer recipient notify failed: %s", exc)
+
+    return {
+        "ok": True,
+        "message": f"{result['count']} کانفیگ به {result['target_name']} منتقل شد.",
+        "count": result["count"],
+        "target_name": result["target_name"],
+    }

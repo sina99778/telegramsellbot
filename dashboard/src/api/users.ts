@@ -107,3 +107,17 @@ export function setUserStatus(id: string, status: "active" | "banned"): Promise<
 export function sendMessage(id: string, text: string): Promise<{ ok: boolean }> {
   return api.post<{ ok: boolean }>(`/users/${id}/message`, { text });
 }
+
+export interface TransferConfigsResult {
+  ok: boolean;
+  message: string;
+  count: number;
+  target_name: string;
+}
+
+export function transferConfigs(
+  id: string,
+  payload: { target: string; all?: boolean; subscription_id?: string },
+): Promise<TransferConfigsResult> {
+  return api.post<TransferConfigsResult>(`/users/${id}/transfer-configs`, payload);
+}
