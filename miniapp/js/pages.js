@@ -247,27 +247,19 @@ const Pages = (() => {
 
         return `
             <div class="${cardClass}" onclick="Pages.showConfigDetail('${sub.id}')">
-                <div class="config-header">
-                    <span class="config-name">${escapeHtml(name)}</span>
-                    <span class="config-status ${health.statusClass}">${health.statusText}</span>
-                </div>
-
-                <div class="progress-bar-container">
-                    <div class="progress-bar ${health.pctClass}" style="width:${health.pct}%"></div>
-                </div>
-                <div class="config-stats">
-                    <span>${UI.formatBytes(sub.used_bytes)} / ${UI.formatBytes(sub.volume_bytes)}</span>
-                    <span>${(health.pct)}%</span>
-                </div>
-
-                <div class="config-meta-grid">
-                    <div class="config-metric">
-                        <span>باقی‌مانده حجم</span>
-                        <strong>${UI.formatBytes(health.remainingBytes)}</strong>
+                <div class="config-top">
+                    <div class="usage-ring ${health.pctClass}" style="--pct:${health.pct}">
+                        <b>${health.pct}%</b><span>مصرف</span>
                     </div>
-                    <div class="config-metric">
-                        <span>زمان</span>
-                        <strong>${escapeHtml(health.daysLabel)}</strong>
+                    <div class="config-top-info">
+                        <div class="config-header">
+                            <span class="config-name">${escapeHtml(name)}</span>
+                            <span class="config-status ${health.statusClass}">${health.statusText}</span>
+                        </div>
+                        <div class="config-meta-row">
+                            <span>حجم <b>${UI.formatBytes(sub.used_bytes)} / ${UI.formatBytes(sub.volume_bytes)}</b></span>
+                            <span>زمان <b>${escapeHtml(health.daysLabel)}</b></span>
+                        </div>
                     </div>
                 </div>
 

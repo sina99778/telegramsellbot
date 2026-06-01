@@ -10,8 +10,8 @@
         // Match the native header/background to the app's --bg-app (#0b0d12)
         // and the <meta theme-color> — otherwise a different black creates a
         // visible seam at the top of the screen.
-        try { tg.setHeaderColor('#0b0d12'); } catch {}
-        try { tg.setBackgroundColor('#0b0d12'); } catch {}
+        try { tg.setHeaderColor('#070611'); } catch {}
+        try { tg.setBackgroundColor('#070611'); } catch {}
     }
 
     document.querySelectorAll('[data-icon]').forEach(el => {
