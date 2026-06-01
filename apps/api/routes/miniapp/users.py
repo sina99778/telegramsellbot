@@ -2710,7 +2710,70 @@ async def create_wallet_topup(
         return await _create_tetrapay_topup(session, user, amount)
     if body.payment_method == "tronado":
         return await _create_tronado_topup(session, user, amount)
+    if body.payment_method == "card_to_card":
+        return await _create_card_to_card_topup(session, user, amount)
     raise HTTPException(status_code=400, detail="روش شارژ نامعتبر است.")
+
+
+async def _create_card_to_card_topup(
+    session: AsyncSession,
+    user: User,
+    amount: Decimal,
+) -> TopUpResponse:
+    """Create a card-to-card top-up invoice the user completes INSIDE the
+    mini-app (show card details → user transfers → uploads a receipt photo
+    via /payments/card_receipt). Mirrors the bot's topup_pay_card_to_card.
+    """
+    from services.card_payments import compute_unique_toman, pick_card
+
+    settings_repo = AppSettingsRepository(session)
+    gw = await settings_repo.get_gateway_settings()
+    card = pick_card(gw)
+    if not gw.card_to_card_enabled or card is None:
+        raise HTTPException(status_code=400, detail="پرداخت کارت به کارت در حال حاضر فعال نیست.")
+
+    toman_rate = await settings_repo.get_toman_rate()
+    if not toman_rate or toman_rate <= 0:
+        raise HTTPException(status_code=400, detail="نرخ تبدیل تومان تنظیم نشده است.")
+
+    base_toman = int((amount * toman_rate).quantize(Decimal("1")))
+    toman_amount = await compute_unique_toman(session, base_toman, gw.card_amount_jitter_toman)
+
+    payment = Payment(
+        user_id=user.id,
+        provider="card_to_card",
+        kind="wallet_topup",
+        order_id=str(uuid4()),
+        payment_status="waiting_receipt",
+        pay_currency="IRT",
+        price_currency="USD",
+        price_amount=amount,
+        pay_amount=Decimal(toman_amount),
+        callback_payload={
+            "source": "miniapp",
+            "purpose": "wallet_topup",
+            "card_number": card["number"],
+            "card_holder": card["holder"],
+            "card_bank": card.get("bank"),
+            "base_toman": base_toman,
+            "jittered": toman_amount != base_toman,
+        },
+    )
+    session.add(payment)
+    await session.flush()
+    return TopUpResponse(
+        status="card_pending_receipt",
+        message="بعد از واریزِ مبلغِ دقیق، عکس رسید را آپلود کنید تا کیف پول شارژ شود.",
+        payment_method="card_to_card",
+        invoice_url="",
+        payment_id=payment.id,
+        pay_amount=Decimal(toman_amount),
+        pay_currency="IRT",
+        card_number=card["number"],
+        card_holder=card["holder"],
+        card_bank=card.get("bank"),
+        card_note=getattr(gw, "card_note", None) or None,
+    )
 
 
 @router.post("/payments/{payment_id}/refresh")

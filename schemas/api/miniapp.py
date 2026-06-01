@@ -196,6 +196,13 @@ class TopUpResponse(BaseModel):
     payment_id: UUID
     pay_amount: Decimal | None = None
     pay_currency: str | None = None
+    # Card-to-card top-ups don't return an invoice URL — instead the
+    # mini-app renders the card details inline and lets the user upload a
+    # receipt photo. These fields carry that data.
+    card_number: str | None = None
+    card_holder: str | None = None
+    card_bank: str | None = None
+    card_note: str | None = None
 
 
 class RenewalQuoteRequest(BaseModel):

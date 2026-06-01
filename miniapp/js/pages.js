@@ -47,34 +47,42 @@ const Pages = (() => {
         return buttons.join('\n');
     }
 
-    /** Topup-specific: no wallet option */
+    /** Topup-specific: no wallet option. Card-to-card is now handled
+     *  fully INSIDE the mini-app (show card → upload receipt), so it gets
+     *  its own button instead of being lumped into "pay via bot". Only
+     *  manual-crypto still bounces to the bot (TXID flow). */
     function topupGatewayButtons(callbackPrefix) {
-        const buttons = [];
+        const methods = [];
         if (gateways.tetrapay) {
-            buttons.push(`<button class="btn btn-primary btn-block" onclick="${callbackPrefix} 'tetrapay')">💳 درگاه ریالی تتراپی</button>`);
+            methods.push({ cb: `${callbackPrefix} 'tetrapay')`, label: '🏦 درگاه ریالی تتراپی' });
         }
         if (gateways.tronado) {
-            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'tronado')">💰 درگاه ترونادو</button>`);
+            methods.push({ cb: `${callbackPrefix} 'tronado')`, label: '💰 درگاه ترونادو' });
         }
         if (gateways.nowpayments) {
-            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'nowpayments')">💎 درگاه ارزی NOWPayments</button>`);
+            methods.push({ cb: `${callbackPrefix} 'nowpayments')`, label: '💎 درگاه ارزی NOWPayments' });
         }
-        if (gateways.manual_crypto || gateways.card_to_card) {
+        if (gateways.card_to_card) {
+            methods.push({ cb: `${callbackPrefix} 'card_to_card')`, label: '💳 کارت به کارت' });
+        }
+        if (gateways.manual_crypto) {
             // `<a target="_blank">` is silently dropped inside Telegram's
-            // WebApp iframe. We need openTelegramLink() to actually leave
-            // the miniapp. Wrap it in a button that calls openBotChat().
-            buttons.push(`<button class="btn btn-secondary btn-block" onclick="Pages.openBotChat()">🤖 پرداخت دستی (از طریق ربات)</button>`);
+            // WebApp iframe; openBotChat() actually leaves the miniapp.
+            methods.push({ cb: 'Pages.openBotChat()', label: '🪙 ارز دیجیتال (از طریق ربات)' });
         }
-        if (!buttons.length) {
-            buttons.push(`
+        if (!methods.length) {
+            return `
                 <div class="empty-state compact">
                     <p>هیچ درگاه پرداختی فعال نیست</p>
-                    <p class="empty-hint">ادمین باید حداقل یکی از درگاه‌ها (تتراپی / NOWPayments / دستی) را فعال کند.</p>
+                    <p class="empty-hint">ادمین باید حداقل یکی از درگاه‌ها (تتراپی / NOWPayments / کارت به کارت) را فعال کند.</p>
                     <button class="btn btn-secondary btn-sm" onclick="Pages.openBotChat()">${UI.icon('share')} رفتن به ربات</button>
                 </div>
-            `);
+            `;
         }
-        return buttons.join('\n');
+        // First available method is the visually-emphasised (gradient) one.
+        return methods.map((m, i) =>
+            `<button class="btn ${i === 0 ? 'btn-primary' : 'btn-secondary'} btn-block" onclick="${m.cb}">${m.label}</button>`
+        ).join('\n');
     }
 
     function getBotUsername() {
@@ -910,6 +918,10 @@ const Pages = (() => {
         try {
             UI.toast('در حال ساخت فاکتور...');
             const result = await API.createTopup({ amount, payment_method: paymentMethod });
+            if (paymentMethod === 'card_to_card' || result.payment_method === 'card_to_card') {
+                renderCardTopupScreen(result);
+                return;
+            }
             UI.showModal(`
                 <div class="modal-title">فاکتور شارژ آماده است</div>
                 <p class="form-hint" style="text-align:center;margin-bottom:14px">${escapeHtml(result.message)}</p>
@@ -924,6 +936,95 @@ const Pages = (() => {
             methodBtns.forEach(b => { b.disabled = false; b.classList.remove('is-loading'); });
         } finally {
             _topupSubmitting = false;
+        }
+    }
+
+    // ─── Card-to-card top-up (fully in-app) ─────────────────────────────
+    function formatCardNumber(num) {
+        const digits = String(num || '').replace(/\D/g, '');
+        return digits.replace(/(\d{4})(?=\d)/g, '$1 ').trim() || escapeHtml(String(num || ''));
+    }
+
+    function renderCardTopupScreen(result) {
+        const tomanRaw = String(Math.round(Number(result.pay_amount || 0)));
+        const tomanFmt = Number(tomanRaw).toLocaleString('en-US');
+        const cardNum = result.card_number || '';
+        UI.showModal(`
+            <div class="modal-title">پرداخت کارت به کارت</div>
+            <p class="form-hint" style="text-align:center;margin-bottom:14px">
+                مبلغِ <b>دقیقِ</b> زیر را به این کارت واریز کنید، سپس عکس رسید را آپلود کنید.
+            </p>
+
+            <div class="card-pay-box">
+                <button class="card-pay-row copyable" onclick="Pages.copyText('${tomanRaw}', this, 'مبلغ کپی شد')">
+                    <span>مبلغ دقیق</span>
+                    <strong dir="ltr">${tomanFmt} <small>تومان</small> ${UI.icon('copy')}</strong>
+                </button>
+                <button class="card-pay-row copyable" onclick="Pages.copyText('${escapeHtml(cardNum)}', this, 'شماره کارت کپی شد')">
+                    <span>شماره کارت</span>
+                    <strong dir="ltr" class="card-num">${formatCardNumber(cardNum)} ${UI.icon('copy')}</strong>
+                </button>
+                <div class="card-pay-row">
+                    <span>صاحب کارت</span>
+                    <strong>${escapeHtml(result.card_holder || '—')}</strong>
+                </div>
+                ${result.card_bank ? `<div class="card-pay-row"><span>بانک</span><strong>${escapeHtml(result.card_bank)}</strong></div>` : ''}
+            </div>
+
+            ${result.card_note ? `<p class="form-hint" style="margin-top:10px">${escapeHtml(result.card_note)}</p>` : ''}
+            <p class="form-hint" style="margin-top:6px">⚠️ حتماً <b>دقیقاً</b> همین مبلغ را واریز کنید؛ این مبلغ مخصوصِ حساب شماست.</p>
+
+            <label class="btn btn-primary btn-block" style="margin-top:14px;cursor:pointer">
+                ${UI.icon('image') || '📷'} انتخاب و ارسال عکس رسید
+                <input type="file" accept="image/*" style="display:none"
+                       onchange="Pages.onCardReceiptSelected('${result.payment_id}', this)">
+            </label>
+            <div id="card-receipt-status" class="form-hint" style="text-align:center;margin-top:8px"></div>
+            <button class="btn btn-secondary btn-block" style="margin-top:10px"
+                    onclick="UI.closeModal(); Pages.load_wallet()">بعداً ارسال می‌کنم</button>
+        `);
+    }
+
+    function copyText(text, btnEl, okMsg) {
+        UI.copyToClipboard(text);
+        try { window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred('success'); } catch {}
+        if (btnEl) {
+            btnEl.classList.add('copied');
+            setTimeout(() => btnEl.classList.remove('copied'), 1200);
+        }
+        if (okMsg) UI.toast(okMsg, 'success');
+    }
+
+    let _receiptUploading = false;
+    async function onCardReceiptSelected(paymentId, inputEl) {
+        const file = inputEl?.files?.[0];
+        if (!file) return;
+        if (_receiptUploading) return;
+        const statusEl = document.getElementById('card-receipt-status');
+        if (file.size > 6 * 1024 * 1024) {
+            if (statusEl) statusEl.innerHTML = '<span style="color:var(--coral)">حجم عکس بیش از ۶ مگابایت است.</span>';
+            inputEl.value = '';
+            return;
+        }
+        _receiptUploading = true;
+        if (statusEl) statusEl.textContent = 'در حال ارسال رسید…';
+        // Disable the picker label/button while uploading.
+        const label = inputEl.closest('label');
+        if (label) { label.style.pointerEvents = 'none'; label.style.opacity = '0.6'; }
+        try {
+            const res = await API.uploadCardReceipt(paymentId, file);
+            try { window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred('success'); } catch {}
+            UI.showModal(`
+                <div class="modal-title">✅ رسید ثبت شد</div>
+                <p class="form-hint" style="text-align:center;margin:8px 0 16px">${escapeHtml(res.message || 'رسید شما برای مدیر ارسال شد. بعد از تأیید، کیف پول شارژ می‌شود.')}</p>
+                <button class="btn btn-primary btn-block" onclick="UI.closeModal(); Pages.load_wallet()">باشه</button>
+            `);
+        } catch (e) {
+            if (statusEl) statusEl.innerHTML = `<span style="color:var(--coral)">${escapeHtml(e.message)}</span>`;
+            if (label) { label.style.pointerEvents = ''; label.style.opacity = ''; }
+            inputEl.value = '';
+        } finally {
+            _receiptUploading = false;
         }
     }
 
@@ -1876,6 +1977,7 @@ const Pages = (() => {
         load_wallet, load_support, load_referral, load_admin,
         showConfigDetail, showRenewal, setRenewalType, submitRenewal,
         buyPlan, buyCustomPlan, submitPurchase, submitCustomPurchase, openInvoice, topupWallet, submitTopup, refreshPayment,
+        copyText, onCardReceiptSelected,
         showTicketHistory, closeTicket, openAdminModule, openAdminTicket, submitAdminTicketReply, runAdminAction,
         loadCustomerReport, showPlanNameEditor, submitPlanName, setServerSubScheme,
         showPlanDurationEditor, submitPlanDuration, showPlanPriceEditor, submitPlanPrice, showPlanStockEditor, submitPlanStock,

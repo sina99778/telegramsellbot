@@ -72,6 +72,37 @@ const API = (() => {
         return res.json();
     }
 
+    /**
+     * Multipart/form-data variant for file uploads (e.g. card receipt
+     * photos). We MUST NOT set Content-Type ourselves — the browser adds
+     * the multipart boundary automatically. Auth still travels as the
+     * `_auth`/`_session` query param like the JSON `request()`.
+     */
+    async function requestForm(method, path, formData) {
+        const sessionToken = getSessionToken();
+        const initData = sessionToken ? '' : getInitData();
+        const separator = path.includes('?') ? '&' : '?';
+        let url = `/api/miniapp${path}`;
+        if (initData) {
+            url += `${separator}_auth=${encodeURIComponent(initData)}`;
+        } else if (sessionToken) {
+            url += `${separator}_session=${encodeURIComponent(sessionToken)}`;
+        }
+        const headers = {};
+        if (initData) headers['X-Telegram-Init-Data'] = initData;
+
+        const res = await fetch(url, { method, headers, body: formData });
+        if (!res.ok) {
+            const err = await res.json().catch(() => ({ detail: 'خطای ناشناخته' }));
+            let detail = err.detail;
+            if (Array.isArray(detail)) {
+                detail = detail.map(d => (d && d.msg) ? d.msg : '').filter(Boolean).join('، ');
+            }
+            throw new Error(detail || `خطای سرور (${res.status})`);
+        }
+        return res.json();
+    }
+
     return {
         getInitData,
         getConfig:       ()           => request('GET', '/config'),
@@ -99,6 +130,12 @@ const API = (() => {
         createReadyPlan:(payload)     => request('POST', '/admin/ready-configs/plans', payload),
         addReadyConfigs:(id, content) => request('POST', `/admin/ready-configs/${encodeURIComponent(id)}/items`, { content }),
         createTopup:    (payload)     => request('POST', '/wallet/topup', payload),
+        uploadCardReceipt:(paymentId, file) => {
+            const fd = new FormData();
+            fd.append('payment_id', paymentId);
+            fd.append('photo', file);
+            return requestForm('POST', '/payments/card_receipt', fd);
+        },
         getTransactions: (page = 1)   => request('GET', `/wallet/transactions?page=${page}`),
         getPayments:     (page = 1)   => request('GET', `/payments?page=${page}`),
         refreshPayment:  (id)         => request('POST', `/payments/${encodeURIComponent(id)}/refresh`),

@@ -2197,6 +2197,58 @@ input:focus, textarea:focus, select:focus {
     direction: ltr;
 }
 
+/* ── Card-to-card top-up (inline card details + receipt upload) ──── */
+.card-pay-box {
+    margin: var(--space-3) 0;
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: linear-gradient(135deg, var(--accent-soft), transparent);
+}
+.card-pay-row {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: 12px 14px;
+    font-size: 13px;
+    color: var(--text-soft);
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    background: transparent;
+    text-align: start;
+    font-family: inherit;
+}
+.card-pay-row:last-child { border-bottom: 0; }
+.card-pay-row strong {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--text);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+.card-pay-row strong small {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-soft);
+}
+.card-pay-row .inline-icon {
+    width: 15px;
+    height: 15px;
+    color: var(--accent);
+    opacity: 0.8;
+}
+.card-pay-row.copyable { cursor: pointer; transition: background 0.15s ease; }
+.card-pay-row.copyable:active { background: rgba(255, 255, 255, 0.04); }
+.card-pay-row.copied { background: var(--accent-soft); }
+.card-pay-row.copied .inline-icon { color: var(--emerald); opacity: 1; }
+.card-pay-row .card-num {
+    letter-spacing: 1.5px;
+    font-variant-numeric: tabular-nums;
+}
+
 .checkout-methods {
     display: grid;
     grid-template-columns: 1fr;
