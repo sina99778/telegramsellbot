@@ -675,7 +675,7 @@ button { font: inherit; color: inherit; }
     background: linear-gradient(135deg, var(--bg-elevated), rgba(54,209,224,0.06));
 }
 .plan-card.is-recommended::after {
-    content: "â­ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ÛŒ";
+    content: "⭐ پیشنهادی";
     position: absolute;
     inset-block-start: 12px;
     inset-inline-end: 12px;
@@ -797,7 +797,7 @@ button { font: inherit; color: inherit; }
     border: 1px solid transparent;
 }
 .config-status::before {
-    content: "â—";
+    content: "●";
     margin-inline-end: 4px;
     font-size: 8px;
     vertical-align: middle;
@@ -1486,7 +1486,7 @@ input:focus, textarea:focus, select:focus {
     background: linear-gradient(135deg, var(--bg-elevated), rgba(54,209,224,0.06));
 }
 .plan-card.popular::after {
-    content: "â­ Ù¾ÛŒØ´Ù†Ù‡Ø§Ø¯ÛŒ";
+    content: "⭐ پیشنهادی";
     position: absolute;
     inset-block-start: 12px;
     inset-inline-end: 12px;
