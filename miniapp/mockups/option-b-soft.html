@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>نمونه B — Soft Fintech</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css">
+<style>
+  :root{
+    --bg:#0f1320; --card:#1a2030; --card2:#222a3e; --bd:rgba(255,255,255,.05);
+    --tx:#f3f5fb; --mut:#9aa4bd; --faint:#6b7390;
+    --indigo:#6d6cff; --violet:#9b5cff; --teal:#2bd4c0; --amber:#ffb84d; --rose:#ff6b9a;
+    --grad:linear-gradient(135deg,#6d6cff,#9b5cff);
+    --r:24px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{font-family:Vazirmatn,system-ui,sans-serif;background:#080a12;color:var(--tx);
+       display:flex;justify-content:center;min-height:100vh;padding:18px 0}
+  .phone{width:390px;max-width:100%;min-height:780px;position:relative;overflow:hidden;
+         background:var(--bg);border-radius:34px;border:1px solid rgba(255,255,255,.05);
+         box-shadow:0 30px 80px rgba(0,0,0,.55)}
+  .scroll{padding:22px 18px 100px}
+  .hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+  .who{display:flex;align-items:center;gap:12px}
+  .av{width:48px;height:48px;border-radius:16px;background:var(--grad);display:grid;place-items:center;
+      font-weight:800;color:#fff;font-size:20px}
+  .who b{display:block;font-size:16px}
+  .who span{font-size:12.5px;color:var(--mut)}
+  .iconbtn{width:44px;height:44px;border-radius:14px;background:var(--card);display:grid;place-items:center;color:var(--mut)}
+  /* big balance card */
+  .bal-card{border-radius:26px;padding:22px;margin-bottom:20px;color:#fff;position:relative;overflow:hidden;
+            background:linear-gradient(135deg,#6d6cff,#9b5cff 60%,#b95cff)}
+  .bal-card::after{content:"";position:absolute;width:180px;height:180px;border-radius:50%;
+                   background:rgba(255,255,255,.16);top:-70px;left:-40px}
+  .bal-card .l{font-size:13px;opacity:.85}
+  .bal-card .n{font-size:40px;font-weight:800;margin:8px 0 18px;direction:ltr;text-align:right;letter-spacing:-1px}
+  .bal-card .row{display:flex;gap:10px;position:relative}
+  .bc-btn{flex:1;border:none;border-radius:15px;padding:13px;font-family:inherit;font-weight:700;font-size:14px;
+          background:rgba(255,255,255,.18);color:#fff;backdrop-filter:blur(6px);cursor:pointer}
+  .bc-btn.solid{background:#fff;color:#6d3cff}
+  /* quick actions */
+  .quick{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:22px}
+  .qa{background:var(--card);border-radius:20px;padding:16px 8px;text-align:center}
+  .qchip{width:46px;height:46px;border-radius:15px;display:grid;place-items:center;margin:0 auto 9px;font-size:21px}
+  .qa b{font-size:12px;font-weight:600}
+  /* stats 2x2 */
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:24px}
+  .st{background:var(--card);border-radius:20px;padding:16px}
+  .st .sl{font-size:12px;color:var(--mut)}
+  .st .sv{font-size:26px;font-weight:800;margin-top:4px;direction:ltr;text-align:right}
+  /* section */
+  .sec{font-size:15px;font-weight:700;margin:0 4px 14px}
+  /* config card with bar */
+  .cfg{background:var(--card);border-radius:22px;padding:18px;margin-bottom:14px}
+  .cfg-h{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+  .cfg-h .nm{display:flex;align-items:center;gap:10px}
+  .cfg-h .ico{width:42px;height:42px;border-radius:13px;background:rgba(109,108,255,.16);color:#a9a8ff;display:grid;place-items:center}
+  .cfg-h b{font-size:15px}
+  .cfg-h .nm span{font-size:11.5px;color:var(--mut);display:block;margin-top:2px}
+  .chip{font-size:11px;font-weight:700;padding:5px 12px;border-radius:999px;background:rgba(43,212,192,.15);color:#7af0e3}
+  .bar{height:9px;border-radius:999px;background:rgba(255,255,255,.07);overflow:hidden;margin-bottom:10px}
+  .bar i{display:block;height:100%;width:14%;border-radius:999px;background:linear-gradient(90deg,#6d6cff,#2bd4c0)}
+  .cfg-f{display:flex;justify-content:space-between;font-size:12.5px;color:var(--mut)}
+  .cfg-f b{color:var(--tx);font-weight:700;direction:ltr}
+  /* nav */
+  .nav{position:absolute;left:14px;right:14px;bottom:14px;height:66px;border-radius:24px;background:var(--card2);
+       display:flex;align-items:center;justify-content:space-around;padding:0 8px;box-shadow:0 12px 30px rgba(0,0,0,.4)}
+  .nb{display:flex;flex-direction:column;align-items:center;gap:4px;color:var(--mut);font-size:10px;font-weight:600;
+      padding:8px 10px;border-radius:16px}
+  .nb .ic{width:22px;height:22px}
+  .nb.on{background:var(--grad);color:#fff}
+  svg{stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="scroll">
+    <div class="hdr">
+      <div class="who"><div class="av">S</div><div><b>سینا</b><span>سلام، خوش اومدی 👋</span></div></div>
+      <button class="iconbtn"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 1 0 2.13-5.88L21 8"/></svg></button>
+    </div>
+
+    <div class="bal-card">
+      <div class="l">موجودی کیف پول</div>
+      <div class="n">$199.63</div>
+      <div class="row">
+        <button class="bc-btn solid">＋ شارژ حساب</button>
+        <button class="bc-btn">🛒 خرید سرویس</button>
+      </div>
+    </div>
+
+    <div class="quick">
+      <div class="qa"><div class="qchip" style="background:rgba(109,108,255,.16)">🛒</div><b>خرید</b></div>
+      <div class="qa"><div class="qchip" style="background:rgba(43,212,192,.16)">🔄</div><b>تمدید</b></div>
+      <div class="qa"><div class="qchip" style="background:rgba(255,184,77,.16)">💬</div><b>پشتیبانی</b></div>
+    </div>
+
+    <div class="stats">
+      <div class="st"><div class="sl">سرویس فعال</div><div class="sv" style="color:#2bd4c0">۲</div></div>
+      <div class="st"><div class="sl">حجم باقی‌مانده</div><div class="sv" style="color:#a9a8ff">5.9 GB</div></div>
+    </div>
+
+    <div class="sec">سرویس‌های من</div>
+    <div class="cfg">
+      <div class="cfg-h">
+        <div class="nm"><div class="ico"><svg width="20" height="20" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/></svg></div>
+          <div><b>MyVPN</b><span>یک‌ماهه · ۱۰ گیگ</span></div></div>
+        <span class="chip">فعال</span>
+      </div>
+      <div class="bar"><i style="width:14%"></i></div>
+      <div class="cfg-f"><span>مصرف: <b>0.98 / 6.9 GB</b></span><span>زمان: <b>176 روز</b></span></div>
+    </div>
+    <div class="cfg">
+      <div class="cfg-h">
+        <div class="nm"><div class="ico" style="background:rgba(255,184,77,.16);color:#ffd089"><svg width="20" height="20" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/></svg></div>
+          <div><b>phone-1</b><span>یک‌ماهه · ۳۰ گیگ</span></div></div>
+        <span class="chip" style="background:rgba(255,184,77,.15);color:#ffd089">رو به اتمام</span>
+      </div>
+      <div class="bar"><i style="width:68%;background:linear-gradient(90deg,#ffb84d,#ff6b9a)"></i></div>
+      <div class="cfg-f"><span>مصرف: <b>20.4 / 30 GB</b></span><span>زمان: <b>12 روز</b></span></div>
+    </div>
+  </div>
+
+  <div class="nav">
+    <div class="nb on"><svg class="ic" viewBox="0 0 24 24"><path d="M3 12 12 3l9 9"/><path d="M5 10v10h14V10"/></svg>خانه</div>
+    <div class="nb"><svg class="ic" viewBox="0 0 24 24"><path d="M3 9 5 3h14l2 6"/><path d="M3 9v11h18V9"/></svg>فروشگاه</div>
+    <div class="nb"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/></svg>سرویس‌ها</div>
+    <div class="nb"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="14" rx="3"/><path d="M3 10h18"/></svg>کیف پول</div>
+    <div class="nb"><svg class="ic" viewBox="0 0 24 24"><path d="M4 5h16v11H7l-3 3z"/></svg>پشتیبانی</div>
+  </div>
+</div>
+</body>
+</html>

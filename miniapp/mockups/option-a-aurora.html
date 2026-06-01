@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>نمونه A — Aurora Glass</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css">
+<style>
+  :root{
+    --bg:#0a0e17; --card:rgba(22,28,40,.55); --card2:rgba(30,38,54,.5);
+    --bd:rgba(255,255,255,.08); --bd2:rgba(255,255,255,.14);
+    --tx:#eef2fb; --mut:rgba(238,242,251,.62); --faint:rgba(238,242,251,.42);
+    --cyan:#36d1e0; --emer:#29c47a; --viol:#8b6fff; --amber:#f4b740; --rose:#f25e88;
+    --grad:linear-gradient(135deg,#36d1e0,#29c47a);
+    --r:18px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{font-family:Vazirmatn,system-ui,sans-serif;background:#05070c;color:var(--tx);
+       display:flex;justify-content:center;min-height:100vh;padding:18px 0}
+  .phone{width:390px;max-width:100%;min-height:780px;position:relative;overflow:hidden;
+         background:var(--bg);border-radius:34px;border:1px solid rgba(255,255,255,.06);
+         box-shadow:0 30px 80px rgba(0,0,0,.6)}
+  .aurora{position:absolute;inset:0;pointer-events:none;
+    background:
+      radial-gradient(60% 40% at 15% 8%,rgba(54,209,224,.20),transparent 60%),
+      radial-gradient(55% 38% at 88% 12%,rgba(139,111,255,.18),transparent 60%),
+      radial-gradient(70% 50% at 50% 105%,rgba(41,196,122,.12),transparent 60%);}
+  .scroll{position:relative;padding:20px 16px 96px}
+  /* header */
+  .hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+  .who{display:flex;align-items:center;gap:11px}
+  .av{width:46px;height:46px;border-radius:14px;background:var(--grad);display:grid;place-items:center;
+      font-weight:800;color:#04111a;font-size:19px;box-shadow:0 6px 18px rgba(54,209,224,.35)}
+  .who b{display:block;font-size:15px}
+  .who span{font-size:12px;color:var(--mut)}
+  .iconbtn{width:42px;height:42px;border-radius:13px;background:var(--card);border:1px solid var(--bd);
+           display:grid;place-items:center;color:var(--mut)}
+  /* balance hero */
+  .hero{position:relative;border-radius:24px;padding:20px;margin-bottom:18px;
+        background:linear-gradient(135deg,rgba(54,209,224,.14),rgba(41,196,122,.07));
+        border:1px solid var(--bd2);overflow:hidden;backdrop-filter:blur(14px)}
+  .hero .glow{position:absolute;width:200px;height:200px;border-radius:50%;background:var(--grad);
+              filter:blur(60px);opacity:.22;top:-60px;left:-30px}
+  .hero .lbl{font-size:12.5px;color:var(--mut);display:flex;align-items:center;gap:6px}
+  .hero .bal{font-size:38px;font-weight:800;margin:6px 0 14px;direction:ltr;text-align:right;letter-spacing:-.5px}
+  .hero .btns{display:flex;gap:9px}
+  .btn{flex:1;border:none;border-radius:13px;padding:12px;font-family:inherit;font-weight:700;font-size:13.5px;
+       display:flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;color:var(--tx)}
+  .btn.pri{background:var(--grad);color:#04111a;box-shadow:0 8px 22px rgba(54,209,224,.3)}
+  .btn.sec{background:rgba(255,255,255,.06);border:1px solid var(--bd)}
+  /* quick */
+  .quick{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:20px}
+  .qa{background:var(--card);border:1px solid var(--bd);border-radius:var(--r);padding:14px 8px;
+      text-align:center;backdrop-filter:blur(10px)}
+  .qa .e{font-size:22px}
+  .qa b{display:block;font-size:11.5px;margin-top:6px;font-weight:600}
+  /* section title */
+  .sec{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700;margin:0 2px 12px}
+  .sec::after{content:"";flex:1;height:1px;background:var(--bd)}
+  /* config card */
+  .cfg{background:var(--card);border:1px solid var(--bd);border-radius:22px;padding:16px;margin-bottom:12px;
+       display:flex;gap:14px;align-items:center;backdrop-filter:blur(10px)}
+  .ring{width:74px;height:74px;flex-shrink:0;border-radius:50%;display:grid;place-items:center;position:relative;
+        background:conic-gradient(var(--cyan) 0 14%,rgba(255,255,255,.07) 14% 100%)}
+  .ring::before{content:"";position:absolute;inset:7px;border-radius:50%;background:#11151e}
+  .ring b{position:relative;font-size:15px;font-weight:800}
+  .ring span{position:relative;display:block;font-size:8.5px;color:var(--mut);text-align:center}
+  .cfg-info{flex:1;min-width:0}
+  .cfg-top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+  .cfg-top b{font-size:14.5px}
+  .pill{font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:999px;background:rgba(41,196,122,.16);color:#7ef0bb}
+  .meta{display:flex;gap:14px;font-size:11.5px;color:var(--mut)}
+  .meta b{color:var(--tx);font-weight:700;direction:ltr}
+  /* nav */
+  .nav{position:absolute;left:12px;right:12px;bottom:12px;height:64px;border-radius:20px;
+       background:rgba(16,20,30,.78);border:1px solid var(--bd2);backdrop-filter:blur(16px);
+       display:flex;align-items:center;justify-content:space-around;padding:0 6px}
+  .nb{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--faint);font-size:10px;font-weight:600}
+  .nb .ic{width:22px;height:22px}
+  .nb.on{color:var(--cyan)}
+  .nb.on .ic{filter:drop-shadow(0 0 8px rgba(54,209,224,.6))}
+  svg{stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="aurora"></div>
+  <div class="scroll">
+    <div class="hdr">
+      <div class="who">
+        <div class="av">S</div>
+        <div><b>سینا</b><span>V2rays Emergency</span></div>
+      </div>
+      <button class="iconbtn"><svg width="20" height="20" viewBox="0 0 24 24"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 1 0 2.13-5.88L21 8"/></svg></button>
+    </div>
+
+    <div class="hero">
+      <div class="glow"></div>
+      <div class="lbl">💳 موجودی کیف پول</div>
+      <div class="bal">$199.63</div>
+      <div class="btns">
+        <button class="btn pri">＋ شارژ حساب</button>
+        <button class="btn sec">🛒 خرید سرویس</button>
+      </div>
+    </div>
+
+    <div class="quick">
+      <div class="qa"><div class="e">🛒</div><b>خرید</b></div>
+      <div class="qa"><div class="e">🔄</div><b>تمدید</b></div>
+      <div class="qa"><div class="e">💬</div><b>پشتیبانی</b></div>
+    </div>
+
+    <div class="sec">سرویس‌های فعال</div>
+    <div class="cfg">
+      <div class="ring"><b>14%</b><span>مصرف</span></div>
+      <div class="cfg-info">
+        <div class="cfg-top"><b>MyVPN</b><span class="pill">فعال</span></div>
+        <div class="meta">
+          <span>حجم <b>0.98/6.9 GB</b></span>
+          <span>زمان <b>176 روز</b></span>
+        </div>
+      </div>
+    </div>
+    <div class="cfg">
+      <div class="ring" style="background:conic-gradient(var(--amber) 0 68%,rgba(255,255,255,.07) 68% 100%)"><b>68%</b><span>مصرف</span></div>
+      <div class="cfg-info">
+        <div class="cfg-top"><b>phone-1</b><span class="pill" style="background:rgba(244,183,64,.16);color:#ffdf9e">رو به اتمام</span></div>
+        <div class="meta">
+          <span>حجم <b>20.4/30 GB</b></span>
+          <span>زمان <b>12 روز</b></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="nav">
+    <div class="nb on"><svg class="ic" viewBox="0 0 24 24"><path d="M3 12 12 3l9 9"/><path d="M5 10v10h14V10"/></svg>خانه</div>
+    <div class="nb"><svg class="ic" viewBox="0 0 24 24"><path d="M3 9 5 3h14l2 6"/><path d="M3 9v11h18V9"/></svg>فروشگاه</div>
+    <div class="nb"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/></svg>سرویس‌ها</div>
+    <div class="nb"><svg class="ic" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="14" rx="3"/><path d="M3 10h18"/></svg>کیف پول</div>
+    <div class="nb"><svg class="ic" viewBox="0 0 24 24"><path d="M4 5h16v11H7l-3 3z"/></svg>پشتیبانی</div>
+  </div>
+</div>
+</body>
+</html>

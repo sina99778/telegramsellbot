@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>نمونه‌های طراحی مینی‌اپ</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Vazirmatn,system-ui,sans-serif;background:#06070d;color:#eef2fb;padding:22px 14px 60px}
+  h1{font-size:20px;text-align:center;margin-bottom:4px}
+  .sub{font-size:13px;color:#9aa4bd;text-align:center;margin-bottom:24px}
+  .grid{display:flex;flex-wrap:wrap;gap:24px;justify-content:center}
+  .opt{width:392px;max-width:100%}
+  .tag{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;padding:0 4px}
+  .tag b{font-size:16px}
+  .tag .badge{font-size:11px;font-weight:700;color:#04111a;padding:4px 12px;border-radius:999px}
+  .opt p{font-size:12.5px;color:#9aa4bd;margin:0 4px 12px;line-height:1.7}
+  .frame{width:100%;aspect-ratio:390/800;border:1px solid rgba(255,255,255,.08);border-radius:30px;overflow:hidden;background:#000}
+  iframe{width:390px;height:800px;border:0;transform-origin:top right;display:block}
+  .open{display:inline-block;margin-top:12px;font-size:13px;font-weight:700;color:#36d1e0;text-decoration:none}
+  /* scale the iframe to fit the column width */
+  @media (max-width:430px){
+    .frame{aspect-ratio:390/800}
+    iframe{transform:scale(calc((100vw - 28px)/390))}
+    .opt{width:100%}
+  }
+</style>
+</head>
+<body>
+  <h1>🎨 سه نمونه طراحی برای مینی‌اپ</h1>
+  <p class="sub">هر کدوم رو ببین و بگو کدوم رو بسازم — یا ترکیبی ازشون</p>
+
+  <div class="grid">
+    <div class="opt">
+      <div class="tag"><b>A — شیشه‌ای پریمیوم</b><span class="badge" style="background:#36d1e0">Aurora</span></div>
+      <p>تیره و لاکچری، افکت شیشه‌ای، گرادیان فیروزه‌ای→سبز، حلقه‌ی مصرف. حسِ «گرون و حرفه‌ای».</p>
+      <div class="frame"><iframe src="option-a-aurora.html" scrolling="no"></iframe></div>
+      <a class="open" href="option-a-aurora.html" target="_blank">باز کردن تمام‌صفحه ↗</a>
+    </div>
+
+    <div class="opt">
+      <div class="tag"><b>B — فین‌تک نرم</b><span class="badge" style="background:#7c6cff">Soft</span></div>
+      <p>کارت‌های بزرگِ گرد، رنگ بنفش/آبی، کارت موجودیِ رنگی، نوار پیشرفت افقی. دوستانه و خلوت — شبیه اپ‌های کیف‌پول مدرن.</p>
+      <div class="frame"><iframe src="option-b-soft.html" scrolling="no"></iframe></div>
+      <a class="open" href="option-b-soft.html" target="_blank">باز کردن تمام‌صفحه ↗</a>
+    </div>
+
+    <div class="opt">
+      <div class="tag"><b>C — پر‌انرژی</b><span class="badge" style="background:linear-gradient(120deg,#ff4d8d,#1fd1ff)">Vibrant</span></div>
+      <p>گرادیان‌های جسور صورتی→بنفش→آبی، نئون و گلو، حسِ صرافی‌های کریپتو. پر‌جنب‌و‌جوش و چشم‌گیر.</p>
+      <div class="frame"><iframe src="option-c-vibrant.html" scrolling="no"></iframe></div>
+      <a class="open" href="option-c-vibrant.html" target="_blank">باز کردن تمام‌صفحه ↗</a>
+    </div>
+  </div>
+</body>
+</html>

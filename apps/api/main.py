@@ -65,11 +65,16 @@ if MINIAPP_DIR.exists():
 
     app.add_middleware(NoCacheMiniAppMiddleware)
 
-    # Mount sub-directories for static assets
-    for subdir in ("css", "js", "assets"):
+    # Mount sub-directories for static assets. "mockups" holds standalone
+    # design-preview pages (served so the operator can open them in a browser).
+    for subdir in ("css", "js", "assets", "mockups"):
         sub_path = MINIAPP_DIR / subdir
         if sub_path.exists():
-            app.mount(f"/miniapp/{subdir}", StaticFiles(directory=str(sub_path)), name=f"miniapp-{subdir}")
+            app.mount(
+                f"/miniapp/{subdir}",
+                StaticFiles(directory=str(sub_path), html=(subdir == "mockups")),
+                name=f"miniapp-{subdir}",
+            )
 
     @app.get("/miniapp")
     @app.get("/miniapp/")
