@@ -8,7 +8,7 @@
 <style>
   :root{
     /* پالت رنگیِ نمونه C */
-    --bg:#070611; --card:rgba(20,16,36,.6); --bd:rgba(255,255,255,.08); --bd2:rgba(255,255,255,.15);
+    --bg:#070611; --card:rgba(20,16,36,.6); --card2:#181430; --bd:rgba(255,255,255,.08); --bd2:rgba(255,255,255,.15);
     --tx:#f5f3ff; --mut:rgba(245,243,255,.64); --faint:rgba(245,243,255,.42);
     --p1:#ff4d8d; --p2:#7c5cff; --p3:#1fd1ff; --emer:#33e0a0; --amber:#ffc24d;
     --grad:linear-gradient(120deg,#ff4d8d,#7c5cff 55%,#1fd1ff);
@@ -16,54 +16,52 @@
   *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
   body{font-family:Vazirmatn,system-ui,sans-serif;background:#040309;color:var(--tx);
        display:flex;justify-content:center;min-height:100vh;padding:18px 0}
-  .phone{width:390px;max-width:100%;min-height:790px;position:relative;overflow:hidden;
+  .phone{width:390px;max-width:100%;min-height:800px;position:relative;overflow:hidden;
          background:var(--bg);border-radius:34px;border:1px solid rgba(255,255,255,.06);
          box-shadow:0 30px 80px rgba(0,0,0,.65)}
-  /* پس‌زمینه‌ی هاله‌ای (از A) ولی با رنگ‌های C */
+  /* پس‌زمینه‌ی هاله‌ای (از A) با رنگ‌های C */
   .aurora{position:absolute;inset:0;pointer-events:none;
     background:
       radial-gradient(58% 40% at 14% 6%,rgba(255,77,141,.20),transparent 60%),
       radial-gradient(55% 38% at 90% 12%,rgba(124,92,255,.20),transparent 60%),
       radial-gradient(70% 50% at 50% 104%,rgba(31,209,255,.14),transparent 60%);}
-  .scroll{position:relative;padding:20px 16px 98px}
+  .scroll{position:relative;padding:20px 16px 100px}
   /* header */
   .hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
   .who{display:flex;align-items:center;gap:11px}
-  .av{width:46px;height:46px;border-radius:15px;background:var(--grad);display:grid;place-items:center;
-      font-weight:800;color:#fff;font-size:19px;box-shadow:0 0 22px rgba(124,92,255,.55)}
+  .av{width:48px;height:48px;border-radius:16px;background:var(--grad);display:grid;place-items:center;
+      font-weight:800;color:#fff;font-size:20px;box-shadow:0 0 22px rgba(124,92,255,.55)}
   .who b{display:block;font-size:15px}
   .who span{font-size:12px;color:var(--mut)}
-  .iconbtn{width:42px;height:42px;border-radius:13px;background:var(--card);border:1px solid var(--bd);
+  .iconbtn{width:44px;height:44px;border-radius:15px;background:var(--card);border:1px solid var(--bd);
            display:grid;place-items:center;color:var(--mut);backdrop-filter:blur(10px)}
-  /* hero: کارت شیشه‌ای (A) + متنِ گرادیانیِ C + گلو */
-  .hero{position:relative;border-radius:24px;padding:20px;margin-bottom:18px;overflow:hidden;
+  /* hero: کارت شیشه‌ای (A) + متنِ گرادیانیِ C + دکمه‌های نرمِ B */
+  .hero{position:relative;border-radius:26px;padding:22px;margin-bottom:20px;overflow:hidden;
         background:var(--card);border:1px solid var(--bd2);backdrop-filter:blur(14px)}
   .hero .glow{position:absolute;width:220px;height:200px;border-radius:50%;background:var(--grad);
               filter:blur(64px);opacity:.32;top:-70px;left:-30px}
   .hero .lbl{font-size:12.5px;color:var(--mut);display:flex;align-items:center;gap:6px;position:relative}
-  .hero .bal{font-size:39px;font-weight:800;margin:6px 0 14px;direction:ltr;text-align:right;letter-spacing:-.8px;position:relative;
+  .hero .bal{font-size:40px;font-weight:800;margin:6px 0 16px;direction:ltr;text-align:right;letter-spacing:-.8px;position:relative;
              background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
-  .hero .btns{display:flex;gap:9px;position:relative}
-  .btn{flex:1;border:none;border-radius:13px;padding:12px;font-family:inherit;font-weight:800;font-size:13.5px;
+  .hero .btns{display:flex;gap:10px;position:relative}
+  /* دکمه‌های نرم و گردِ B */
+  .btn{flex:1;border:none;border-radius:16px;padding:14px;font-family:inherit;font-weight:800;font-size:14px;
        display:flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;color:var(--tx)}
   .btn.pri{background:var(--grad);color:#fff;box-shadow:0 8px 24px rgba(255,77,141,.32)}
-  .btn.sec{background:rgba(255,255,255,.06);border:1px solid var(--bd2)}
-  /* quick (A glass + C tint) */
-  .quick{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:20px}
-  .qa{position:relative;background:var(--card);border:1px solid var(--bd);border-radius:18px;padding:14px 8px;
-      text-align:center;backdrop-filter:blur(10px);overflow:hidden}
-  .qa::before{content:"";position:absolute;inset:0;background:var(--grad);opacity:.06}
-  .qa .e{font-size:22px;position:relative}
-  .qa b{display:block;font-size:11.5px;margin-top:6px;font-weight:700;position:relative}
+  .btn.sec{background:rgba(255,255,255,.10);border:1px solid var(--bd2)}
+  /* quick actions: استایل چیپِ B + رنگ‌های C */
+  .quick{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:22px}
+  .qa{background:var(--card);border:1px solid var(--bd);border-radius:20px;padding:16px 8px;text-align:center;backdrop-filter:blur(10px)}
+  .qchip{width:48px;height:48px;border-radius:16px;display:grid;place-items:center;margin:0 auto 9px;font-size:22px}
+  .qa b{font-size:12px;font-weight:700}
   /* section title (C accent bar) */
-  .sec{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:800;margin:0 2px 12px}
+  .sec{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:800;margin:0 2px 14px}
   .sec i{width:4px;height:18px;border-radius:4px;background:var(--grad)}
   .sec::after{content:"";flex:1;height:1px;background:var(--bd)}
   /* config card: حلقه‌ی مصرف (A) + رنگ/گلوی C + شیشه */
   .cfg{background:var(--card);border:1px solid var(--bd);border-radius:22px;padding:16px;margin-bottom:12px;
        display:flex;gap:14px;align-items:center;backdrop-filter:blur(10px)}
-  .ring{width:76px;height:76px;flex-shrink:0;border-radius:50%;display:grid;place-items:center;position:relative;
-        background:conic-gradient(from 220deg,#ff4d8d,#7c5cff 40%,#1fd1ff 14%,rgba(255,255,255,.07) 14% 100%)}
+  .ring{width:76px;height:76px;flex-shrink:0;border-radius:50%;display:grid;place-items:center;position:relative}
   .ring.ok{background:conic-gradient(from 220deg,#1fd1ff,#7c5cff,#ff4d8d 14%,rgba(255,255,255,.07) 14% 100%);
            filter:drop-shadow(0 0 10px rgba(124,92,255,.4))}
   .ring.warn{background:conic-gradient(#ffc24d 0 68%,rgba(255,255,255,.07) 68% 100%);filter:drop-shadow(0 0 10px rgba(255,194,77,.35))}
@@ -73,20 +71,19 @@
   .cfg-info{flex:1;min-width:0}
   .cfg-top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
   .cfg-top b{font-size:14.5px}
-  .pill{font-size:10.5px;font-weight:800;padding:3px 10px;border-radius:999px;background:rgba(51,224,160,.16);color:#5ff3bc;
+  .pill{font-size:10.5px;font-weight:800;padding:4px 11px;border-radius:999px;background:rgba(51,224,160,.16);color:#5ff3bc;
         box-shadow:0 0 12px rgba(51,224,160,.22)}
   .pill.warn{background:rgba(255,194,77,.16);color:#ffd98a;box-shadow:0 0 12px rgba(255,194,77,.2)}
   .meta{display:flex;gap:14px;font-size:11.5px;color:var(--mut)}
   .meta b{color:var(--tx);font-weight:700;direction:ltr}
-  /* nav: شیشه‌ای (A) + نئونِ C */
-  .nav{position:absolute;left:12px;right:12px;bottom:12px;height:64px;border-radius:20px;
+  /* nav: شیشه‌ای (A) + ایندیکیتورِ قرصیِ B + نئونِ C */
+  .nav{position:absolute;left:14px;right:14px;bottom:14px;height:66px;border-radius:24px;
        background:rgba(12,9,24,.82);border:1px solid var(--bd2);backdrop-filter:blur(16px);
-       display:flex;align-items:center;justify-content:space-around;padding:0 6px}
-  .nb{display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--faint);font-size:10px;font-weight:700;position:relative}
+       display:flex;align-items:center;justify-content:space-around;padding:0 8px}
+  .nb{display:flex;flex-direction:column;align-items:center;gap:4px;color:var(--faint);font-size:10px;font-weight:700;
+      padding:8px 12px;border-radius:16px}
   .nb .ic{width:22px;height:22px}
-  .nb.on{color:#fff}
-  .nb.on .ic{color:#1fd1ff;filter:drop-shadow(0 0 9px rgba(31,209,255,.85))}
-  .nb.on::after{content:"";position:absolute;bottom:-9px;width:5px;height:5px;border-radius:50%;background:#1fd1ff;box-shadow:0 0 9px #1fd1ff}
+  .nb.on{background:var(--grad);color:#fff;box-shadow:0 6px 18px rgba(124,92,255,.4)}
   svg{stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 </style>
 </head>
@@ -110,9 +107,9 @@
     </div>
 
     <div class="quick">
-      <div class="qa"><div class="e">🛒</div><b>خرید</b></div>
-      <div class="qa"><div class="e">🔄</div><b>تمدید</b></div>
-      <div class="qa"><div class="e">💬</div><b>پشتیبانی</b></div>
+      <div class="qa"><div class="qchip" style="background:rgba(255,77,141,.16)">🛒</div><b>خرید</b></div>
+      <div class="qa"><div class="qchip" style="background:rgba(124,92,255,.16)">🔄</div><b>تمدید</b></div>
+      <div class="qa"><div class="qchip" style="background:rgba(31,209,255,.16)">💬</div><b>پشتیبانی</b></div>
     </div>
 
     <div class="sec"><i></i> سرویس‌های فعال</div>
