@@ -5,7 +5,7 @@ import logging
 from datetime import timedelta
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -22,6 +22,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PLAN_DURATION_DAYS = 30
 XUI_USAGE_SYNC_CONCURRENCY = 10
+# How many CONSECUTIVE "client not found on panel" sync cycles before we trust
+# it and mark the sub expired. A single transient panel error (or a flaky
+# "no traffic stats found") must never expire a config that still has valid
+# time + volume. Sync runs ~every minute, so 5 ≈ 5 minutes of sustained gone.
+USAGE_GONE_STRIKES = 5
 
 
 async def sync_xui_usage_and_status(
@@ -54,25 +59,35 @@ async def sync_xui_usage_and_status(
         except XUIRequestError as exc:
             error_msg = str(exc)
             low = error_msg.lower()
-            # The panel signals "this client no longer exists" several ways
-            # across X-UI versions: "No traffic stats found", a 404, or
-            # "Inbound Not Found For Email: <email>" (the email isn't on any
-            # inbound anymore). All three mean the config was deleted on the
-            # panel → mark the sub expired so we stop hammering the API every
-            # cycle with the same orphaned email.
-            if (
+            # Does the panel ACTIVELY say this client is gone? ("No traffic stats
+            # found", a 404, or "Inbound Not Found For Email"). A transient
+            # network/5xx error is NOT this and must never expire a config.
+            client_gone = (
                 "no traffic stats found" in low
                 or "404" in error_msg
                 or "not found" in low  # covers "Inbound Not Found For Email"
-            ):
-                logger.warning(
-                    "[SYNC] Client '%s' not found on panel — marking as deleted (sub=%s)",
-                    xui_record.email, subscription.id,
-                )
-                subscription.status = "expired"
-                subscription.expired_at = utcnow()
-                xui_record.is_active = False
-                any_expired = True
+            )
+            if client_gone:
+                # Count consecutive strikes. Only after several in a row do we
+                # trust it and expire — a single flaky response (the panel
+                # sometimes returns "no traffic stats found" for a live client)
+                # used to instantly expire a perfectly valid config.
+                strikes = (subscription.usage_sync_failures or 0) + 1
+                subscription.usage_sync_failures = strikes
+                if strikes >= USAGE_GONE_STRIKES:
+                    logger.warning(
+                        "[SYNC] Client '%s' reported gone %d cycles in a row — marking expired (sub=%s)",
+                        xui_record.email, strikes, subscription.id,
+                    )
+                    subscription.status = "expired"
+                    subscription.expired_at = utcnow()
+                    xui_record.is_active = False
+                    any_expired = True
+                else:
+                    logger.info(
+                        "[SYNC] Client '%s' not found (strike %d/%d) — leaving sub untouched (sub=%s)",
+                        xui_record.email, strikes, USAGE_GONE_STRIKES, subscription.id,
+                    )
                 return
             logger.warning("[SYNC] Error fetching traffic for '%s': %s", xui_record.email, exc)
             return
@@ -85,6 +100,26 @@ async def sync_xui_usage_and_status(
         subscription.used_bytes = traffic.used_bytes
         subscription.last_usage_sync_at = now
         xui_record.usage_bytes = traffic.used_bytes
+        subscription.usage_sync_failures = 0  # a successful read clears the strikes
+
+        # Recover a config that was previously (falsely) marked expired but is
+        # clearly ALIVE on the panel and still has valid time + volume. This
+        # auto-undoes the old "transient panel error → expired" damage that left
+        # working configs showing «منقضی» while still active on the panel.
+        if subscription.status == "expired":
+            time_ok = subscription.ends_at is None or subscription.ends_at > now
+            vol_ok = subscription.volume_bytes <= 0 or traffic.used_bytes < subscription.volume_bytes
+            if time_ok and vol_ok:
+                subscription.status = "active"
+                subscription.expired_at = None
+                xui_record.is_active = True
+                logger.info(
+                    "[SYNC] Reactivated falsely-expired sub %s (alive on panel, time+volume OK)",
+                    subscription.id,
+                )
+            else:
+                # Genuinely expired (time/volume) — leave as-is, don't reprocess.
+                return
 
         if subscription.status == "pending_activation" and traffic.used_bytes > 0:
             subscription.status = "active"
@@ -158,7 +193,25 @@ async def sync_all_subscription_states() -> None:
                 .selectinload(XUIInboundRecord.server)
                 .selectinload(XUIServerRecord.credentials),
             )
-            .where(Subscription.status.in_(["pending_activation", "active"]))
+            .where(
+                or_(
+                    Subscription.status.in_(["pending_activation", "active"]),
+                    # Re-check configs that are marked expired but STILL have a
+                    # future end date AND un-exhausted volume — the signature of
+                    # a falsely-expired config. If the panel confirms it's alive,
+                    # sync_one reactivates it. They drop out of this filter once
+                    # reactivated, so there's no permanent extra load.
+                    and_(
+                        Subscription.status == "expired",
+                        Subscription.ends_at.isnot(None),
+                        Subscription.ends_at > utcnow(),
+                        or_(
+                            Subscription.volume_bytes <= 0,
+                            Subscription.used_bytes < Subscription.volume_bytes,
+                        ),
+                    ),
+                )
+            )
         )
         subscriptions = list(result.scalars().all())
 
@@ -447,6 +500,19 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
             subscription.used_bytes = traffic.used_bytes
             subscription.last_usage_sync_at = now
             xui_record.usage_bytes = traffic.used_bytes
+            subscription.usage_sync_failures = 0
+
+            # Recover a falsely-expired config immediately when the user opens
+            # it: alive on the panel + valid time + volume → reactivate. Mirrors
+            # the same recovery in the background sync job.
+            if subscription.status == "expired":
+                _time_ok = subscription.ends_at is None or subscription.ends_at > now
+                _vol_ok = subscription.volume_bytes <= 0 or traffic.used_bytes < subscription.volume_bytes
+                if _time_ok and _vol_ok:
+                    subscription.status = "active"
+                    subscription.expired_at = None
+                    xui_record.is_active = True
+                    logger.info("[REALTIME] Reactivated falsely-expired sub %s on view", subscription.id)
 
             # Auto-activate if still pending and has usage
             if subscription.status == "pending_activation" and traffic.used_bytes > 0:

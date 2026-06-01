@@ -76,6 +76,13 @@ class Subscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     migration_usage_reconciled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false",
     )
+    # Consecutive "client not found on panel" responses during usage sync. We
+    # only mark a sub expired after several in a row — a single transient panel
+    # error (or a flaky "no traffic stats found") must NOT expire a config that
+    # still has valid time + volume. Reset to 0 on any successful usage read.
+    usage_sync_failures: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0",
+    )
     # User-attached label. Visible to the user on the my-configs list and to
     # the admin in the dashboard. Faoxima parity for `note` per-service.
     # Nullable so the column is harmless on the auto-sync migration path.
