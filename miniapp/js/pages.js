@@ -32,8 +32,11 @@ const Pages = (() => {
         if (gateways.nowpayments) {
             buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'nowpayments')">💎 درگاه ارزی NOWPayments</button>`);
         }
-        if (gateways.manual_crypto || gateways.card_to_card) {
-            buttons.push(`<button class="btn btn-secondary btn-block" onclick="Pages.openBotChat()">🤖 پرداخت دستی (از طریق ربات)</button>`);
+        if (gateways.card_to_card) {
+            buttons.push(`<button class="btn btn-secondary btn-block" onclick="${callbackPrefix} 'card_to_card')">💳 کارت به کارت</button>`);
+        }
+        if (gateways.manual_crypto) {
+            buttons.push(`<button class="btn btn-secondary btn-block" onclick="Pages.openBotChat()">🪙 ارز دیجیتال (از طریق ربات)</button>`);
         }
         if (!buttons.length) {
             buttons.push(`
@@ -471,6 +474,11 @@ const Pages = (() => {
                 payment_method: paymentMethod || 'wallet',
             });
 
+            if (paymentMethod === 'card_to_card' || result.payment_method === 'card_to_card') {
+                renderCardPaymentScreen(result, 'renewal');
+                return;
+            }
+
             if (result.invoice_url) {
                 UI.showModal(`
                     <div class="modal-title">فاکتور تمدید آماده است</div>
@@ -628,6 +636,10 @@ const Pages = (() => {
                 config_name: configName,
                 payment_method: paymentMethod,
             });
+            if (paymentMethod === 'card_to_card' || result.payment_method === 'card_to_card') {
+                renderCardPaymentScreen(result, 'purchase');
+                return;
+            }
             if (result.invoice_url) {
                 UI.showModal(`
                     <div class="modal-title">فاکتور آماده است</div>
@@ -696,6 +708,11 @@ const Pages = (() => {
                 config_name: configName,
                 payment_method: paymentMethod,
             });
+
+            if (paymentMethod === 'card_to_card' || result.payment_method === 'card_to_card') {
+                renderCardPaymentScreen(result, 'purchase');
+                return;
+            }
 
             if (result.invoice_url) {
                 UI.showModal(`
@@ -919,7 +936,7 @@ const Pages = (() => {
             UI.toast('در حال ساخت فاکتور...');
             const result = await API.createTopup({ amount, payment_method: paymentMethod });
             if (paymentMethod === 'card_to_card' || result.payment_method === 'card_to_card') {
-                renderCardTopupScreen(result);
+                renderCardPaymentScreen(result, 'topup');
                 return;
             }
             UI.showModal(`
@@ -939,21 +956,28 @@ const Pages = (() => {
         }
     }
 
-    // ─── Card-to-card top-up (fully in-app) ─────────────────────────────
+    // ─── Card-to-card payment screen (top-up / purchase / renewal) ──────
     function formatCardNumber(num) {
         const digits = String(num || '').replace(/\D/g, '');
         return digits.replace(/(\d{4})(?=\d)/g, '$1 ').trim() || escapeHtml(String(num || ''));
     }
 
-    function renderCardTopupScreen(result) {
+    // context ∈ {'topup','purchase','renewal'} — controls the wording and
+    // which page to reload after the user is done.
+    function renderCardPaymentScreen(result, context) {
+        context = context || 'topup';
+        const subtitle = {
+            topup: 'مبلغِ <b>دقیقِ</b> زیر را به این کارت واریز کنید، سپس عکس رسید را آپلود کنید تا کیف پول شارژ شود.',
+            purchase: 'مبلغِ <b>دقیقِ</b> زیر را به این کارت واریز کنید، سپس عکس رسید را آپلود کنید تا کانفیگ ساخته شود.',
+            renewal: 'مبلغِ <b>دقیقِ</b> زیر را به این کارت واریز کنید، سپس عکس رسید را آپلود کنید تا سرویس تمدید شود.',
+        }[context];
+        const laterReload = context === 'topup' ? 'Pages.load_wallet()' : 'Pages.load_dashboard()';
         const tomanRaw = String(Math.round(Number(result.pay_amount || 0)));
         const tomanFmt = Number(tomanRaw).toLocaleString('en-US');
         const cardNum = result.card_number || '';
         UI.showModal(`
             <div class="modal-title">پرداخت کارت به کارت</div>
-            <p class="form-hint" style="text-align:center;margin-bottom:14px">
-                مبلغِ <b>دقیقِ</b> زیر را به این کارت واریز کنید، سپس عکس رسید را آپلود کنید.
-            </p>
+            <p class="form-hint" style="text-align:center;margin-bottom:14px">${subtitle}</p>
 
             <div class="card-pay-box">
                 <button class="card-pay-row copyable" onclick="Pages.copyText('${tomanRaw}', this, 'مبلغ کپی شد')">
@@ -977,11 +1001,11 @@ const Pages = (() => {
             <label class="btn btn-primary btn-block" style="margin-top:14px;cursor:pointer">
                 ${UI.icon('image') || '📷'} انتخاب و ارسال عکس رسید
                 <input type="file" accept="image/*" style="display:none"
-                       onchange="Pages.onCardReceiptSelected('${result.payment_id}', this)">
+                       onchange="Pages.onCardReceiptSelected('${result.payment_id}', this, '${context}')">
             </label>
             <div id="card-receipt-status" class="form-hint" style="text-align:center;margin-top:8px"></div>
             <button class="btn btn-secondary btn-block" style="margin-top:10px"
-                    onclick="UI.closeModal(); Pages.load_wallet()">بعداً ارسال می‌کنم</button>
+                    onclick="UI.closeModal(); ${laterReload}">بعداً ارسال می‌کنم</button>
         `);
     }
 
@@ -996,7 +1020,7 @@ const Pages = (() => {
     }
 
     let _receiptUploading = false;
-    async function onCardReceiptSelected(paymentId, inputEl) {
+    async function onCardReceiptSelected(paymentId, inputEl, context) {
         const file = inputEl?.files?.[0];
         if (!file) return;
         if (_receiptUploading) return;
@@ -1014,10 +1038,13 @@ const Pages = (() => {
         try {
             const res = await API.uploadCardReceipt(paymentId, file);
             try { window.Telegram?.WebApp?.HapticFeedback?.notificationOccurred('success'); } catch {}
+            const doneReload = (context === 'purchase' || context === 'renewal')
+                ? "Pages.load_dashboard(); UI.navigate('configs')"
+                : 'Pages.load_wallet()';
             UI.showModal(`
                 <div class="modal-title">✅ رسید ثبت شد</div>
-                <p class="form-hint" style="text-align:center;margin:8px 0 16px">${escapeHtml(res.message || 'رسید شما برای مدیر ارسال شد. بعد از تأیید، کیف پول شارژ می‌شود.')}</p>
-                <button class="btn btn-primary btn-block" onclick="UI.closeModal(); Pages.load_wallet()">باشه</button>
+                <p class="form-hint" style="text-align:center;margin:8px 0 16px">${escapeHtml(res.message || 'رسید شما برای مدیر ارسال شد. بعد از تأیید انجام می‌شود.')}</p>
+                <button class="btn btn-primary btn-block" onclick="UI.closeModal(); ${doneReload}">باشه</button>
             `);
         } catch (e) {
             if (statusEl) statusEl.innerHTML = `<span style="color:var(--coral)">${escapeHtml(e.message)}</span>`;

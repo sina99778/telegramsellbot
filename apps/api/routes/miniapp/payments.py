@@ -232,14 +232,30 @@ async def upload_card_receipt(
             admin_ids.update(int(x) for x in result.scalars().all())
 
             builder = InlineKeyboardBuilder()
-            builder.button(text="تایید و شارژ کیف پول", callback_data=f"mp:ok:{payment.id}")
+            _ok_label = {
+                "direct_purchase": "تایید و ساخت کانفیگ",
+                "direct_renewal": "تایید و تمدید سرویس",
+            }.get(payment.kind, "تایید و شارژ کیف پول")
+            builder.button(text=_ok_label, callback_data=f"mp:ok:{payment.id}")
             builder.button(text="رد پرداخت", callback_data=f"mp:no:{payment.id}")
             builder.adjust(1)
+            _payload = payment.callback_payload or {}
+            _title = {
+                "direct_purchase": "🛒 درخواست خرید کانفیگ (کارت به کارت — از مینی‌اپ)",
+                "direct_renewal": "♻️ درخواست تمدید سرویس (کارت به کارت — از مینی‌اپ)",
+            }.get(payment.kind, "💳 درخواست شارژ کیف پول (کارت به کارت — از مینی‌اپ)")
+            _extra = ""
+            if payment.kind == "direct_purchase" and _payload.get("config_name"):
+                _extra = f"کانفیگ: <code>{_payload.get('config_name')}</code>\n"
+            elif payment.kind == "direct_renewal":
+                _rt = "حجم" if _payload.get("renew_type") == "volume" else "زمان"
+                _extra = f"نوع تمدید: {_rt} ({_payload.get('renew_amount')})\n"
             caption = (
-                "درخواست شارژ کارت به کارت (از مینی‌اپ)\n\n"
+                f"{_title}\n\n"
                 f"Telegram ID: <code>{user.telegram_id}</code>\n"
+                f"{_extra}"
                 f"مبلغ: <b>{int(payment.pay_amount or 0):,} تومان</b>\n"
-                f"شارژ دلاری: <b>{payment.price_amount:.2f} USD</b>\n\n"
+                f"معادل دلاری: <b>{payment.price_amount:.2f} USD</b>\n\n"
                 "بعد از بررسی رسید، تایید یا رد کنید."
             )
             for admin_id in admin_ids:
@@ -252,7 +268,11 @@ async def upload_card_receipt(
     except Exception as exc:
         logger.warning("admin notify after miniapp receipt upload failed: %s", exc)
 
+    _done_msg = {
+        "direct_purchase": "رسید شما ثبت شد. بعد از تأیید مدیر، کانفیگ ساخته و برایتان ارسال می‌شود.",
+        "direct_renewal": "رسید شما ثبت شد. بعد از تأیید مدیر، سرویس شما تمدید می‌شود.",
+    }.get(payment.kind, "رسید شما با موفقیت ثبت شد. بعد از تأیید مدیر، کیف پول شارژ می‌شود.")
     return {
         "ok": True,
-        "message": "رسید شما با موفقیت ثبت شد. بعد از تأیید مدیر، کیف پول شارژ می‌شود.",
+        "message": _done_msg,
     }

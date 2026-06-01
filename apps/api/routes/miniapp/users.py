@@ -1827,6 +1827,8 @@ async def create_purchase(
             return await _create_tetrapay_custom_purchase(session, user, draft)
         if payment_method == "tronado":
             return await _create_tronado_custom_purchase(session, user, draft)
+        if payment_method == "card_to_card":
+            return await _create_card_to_card_custom_purchase(session, user, draft)
         raise HTTPException(status_code=400, detail="روش پرداخت نامعتبر است.")
 
     plan = await session.get(Plan, body.plan_id)
@@ -1845,6 +1847,8 @@ async def create_purchase(
         return await _create_tetrapay_purchase(session, user, plan, config_name)
     if payment_method == "tronado":
         return await _create_tronado_purchase(session, user, plan, config_name)
+    if payment_method == "card_to_card":
+        return await _create_card_to_card_purchase(session, user, plan, config_name)
 
     raise HTTPException(status_code=400, detail="روش پرداخت نامعتبر است.")
 
@@ -1919,6 +1923,64 @@ async def _build_custom_purchase_gateway_draft(
             "source": "miniapp",
         },
     }
+
+
+def _card_purchase_response(payment: Payment, card: dict[str, Any]) -> PurchaseResponse:
+    return PurchaseResponse(
+        status="card_pending_receipt",
+        message="بعد از واریزِ مبلغِ دقیق، عکس رسید را آپلود کنید تا کانفیگ ساخته و ارسال شود.",
+        payment_method="card_to_card",
+        payment_id=payment.id,
+        pay_amount=card["pay_amount"],
+        pay_currency="IRT",
+        card_number=card["card_number"],
+        card_holder=card["card_holder"],
+        card_bank=card["card_bank"],
+        card_note=card["card_note"],
+    )
+
+
+async def _create_card_to_card_purchase(
+    session: AsyncSession,
+    user: User,
+    plan: Plan,
+    config_name: str,
+) -> PurchaseResponse:
+    """Card-to-card purchase of a real plan, completed in-app. Plan stock
+    was already ensured by create_purchase before dispatch."""
+    payment, card = await _build_card_to_card_payment(
+        session,
+        user,
+        price=plan.price,
+        price_currency=plan.currency or "USD",
+        kind="direct_purchase",
+        base_payload={
+            "plan_id": str(plan.id),
+            "config_name": config_name,
+            "discount_percent": 0,
+            "discount_id": None,
+            "purpose": "direct_purchase",
+        },
+    )
+    return _card_purchase_response(payment, card)
+
+
+async def _create_card_to_card_custom_purchase(
+    session: AsyncSession,
+    user: User,
+    draft: dict[str, Any],
+) -> PurchaseResponse:
+    """Card-to-card purchase of a custom (volume/duration) config. The draft
+    already carries the custom_* metadata that provisioning needs."""
+    payment, card = await _build_card_to_card_payment(
+        session,
+        user,
+        price=draft["price"],
+        price_currency="USD",
+        kind="direct_purchase",
+        base_payload=dict(draft["callback_payload"]),
+    )
+    return _card_purchase_response(payment, card)
 
 
 async def _purchase_with_wallet(
@@ -2517,6 +2579,30 @@ async def renew_subscription(
                 invoice_url=invoice.invoice_url,
             )
 
+    # ── Card-to-card renewal (completed in-app) ──
+    if body.payment_method == "card_to_card":
+        payment, card = await _build_card_to_card_payment(
+            session,
+            user,
+            price=price,
+            price_currency="USD",
+            kind="direct_renewal",
+            base_payload=dict(renewal_meta),
+        )
+        return RenewalResponse(
+            status="card_pending_receipt",
+            message="بعد از واریزِ مبلغِ دقیق، عکس رسید را آپلود کنید تا تمدید اعمال شود.",
+            price=price,
+            payment_method="card_to_card",
+            payment_id=payment.id,
+            pay_amount=card["pay_amount"],
+            pay_currency="IRT",
+            card_number=card["card_number"],
+            card_holder=card["card_holder"],
+            card_bank=card["card_bank"],
+            card_note=card["card_note"],
+        )
+
     # ── Wallet renewal (default) ──
     if body.payment_method != "wallet":
         raise HTTPException(status_code=400, detail="روش پرداخت نامعتبر.")
@@ -2715,14 +2801,23 @@ async def create_wallet_topup(
     raise HTTPException(status_code=400, detail="روش شارژ نامعتبر است.")
 
 
-async def _create_card_to_card_topup(
+async def _build_card_to_card_payment(
     session: AsyncSession,
     user: User,
-    amount: Decimal,
-) -> TopUpResponse:
-    """Create a card-to-card top-up invoice the user completes INSIDE the
-    mini-app (show card details → user transfers → uploads a receipt photo
-    via /payments/card_receipt). Mirrors the bot's topup_pay_card_to_card.
+    *,
+    price: Decimal,
+    price_currency: str,
+    kind: str,
+    base_payload: dict[str, Any],
+) -> tuple[Payment, dict[str, Any]]:
+    """Shared core for every in-app card-to-card flow (top-up, purchase,
+    renewal). Picks a card, converts USD→Toman at the configured rate,
+    applies the per-payment unique-amount jitter, and creates a
+    `card_to_card` Payment in `waiting_receipt` — byte-for-byte the shape
+    the bot creates, so the existing admin approve flow handles it.
+
+    Returns (payment, card_meta) where card_meta carries the fields the
+    mini-app needs to render the card inline.
     """
     from services.card_payments import compute_unique_toman, pick_card
 
@@ -2736,43 +2831,73 @@ async def _create_card_to_card_topup(
     if not toman_rate or toman_rate <= 0:
         raise HTTPException(status_code=400, detail="نرخ تبدیل تومان تنظیم نشده است.")
 
-    base_toman = int((amount * toman_rate).quantize(Decimal("1")))
+    price = Decimal(str(price))
+    base_toman = int((price * toman_rate).quantize(Decimal("1")))
     toman_amount = await compute_unique_toman(session, base_toman, gw.card_amount_jitter_toman)
+
+    payload = dict(base_payload)
+    payload.update({
+        "source": "miniapp",
+        "card_number": card["number"],
+        "card_holder": card["holder"],
+        "card_bank": card.get("bank"),
+        "base_toman": base_toman,
+        "jittered": toman_amount != base_toman,
+    })
 
     payment = Payment(
         user_id=user.id,
         provider="card_to_card",
-        kind="wallet_topup",
+        kind=kind,
         order_id=str(uuid4()),
         payment_status="waiting_receipt",
         pay_currency="IRT",
-        price_currency="USD",
-        price_amount=amount,
+        price_currency=price_currency,
+        price_amount=price,
         pay_amount=Decimal(toman_amount),
-        callback_payload={
-            "source": "miniapp",
-            "purpose": "wallet_topup",
-            "card_number": card["number"],
-            "card_holder": card["holder"],
-            "card_bank": card.get("bank"),
-            "base_toman": base_toman,
-            "jittered": toman_amount != base_toman,
-        },
+        callback_payload=payload,
     )
     session.add(payment)
     await session.flush()
+
+    card_meta = {
+        "pay_amount": Decimal(toman_amount),
+        "card_number": card["number"],
+        "card_holder": card["holder"],
+        "card_bank": card.get("bank"),
+        "card_note": getattr(gw, "card_note", None) or None,
+    }
+    return payment, card_meta
+
+
+async def _create_card_to_card_topup(
+    session: AsyncSession,
+    user: User,
+    amount: Decimal,
+) -> TopUpResponse:
+    """Card-to-card wallet top-up completed fully INSIDE the mini-app:
+    show card details → user transfers → uploads a receipt photo via
+    /payments/card_receipt. Mirrors the bot's topup_pay_card_to_card."""
+    payment, card = await _build_card_to_card_payment(
+        session,
+        user,
+        price=amount,
+        price_currency="USD",
+        kind="wallet_topup",
+        base_payload={"purpose": "wallet_topup"},
+    )
     return TopUpResponse(
         status="card_pending_receipt",
         message="بعد از واریزِ مبلغِ دقیق، عکس رسید را آپلود کنید تا کیف پول شارژ شود.",
         payment_method="card_to_card",
         invoice_url="",
         payment_id=payment.id,
-        pay_amount=Decimal(toman_amount),
+        pay_amount=card["pay_amount"],
         pay_currency="IRT",
-        card_number=card["number"],
-        card_holder=card["holder"],
-        card_bank=card.get("bank"),
-        card_note=getattr(gw, "card_note", None) or None,
+        card_number=card["card_number"],
+        card_holder=card["card_holder"],
+        card_bank=card["card_bank"],
+        card_note=card["card_note"],
     )
 
 

@@ -181,6 +181,13 @@ class PurchaseResponse(BaseModel):
     subscription_id: UUID | None = None
     sub_link: str | None = None
     vless_uri: str | None = None
+    # Card-to-card purchases render card details inline + receipt upload.
+    pay_amount: Decimal | None = None
+    pay_currency: str | None = None
+    card_number: str | None = None
+    card_holder: str | None = None
+    card_bank: str | None = None
+    card_note: str | None = None
 
 
 class TopUpRequest(BaseModel):
@@ -228,6 +235,15 @@ class RenewalResponse(BaseModel):
     price: Decimal
     balance: Decimal | None = None
     invoice_url: str | None = None
+    # Card-to-card renewals render card details inline + receipt upload.
+    payment_method: str | None = None
+    payment_id: UUID | None = None
+    pay_amount: Decimal | None = None
+    pay_currency: str | None = None
+    card_number: str | None = None
+    card_holder: str | None = None
+    card_bank: str | None = None
+    card_note: str | None = None
 
 
 class AdminModuleView(BaseModel):
