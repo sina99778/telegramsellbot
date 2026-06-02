@@ -42,9 +42,10 @@ export interface AllSettings {
   };
 }
 
-// Bot API 9.4 accepts "primary" / "success" / "danger", or empty for
-// no style (Telegram's default look).
-export type ButtonStyle = "primary" | "success" | "danger" | "";
+// Each token maps to a colored-circle emoji prefix on the button (shown on
+// every client). "primary"/"success"/"danger" ALSO map to the native Bot API
+// 9.4 style; "violet"/"amber"/"orange" are emoji-only; "" = no color.
+export type ButtonStyle = "primary" | "success" | "danger" | "violet" | "amber" | "orange" | "";
 
 export function fetchAllSettings(): Promise<AllSettings> {
   return api.get<AllSettings>("/settings");

@@ -1094,7 +1094,10 @@ class AppSettingsRepository:
 
     # ── Button-style (Bot API 9.4) ───────────────────────────────────
 
-    _VALID_BUTTON_STYLES = ("primary", "success", "danger", "")
+    # Color tokens the operator can assign to each role. The first three map
+    # to a native Telegram button style (Bot API 9.4); all of them also map to
+    # a colored-circle emoji prefix so the color shows on EVERY client.
+    _VALID_BUTTON_STYLES = ("primary", "success", "danger", "violet", "amber", "orange", "")
 
     async def get_button_style_settings(self) -> 'ButtonStyleSettings':
         record = await self.session.get(AppSetting, BUTTON_STYLE_SETTINGS_KEY)

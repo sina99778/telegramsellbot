@@ -2053,11 +2053,14 @@ async def force_join_check(callback: CallbackQuery, session: AsyncSession) -> No
 
 # Cycle order when admin taps a role row. We include "" to allow opting
 # out of coloring for a particular role.
-_BUTTON_STYLE_CYCLE = ("primary", "success", "danger", "")
+_BUTTON_STYLE_CYCLE = ("primary", "success", "danger", "violet", "amber", "orange", "")
 _BUTTON_STYLE_LABEL = {
-    "primary": "🔵 آبی (Primary)",
-    "success": "🟢 سبز (Success)",
-    "danger":  "🔴 قرمز (Danger)",
+    "primary": "🔵 آبی",
+    "success": "🟢 سبز",
+    "danger":  "🔴 قرمز",
+    "violet":  "🟣 بنفش",
+    "amber":   "🟡 زرد",
+    "orange":  "🟠 نارنجی",
     "":        "⚪️ بدون رنگ",
 }
 _BUTTON_ROLE_LABEL = {

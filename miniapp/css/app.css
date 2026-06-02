@@ -436,11 +436,18 @@ button { font: inherit; color: inherit; }
 .btn-primary:hover { box-shadow: var(--shadow-lg), var(--shadow-accent); }
 
 .btn-secondary {
-    background: var(--bg-elevated);
+    /* Colored "glass": a translucent violet→cyan tint (design-D palette) with
+       an accent border, instead of the old flat gray. */
+    background: linear-gradient(135deg, rgba(124, 92, 255, 0.18), rgba(31, 209, 255, 0.10));
     color: var(--text);
-    border-color: var(--border-strong);
+    border-color: var(--border-accent);
+    -webkit-backdrop-filter: saturate(150%) blur(10px);
+    backdrop-filter: saturate(150%) blur(10px);
 }
-.btn-secondary:hover { background: var(--bg-muted); }
+.btn-secondary:hover {
+    background: linear-gradient(135deg, rgba(124, 92, 255, 0.30), rgba(31, 209, 255, 0.18));
+    border-color: var(--accent);
+}
 
 .btn-ghost {
     background: transparent;

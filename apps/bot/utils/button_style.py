@@ -34,6 +34,7 @@ keyboard build on a DB round-trip. The cache is refreshed by
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -50,6 +51,45 @@ logger = logging.getLogger(__name__)
 
 _VALID_ROLES = {"confirm", "destructive", "navigation", "info"}
 _CACHE_TTL_SECONDS = 30
+
+# Each color token → (colored-circle emoji prefix, native Telegram style|None).
+# The emoji prefix is what makes the color visible on EVERY Telegram client
+# (the native `style` only renders on the newest apps). violet/amber/orange
+# have no native equivalent, so they're emoji-only.
+COLOR_PALETTE: dict[str, tuple[str, str | None]] = {
+    "success": ("🟢", "success"),
+    "danger": ("🔴", "danger"),
+    "primary": ("🔵", "primary"),
+    "violet": ("🟣", "primary"),
+    "amber": ("🟡", None),
+    "orange": ("🟠", None),
+    "": ("", None),
+}
+
+# Detect a leading emoji so we never double up (e.g. "🔙 بازگشت" stays as-is).
+# The ranges cover pictographic emoji, symbols, arrows and dingbats but NOT
+# Arabic/Persian letters (U+0600–06FF), so Persian labels are prefixed.
+_LEADING_EMOJI_RE = re.compile(
+    "^["
+    "\U0001F000-\U0001FAFF"   # pictographs / emoji
+    "\U00002600-\U000027BF"   # misc symbols + dingbats
+    "\U00002190-\U000021FF"   # arrows
+    "\U000025A0-\U000025FF"   # geometric shapes (◀️ ▶️ ● ■ …)
+    "\U00002B00-\U00002BFF"   # misc symbols & arrows (⭐ …)
+    "\U0001F1E6-\U0001F1FF"   # regional indicators
+    "\U00002139\U0000231A-\U0000231B\U000023E9-\U000023FA"
+    "]"
+)
+
+
+def _has_leading_emoji(text: str) -> bool:
+    return bool(_LEADING_EMOJI_RE.match((text or "").lstrip()))
+
+
+def color_emoji(token: str | None) -> str:
+    """Public helper: the colored-circle emoji for a color token (for the
+    bot/web settings preview)."""
+    return COLOR_PALETTE.get((token or "").strip(), ("", None))[0]
 
 _cache_value: dict[str, Any] | None = None
 _cache_expires_at = 0.0
@@ -88,23 +128,26 @@ async def prime_button_style_cache() -> dict[str, Any]:
     return settings
 
 
-def _resolve_style(role: str) -> str | None:
-    """Translate a semantic role to a Telegram style string, or None.
+def _resolve_color_token(role: str) -> str:
+    """Translate a semantic role to the operator-chosen color token.
 
     Reads from the (sync) cache. If the cache is empty or stale, falls
-    back to defaults — never blocks. The first hot call after a deploy
-    just uses defaults until prime_button_style_cache() runs.
+    back to defaults — never blocks. Returns "" when coloring is disabled
+    or the role is unknown.
     """
     if role not in _VALID_ROLES:
-        return None
+        return ""
     now = time.monotonic()
     cfg = _cache_value if (_cache_value is not None and now < _cache_expires_at) else _default_settings()
     if not cfg.get("enabled", True):
-        return None
-    style = str(cfg.get(role) or "").strip()
-    if style in ("primary", "success", "danger"):
-        return style
-    return None
+        return ""
+    token = str(cfg.get(role) or "").strip()
+    return token if token in COLOR_PALETTE else ""
+
+
+def _resolve_style(role: str) -> str | None:
+    """Back-compat: the native Telegram style for a role (or None)."""
+    return COLOR_PALETTE.get(_resolve_color_token(role), ("", None))[1]
 
 
 def styled_button(
@@ -115,18 +158,30 @@ def styled_button(
     role: str | None = None,
     **kwargs: Any,
 ) -> None:
-    """Add a button to `builder`, optionally with a colored `style`.
+    """Add a button to `builder`, colored by its semantic `role`.
 
-    Falls back gracefully if the installed aiogram is older than 3.27
-    (no `style` kwarg) — the button still gets added, just uncolored.
+    Coloring is applied two ways so it's visible everywhere:
+      1. A colored-circle emoji prefix (🟢/🔵/🔴/🟣/🟡/🟠) — unless the label
+         already starts with an emoji. Shows on every Telegram client.
+      2. The native Bot API 9.4 `style` field — shows on the newest apps.
+
+    Falls back gracefully on older aiogram (no `style` kwarg): the button is
+    still added, just without the native style (the emoji prefix remains).
     """
+    label = text
+    style: str | None = None
     if role:
-        style = _resolve_style(role)
-        if style:
-            try:
-                builder.button(text=text, callback_data=callback_data, style=style, **kwargs)
-                return
-            except TypeError:
-                # aiogram doesn't accept `style` yet → drop it silently.
-                pass
-    builder.button(text=text, callback_data=callback_data, **kwargs)
+        token = _resolve_color_token(role)
+        if token:
+            emoji, style = COLOR_PALETTE.get(token, ("", None))
+            if emoji and not _has_leading_emoji(text):
+                label = f"{emoji} {text}"
+
+    if style:
+        try:
+            builder.button(text=label, callback_data=callback_data, style=style, **kwargs)
+            return
+        except TypeError:
+            # aiogram doesn't accept `style` yet → drop it but keep the emoji.
+            pass
+    builder.button(text=label, callback_data=callback_data, **kwargs)
