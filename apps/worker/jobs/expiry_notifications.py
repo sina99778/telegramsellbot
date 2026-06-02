@@ -31,9 +31,9 @@ _ALERT_KEY_PREFIX = "alert.sub."
 
 
 async def send_expiry_notifications(session: AsyncSession, bot: Bot) -> None:
-    """Notify users about subscriptions expiring within 24 hours."""
+    """Notify users whose service expires soon — at ~3 days and again at <24h."""
     now = utcnow()
-    threshold = now + timedelta(hours=24)
+    threshold = now + timedelta(hours=72)
 
     result = await session.execute(
         select(Subscription)
@@ -68,16 +68,28 @@ async def send_expiry_notifications(session: AsyncSession, bot: Bot) -> None:
         if user is None or user.is_bot_blocked:
             continue
 
-        alert_key = f"{_ALERT_KEY_PREFIX}{sub.id}.time_24h"
+        hours_left = (sub.ends_at - now).total_seconds() / 3600
+        # Pick the most urgent un-sent threshold (24h supersedes the 3-day one).
+        if hours_left <= 24:
+            tkey, label = "time_24h", "کمتر از ۲۴ ساعت"
+        elif hours_left <= 72:
+            tkey, label = "time_72h", "حدود ۳ روز"
+        else:
+            continue
+        alert_key = f"{_ALERT_KEY_PREFIX}{sub.id}.{tkey}"
         if alert_key in alerted_keys:
             continue
 
         plan_name = sub.plan.name if sub.plan else "نامشخص"
         sub_name = sub.xui_client.username if (sub.xui_client and sub.xui_client.username) else str(sub.id)[:8]
-        remaining_hours = max(int((sub.ends_at - now).total_seconds() / 3600), 0)
+        remaining_hours = max(int(hours_left), 0)
         volume_remaining = format_volume_bytes(max(sub.volume_bytes - sub.used_bytes, 0))
 
         builder = InlineKeyboardBuilder()
+        builder.button(
+            text="🔁 تمدید سرویس",
+            callback_data=MyConfigCallback(action="renew", subscription_id=sub.id).pack(),
+        )
         builder.button(
             text="⚙️ مشاهده سرویس",
             callback_data=MyConfigCallback(action="view", subscription_id=sub.id).pack(),
@@ -85,7 +97,7 @@ async def send_expiry_notifications(session: AsyncSession, bot: Bot) -> None:
         builder.adjust(1)
 
         text = (
-            "⚠️ سرویس شما رو به اتمام است!\n\n"
+            f"⏰ سرویس شما رو به اتمام است ({label})!\n\n"
             f"👤 سرویس: {sub_name}\n"
             f"📦 پلن: {plan_name}\n"
             f"⏰ زمان باقی‌مانده: {remaining_hours} ساعت\n"
@@ -161,6 +173,11 @@ async def _send_volume_warnings(session: AsyncSession, bot: Bot) -> None:
             pct_remaining = max(100 - round(usage_ratio * 100), 0)
             emoji = "🟡"
             urgency = "کم"
+        elif usage_ratio >= 0.80:
+            threshold_key = "vol_80"
+            pct_remaining = max(100 - round(usage_ratio * 100), 0)
+            emoji = "🟠"
+            urgency = "رو به اتمام"
         else:
             continue
 
@@ -175,6 +192,10 @@ async def _send_volume_warnings(session: AsyncSession, bot: Bot) -> None:
         pct_used = round(usage_ratio * 100)
 
         builder = InlineKeyboardBuilder()
+        builder.button(
+            text="🔁 تمدید سرویس",
+            callback_data=MyConfigCallback(action="renew", subscription_id=sub.id).pack(),
+        )
         builder.button(
             text="⚙️ مشاهده سرویس",
             callback_data=MyConfigCallback(action="view", subscription_id=sub.id).pack(),
