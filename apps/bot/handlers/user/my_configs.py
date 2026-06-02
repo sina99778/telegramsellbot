@@ -16,6 +16,7 @@ from aiogram.types import (
     Message,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from apps.bot.utils.button_style import styled_button
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -209,14 +210,24 @@ def _build_config_list_keyboard(
 ) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for sub in subscriptions:
-        builder.button(
-            text=_build_config_button_label(sub),
+        # Color by status: finished/disabled → red, active → green, else blue.
+        if sub.status in ("expired", "disabled"):
+            role = "destructive"
+        elif sub.status == "active":
+            role = "confirm"
+        else:
+            role = "navigation"
+        styled_button(
+            builder,
+            _build_config_button_label(sub),
             callback_data=MyConfigCallback(
                 action=f"viewp{page}",
                 subscription_id=sub.id,
             ).pack(),
+            role=role,
         )
-    builder.adjust(1)
+    # Two columns so more configs fit per page.
+    builder.adjust(2)
 
     if total_pages > 1:
         nav_buttons: list[InlineKeyboardButton] = []
@@ -595,10 +606,17 @@ async def my_config_detail_handler(
             callback_data=MyConfigCallback(action="change_inbound", subscription_id=sub.id).pack(),
         )
 
-        # New Feature: Toggle enable status
+        # New Feature: Toggle enable status — red when it turns the config OFF,
+        # green when it turns it back ON (overrides the callback heuristic, which
+        # would otherwise see "enable" and color it green either way).
         is_enabled = xui.is_active if xui else False
         toggle_text = "🔴 خاموش کردن" if is_enabled else "🟢 روشن کردن"
-        builder.button(text=toggle_text, callback_data=MyConfigCallback(action="toggle_enable", subscription_id=sub.id).pack())
+        styled_button(
+            builder,
+            toggle_text,
+            callback_data=MyConfigCallback(action="toggle_enable", subscription_id=sub.id).pack(),
+            role="destructive" if is_enabled else "confirm",
+        )
 
     # Load user actions settings once for all toggle checks
     user_actions_settings = await AppSettingsRepository(session).get_user_actions_settings()
