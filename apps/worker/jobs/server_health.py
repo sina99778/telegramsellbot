@@ -1,76 +1,101 @@
 """
 Server health check job.
-Periodically checks connectivity to all active X-UI panels
-and notifies admins if any server is unreachable.
+
+Pings every active X-UI panel. A server only flips to "unhealthy" after a few
+consecutive failures (so one transient blip doesn't stop sales), and admins are
+alerted ONLY on a state transition — when a server goes down, and again when it
+recovers — instead of every run. The server's `health_status` is kept accurate
+so the rest of the app (and the sales path) can avoid dead servers.
 """
 from __future__ import annotations
 
 import logging
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramForbiddenError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from models.xui import XUIServerRecord, XUIServerCredential
+from models.xui import XUIServerRecord
 from services.xui.runtime import create_xui_client_for_server
 from services.xui.client import XUIClientError
 
 logger = logging.getLogger(__name__)
 
+# Consecutive failures before we declare a server down (and stop selling on it).
+_FAILURE_STRIKES = 3
+
+
+async def _probe(server: XUIServerRecord) -> tuple[bool, str]:
+    """Return (ok, error_message). Full connectivity = login + list inbounds."""
+    try:
+        async with create_xui_client_for_server(server) as xui_client:
+            inbounds = await xui_client.get_inbounds()
+        logger.info("[HEALTH] ✅ %s — OK (%d inbounds)", server.name or server.base_url, len(inbounds))
+        return True, ""
+    except XUIClientError as exc:
+        return False, str(exc)[:200]
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"[:200]
+
 
 async def check_server_health(session: AsyncSession, bot: Bot) -> None:
-    """Check connectivity to all active X-UI servers and notify admins on failure."""
     result = await session.execute(
         select(XUIServerRecord)
         .options(selectinload(XUIServerRecord.credentials))
-        .where(XUIServerRecord.is_active.is_(True))
+        .where(
+            XUIServerRecord.is_active.is_(True),
+            XUIServerRecord.health_status != "deleted",
+        )
     )
     servers = list(result.scalars().all())
-
     if not servers:
         logger.info("[HEALTH] No active servers to check")
         return
 
-    failed_servers: list[tuple[str, str]] = []  # (name, error)
+    newly_down: list[tuple[str, str]] = []   # crossed into "unhealthy" this run
+    recovered: list[str] = []                # came back up this run
 
     for server in servers:
-        server_name = server.name or server.base_url
-        try:
-            async with create_xui_client_for_server(server) as xui_client:
-                # Try to login and fetch inbounds — proves full connectivity
-                inbounds = await xui_client.get_inbounds()
-                logger.info(
-                    "[HEALTH] ✅ %s — OK (%d inbounds)",
-                    server_name, len(inbounds),
-                )
-        except XUIClientError as exc:
-            error_msg = str(exc)[:200]
-            logger.error("[HEALTH] ❌ %s — FAILED: %s", server_name, error_msg)
-            failed_servers.append((server_name, error_msg))
-        except Exception as exc:
-            error_msg = f"{type(exc).__name__}: {exc}"[:200]
-            logger.error("[HEALTH] ❌ %s — FAILED: %s", server_name, error_msg)
-            failed_servers.append((server_name, error_msg))
+        name = server.name or server.base_url
+        ok, error = await _probe(server)
+        if ok:
+            if server.health_status == "unhealthy":
+                recovered.append(name)
+            server.health_check_failures = 0
+            server.health_status = "healthy"
+        else:
+            server.health_check_failures = int(server.health_check_failures or 0) + 1
+            logger.error(
+                "[HEALTH] ❌ %s — FAILED (%d/%d): %s",
+                name, server.health_check_failures, _FAILURE_STRIKES, error,
+            )
+            if server.health_check_failures >= _FAILURE_STRIKES and server.health_status != "unhealthy":
+                server.health_status = "unhealthy"
+                newly_down.append((name, error))
 
-    if not failed_servers:
-        logger.info("[HEALTH] All %d servers are healthy", len(servers))
+    await session.flush()
+
+    if not newly_down and not recovered:
         return
 
-    # Send alert to admin
-    lines = [
-        f"🚨 هشدار: {len(failed_servers)} سرور از {len(servers)} سرور غیرقابل دسترسی!\n"
-    ]
-    for name, error in failed_servers:
-        lines.append(f"❌ {name}\n   ⚠️ {error}\n")
-
-    lines.append("\nلطفاً وضعیت سرورها را بررسی کنید.")
-    alert_text = "\n".join(lines)
-
     from services.notifications import notify_admins
-    try:
-        await notify_admins(session, bot, alert_text)
-        logger.info("[HEALTH] Alert sent to admins")
-    except Exception as exc:
-        logger.error("[HEALTH] Failed to send health alert: %s", exc)
+
+    if newly_down:
+        lines = [f"🚨 <b>{len(newly_down)} سرور از کار افتاد</b> (فروش روی آن متوقف شد):\n"]
+        for name, error in newly_down:
+            lines.append(f"❌ <b>{name}</b>\n   ⚠️ {error}\n")
+        lines.append("\nلطفاً هرچه سریع‌تر بررسی کنید.")
+        try:
+            await notify_admins(session, bot, "\n".join(lines))
+        except Exception as exc:
+            logger.error("[HEALTH] failed to send down alert: %s", exc)
+
+    if recovered:
+        lines = [f"✅ <b>{len(recovered)} سرور دوباره سالم شد</b> (فروش از سر گرفته شد):\n"]
+        for name in recovered:
+            lines.append(f"🟢 <b>{name}</b>")
+        try:
+            await notify_admins(session, bot, "\n".join(lines))
+        except Exception as exc:
+            logger.error("[HEALTH] failed to send recovery alert: %s", exc)

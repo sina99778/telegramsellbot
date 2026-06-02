@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     app_secret_key: SecretStr = SecretStr("CHANGE_ME_BASE64_32BYTE_FERNET_KEY")
 
+    # Error tracking (Sentry). Leave the DSN empty to disable entirely — the
+    # integration is a no-op without it (and even without sentry-sdk installed).
+    sentry_dsn: str | None = None
+    sentry_environment: str | None = None
+    sentry_traces_sample_rate: float = 0.0
+
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/telegramsellbot"
     database_echo: bool = False
     database_pool_size: int = 10

@@ -80,6 +80,9 @@ async def on_shutdown(bot: PremiumEmojiBot) -> None:
 async def main() -> None:
     configure_logging()
 
+    from core.observability import init_sentry
+    init_sentry("bot")
+
     # Write a heartbeat synchronously BEFORE starting the dispatcher so the
     # container healthcheck has something to read during the slow first
     # bring-up (DB pool warmup, initial Telegram polling handshake).

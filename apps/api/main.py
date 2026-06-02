@@ -23,6 +23,11 @@ from apps.api.routes.dashboard import router as dashboard_router
 
 logger = logging.getLogger(__name__)
 
+# Initialise error tracking BEFORE the app is built so Sentry's FastAPI/ASGI
+# integration hooks in. No-op without SENTRY_DSN.
+from core.observability import init_sentry  # noqa: E402
+init_sentry("api")
+
 MINIAPP_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "miniapp"
 DASHBOARD_DIST_DIR = pathlib.Path(__file__).resolve().parent.parent.parent / "dashboard" / "dist"
 

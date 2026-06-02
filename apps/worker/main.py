@@ -44,6 +44,9 @@ logger = logging.getLogger(__name__)
 async def main() -> None:
     logging.basicConfig(level=logging.INFO)
 
+    from core.observability import init_sentry
+    init_sentry("worker")
+
     # Bootstrap heartbeat — see apps/bot/main.py for rationale.
     try:
         HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)

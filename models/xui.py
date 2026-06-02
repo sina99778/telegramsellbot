@@ -23,6 +23,12 @@ class XUIServerRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100, server_default="100")
     health_status: Mapped[str] = mapped_column(String(24), nullable=False, default="unknown")
+    # Consecutive health-check failures. The health job only flips a server to
+    # "unhealthy" (and alerts) after several in a row, so one transient blip
+    # doesn't stop sales. Reset to 0 on any successful check.
+    health_check_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0",
+    )
     # Port used by X-UI subscription service (different from admin panel port)
     # X-UI Sanaei default sub port is 2096 over HTTP
     subscription_port: Mapped[int] = mapped_column(Integer, nullable=False, default=2096, server_default="2096")
