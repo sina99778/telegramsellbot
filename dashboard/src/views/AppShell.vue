@@ -10,6 +10,7 @@ const route = useRoute();
 // stays under ~200 KB gzipped.
 const navItems = [
   { name: "overview",     label: "نمای کلی",        to: "/",             icon: "home" },
+  { name: "analytics",    label: "هوش مالی",         to: "/analytics",    icon: "chart" },
   { name: "users",        label: "مدیریت کاربران",   to: "/users",        icon: "users" },
   { name: "servers",      label: "مدیریت سرورها",    to: "/servers",      icon: "server" },
   { name: "plans",        label: "پلن‌ها",            to: "/plans",        icon: "plans" },
@@ -65,6 +66,9 @@ const initials = computed(() => {
           <!-- inline SVG icons -->
           <svg v-if="item.icon === 'home'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M3 9.75 12 3l9 6.75V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1V9.75Z" />
+          </svg>
+          <svg v-else-if="item.icon === 'chart'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3 3v18h18M8 17v-5m5 5V8m5 9v-7" />
           </svg>
           <svg v-else-if="item.icon === 'users'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
             <path stroke-linecap="round" stroke-linejoin="round" d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2M21 21v-2a4 4 0 0 0-3-3.87M9 7a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm7 0a4 4 0 0 1 0 8" />
