@@ -17,6 +17,7 @@ from apps.bot.keyboards.inline import (
 from apps.bot.states.wallet import TopUpStates
 from core.config import settings
 from core.texts import Buttons, Messages
+from apps.bot.utils.menu_match import MenuText
 from models.payment import Payment
 from repositories.user import UserRepository
 from schemas.internal.nowpayments import NowPaymentsPaymentCreateRequest
@@ -27,7 +28,7 @@ from apps.bot.utils.messaging import safe_edit_or_send
 router = Router(name="user-topup")
 
 
-@router.message(F.text == Buttons.PROFILE_WALLET)
+@router.message(MenuText(Buttons.PROFILE_WALLET))
 async def wallet_profile_handler(message: Message, session: AsyncSession) -> None:
     if message.from_user is None:
         return

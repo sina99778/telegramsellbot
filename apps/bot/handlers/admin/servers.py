@@ -21,6 +21,7 @@ from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.states.admin import AddServerStates, ServerManageStates
 from core.security import decrypt_secret, encrypt_secret
 from core.texts import AdminButtons, AdminMessages, Common
+from apps.bot.utils.menu_match import MenuText
 from models.plan import Plan
 from models.user import User
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerCredential, XUIServerRecord
@@ -93,9 +94,9 @@ def _admin_main_text() -> str:
 
 @router.message(Command("admin"))
 # Accept both the new label ("⚙️ پنل مدیریت") and the legacy one
-# ("پنل مدیریت ⚙️") so admins whose Telegram clients still have the
-# old keyboard cached can use it until they hit /start once.
-@router.message(F.text.in_(["⚙️ پنل مدیریت", "پنل مدیریت ⚙️"]))
+# ("پنل مدیریت ⚙️"), and ignore a leading emoji so it still routes when
+# premium-emoji icons strip "⚙️" from the button text.
+@router.message(MenuText("⚙️ پنل مدیریت", "پنل مدیریت ⚙️"))
 async def admin_main_menu(message: Message) -> None:
     await message.answer(_admin_main_text(), reply_markup=_build_admin_main_markup(), parse_mode="HTML")
 

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.bot.handlers.admin.support import SupportTicketActionCallback
 from apps.bot.states.support import UserSupportStates
 from core.texts import Buttons, Messages, SupportTexts
+from apps.bot.utils.menu_match import MenuText
 from models.user import User
 from repositories.ticket import TicketRepository
 from repositories.user import UserRepository
@@ -33,7 +34,7 @@ async def cancel_support_state(message: Message, state: FSMContext) -> None:
     await message.answer(Messages.CANCELLED)
 
 
-@router.message(F.text == Buttons.SUPPORT)
+@router.message(MenuText(Buttons.SUPPORT))
 async def support_start(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if message.from_user is None:
         return

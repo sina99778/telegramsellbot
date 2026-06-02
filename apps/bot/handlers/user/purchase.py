@@ -18,6 +18,7 @@ from core.formatting import format_volume_bytes, escape_markdown as _escape
 from services.banner import create_traffic_banner
 import urllib.parse
 from core.texts import Buttons, Messages
+from apps.bot.utils.menu_match import MenuText
 from models.order import Order
 from models.payment import Payment
 from models.plan import Plan
@@ -130,7 +131,7 @@ async def show_available_plans_from_callback(
     await show_available_plans(_Pseudo(), session, state)
 
 
-@router.message(F.text == Buttons.BUY_CONFIG)
+@router.message(MenuText(Buttons.BUY_CONFIG))
 async def show_available_plans(message: Message, session: AsyncSession, state: FSMContext) -> None:
     # Check if sales are enabled by admin (admins bypass)
     user_actions = await AppSettingsRepository(session).get_user_actions_settings()

@@ -25,6 +25,7 @@ from apps.bot.utils.messaging import safe_edit_or_send
 from apps.bot.states.my_configs import InboundChangeStates, UserConfigSearchStates
 from core.formatting import escape_markdown, format_usage_bar, format_volume_bytes
 from core.texts import Buttons
+from apps.bot.utils.menu_match import MenuText
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.audit import AuditLogRepository
@@ -72,7 +73,7 @@ class InboundConfirmCallback(CallbackData, prefix="ibok"):
     inbound_id: UUID
 
 
-@router.message(F.text == Buttons.MY_CONFIGS)
+@router.message(MenuText(Buttons.MY_CONFIGS))
 async def my_configs_handler(message: Message, state: FSMContext, session: AsyncSession) -> None:
     """Show a list of inline buttons for each active config."""
     if message.from_user is None:

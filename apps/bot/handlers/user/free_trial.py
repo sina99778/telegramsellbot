@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from core.texts import Buttons
+from apps.bot.utils.menu_match import MenuText
 from models.order import Order
 from models.plan import Plan
 from models.user import User, UserProfile
@@ -37,7 +38,7 @@ async def free_trial_from_callback(callback, session: AsyncSession, bot: Bot) ->
     await free_trial_handler(_Pseudo(), session, bot)
 
 
-@router.message(F.text == Buttons.TEST_CONFIG)
+@router.message(MenuText(Buttons.TEST_CONFIG))
 async def free_trial_handler(message: Message, session: AsyncSession, bot: Bot) -> None:
     if message.from_user is None:
         return

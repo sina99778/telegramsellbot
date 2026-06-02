@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.bot.utils.messaging import safe_edit_or_send
 from core.texts import Buttons
+from apps.bot.utils.menu_match import MenuText
 from models.user import User
 from repositories.settings import AppSettingsRepository
 from repositories.user import UserRepository
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 router = Router(name="user-referral")
 
 
-@router.message(F.text == Buttons.REFERRAL)
+@router.message(MenuText(Buttons.REFERRAL))
 async def referral_menu_handler(message: Message, session: AsyncSession) -> None:
     if message.from_user is None:
         return

@@ -28,6 +28,7 @@ from models.user import User
 from models.xui import XUIInboundRecord
 from repositories.audit import AuditLogRepository
 from repositories.settings import AppSettingsRepository
+from apps.bot.utils.button_style import strip_leading_emoji
 from apps.bot.utils.messaging import safe_edit_or_send
 from apps.bot.utils.panels import admin_panel, status_label
 from services.plan_inventory import get_plan_stock_map, set_plan_sales_limit
@@ -61,11 +62,16 @@ class InboundSelectCallback(CallbackData, prefix="inbound_sel"):
     inbound_id: UUID
 
 
-MENU_INTERRUPT_TEXTS = {
+_MENU_INTERRUPT_LABELS = (
     Buttons.BUY_CONFIG,
     Buttons.PROFILE_WALLET,
     Buttons.SUPPORT,
     Buttons.MY_CONFIGS,
+)
+# Include the emoji-stripped variants too, so the interrupt still fires when
+# premium-emoji icons removed the leading emoji from a menu button's text.
+MENU_INTERRUPT_TEXTS = set(_MENU_INTERRUPT_LABELS) | {
+    strip_leading_emoji(label) for label in _MENU_INTERRUPT_LABELS
 }
 
 

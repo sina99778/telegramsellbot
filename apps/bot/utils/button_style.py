@@ -34,6 +34,7 @@ keyboard build on a DB round-trip. The cache is refreshed by
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -117,11 +118,6 @@ def make_keyboard_button(text: str, *, role: str | None = None, **kwargs: Any):
     from aiogram.types import KeyboardButton
 
     style = _resolve_style(role) if role else None
-    # IMPORTANT: do NOT move the emoji into icon_custom_emoji_id for REPLY
-    # buttons. Tapping a reply button sends its TEXT as a message, and handlers
-    # route on the exact text (F.text == "🛒 خرید سرویس"). Stripping the emoji
-    # would change the sent text and break every menu button. Premium icons are
-    # applied to INLINE buttons only (those route on callback_data, not text).
     btn: KeyboardButton
     if style:
         try:
@@ -130,6 +126,10 @@ def make_keyboard_button(text: str, *, role: str | None = None, **kwargs: Any):
             btn = KeyboardButton(text=text, **kwargs)
     else:
         btn = KeyboardButton(text=text, **kwargs)
+    # Premium icon: moves the leading emoji into icon_custom_emoji_id and strips
+    # it from the text. Safe for REPLY buttons now that the menu handlers route
+    # via MenuText (emoji-insensitive), so the stripped text still matches.
+    _apply_premium_icon(btn)
     return btn
 
 
@@ -156,6 +156,34 @@ def styled_button(
                 # aiogram doesn't accept `style` yet → drop it silently.
                 pass
     builder.button(text=text, callback_data=callback_data, **kwargs)
+
+
+# A leading emoji "cluster": the emoji + any variation selectors / ZWJ / skin
+# tones / keycap + surrounding spaces. Persian letters and ZWNJ (U+200C) are
+# deliberately NOT in the class, so Persian labels are never damaged.
+_LEADING_EMOJI_RUN_RE = re.compile(
+    "^[\\s"
+    "\U0001F000-\U0001FAFF"   # pictographs / emoji
+    "\U00002600-\U000027BF"   # misc symbols + dingbats
+    "\U00002190-\U000021FF"   # arrows
+    "\U000025A0-\U000025FF"   # geometric shapes (◀️ ▶️ …)
+    "\U00002B00-\U00002BFF"   # misc symbols & arrows (⭐ …)
+    "\U0001F1E6-\U0001F1FF"   # regional indicators
+    "\U00002139\U0000231A\U0000231B\U000023E9-\U000023FA"
+    "️‍⃣\U0001F3FB-\U0001F3FF"  # VS16, ZWJ, keycap, skin tones
+    "]+"
+)
+
+
+def strip_leading_emoji(text: str) -> str:
+    """Drop a leading emoji cluster (and surrounding spaces) from a label.
+
+    Used so reply-menu routing matches a button whether or not premium-emoji
+    icons stripped its emoji into icon_custom_emoji_id.
+    """
+    if not text:
+        return text
+    return _LEADING_EMOJI_RUN_RE.sub("", text, count=1).strip()
 
 
 # ── Global default coloring ──────────────────────────────────────────────
