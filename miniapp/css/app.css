@@ -436,17 +436,17 @@ button { font: inherit; color: inherit; }
 .btn-primary:hover { box-shadow: var(--shadow-lg), var(--shadow-accent); }
 
 .btn-secondary {
-    /* Colored "glass": a translucent violet→cyan tint (design-D palette) with
-       an accent border, instead of the old flat gray. */
-    background: linear-gradient(135deg, rgba(124, 92, 255, 0.18), rgba(31, 209, 255, 0.10));
-    color: var(--text);
-    border-color: var(--border-accent);
-    -webkit-backdrop-filter: saturate(150%) blur(10px);
-    backdrop-filter: saturate(150%) blur(10px);
+    /* Fully colored: a solid violet→blue button (the whole button is colored,
+       not just a faint tint). Primary stays the louder pink→violet→cyan
+       gradient, so the two keep a clear visual hierarchy. */
+    background: linear-gradient(135deg, #7c5cff, #5b8bff);
+    color: #fff;
+    border-color: transparent;
+    box-shadow: 0 6px 18px rgba(124, 92, 255, 0.32);
 }
 .btn-secondary:hover {
-    background: linear-gradient(135deg, rgba(124, 92, 255, 0.30), rgba(31, 209, 255, 0.18));
-    border-color: var(--accent);
+    background: linear-gradient(135deg, #8b6dff, #6c98ff);
+    box-shadow: 0 8px 22px rgba(124, 92, 255, 0.42);
 }
 
 .btn-ghost {

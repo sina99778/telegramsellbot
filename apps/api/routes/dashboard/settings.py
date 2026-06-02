@@ -331,15 +331,12 @@ async def patch_premium_emoji(body: PremiumEmojiBody, auth: AuthDep) -> dict[str
 # ─── PATCH: button_style ──────────────────────────────────────────────
 
 
-_BTN_STYLE_PAT = "^(primary|success|danger|violet|amber|orange|)$"
-
-
 class ButtonStyleBody(BaseModel):
     enabled: bool | None = None
-    confirm: str | None = Field(None, pattern=_BTN_STYLE_PAT)
-    destructive: str | None = Field(None, pattern=_BTN_STYLE_PAT)
-    navigation: str | None = Field(None, pattern=_BTN_STYLE_PAT)
-    info: str | None = Field(None, pattern=_BTN_STYLE_PAT)
+    confirm: str | None = Field(None, pattern="^(primary|success|danger|)$")
+    destructive: str | None = Field(None, pattern="^(primary|success|danger|)$")
+    navigation: str | None = Field(None, pattern="^(primary|success|danger|)$")
+    info: str | None = Field(None, pattern="^(primary|success|danger|)$")
 
 
 @router.patch("/button_style")

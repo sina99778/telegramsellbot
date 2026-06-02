@@ -41,13 +41,10 @@ const emojiRows = ref<Array<{ key: string; value: string }>>([]);
 
 // The four style values the dashboard exposes. Empty = no styling (Telegram's default look).
 const BUTTON_STYLE_OPTIONS: Array<{ value: ButtonStyle; label: string }> = [
-  { value: "primary", label: "🔵 آبی" },
-  { value: "success", label: "🟢 سبز" },
-  { value: "danger",  label: "🔴 قرمز" },
-  { value: "violet",  label: "🟣 بنفش" },
-  { value: "amber",   label: "🟡 زرد" },
-  { value: "orange",  label: "🟠 نارنجی" },
-  { value: "",        label: "⚪️ بدون رنگ" },
+  { value: "primary", label: "🔵 آبی (Primary)" },
+  { value: "success", label: "🟢 سبز (Success)" },
+  { value: "danger",  label: "🔴 قرمز (Danger)" },
+  { value: "",        label: "⚪️ بدون رنگ (پیش‌فرض)" },
 ];
 
 async function refresh() {
@@ -452,12 +449,11 @@ const TABS: Array<{ id: Tab; label: string }> = [
 
     <!-- ── Button style (Bot API 9.4 colored inline buttons) ─────── -->
     <section v-else-if="tab === 'button_style'" class="card space-y-4">
-      <h3 class="font-bold text-white">🎨 رنگ دکمه‌های ربات</h3>
+      <h3 class="font-bold text-white">🎨 رنگ دکمه‌های شیشه‌ای</h3>
       <div class="text-[11px] text-slate-400 leading-5">
-        هر نقش یک رنگ می‌گیرد و ربات یک دایره‌ی رنگی (🟢🔵🔴🟣🟡🟠) جلوی دکمه‌ها می‌گذارد —
-        این روی <b>همه‌ی</b> نسخه‌های تلگرام دیده می‌شود. سه رنگِ آبی/سبز/قرمز علاوه بر این،
-        رنگِ نیتیوِ تلگرام (Bot API 9.4) را هم روی نسخه‌های جدید اعمال می‌کنند.
-        پس از ذخیره، تا ۳۰ ثانیه طول می‌کشد ربات تغییرات را اعمال کند.
+        نیاز به Bot API 9.4 (فوریه ۲۰۲۶). کلاینت‌های تلگرامی که هنوز به این نسخه آپدیت نشده‌اند،
+        دکمه‌ها را با ظاهر پیش‌فرض می‌بینند — هیچ آسیبی نمی‌رسد.
+        پس از ذخیره، تا حداکثر ۳۰ ثانیه طول می‌کشد ربات تغییرات را اعمال کند.
       </div>
 
       <label class="flex items-center justify-between gap-3 py-2 border-b border-bg-border/60">
