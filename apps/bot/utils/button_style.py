@@ -117,6 +117,11 @@ def make_keyboard_button(text: str, *, role: str | None = None, **kwargs: Any):
     from aiogram.types import KeyboardButton
 
     style = _resolve_style(role) if role else None
+    # IMPORTANT: do NOT move the emoji into icon_custom_emoji_id for REPLY
+    # buttons. Tapping a reply button sends its TEXT as a message, and handlers
+    # route on the exact text (F.text == "🛒 خرید سرویس"). Stripping the emoji
+    # would change the sent text and break every menu button. Premium icons are
+    # applied to INLINE buttons only (those route on callback_data, not text).
     btn: KeyboardButton
     if style:
         try:
@@ -125,7 +130,6 @@ def make_keyboard_button(text: str, *, role: str | None = None, **kwargs: Any):
             btn = KeyboardButton(text=text, **kwargs)
     else:
         btn = KeyboardButton(text=text, **kwargs)
-    _apply_premium_icon(btn)
     return btn
 
 
