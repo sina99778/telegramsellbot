@@ -93,6 +93,25 @@ async def _build_payment_context(session: AsyncSession, payment: Payment) -> str
         flags.append("👶 اولین پرداخت موفق")
 
     flag_line = ("\n⚠️ " + " | ".join(flags)) if flags else ""
+
+    # ── OCR fraud assist: does the operator's OWN card appear on the receipt? ──
+    ocr_line = ""
+    if payment.provider == "card_to_card":
+        payload = payment.callback_payload or {}
+        file_id = payload.get("receipt_file_id") or payment.provider_payment_id
+        if file_id:
+            try:
+                from services.receipt_ocr import assess_card_receipt
+                verdict = await assess_card_receipt(
+                    str(file_id),
+                    card_number=payload.get("card_number"),
+                    card_holder=payload.get("card_holder"),
+                    expected_toman=int(payment.pay_amount or 0) or None,
+                )
+                ocr_line = "\n━━━━━━━━━━\n" + verdict["summary"]
+            except Exception:
+                ocr_line = ""
+
     return (
         "\n━━━━━━━━━━\n"
         "<b>سابقه کاربر:</b>\n"
@@ -101,6 +120,7 @@ async def _build_payment_context(session: AsyncSession, payment: Payment) -> str
         f"• پرداخت‌های موفق: <b>{paid_total}</b>\n"
         f"• رد در ۳۰ روز اخیر: <b>{rejected}</b>"
         f"{flag_line}"
+        f"{ocr_line}"
     )
 
 

@@ -69,6 +69,7 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libpq5 curl postgresql-client \
+       tesseract-ocr tesseract-ocr-fas \
     && groupadd --system appgroup \
     && useradd --system --gid appgroup --create-home --home-dir /home/appuser appuser \
     && rm -rf /var/lib/apt/lists/*
