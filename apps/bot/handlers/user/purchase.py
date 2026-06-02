@@ -68,8 +68,9 @@ def _get_state_plan_id(data: dict) -> "UUID | None":
 
 
 def _phone_request_keyboard() -> ReplyKeyboardMarkup:
+    from apps.bot.utils.button_style import make_keyboard_button
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="ارسال شماره موبایل", request_contact=True)]],
+        keyboard=[[make_keyboard_button("ارسال شماره موبایل", role="confirm", request_contact=True)]],
         resize_keyboard=True,
         one_time_keyboard=True,
     )

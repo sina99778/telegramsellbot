@@ -107,6 +107,24 @@ def _resolve_style(role: str) -> str | None:
     return None
 
 
+def make_keyboard_button(text: str, *, role: str | None = None, **kwargs: Any):
+    """Build a REPLY-keyboard KeyboardButton, colored by `role`.
+
+    Bot API 9.4 added the `style` field to KeyboardButton too (not just inline),
+    so the bottom menu can be colored as well. Falls back to an uncolored button
+    on older aiogram or when the operator has coloring disabled.
+    """
+    from aiogram.types import KeyboardButton
+
+    style = _resolve_style(role) if role else None
+    if style:
+        try:
+            return KeyboardButton(text=text, style=style, **kwargs)
+        except TypeError:
+            pass
+    return KeyboardButton(text=text, **kwargs)
+
+
 def styled_button(
     builder: InlineKeyboardBuilder,
     text: str,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from aiogram.types import KeyboardButton, ReplyKeyboardMarkup, WebAppInfo
 
+from apps.bot.utils.button_style import make_keyboard_button
 from core.config import settings
 from core.miniapp_auth import create_miniapp_session_token
 from core.texts import Buttons, Messages
@@ -48,21 +49,21 @@ def get_main_menu_keyboard(is_admin: bool = False, telegram_id: int | None = Non
 
     keyboard: list[list[KeyboardButton]] = [
         # ── Primary CTA ──────────────────────────────────────────
-        [KeyboardButton(text=_MINIAPP_LABEL, web_app=WebAppInfo(url=miniapp_url))],
+        [make_keyboard_button(_MINIAPP_LABEL, role="confirm", web_app=WebAppInfo(url=miniapp_url))],
         # ── Transactional ────────────────────────────────────────
         [
-            KeyboardButton(text=Buttons.BUY_CONFIG),
-            KeyboardButton(text=Buttons.MY_CONFIGS),
+            make_keyboard_button(Buttons.BUY_CONFIG, role="confirm"),
+            make_keyboard_button(Buttons.MY_CONFIGS, role="navigation"),
         ],
         # ── Money / free trial ───────────────────────────────────
         [
-            KeyboardButton(text=Buttons.PROFILE_WALLET),
-            KeyboardButton(text=Buttons.TEST_CONFIG),
+            make_keyboard_button(Buttons.PROFILE_WALLET, role="confirm"),
+            make_keyboard_button(Buttons.TEST_CONFIG, role="confirm"),
         ],
         # ── Growth / support ─────────────────────────────────────
         [
-            KeyboardButton(text=Buttons.REFERRAL),
-            KeyboardButton(text=Buttons.SUPPORT),
+            make_keyboard_button(Buttons.REFERRAL, role="navigation"),
+            make_keyboard_button(Buttons.SUPPORT, role="navigation"),
         ],
     ]
 
@@ -71,8 +72,8 @@ def get_main_menu_keyboard(is_admin: bool = False, telegram_id: int | None = Non
             f"{miniapp_url}&page=admin" if "?" in miniapp_url
             else f"{miniapp_url}?page=admin"
         )
-        keyboard.append([KeyboardButton(text=_ADMIN_MINIAPP_LABEL, web_app=WebAppInfo(url=admin_url))])
-        keyboard.append([KeyboardButton(text=_ADMIN_BOT_LABEL)])
+        keyboard.append([make_keyboard_button(_ADMIN_MINIAPP_LABEL, role="info", web_app=WebAppInfo(url=admin_url))])
+        keyboard.append([make_keyboard_button(_ADMIN_BOT_LABEL, role="info")])
 
     return ReplyKeyboardMarkup(
         keyboard=keyboard,
