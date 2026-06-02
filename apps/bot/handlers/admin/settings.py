@@ -27,6 +27,17 @@ router.message.middleware(AdminOnlyMiddleware())
 router.callback_query.middleware(AdminOnlyMiddleware())
 
 
+async def _sync_premium_icon_cache() -> None:
+    """After a premium-emoji change, refresh the button-icon cache in this
+    process so the new mapping reaches keyboards immediately."""
+    try:
+        from apps.bot.utils.button_style import clear_premium_icon_cache, prime_premium_icon_cache
+        clear_premium_icon_cache()
+        await prime_premium_icon_cache()
+    except Exception as exc:
+        logger.warning("premium icon cache refresh failed: %s", exc)
+
+
 @router.callback_query(F.data == "admin:bot_settings")
 async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> None:
     await callback.answer()
@@ -398,6 +409,7 @@ async def toggle_premium_emoji(callback: CallbackQuery, session: AsyncSession) -
     current = await settings_repo.get_premium_emoji_settings()
     await settings_repo.update_premium_emoji_settings(enabled=not current.enabled)
     clear_premium_emoji_cache()
+    await _sync_premium_icon_cache()
     await bot_settings_menu(callback, session)
 
 
@@ -559,6 +571,7 @@ async def edit_premium_emoji_map_submit(message: Message, state: FSMContext, ses
 
     await settings_repo.update_premium_emoji_settings(enabled=True, emoji_map=new_map)
     clear_premium_emoji_cache()
+    await _sync_premium_icon_cache()
     await state.clear()
 
     # Build a result list showing which emojis got mapped, so the admin
@@ -623,6 +636,7 @@ async def clear_premium_emoji_map(callback: CallbackQuery, session: AsyncSession
     settings_repo = AppSettingsRepository(session)
     await settings_repo.update_premium_emoji_settings(emoji_map={})
     clear_premium_emoji_cache()
+    await _sync_premium_icon_cache()
     await safe_edit_or_send(
         callback,
         "🗑 لیست نگاشت اموجی‌های پریمیم پاک شد.",

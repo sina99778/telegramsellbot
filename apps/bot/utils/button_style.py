@@ -117,12 +117,16 @@ def make_keyboard_button(text: str, *, role: str | None = None, **kwargs: Any):
     from aiogram.types import KeyboardButton
 
     style = _resolve_style(role) if role else None
+    btn: KeyboardButton
     if style:
         try:
-            return KeyboardButton(text=text, style=style, **kwargs)
+            btn = KeyboardButton(text=text, style=style, **kwargs)
         except TypeError:
-            pass
-    return KeyboardButton(text=text, **kwargs)
+            btn = KeyboardButton(text=text, **kwargs)
+    else:
+        btn = KeyboardButton(text=text, **kwargs)
+    _apply_premium_icon(btn)
+    return btn
 
 
 def styled_button(
@@ -200,10 +204,69 @@ def _is_header_or_noop(text: Any, callback_data: Any) -> bool:
     return t.startswith(("━", "─", "┄"))
 
 
+# ── Premium-emoji icons on buttons (Bot API 9.4 icon_custom_emoji_id) ─────
+# A button can carry a custom (premium / animated) emoji icon. We bridge the
+# operator's existing premium-emoji map (standard emoji → custom_emoji_id) to
+# the button icon: when a label starts with a mapped emoji, we move that emoji
+# into icon_custom_emoji_id and drop it from the visible text. Primed once at
+# startup and refreshed when the operator edits premium-emoji settings — NOT
+# TTL-based, so a configured icon never silently disappears mid-session.
+
+_premium_icons_list: list[tuple[str, str]] | None = None  # [(emoji, custom_id)] longest-first
+_premium_icons_enabled = False
+
+
+def clear_premium_icon_cache() -> None:
+    global _premium_icons_list
+    _premium_icons_list = None
+
+
+async def prime_premium_icon_cache() -> None:
+    """Load the premium-emoji map into the sync cache used by the button patch."""
+    global _premium_icons_list, _premium_icons_enabled
+    items: list[tuple[str, str]] = []
+    enabled = False
+    try:
+        async with AsyncSessionFactory() as session:
+            s = await AppSettingsRepository(session).get_premium_emoji_settings()
+            enabled = bool(s.enabled)
+            from services.telegram.premium_emoji import _build_replacements
+            items = [(fb, cid) for fb, cid in _build_replacements(s.emoji_map or {}) if fb and cid]
+    except Exception as exc:
+        logger.warning("premium icon cache prime failed: %s", exc)
+    _premium_icons_list = items
+    _premium_icons_enabled = enabled
+
+
+def _apply_premium_icon(btn: Any) -> None:
+    """If the button label starts with a premium-mapped emoji, set the button's
+    custom-emoji icon and strip that emoji from the text. No-op unless premium
+    emoji is enabled and configured."""
+    if not _premium_icons_enabled or not _premium_icons_list:
+        return
+    if getattr(btn, "icon_custom_emoji_id", None):
+        return
+    text = getattr(btn, "text", None)
+    if not text:
+        return
+    stripped = text.lstrip()
+    for emoji, custom_id in _premium_icons_list:
+        if stripped.startswith(emoji):
+            rest = stripped[len(emoji):].lstrip()
+            if not rest:
+                return  # emoji-only label → leave the text emoji, no icon
+            try:
+                btn.icon_custom_emoji_id = custom_id
+                btn.text = rest
+            except Exception:
+                pass
+            return
+
+
 def install_global_button_coloring() -> None:
-    """Monkeypatch InlineKeyboardBuilder.as_markup so every callback button is
-    colored by default. Idempotent; call once at bot startup. The coloring is
-    still gated by the operator's `enabled` flag (via _resolve_style)."""
+    """Monkeypatch InlineKeyboardBuilder.as_markup so every inline button gets
+    (a) a default color and (b) a premium-emoji icon when configured. Idempotent;
+    call once at bot startup. Both effects are gated by their own operator flags."""
     from aiogram.utils.keyboard import InlineKeyboardBuilder
 
     if getattr(InlineKeyboardBuilder, "_global_color_patched", False):
@@ -214,14 +277,17 @@ def install_global_button_coloring() -> None:
     def _patched_as_markup(self, *args: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
         markup = _orig_as_markup(self, *args, **kwargs)
         try:
-            if _coloring_enabled():
-                rows = getattr(markup, "inline_keyboard", None)
-                for row in (rows or []):
+            color_on = _coloring_enabled()
+            icon_on = bool(_premium_icons_enabled and _premium_icons_list)
+            if color_on or icon_on:
+                for row in (getattr(markup, "inline_keyboard", None) or []):
                     for btn in row:
+                        if _is_header_or_noop(getattr(btn, "text", ""), getattr(btn, "callback_data", None)):
+                            continue
                         if (
-                            getattr(btn, "callback_data", None)
+                            color_on
+                            and getattr(btn, "callback_data", None)
                             and not getattr(btn, "style", None)
-                            and not _is_header_or_noop(getattr(btn, "text", ""), btn.callback_data)
                         ):
                             style = _resolve_style(_heuristic_role(btn.callback_data))
                             if style:
@@ -229,8 +295,10 @@ def install_global_button_coloring() -> None:
                                     btn.style = style
                                 except Exception:
                                     pass
+                        if icon_on:
+                            _apply_premium_icon(btn)
         except Exception:
-            logger.debug("global button coloring skipped", exc_info=True)
+            logger.debug("global button decoration skipped", exc_info=True)
         return markup
 
     InlineKeyboardBuilder.as_markup = _patched_as_markup

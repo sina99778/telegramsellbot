@@ -44,7 +44,8 @@ logger = logging.getLogger(__name__)
 router = Router(name="user-my-configs")
 
 _ACTIVE_STATUSES = {"pending_activation", "active", "expired", "disabled"}
-_CONFIGS_PAGE_SIZE = 8
+# Two-column list, so 16 fit comfortably per page (8 rows) → far fewer pages.
+_CONFIGS_PAGE_SIZE = 16
 
 
 class MyConfigCallback(CallbackData, prefix="myconfig"):
