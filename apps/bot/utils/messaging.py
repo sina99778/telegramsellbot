@@ -54,3 +54,64 @@ async def safe_edit_or_send(
     if await _attempt(callback.message.answer, html.escape(text)):
         return
     logger.warning("Failed to send message even after HTML-escaping: %.80s", text)
+
+
+async def safe_edit_caption_or_text(
+    callback: CallbackQuery,
+    text: str,
+    reply_markup: Any = None,
+    parse_mode: str | None = None,
+) -> None:
+    """Like ``safe_edit_or_send`` but it NEVER deletes the message — so a
+    receipt PHOTO is preserved.
+
+    When the callback message carries a photo (e.g. a card-to-card receipt
+    sent to the admin), editing the *text* is impossible, and the old
+    ``safe_edit_or_send`` path would ``delete()`` the message — wiping the
+    receipt out of the chat. Here we edit the photo's CAPTION instead, so the
+    image stays put. For a plain text message we edit the text. On any
+    failure we send a NEW reply rather than deleting the original.
+    """
+    msg = callback.message
+    if msg is None:
+        return
+
+    kwargs: dict[str, Any] = {"reply_markup": reply_markup}
+    if parse_mode:
+        kwargs["parse_mode"] = parse_mode
+
+    has_photo = bool(getattr(msg, "photo", None))
+
+    if has_photo:
+        # Telegram caption hard limit is 1024 chars.
+        cap = text if len(text) <= 1024 else (text[:1015] + "\n…")
+        for body in (cap, html.escape(cap)):
+            try:
+                await msg.edit_caption(caption=body, **kwargs)
+                return
+            except Exception:
+                continue
+        # Could not edit the caption — reply with a new message but KEEP the
+        # photo (do NOT delete).
+        for body in (text, html.escape(text)):
+            try:
+                await msg.answer(body, **kwargs)
+                return
+            except Exception:
+                continue
+        logger.warning("safe_edit_caption_or_text: photo path failed: %.80s", text)
+        return
+
+    for body in (text, html.escape(text)):
+        try:
+            await msg.edit_text(body, **kwargs)
+            return
+        except Exception:
+            continue
+    for body in (text, html.escape(text)):
+        try:
+            await msg.answer(body, **kwargs)
+            return
+        except Exception:
+            continue
+    logger.warning("safe_edit_caption_or_text: all attempts failed: %.80s", text)

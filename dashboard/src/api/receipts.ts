@@ -29,8 +29,14 @@ export interface ReceiptDetail extends ReceiptListItem {
   };
 }
 
-export function listReceipts(): Promise<{ items: ReceiptListItem[]; total: number }> {
-  return api.get<{ items: ReceiptListItem[]; total: number }>("/receipts");
+export type ReceiptFilter = "pending" | "approved" | "rejected" | "history" | "all";
+
+export function listReceipts(
+  status: ReceiptFilter = "pending",
+): Promise<{ items: ReceiptListItem[]; total: number }> {
+  return api.get<{ items: ReceiptListItem[]; total: number }>(
+    `/receipts?status=${encodeURIComponent(status)}`,
+  );
 }
 
 export function getReceipt(id: string): Promise<ReceiptDetail> {

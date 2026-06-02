@@ -8,6 +8,7 @@ import {
   receiptPhotoUrl,
   type ReceiptListItem,
   type ReceiptDetail,
+  type ReceiptFilter,
 } from "@/api/receipts";
 import { ApiError } from "@/api/client";
 import { fmtNumber } from "@/utils/format";
@@ -19,6 +20,14 @@ const banner = ref<string | null>(null);
 const bannerTone = ref<"ok" | "warn">("ok");
 const busyId = ref<string>("");
 
+const filter = ref<ReceiptFilter>("pending");
+const filters: { key: ReceiptFilter; label: string }[] = [
+  { key: "pending", label: "در انتظار" },
+  { key: "approved", label: "تأییدشده" },
+  { key: "rejected", label: "ردشده" },
+  { key: "all", label: "همه" },
+];
+
 const drawer = ref<ReceiptDetail | null>(null);
 const drawerLoading = ref(false);
 
@@ -26,7 +35,7 @@ async function refresh() {
   loading.value = true;
   errorMsg.value = null;
   try {
-    const r = await listReceipts();
+    const r = await listReceipts(filter.value);
     items.value = r.items;
   } catch (exc) {
     errorMsg.value = exc instanceof ApiError ? exc.detail : "خطا";
@@ -35,6 +44,25 @@ async function refresh() {
   }
 }
 onMounted(refresh);
+
+function setFilter(f: ReceiptFilter) {
+  if (filter.value === f) return;
+  filter.value = f;
+  refresh();
+}
+
+function statusLabel(s: string): string {
+  if (s === "pending_approval") return "در انتظار";
+  if (s === "finished") return "تأییدشده";
+  if (s === "rejected") return "ردشده";
+  return s;
+}
+function statusBadge(s: string): string {
+  if (s === "finished") return "badge badge-success";
+  if (s === "rejected") return "badge badge-danger";
+  if (s === "pending_approval") return "badge badge-warn";
+  return "badge badge-muted";
+}
 
 function flash(msg: string, tone: "ok" | "warn" = "ok") {
   banner.value = msg;
@@ -100,12 +128,22 @@ async function doReject(r: ReceiptListItem) {
   <div class="p-6 lg:p-8 max-w-7xl mx-auto">
     <header class="flex flex-wrap items-end justify-between gap-3 mb-6">
       <div>
-        <h1 class="text-2xl font-bold text-white">رسیدهای در انتظار</h1>
+        <h1 class="text-2xl font-bold text-white">رسیدهای کارت به کارت</h1>
         <p class="text-sm text-slate-400 mt-1">
           {{ fmtNumber(items.length) }} رسید — جمع: {{ totalPendingAmount.toFixed(2) }} $
         </p>
       </div>
-      <button class="btn btn-secondary" @click="refresh" :disabled="loading">به‌روزرسانی</button>
+      <div class="flex items-center gap-2">
+        <div class="flex gap-1 bg-bg-elev/40 rounded-lg p-1">
+          <button
+            v-for="f in filters"
+            :key="f.key"
+            :class="['btn btn-sm', filter === f.key ? 'btn-primary' : 'btn-ghost']"
+            @click="setFilter(f.key)"
+          >{{ f.label }}</button>
+        </div>
+        <button class="btn btn-secondary" @click="refresh" :disabled="loading">به‌روزرسانی</button>
+      </div>
     </header>
 
     <div
@@ -129,6 +167,7 @@ async function doReject(r: ReceiptListItem) {
             <th>کاربر</th>
             <th>مبلغ</th>
             <th>کارت</th>
+            <th>وضعیت</th>
             <th>تاریخ</th>
             <th class="text-end">عملیات</th>
           </tr>
@@ -153,16 +192,19 @@ async function doReject(r: ReceiptListItem) {
               <div class="text-slate-300">{{ r.card_holder || "—" }}</div>
               <div class="font-mono text-slate-500">{{ r.card_number || "" }}</div>
             </td>
+            <td><span :class="statusBadge(r.status)">{{ statusLabel(r.status) }}</span></td>
             <td class="text-xs text-slate-300">{{ fmtDate(r.created_at) }}</td>
             <td class="text-end whitespace-nowrap">
               <button class="btn btn-ghost btn-sm" @click="openDrawer(r)">مشاهده</button>
-              <button class="btn btn-ghost btn-sm text-emerald-300" :disabled="busyId === r.id" @click="doApprove(r)">تأیید</button>
-              <button class="btn btn-ghost btn-sm text-rose-300" :disabled="busyId === r.id" @click="doReject(r)">رد</button>
+              <template v-if="r.status === 'pending_approval'">
+                <button class="btn btn-ghost btn-sm text-emerald-300" :disabled="busyId === r.id" @click="doApprove(r)">تأیید</button>
+                <button class="btn btn-ghost btn-sm text-rose-300" :disabled="busyId === r.id" @click="doReject(r)">رد</button>
+              </template>
             </td>
           </tr>
           <tr v-if="!items.length">
-            <td colspan="5" class="text-center text-slate-500 py-8">
-              ✅ هیچ رسیدی در صف نیست.
+            <td colspan="6" class="text-center text-slate-500 py-8">
+              {{ filter === 'pending' ? '✅ هیچ رسیدی در صف نیست.' : 'رسیدی یافت نشد.' }}
             </td>
           </tr>
         </tbody>
@@ -204,6 +246,7 @@ async function doReject(r: ReceiptListItem) {
             <div>
               <div class="text-[11px] text-slate-500">زمان ثبت</div>
               <div class="text-slate-300">{{ fmtDate(drawer.created_at) }}</div>
+              <span :class="statusBadge(drawer.status)" class="mt-1 inline-block">{{ statusLabel(drawer.status) }}</span>
             </div>
           </div>
 
@@ -241,7 +284,7 @@ async function doReject(r: ReceiptListItem) {
             <div v-else class="text-xs text-slate-500">عکسی ضمیمه نشده.</div>
           </div>
 
-          <div class="flex justify-end gap-2 pt-2">
+          <div v-if="drawer.status === 'pending_approval'" class="flex justify-end gap-2 pt-2">
             <button
               class="btn btn-ghost text-rose-300"
               :disabled="busyId === drawer.id"
@@ -252,6 +295,9 @@ async function doReject(r: ReceiptListItem) {
               :disabled="busyId === drawer.id"
               @click="doApprove(drawer)"
             >تأیید و شارژ کیف پول</button>
+          </div>
+          <div v-else class="text-xs text-slate-500 pt-2 text-end">
+            این رسید قبلاً «{{ statusLabel(drawer.status) }}» شده — فقط برای مشاهده.
           </div>
         </div>
       </div>

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
-from apps.bot.utils.messaging import safe_edit_or_send
+from apps.bot.utils.messaging import safe_edit_caption_or_text
 from models.payment import Payment
 from models.user import User
 from models.wallet import Wallet
@@ -118,15 +118,15 @@ async def approve_manual_payment_preview(
     try:
         payment_id = UUID(payment_id_str)
     except ValueError:
-        await safe_edit_or_send(callback, "❌ شناسه پرداخت نامعتبر.")
+        await safe_edit_caption_or_text(callback, "❌ شناسه پرداخت نامعتبر.")
         return
 
     payment = await session.get(Payment, payment_id)
     if payment is None:
-        await safe_edit_or_send(callback, "❌ پرداخت یافت نشد.")
+        await safe_edit_caption_or_text(callback, "❌ پرداخت یافت نشد.")
         return
     if payment.payment_status not in {"pending_approval", "waiting_hash"}:
-        await safe_edit_or_send(callback, f"⚠️ این پرداخت قبلاً پردازش شده.\nوضعیت: {payment.payment_status}")
+        await safe_edit_caption_or_text(callback, f"⚠️ این پرداخت قبلاً پردازش شده.\nوضعیت: {payment.payment_status}")
         return
 
     context = await _build_payment_context(session, payment)
@@ -134,7 +134,7 @@ async def approve_manual_payment_preview(
     builder.button(text="✅ تأیید نهایی و واریز", callback_data=f"mp:ok:final:{payment.id}")
     builder.button(text="❌ رد پرداخت", callback_data=f"mp:no:{payment.id}")
     builder.adjust(1)
-    await safe_edit_or_send(
+    await safe_edit_caption_or_text(
         callback,
         f"🔎 <b>پیش از تأیید نهایی</b>\n"
         f"شناسه پرداخت: <code>{payment.id}</code>\n"
@@ -156,7 +156,7 @@ async def approve_manual_payment(
     try:
         payment_id = UUID(payment_id_str)
     except ValueError:
-        await safe_edit_or_send(callback, "❌ شناسه پرداخت نامعتبر.")
+        await safe_edit_caption_or_text(callback, "❌ شناسه پرداخت نامعتبر.")
         return
 
     # Row-lock the payment so a double-click cannot credit twice. The lock is
@@ -165,11 +165,11 @@ async def approve_manual_payment(
         select(Payment).where(Payment.id == payment_id).with_for_update()
     )
     if payment is None:
-        await safe_edit_or_send(callback, "❌ پرداخت یافت نشد.")
+        await safe_edit_caption_or_text(callback, "❌ پرداخت یافت نشد.")
         return
 
     if payment.payment_status not in {"pending_approval", "waiting_hash"}:
-        await safe_edit_or_send(callback, f"⚠️ این پرداخت قبلاً پردازش شده.\nوضعیت: {payment.payment_status}")
+        await safe_edit_caption_or_text(callback, f"⚠️ این پرداخت قبلاً پردازش شده.\nوضعیت: {payment.payment_status}")
         return
 
     # Process the payment (credit wallet)
@@ -181,7 +181,7 @@ async def approve_manual_payment(
         )
     except Exception as exc:
         logger.error("Failed to process manual payment %s: %s", payment.id, exc, exc_info=True)
-        await safe_edit_or_send(
+        await safe_edit_caption_or_text(
             callback,
             f"❌ خطا در پردازش پرداخت:\n{str(exc)[:300]}",
         )
@@ -202,7 +202,7 @@ async def approve_manual_payment(
         else "مبلغ به کیف پول کاربر واریز شد."
     )
 
-    await safe_edit_or_send(
+    await safe_edit_caption_or_text(
         callback,
         "✅━━━━━━━━━━━━━━━━━━━━━✅\n"
         "  پرداخت تأیید شد\n"
@@ -258,7 +258,7 @@ async def reject_manual_payment(
     try:
         payment_id = UUID(payment_id_str)
     except ValueError:
-        await safe_edit_or_send(callback, "❌ شناسه پرداخت نامعتبر.")
+        await safe_edit_caption_or_text(callback, "❌ شناسه پرداخت نامعتبر.")
         return
 
     # Row-lock the payment so a double-click cannot credit twice. The lock is
@@ -267,11 +267,11 @@ async def reject_manual_payment(
         select(Payment).where(Payment.id == payment_id).with_for_update()
     )
     if payment is None:
-        await safe_edit_or_send(callback, "❌ پرداخت یافت نشد.")
+        await safe_edit_caption_or_text(callback, "❌ پرداخت یافت نشد.")
         return
 
     if payment.payment_status not in {"pending_approval", "waiting_hash"}:
-        await safe_edit_or_send(callback, f"⚠️ این پرداخت قبلاً پردازش شده.\nوضعیت: {payment.payment_status}")
+        await safe_edit_caption_or_text(callback, f"⚠️ این پرداخت قبلاً پردازش شده.\nوضعیت: {payment.payment_status}")
         return
 
     payment.payment_status = "rejected"
@@ -283,7 +283,7 @@ async def reject_manual_payment(
     user_info = f"<b>{rejected_user.first_name or '-'}</b> (<code>{rejected_user.telegram_id}</code>)" if rejected_user else "?"
     admin_name = callback.from_user.first_name if callback.from_user else "Admin"
 
-    await safe_edit_or_send(
+    await safe_edit_caption_or_text(
         callback,
         "❌━━━━━━━━━━━━━━━━━━━━━❌\n"
         "  پرداخت رد شد\n"
@@ -313,6 +313,134 @@ async def reject_manual_payment(
             pass
         except Exception as exc:
             logger.warning("Could not notify user about rejection: %s", exc)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Receipt archive — view any card-to-card receipt again, even after it was
+#  approved/rejected. The receipt photo's Telegram file_id is stored on the
+#  payment (callback_payload["receipt_file_id"] / provider_payment_id) and is
+#  never wiped, so we can always re-send the image on demand.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_STATUS_FA = {
+    "pending_approval": "⏳ در انتظار تأیید",
+    "waiting_receipt": "📤 منتظر رسید",
+    "waiting": "⏳ در انتظار",
+    "waiting_hash": "⏳ در انتظار",
+    "finished": "✅ تأیید‌شده",
+    "rejected": "❌ ردشده",
+    "expired": "⌛️ منقضی",
+    "failed": "⚠️ ناموفق",
+}
+
+
+def _payment_status_fa(status: str | None) -> str:
+    return _STATUS_FA.get(status or "", status or "—")
+
+
+async def _receipt_caption(session: AsyncSession, payment: Payment) -> str:
+    payload = payment.callback_payload or {}
+    user = await session.get(User, payment.user_id)
+    uname = (user.first_name or user.username or str(user.telegram_id)) if user else "?"
+    utg = user.telegram_id if user else "?"
+    kind_fa = {
+        "wallet_topup": "شارژ کیف پول",
+        "direct_purchase": "خرید کانفیگ",
+        "direct_renewal": "تمدید سرویس",
+    }.get(payment.kind or "", payment.kind or "")
+    toman = int(payment.pay_amount or 0)
+    created = payment.created_at.strftime("%Y-%m-%d %H:%M") if payment.created_at else "—"
+    return (
+        "🧾 <b>رسید کارت به کارت</b>\n"
+        f"وضعیت: <b>{_payment_status_fa(payment.payment_status)}</b>\n"
+        f"نوع: {kind_fa}\n"
+        f"👤 {_esc(uname)} (<code>{utg}</code>)\n"
+        f"💵 <b>{payment.price_amount:.2f}$</b> | {toman:,} تومان\n"
+        f"💳 <code>{_esc(payload.get('card_number') or '—')}</code> — {_esc(payload.get('card_holder') or '—')}\n"
+        f"🆔 <code>{payment.id}</code>\n"
+        f"🕐 {created}"
+    )
+
+
+async def _send_stored_receipt(bot, chat_id: int, session: AsyncSession, payment: Payment) -> bool:
+    """Re-send a stored receipt photo (by its Telegram file_id) to chat_id.
+    Falls back to a text summary if no photo / the file_id can't be resent."""
+    payload = payment.callback_payload or {}
+    file_id = payload.get("receipt_file_id") or payment.provider_payment_id
+    caption = await _receipt_caption(session, payment)
+    if not file_id:
+        await bot.send_message(chat_id, caption + "\n\n⚠️ عکس رسیدی برای این پرداخت ثبت نشده.", parse_mode="HTML")
+        return False
+    try:
+        await bot.send_photo(chat_id, photo=file_id, caption=caption, parse_mode="HTML")
+        return True
+    except Exception as exc:
+        logger.warning("resend receipt photo failed for %s: %s", payment.id, exc)
+        await bot.send_message(chat_id, caption + "\n\n⚠️ عکس رسید قابل بازیابی نبود.", parse_mode="HTML")
+        return False
+
+
+@router.message(Command("receipts"))
+async def list_recent_receipts(message: Message, session: AsyncSession) -> None:
+    """List the most recent card-to-card receipts (any status) with a button
+    to re-view each one's photo — so an accidentally-approved receipt is never
+    lost."""
+    rows = (await session.execute(
+        select(Payment)
+        .options(selectinload(Payment.user))
+        .where(Payment.provider == "card_to_card")
+        .order_by(Payment.created_at.desc())
+        .limit(15)
+    )).scalars().all()
+    if not rows:
+        await message.answer("هیچ رسید کارت‌به‌کارتی ثبت نشده.")
+        return
+
+    builder = InlineKeyboardBuilder()
+    lines = ["🧾 <b>رسیدهای اخیر (کارت به کارت)</b>\n"]
+    for p in rows:
+        u = p.user
+        uname = (u.first_name or u.username or str(u.telegram_id)) if u else "?"
+        toman = int(p.pay_amount or 0)
+        lines.append(f"{_payment_status_fa(p.payment_status)} • {toman:,}ت • {_esc(uname)}")
+        builder.button(text=f"🧾 {toman:,}ت — {uname}"[:60], callback_data=f"rcpt:show:{p.id}")
+    builder.adjust(1)
+    lines.append("\nبرای دیدن عکسِ هر رسید، دکمه‌اش را بزن.")
+    await message.answer("\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("rcpt:show:"))
+async def show_receipt_callback(callback: CallbackQuery, session: AsyncSession) -> None:
+    await callback.answer()
+    if callback.message is None:
+        return
+    try:
+        pid = UUID(callback.data.split(":")[-1])
+    except ValueError:
+        return
+    payment = await session.get(Payment, pid)
+    if payment is None:
+        await callback.message.answer("❌ پرداخت یافت نشد.")
+        return
+    await _send_stored_receipt(callback.bot, callback.message.chat.id, session, payment)
+
+
+@router.message(Command("receipt"))
+async def show_receipt_command(message: Message, command: CommandObject, session: AsyncSession) -> None:
+    """/receipt <payment_id|order_id> — re-send a specific receipt's photo."""
+    ident = (command.args or "").strip()
+    if not ident:
+        await message.answer(
+            "<b>/receipt</b>\nنحوه استفاده: <code>/receipt &lt;payment_id&gt;</code>\n"
+            "یا <code>/receipts</code> برای دیدن لیست رسیدهای اخیر.",
+            parse_mode="HTML",
+        )
+        return
+    payment = await _load_payment_for_diag(session, ident)
+    if payment is None:
+        await message.answer(f"❌ پرداخت <code>{_esc(ident)}</code> یافت نشد.", parse_mode="HTML")
+        return
+    await _send_stored_receipt(message.bot, message.chat.id, session, payment)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

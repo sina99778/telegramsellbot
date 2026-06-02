@@ -72,17 +72,38 @@ def _serialize(p: Payment, user: User | None) -> dict[str, Any]:
 
 
 @router.get("")
-async def list_pending_receipts(auth: AuthDep) -> dict[str, Any]:
+async def list_pending_receipts(auth: AuthDep, status: str = "pending") -> dict[str, Any]:
+    """List card-to-card receipts.
+
+    ?status= controls the view:
+      * "pending"  (default) — only awaiting approval (the live queue)
+      * "approved" — already credited (finished)
+      * "rejected" — rejected
+      * "history"  — approved + rejected (everything already decided)
+      * "all"      — every card receipt regardless of status
+
+    The photo proxy works for ANY status, so the operator can re-open a
+    receipt they already approved/rejected (e.g. after a misclick).
+    """
     _admin, session = auth
-    rows = (await session.execute(
+    status = (status or "pending").lower()
+    stmt = (
         select(Payment)
         .options(selectinload(Payment.user))
-        .where(
-            Payment.provider == "card_to_card",
-            Payment.payment_status == "pending_approval",
-        )
-        .order_by(desc(Payment.created_at))
-        .limit(200)
+        .where(Payment.provider == "card_to_card")
+    )
+    if status == "pending":
+        stmt = stmt.where(Payment.payment_status == "pending_approval")
+    elif status == "approved":
+        stmt = stmt.where(Payment.payment_status == "finished")
+    elif status == "rejected":
+        stmt = stmt.where(Payment.payment_status == "rejected")
+    elif status == "history":
+        stmt = stmt.where(Payment.payment_status.in_(("finished", "rejected")))
+    # status == "all" → no extra status filter
+
+    rows = (await session.execute(
+        stmt.order_by(desc(Payment.created_at)).limit(200)
     )).scalars().all()
     items = [_serialize(p, p.user) for p in rows]
     return {"items": items, "total": len(items)}
