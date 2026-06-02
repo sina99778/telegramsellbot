@@ -101,7 +101,7 @@ async def _build_payment_context(session: AsyncSession, payment: Payment) -> str
         file_id = payload.get("receipt_file_id") or payment.provider_payment_id
         if file_id:
             try:
-                from services.receipt_ocr import assess_card_receipt
+                from services.receipt_ocr import assess_card_receipt, hamming_hex
                 verdict = await assess_card_receipt(
                     str(file_id),
                     card_number=payload.get("card_number"),
@@ -109,8 +109,28 @@ async def _build_payment_context(session: AsyncSession, payment: Payment) -> str
                     expected_toman=int(payment.pay_amount or 0) or None,
                 )
                 ocr_line = "\n━━━━━━━━━━\n" + verdict["summary"]
+
+                # Duplicate-receipt detection: compare this receipt's perceptual
+                # hash against recent card receipts (catches a resubmitted image).
+                phash = verdict.get("phash")
+                if phash:
+                    rows = (await session.execute(
+                        select(Payment.id, Payment.user_id, Payment.callback_payload)
+                        .where(Payment.provider == "card_to_card", Payment.id != payment.id)
+                        .order_by(Payment.created_at.desc())
+                        .limit(400)
+                    )).all()
+                    for _pid, _uid, _pl in rows:
+                        if hamming_hex(phash, (_pl or {}).get("receipt_phash")) <= 6:
+                            who = "همین کاربر" if _uid == payment.user_id else "کاربرِ دیگری!"
+                            ocr_line += f"\n🚩 <b>این رسید قبلاً ارسال شده</b> ({who})"
+                            break
+                    # Remember this receipt's hash so future submissions match it.
+                    new_payload = dict(payment.callback_payload or {})
+                    new_payload["receipt_phash"] = phash
+                    payment.callback_payload = new_payload
             except Exception:
-                ocr_line = ""
+                ocr_line = ocr_line or ""
 
     return (
         "\n━━━━━━━━━━\n"

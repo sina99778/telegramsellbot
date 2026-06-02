@@ -100,6 +100,36 @@ async def ocr_receipt_text(file_id: str) -> str | None:
     return await asyncio.to_thread(_ocr_bytes, blob)
 
 
+def _dhash_bytes(blob: bytes) -> str | None:
+    """64-bit perceptual difference-hash (hex) — catches the SAME receipt even
+    if re-screenshotted/recompressed. Uses Pillow only (no extra dependency)."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        img = Image.open(io.BytesIO(blob)).convert("L").resize((9, 8))
+        px = list(img.getdata())  # 8 rows × 9 cols, row-major
+        bits = 0
+        for row in range(8):
+            for col in range(8):
+                bits = (bits << 1) | (1 if px[row * 9 + col] > px[row * 9 + col + 1] else 0)
+        return f"{bits:016x}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("dhash failed: %s", exc)
+        return None
+
+
+def hamming_hex(a: str | None, b: str | None) -> int:
+    """Bit difference between two 16-hex-char hashes (999 = incomparable)."""
+    if not a or not b:
+        return 999
+    try:
+        return bin(int(a, 16) ^ int(b, 16)).count("1")
+    except (ValueError, TypeError):
+        return 999
+
+
 def _name_matches(holder: str, ocr_text: str) -> bool:
     holder_n = _norm_fa(holder)
     text_n = _norm_fa(ocr_text)
@@ -179,12 +209,19 @@ async def assess_card_receipt(
     card_holder: str | None,
     expected_toman: int | None = None,
 ) -> dict:
-    """Download + OCR + assess in one call. Never raises."""
+    """Download once, then OCR + perceptual-hash + assess. Never raises.
+    Returns the verdict dict plus a "phash" (for duplicate-receipt detection)."""
     try:
-        text = await ocr_receipt_text(file_id)
-        return assess_receipt(
+        blob = await _download_telegram_file(file_id)
+        if not blob:
+            return {"ok": None, "summary": "🧾 OCR: متن رسید خوانده نشد — دستی بررسی کن.", "phash": None}
+        text = await asyncio.to_thread(_ocr_bytes, blob)
+        phash = _dhash_bytes(blob)
+        verdict = assess_receipt(
             text, card_number=card_number, card_holder=card_holder, expected_toman=expected_toman
         )
+        verdict["phash"] = phash
+        return verdict
     except Exception as exc:  # noqa: BLE001
         logger.warning("receipt assessment failed: %s", exc)
-        return {"ok": None, "summary": "🧾 OCR: بررسی خودکار ناموفق — دستی بررسی کن."}
+        return {"ok": None, "summary": "🧾 OCR: بررسی خودکار ناموفق — دستی بررسی کن.", "phash": None}

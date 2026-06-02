@@ -143,6 +143,24 @@ async def receipt_detail(payment_id: UUID, auth: AuthDep) -> dict[str, Any]:
             )
         ) or 0)
     base["context"] = context
+
+    # OCR fraud verdict — does the operator's own card appear on the receipt?
+    base["ocr"] = None
+    payload = dict(payment.callback_payload or {})
+    file_id = payload.get("receipt_file_id") or payment.provider_payment_id
+    if file_id:
+        try:
+            from services.receipt_ocr import assess_card_receipt
+            v = await assess_card_receipt(
+                str(file_id),
+                card_number=payload.get("card_number"),
+                card_holder=payload.get("card_holder"),
+                expected_toman=int(payment.pay_amount or 0) or None,
+            )
+            summary = (v.get("summary") or "").replace("<b>", "").replace("</b>", "")
+            base["ocr"] = {"ok": v.get("ok"), "summary": summary}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("receipt OCR for dashboard failed: %s", exc)
     return base
 
 

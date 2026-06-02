@@ -27,6 +27,9 @@ export interface ReceiptDetail extends ReceiptListItem {
     rejected_recent: number;
     paid_lifetime: number;
   };
+  // OCR fraud verdict: ok=true matched the operator's card, false=not found
+  // (possible "paid someone else"), null=couldn't read / OCR unavailable.
+  ocr?: { ok: boolean | null; summary: string } | null;
 }
 
 export type ReceiptFilter = "pending" | "approved" | "rejected" | "history" | "all";

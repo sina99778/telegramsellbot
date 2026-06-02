@@ -272,6 +272,18 @@ async function doReject(r: ReceiptListItem) {
             </div>
           </div>
 
+          <div v-if="drawer.ocr" class="border-t border-bg-border pt-3">
+            <h4 class="text-sm font-bold text-white mb-2">🤖 بررسی خودکار رسید (OCR)</h4>
+            <div
+              class="text-sm rounded-lg px-3 py-2 border"
+              :class="drawer.ocr.ok === true
+                ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                : drawer.ocr.ok === false
+                  ? 'bg-rose-500/10 text-rose-300 border-rose-500/40'
+                  : 'bg-slate-500/10 text-slate-300 border-bg-border'"
+            >{{ drawer.ocr.summary }}</div>
+          </div>
+
           <div class="border-t border-bg-border pt-3">
             <h4 class="text-sm font-bold text-white mb-2">عکس رسید</h4>
             <div v-if="drawer.receipt_file_id" class="rounded-lg overflow-hidden border border-bg-border bg-bg-elev/30">
