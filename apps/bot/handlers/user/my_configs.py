@@ -597,7 +597,18 @@ async def my_config_detail_handler(
         
     if sub.status in ("active", "pending_activation", "expired") and not server_deleted:
         builder.button(text=Buttons.RENEW_SERVICE, callback_data=MyConfigCallback(action="renew", subscription_id=sub.id).pack())
-        
+
+        # Auto-renew toggle — only meaningful for plan-based services (we extend
+        # by the plan's duration). Green when ON, neutral when OFF.
+        if sub.plan_id is not None:
+            ar_on = bool(getattr(sub, "auto_renew_enabled", False))
+            styled_button(
+                builder,
+                "🔁 تمدید خودکار: روشن ✅" if ar_on else "🔁 تمدید خودکار: خاموش",
+                callback_data=MyConfigCallback(action="toggle_autorenew", subscription_id=sub.id).pack(),
+                role="confirm" if ar_on else "navigation",
+            )
+
     if sub.status in ("active", "pending_activation") and not server_deleted:
         # New Feature: Change Link / Reset UUID
         builder.button(text="🔄 تغییر لینک", callback_data=MyConfigCallback(action="reset_uuid", subscription_id=sub.id).pack())
@@ -904,6 +915,42 @@ async def reset_uuid_handler(
         logger.error("Failed to reset UUID for sub %s: %s", sub.id, exc, exc_info=True)
         error_detail = str(exc)[:150]
         await safe_edit_or_send(callback, f"❌ خطا در تغییر لینک:\n{error_detail}")
+
+
+@router.callback_query(MyConfigCallback.filter(F.action == "toggle_autorenew"))
+async def toggle_autorenew_handler(
+    callback: CallbackQuery,
+    callback_data: MyConfigCallback,
+    session: AsyncSession,
+    bot: Bot,
+) -> None:
+    """Flip the per-service auto-renew opt-in, then re-render the detail."""
+    if callback.from_user is None:
+        await callback.answer()
+        return
+    user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+    if user is None:
+        await callback.answer()
+        return
+    sub = await session.scalar(
+        select(Subscription).where(
+            Subscription.id == callback_data.subscription_id,
+            Subscription.user_id == user.id,
+        )
+    )
+    if sub is None:
+        await callback.answer("سرویس پیدا نشد.", show_alert=True)
+        return
+    sub.auto_renew_enabled = not bool(getattr(sub, "auto_renew_enabled", False))
+    await session.flush()
+    # Re-render the detail (my_config_detail_handler answers the callback and
+    # redraws the keyboard, so the toggle button shows its new state).
+    await my_config_detail_handler(
+        callback,
+        MyConfigCallback(action="view", subscription_id=sub.id),
+        session,
+        bot,
+    )
 
 
 @router.callback_query(MyConfigCallback.filter(F.action == "toggle_enable"))

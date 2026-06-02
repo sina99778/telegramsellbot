@@ -87,6 +87,12 @@ class Subscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # the admin in the dashboard. Faoxima parity for `note` per-service.
     # Nullable so the column is harmless on the auto-sync migration path.
     user_note: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # Opt-in: when ON, the worker auto-renews this service (extends time by the
+    # plan's duration, paid from the user's wallet) shortly before it expires.
+    # Default OFF; server_default keeps the auto-sync migration safe.
+    auto_renew_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false",
+    )
 
     user: Mapped[User] = relationship("User", back_populates="subscriptions")
     order: Mapped[Order | None] = relationship("Order", back_populates="subscription")

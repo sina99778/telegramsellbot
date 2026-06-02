@@ -28,6 +28,7 @@ from apps.worker.jobs.payments import sync_pending_payments
 from apps.worker.jobs.retargeting import process_retargeting_campaigns
 from apps.worker.jobs.subscriptions import sync_all_subscription_states
 from apps.worker.jobs.expiry_notifications import send_expiry_notifications
+from apps.worker.jobs.auto_renew import run_auto_renew
 from apps.worker.jobs.server_health import check_server_health
 from apps.worker.jobs.backup import run_backup
 from apps.worker.jobs.card_autoconfirm import run_card_autoconfirm
@@ -148,6 +149,16 @@ async def main() -> None:
         max_instances=1,
         coalesce=True,
     )
+    # Auto-renew opt-in services from the wallet, ~once an hour. Cheap when no
+    # service is near expiry (a single indexed query returns nothing).
+    scheduler.add_job(
+        run_auto_renew_job,
+        "cron",
+        minute=15,
+        kwargs={"bot": bot},
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.start()
 
     heartbeat_task = asyncio.create_task(_heartbeat_loop(), name="worker-heartbeat")
@@ -206,6 +217,15 @@ async def run_server_health_check(bot: PremiumEmojiBot) -> None:
             await session.commit()
     except Exception as exc:
         logger.error("server_health_check failed: %s", exc, exc_info=True)
+
+
+async def run_auto_renew_job(bot: PremiumEmojiBot) -> None:
+    try:
+        async with AsyncSessionFactory() as session:
+            await run_auto_renew(session, bot)
+            await session.commit()
+    except Exception as exc:
+        logger.error("auto_renew failed: %s", exc, exc_info=True)
 
 
 async def run_backup_job(bot: PremiumEmojiBot) -> None:
