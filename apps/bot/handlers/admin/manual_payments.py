@@ -380,11 +380,12 @@ async def _send_stored_receipt(bot, chat_id: int, session: AsyncSession, payment
         return False
 
 
-@router.message(Command("receipts"))
-async def list_recent_receipts(message: Message, session: AsyncSession) -> None:
-    """List the most recent card-to-card receipts (any status) with a button
-    to re-view each one's photo — so an accidentally-approved receipt is never
-    lost."""
+@router.callback_query(F.data == "admin:receipts")
+async def show_receipts_list(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Button-driven: list the most recent card-to-card receipts (any status)
+    with a button to re-view each one's photo — so an accidentally-approved
+    receipt is never lost."""
+    await callback.answer()
     rows = (await session.execute(
         select(Payment)
         .options(selectinload(Payment.user))
@@ -392,11 +393,13 @@ async def list_recent_receipts(message: Message, session: AsyncSession) -> None:
         .order_by(Payment.created_at.desc())
         .limit(15)
     )).scalars().all()
-    if not rows:
-        await message.answer("هیچ رسید کارت‌به‌کارتی ثبت نشده.")
-        return
 
     builder = InlineKeyboardBuilder()
+    if not rows:
+        builder.button(text="🔙 بازگشت", callback_data="admin:finance")
+        await safe_edit_caption_or_text(callback, "هیچ رسید کارت‌به‌کارتی ثبت نشده.", reply_markup=builder.as_markup())
+        return
+
     lines = ["🧾 <b>رسیدهای اخیر (کارت به کارت)</b>\n"]
     for p in rows:
         u = p.user
@@ -404,9 +407,10 @@ async def list_recent_receipts(message: Message, session: AsyncSession) -> None:
         toman = int(p.pay_amount or 0)
         lines.append(f"{_payment_status_fa(p.payment_status)} • {toman:,}ت • {_esc(uname)}")
         builder.button(text=f"🧾 {toman:,}ت — {uname}"[:60], callback_data=f"rcpt:show:{p.id}")
+    builder.button(text="🔙 بازگشت", callback_data="admin:finance")
     builder.adjust(1)
     lines.append("\nبرای دیدن عکسِ هر رسید، دکمه‌اش را بزن.")
-    await message.answer("\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+    await safe_edit_caption_or_text(callback, "\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("rcpt:show:"))
@@ -423,24 +427,6 @@ async def show_receipt_callback(callback: CallbackQuery, session: AsyncSession) 
         await callback.message.answer("❌ پرداخت یافت نشد.")
         return
     await _send_stored_receipt(callback.bot, callback.message.chat.id, session, payment)
-
-
-@router.message(Command("receipt"))
-async def show_receipt_command(message: Message, command: CommandObject, session: AsyncSession) -> None:
-    """/receipt <payment_id|order_id> — re-send a specific receipt's photo."""
-    ident = (command.args or "").strip()
-    if not ident:
-        await message.answer(
-            "<b>/receipt</b>\nنحوه استفاده: <code>/receipt &lt;payment_id&gt;</code>\n"
-            "یا <code>/receipts</code> برای دیدن لیست رسیدهای اخیر.",
-            parse_mode="HTML",
-        )
-        return
-    payment = await _load_payment_for_diag(session, ident)
-    if payment is None:
-        await message.answer(f"❌ پرداخت <code>{_esc(ident)}</code> یافت نشد.", parse_mode="HTML")
-        return
-    await _send_stored_receipt(message.bot, message.chat.id, session, payment)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

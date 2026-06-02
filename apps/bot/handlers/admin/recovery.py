@@ -127,6 +127,10 @@ async def recovery_main_menu(callback: CallbackQuery, session: AsyncSession) -> 
         text="🔧 اصلاح حجم کانفیگ‌های منتقل‌شده",
         callback_data="fixvol:check",
     )
+    builder.button(
+        text="🧾 رسیدهای کارت به کارت",
+        callback_data="admin:receipts",
+    )
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
     builder.adjust(1)
 
