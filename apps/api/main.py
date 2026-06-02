@@ -45,6 +45,20 @@ app.include_router(dl_router, prefix="/api", tags=["dl"])
 app.include_router(sub_router, prefix="/api", tags=["sub"])
 
 
+@app.on_event("startup")
+async def _start_cache_sync() -> None:
+    # Listen for settings-cache invalidations from the bot/worker (and apply our
+    # own dashboard writes everywhere). No-op-safe if Redis is briefly down.
+    try:
+        import asyncio
+
+        from core.cache_sync import register_default_caches, run_cache_invalidation_listener
+        register_default_caches()
+        asyncio.create_task(run_cache_invalidation_listener(), name="cache-sync")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("cache-sync listener start failed: %s", exc)
+
+
 @app.get("/healthz", tags=["health"])
 async def healthz() -> dict[str, str]:
     async with AsyncSessionFactory() as session:

@@ -410,6 +410,8 @@ async def toggle_premium_emoji(callback: CallbackQuery, session: AsyncSession) -
     await settings_repo.update_premium_emoji_settings(enabled=not current.enabled)
     clear_premium_emoji_cache()
     await _sync_premium_icon_cache()
+    from core.cache_sync import publish
+    await publish("premium_emoji")
     await bot_settings_menu(callback, session)
 
 
@@ -572,6 +574,8 @@ async def edit_premium_emoji_map_submit(message: Message, state: FSMContext, ses
     await settings_repo.update_premium_emoji_settings(enabled=True, emoji_map=new_map)
     clear_premium_emoji_cache()
     await _sync_premium_icon_cache()
+    from core.cache_sync import publish
+    await publish("premium_emoji")
     await state.clear()
 
     # Build a result list showing which emojis got mapped, so the admin
@@ -637,6 +641,8 @@ async def clear_premium_emoji_map(callback: CallbackQuery, session: AsyncSession
     await settings_repo.update_premium_emoji_settings(emoji_map={})
     clear_premium_emoji_cache()
     await _sync_premium_icon_cache()
+    from core.cache_sync import publish
+    await publish("premium_emoji")
     await safe_edit_or_send(
         callback,
         "🗑 لیست نگاشت اموجی‌های پریمیم پاک شد.",
@@ -2155,6 +2161,8 @@ async def toggle_button_styles(callback: CallbackQuery, session: AsyncSession) -
     from apps.bot.utils.button_style import clear_button_style_cache, prime_button_style_cache
     clear_button_style_cache()
     await prime_button_style_cache()
+    from core.cache_sync import publish
+    await publish("button_style")
     await _render_button_styles_panel(callback, session)
 
 
@@ -2171,6 +2179,8 @@ async def cycle_button_style_role(callback: CallbackQuery, session: AsyncSession
     from apps.bot.utils.button_style import clear_button_style_cache, prime_button_style_cache
     clear_button_style_cache()
     await prime_button_style_cache()
+    from core.cache_sync import publish
+    await publish("button_style")
     await _render_button_styles_panel(callback, session)
 
 
@@ -2185,4 +2195,6 @@ async def reset_button_styles(callback: CallbackQuery, session: AsyncSession) ->
     from apps.bot.utils.button_style import clear_button_style_cache, prime_button_style_cache
     clear_button_style_cache()
     await prime_button_style_cache()
+    from core.cache_sync import publish
+    await publish("button_style")
     await _render_button_styles_panel(callback, session)

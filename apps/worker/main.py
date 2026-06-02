@@ -164,6 +164,14 @@ async def main() -> None:
     )
     scheduler.start()
 
+    # Keep this process's settings caches in sync with dashboard/bot changes.
+    try:
+        from core.cache_sync import register_default_caches, run_cache_invalidation_listener
+        register_default_caches()
+        asyncio.create_task(run_cache_invalidation_listener(), name="cache-sync")
+    except Exception as exc:
+        logger.warning("cache-sync listener start failed: %s", exc)
+
     heartbeat_task = asyncio.create_task(_heartbeat_loop(), name="worker-heartbeat")
     try:
         await asyncio.Event().wait()

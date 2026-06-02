@@ -119,7 +119,6 @@ async def patch_text_templates(body: TextTemplatesBody, auth: AuthDep) -> dict[s
         raise HTTPException(status_code=400, detail=f"unknown keys: {unknown[:5]}")
 
     await repo.update_text_templates({k: (v or "") for k, v in body.templates.items()})
-    clear_text_template_cache()
     try:
         await AuditLogRepository(session).log_action(
             actor_user_id=None,
@@ -134,4 +133,6 @@ async def patch_text_templates(body: TextTemplatesBody, auth: AuthDep) -> dict[s
     except Exception as exc:
         logger.warning("audit log failed: %s", exc)
     await session.commit()
+    from core.cache_sync import invalidate
+    await invalidate("text_templates")
     return {"ok": True}

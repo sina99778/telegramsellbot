@@ -98,8 +98,11 @@ def _resolve_style(role: str) -> str | None:
     """
     if role not in _VALID_ROLES:
         return None
-    now = time.monotonic()
-    cfg = _cache_value if (_cache_value is not None and now < _cache_expires_at) else _default_settings()
+    # Use the primed cache whenever present (no TTL-revert-to-defaults). The
+    # cache is refreshed on settings changes via Redis pub/sub (core.cache_sync),
+    # so it never goes stale — and the operator's custom colors don't silently
+    # revert after 30s the way the old TTL made them.
+    cfg = _cache_value if _cache_value is not None else _default_settings()
     if not cfg.get("enabled", True):
         return None
     style = str(cfg.get(role) or "").strip()
@@ -223,8 +226,7 @@ def _heuristic_role(callback_data: Any) -> str:
 
 
 def _coloring_enabled() -> bool:
-    now = time.monotonic()
-    cfg = _cache_value if (_cache_value is not None and now < _cache_expires_at) else _default_settings()
+    cfg = _cache_value if _cache_value is not None else _default_settings()
     return bool(cfg.get("enabled", True))
 
 

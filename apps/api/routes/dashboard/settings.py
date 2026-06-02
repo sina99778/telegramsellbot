@@ -316,15 +316,13 @@ async def patch_premium_emoji(body: PremiumEmojiBody, auth: AuthDep) -> dict[str
     if not kwargs:
         return {"ok": True}
     await repo.update_premium_emoji_settings(**kwargs)
-    # Premium-emoji cache lives in services.telegram.premium_emoji — clear
-    # it so the bot picks up the new map without a restart.
-    try:
-        clear_premium_emoji_cache()
-    except Exception as exc:
-        logger.warning("Could not clear premium emoji cache: %s", exc)
     await _audit(session, admin, "premium_emoji",
                  {k: ("…" if k == "emoji_map" else v) for k, v in kwargs.items()})
     await session.commit()
+    # Refresh the cache in EVERY process (bot/worker/api) via Redis pub/sub —
+    # AFTER commit so they re-read the just-saved value. No restart needed.
+    from core.cache_sync import invalidate
+    await invalidate("premium_emoji")
     return {"ok": True}
 
 
@@ -343,10 +341,8 @@ class ButtonStyleBody(BaseModel):
 async def patch_button_style(body: ButtonStyleBody, auth: AuthDep) -> dict[str, Any]:
     """Update the role→color mapping used by `styled_button`.
 
-    The bot reads from a 30s in-process cache; the dashboard API runs
-    in a different process, so we can't clear that cache from here.
-    The 30s TTL is short enough that operators see their changes
-    within half a minute of saving — no restart needed.
+    The bot/worker run in other processes; we publish a Redis invalidation so
+    they refresh their in-process cache immediately — no restart, no TTL wait.
     """
     admin, session = auth
     repo = AppSettingsRepository(session)
@@ -363,4 +359,6 @@ async def patch_button_style(body: ButtonStyleBody, auth: AuthDep) -> dict[str, 
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     await _audit(session, admin, "button_style", kwargs)
     await session.commit()
+    from core.cache_sync import invalidate
+    await invalidate("button_style")
     return {"ok": True}

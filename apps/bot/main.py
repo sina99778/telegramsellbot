@@ -70,6 +70,14 @@ async def on_startup(bot: PremiumEmojiBot) -> None:
         await prime_text_template_cache()
     except Exception as exc:
         logging.getLogger(__name__).warning("text-template cache prime failed: %s", exc)
+    # Keep this process's settings caches in sync with changes made in the
+    # dashboard / worker (Redis pub/sub) — no more "restart the bot to apply".
+    try:
+        from core.cache_sync import register_default_caches, run_cache_invalidation_listener
+        register_default_caches()
+        asyncio.create_task(run_cache_invalidation_listener(), name="cache-sync")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("cache-sync listener start failed: %s", exc)
 
 
 async def on_shutdown(bot: PremiumEmojiBot) -> None:
