@@ -52,8 +52,14 @@ async def on_startup(bot: PremiumEmojiBot) -> None:
     # Prime the button-style cache so the first keyboard render after
     # boot already has the operator's color preferences.
     try:
-        from apps.bot.utils.button_style import prime_button_style_cache
+        from apps.bot.utils.button_style import (
+            install_global_button_coloring,
+            prime_button_style_cache,
+        )
         await prime_button_style_cache()
+        # Color EVERY inline button by default (not just the few that opt in
+        # via styled_button). Buttons keep an explicitly-set color.
+        install_global_button_coloring()
     except Exception as exc:
         logging.getLogger(__name__).warning("button style cache prime failed: %s", exc)
     try:

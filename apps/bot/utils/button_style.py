@@ -130,3 +130,91 @@ def styled_button(
                 # aiogram doesn't accept `style` yet → drop it silently.
                 pass
     builder.button(text=text, callback_data=callback_data, **kwargs)
+
+
+# ── Global default coloring ──────────────────────────────────────────────
+# Most keyboards are built with a plain `builder.button(...)` (no role), so
+# they never got a color. To color the WHOLE bot without touching hundreds of
+# call sites, we patch InlineKeyboardBuilder so that — at markup-build time —
+# every callback button that DIDN'T ask for its own color gets the operator's
+# default ("navigation") color. Buttons that set a style explicitly (via
+# styled_button, e.g. the green/red items on the main menu) keep it, and
+# section-header / noop buttons stay uncolored.
+
+_DEFAULT_COLOR_ROLE = "navigation"
+
+# High-confidence callback_data substrings → role, so the whole bot gets the
+# same tasteful blue/green/red mix as the hand-tagged main menu instead of a
+# monotone blue. Anything that doesn't match stays "navigation" (blue).
+_RED_HINTS = (
+    "delete", "remove", "revoke", "reject", "wipe", "cancel", "reset",
+    "clear", "disable", "destroy", "toggle_ban", "ban_user", "unban",
+    "txcf:no", "mp:no", ":no:",
+)
+_GREEN_HINTS = (
+    "confirm", "approve", ":pay", "buy", "purchase", "renew", "topup",
+    "gift", "create", "enable", "activate", ":ok", ":yes", ":final", "save", "submit",
+)
+
+
+def _heuristic_role(callback_data: Any) -> str:
+    cb = str(callback_data or "").lower()
+    for hint in _RED_HINTS:
+        if hint in cb:
+            return "destructive"
+    for hint in _GREEN_HINTS:
+        if hint in cb:
+            return "confirm"
+    return _DEFAULT_COLOR_ROLE
+
+
+def _coloring_enabled() -> bool:
+    now = time.monotonic()
+    cfg = _cache_value if (_cache_value is not None and now < _cache_expires_at) else _default_settings()
+    return bool(cfg.get("enabled", True))
+
+
+def _is_header_or_noop(text: Any, callback_data: Any) -> bool:
+    cb = str(callback_data or "")
+    if not cb or "noop" in cb:
+        return True
+    t = str(text or "").strip()
+    return t.startswith(("━", "─", "┄"))
+
+
+def install_global_button_coloring() -> None:
+    """Monkeypatch InlineKeyboardBuilder.as_markup so every callback button is
+    colored by default. Idempotent; call once at bot startup. The coloring is
+    still gated by the operator's `enabled` flag (via _resolve_style)."""
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    if getattr(InlineKeyboardBuilder, "_global_color_patched", False):
+        return
+
+    _orig_as_markup = InlineKeyboardBuilder.as_markup
+
+    def _patched_as_markup(self, *args: Any, **kwargs: Any):  # type: ignore[no-untyped-def]
+        markup = _orig_as_markup(self, *args, **kwargs)
+        try:
+            if _coloring_enabled():
+                rows = getattr(markup, "inline_keyboard", None)
+                for row in (rows or []):
+                    for btn in row:
+                        if (
+                            getattr(btn, "callback_data", None)
+                            and not getattr(btn, "style", None)
+                            and not _is_header_or_noop(getattr(btn, "text", ""), btn.callback_data)
+                        ):
+                            style = _resolve_style(_heuristic_role(btn.callback_data))
+                            if style:
+                                try:
+                                    btn.style = style
+                                except Exception:
+                                    pass
+        except Exception:
+            logger.debug("global button coloring skipped", exc_info=True)
+        return markup
+
+    InlineKeyboardBuilder.as_markup = _patched_as_markup
+    InlineKeyboardBuilder._global_color_patched = True
+    logger.info("global inline-button coloring installed")
