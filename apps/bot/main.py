@@ -78,6 +78,13 @@ async def on_startup(bot: PremiumEmojiBot) -> None:
         asyncio.create_task(run_cache_invalidation_listener(), name="cache-sync")
     except Exception as exc:
         logging.getLogger(__name__).warning("cache-sync listener start failed: %s", exc)
+    # Disaster-recovery: verify APP_SECRET_KEY still decrypts the panel
+    # credentials — catches a wrong/missing key after a server move LOUDLY.
+    try:
+        from services.dr_check import verify_encryption_key
+        await verify_encryption_key(bot)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("encryption-key DR check failed: %s", exc)
 
 
 async def on_shutdown(bot: PremiumEmojiBot) -> None:

@@ -339,14 +339,26 @@ async def run_backup(
 
     fname = f"tsb_backup_{ts}.tar.gz"
     doc = BufferedInputFile(bundle, filename=fname)
+    try:
+        from core.security import secret_key_fingerprint
+        key_fp = secret_key_fingerprint()
+    except Exception:
+        key_fp = "?"
     caption_lines = [
         f"🗄 بکاپ {'دستی' if manual_requester_id else 'خودکار'}",
         f"📅 {now.strftime('%Y-%m-%d %H:%M UTC')}",
         f"💾 حجم: {size // 1024} KB",
         f"📦 شامل: DB" + (" + .env" if env_data else "") + (f" + {len(xui_data)} پنل X-UI" if xui_data else ""),
+        f"🔑 اثرِ کلیدِ رمزنگاری: {key_fp}",
         "",
-        "ℹ️ این فایل رمز نشده. روی هر سرور با ./restore.sh قابل بازگردانی است.",
     ]
+    if env_data:
+        caption_lines.append("✅ فایلِ .env (کلیدِ رمزنگاری) داخلِ بکاپ هست — روی سرورِ جدید با ./restore.sh کامل برمی‌گردد.")
+    else:
+        caption_lines.append(
+            "⚠️ هشدار: این بکاپ فایلِ .env را ندارد، یعنی APP_SECRET_KEY داخلش نیست. "
+            "بدونِ آن، رمزِ پنل‌های X-UI روی سرورِ جدید بازیابی نمی‌شود — حتماً .env را جدا نگه دار."
+        )
     caption = "\n".join(caption_lines)
 
     # Build target list — priority order documented in the docstring above.
