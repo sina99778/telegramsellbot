@@ -2,6 +2,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 
 class AddServerStates(StatesGroup):
+    waiting_for_panel_type = State()
     waiting_for_name = State()
     waiting_for_base_url = State()
     waiting_for_username = State()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from sqlalchemy import and_, or_, select
@@ -14,6 +14,9 @@ from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.settings import AppSettingsRepository, ServiceSecuritySettings
 from schemas.internal.xui import XUIClient
+from services.panels.adapter import is_pasarguard, record_is_pasarguard
+from services.pasarguard.client import PasarGuardError
+from services.pasarguard.runtime import create_pasarguard_client_for_server
 from services.xui.client import SanaeiXUIClient, XUIClientError, XUIRequestError
 from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
 
@@ -181,6 +184,107 @@ async def sync_xui_usage_and_status(
     return any_expired
 
 
+async def sync_pasarguard_usage_and_status(
+    session: AsyncSession,
+    server: XUIServerRecord,
+    subscriptions: list[Subscription],
+) -> None:
+    """Sync usage + status for PasarGuard configs on one server.
+
+    Unlike X-UI (where WE set the expiry on first traffic), PasarGuard manages
+    on_hold→active itself: the timer starts on first connect and the panel
+    computes `expire`. So we READ the panel's status/expire and mirror it into
+    our Subscription. No Xray restart, no IP-abuse probe (PasarGuard doesn't
+    expose per-user IPs in our surface).
+    """
+    now = utcnow()
+    async with create_pasarguard_client_for_server(server) as client:
+        for subscription in subscriptions:
+            xui_record = subscription.xui_client
+            if xui_record is None:
+                continue
+            username = xui_record.panel_username or xui_record.username
+            plan_duration_days = (
+                subscription.plan.duration_days
+                if subscription.plan is not None
+                else DEFAULT_PLAN_DURATION_DAYS
+            )
+
+            try:
+                pg_user = await client.get_user(username)
+            except PasarGuardError as exc:
+                logger.warning("[SYNC][PG] error fetching user '%s': %s", username, exc)
+                continue
+
+            if pg_user is None:
+                # 404 — config gone on the panel. Strike before trusting it.
+                strikes = (subscription.usage_sync_failures or 0) + 1
+                subscription.usage_sync_failures = strikes
+                if strikes >= USAGE_GONE_STRIKES:
+                    subscription.status = "expired"
+                    subscription.expired_at = now
+                    xui_record.is_active = False
+                    logger.warning(
+                        "[SYNC][PG] user '%s' gone %d cycles — expired (sub=%s)",
+                        username, strikes, subscription.id,
+                    )
+                continue
+
+            # Usage (panel is the source of truth).
+            used = int(pg_user.used_traffic or 0)
+            subscription.used_bytes = used
+            xui_record.usage_bytes = used
+            subscription.last_usage_sync_at = now
+            subscription.usage_sync_failures = 0
+
+            status = (pg_user.status or "").lower()
+            pg_expire = pg_user.expire_ts
+            pg_ends_at = (
+                datetime.fromtimestamp(pg_expire, tz=timezone.utc) if pg_expire else None
+            )
+
+            # First-connect activation: PasarGuard flips on_hold→active and sets
+            # expire itself — we just record it (no panel write).
+            if subscription.status == "pending_activation" and status == "active":
+                subscription.status = "active"
+                subscription.activated_at = now
+                subscription.starts_at = now
+                subscription.ends_at = pg_ends_at or (now + timedelta(days=plan_duration_days))
+                xui_record.is_active = True
+                logger.info(
+                    "[SYNC][PG] sub %s activated (first connect) ends_at=%s",
+                    subscription.id, subscription.ends_at,
+                )
+                continue
+
+            # Panel says finished → expire on our side too.
+            if status in {"expired", "limited"}:
+                if subscription.status != "expired":
+                    subscription.status = "expired"
+                    subscription.expired_at = now
+                    xui_record.is_active = False
+                    logger.info("[SYNC][PG] sub %s expired (panel status=%s)", subscription.id, status)
+                continue
+
+            # Recover a falsely-expired sub that the panel reports alive.
+            if subscription.status == "expired" and status == "active":
+                subscription.status = "active"
+                subscription.expired_at = None
+                xui_record.is_active = True
+                if pg_ends_at is not None:
+                    subscription.ends_at = pg_ends_at
+                logger.info("[SYNC][PG] reactivated sub %s (alive on panel)", subscription.id)
+                continue
+
+            # Active & alive — keep ends_at aligned with the panel's authority.
+            if subscription.status == "active" and status == "active":
+                if pg_ends_at is not None:
+                    subscription.ends_at = pg_ends_at
+                xui_record.is_active = True
+
+    await session.flush()
+
+
 async def sync_all_subscription_states() -> None:
     async with AsyncSessionFactory() as session:
         security_settings = await AppSettingsRepository(session).get_service_security_settings()
@@ -231,6 +335,15 @@ async def sync_all_subscription_states() -> None:
             if sample_inbound is None:
                 continue
             server = ensure_inbound_server_loaded(sample_inbound)
+
+            # PasarGuard servers sync via the user-centric API (no Xray restart).
+            if is_pasarguard(server):
+                try:
+                    await sync_pasarguard_usage_and_status(session, server, group)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("[SYNC] PasarGuard sync failed for server %s: %s", server.name, exc)
+                continue
+
             try:
                 async with create_xui_client_for_server(server) as xui_client:
                     any_expired = await sync_xui_usage_and_status(session, xui_client, group, security_settings)
@@ -487,6 +600,10 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
         return None
     xui_record.inbound = inbound
 
+    # PasarGuard configs read realtime usage/status from the user-centric API.
+    if record_is_pasarguard(xui_record):
+        return await _pasarguard_realtime_usage(session, subscription, xui_record, inbound)
+
     try:
         server = ensure_inbound_server_loaded(inbound)
         security_settings = await AppSettingsRepository(session).get_service_security_settings()
@@ -589,3 +706,68 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
     except Exception as exc:
         logger.error("[REALTIME] Failed to fetch for email='%s': %s", xui_record.email, exc, exc_info=True)
         raise
+
+
+async def _pasarguard_realtime_usage(
+    session: AsyncSession,
+    subscription: Subscription,
+    xui_record: XUIClientRecord,
+    inbound: XUIInboundRecord,
+) -> dict | None:
+    """Single-config realtime read for PasarGuard (the my_configs 'refresh'
+    button). Mirrors the batch sync's transitions for one user."""
+    server = ensure_inbound_server_loaded(inbound)
+    username = xui_record.panel_username or xui_record.username
+    plan_duration = (
+        subscription.plan.duration_days if subscription.plan is not None else DEFAULT_PLAN_DURATION_DAYS
+    )
+    now = utcnow()
+
+    async with create_pasarguard_client_for_server(server) as client:
+        pg_user = await client.get_user(username)
+
+    if pg_user is None:
+        # Don't mutate on a single missing read — just report current state.
+        return {
+            "used_bytes": subscription.used_bytes or 0,
+            "total_bytes": subscription.volume_bytes,
+            "remaining_bytes": max(subscription.volume_bytes - (subscription.used_bytes or 0), 0),
+            "status": subscription.status,
+        }
+
+    used = int(pg_user.used_traffic or 0)
+    subscription.used_bytes = used
+    xui_record.usage_bytes = used
+    subscription.last_usage_sync_at = now
+    subscription.usage_sync_failures = 0
+
+    status = (pg_user.status or "").lower()
+    pg_expire = pg_user.expire_ts
+    pg_ends_at = datetime.fromtimestamp(pg_expire, tz=timezone.utc) if pg_expire else None
+
+    if subscription.status == "pending_activation" and status == "active":
+        subscription.status = "active"
+        subscription.activated_at = now
+        subscription.starts_at = now
+        subscription.ends_at = pg_ends_at or (now + timedelta(days=plan_duration))
+        xui_record.is_active = True
+    elif status in {"expired", "limited"} and subscription.status != "expired":
+        subscription.status = "expired"
+        subscription.expired_at = now
+        xui_record.is_active = False
+    elif subscription.status == "expired" and status == "active":
+        subscription.status = "active"
+        subscription.expired_at = None
+        xui_record.is_active = True
+        if pg_ends_at is not None:
+            subscription.ends_at = pg_ends_at
+    elif subscription.status == "active" and status == "active" and pg_ends_at is not None:
+        subscription.ends_at = pg_ends_at
+
+    await session.flush()
+    return {
+        "used_bytes": used,
+        "total_bytes": subscription.volume_bytes,
+        "remaining_bytes": max(subscription.volume_bytes - used, 0),
+        "status": subscription.status,
+    }

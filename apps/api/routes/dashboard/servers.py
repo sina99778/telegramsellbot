@@ -28,6 +28,7 @@ from sqlalchemy.orm import selectinload
 
 from apps.api.routes.dashboard._deps import require_dashboard_admin
 from core.security import decrypt_secret, encrypt_secret
+from services.panels.adapter import is_pasarguard
 from models.dashboard_admin import DashboardAdmin
 from models.subscription import Subscription
 from models.xui import (
@@ -164,6 +165,9 @@ class ServerCreateBody(BaseModel):
     base_url: str = Field(..., min_length=4, max_length=1024)
     panel_username: str = Field(..., min_length=1, max_length=128)
     panel_password: str = Field(..., min_length=1, max_length=256)
+    # "sanaei_xui" (default, back-compat) or "pasarguard". For PasarGuard,
+    # sync its groups afterwards from the bot's server-manage menu.
+    panel_type: str = Field("sanaei_xui", pattern="^(sanaei_xui|pasarguard)$")
     config_domain: str | None = Field(None, max_length=255)
     sub_domain: str | None = Field(None, max_length=255)
     subscription_port: int = Field(2096, ge=1, le=65535)
@@ -187,7 +191,7 @@ async def create_server(body: ServerCreateBody, auth: AuthDep) -> dict[str, Any]
     server = XUIServerRecord(
         name=body.name,
         base_url=body.base_url,
-        panel_type="sanaei_xui",
+        panel_type=body.panel_type,
         is_active=True,
         priority=body.priority,
         subscription_port=body.subscription_port,
@@ -368,15 +372,29 @@ async def test_connection(server_id: UUID, auth: AuthDep) -> dict[str, Any]:
     try:
         from pydantic import SecretStr
         from core.config import settings as _settings
-        from services.xui.client import SanaeiXUIClient, XUIClientConfig
-        config = XUIClientConfig(
-            base_url=server.base_url,
-            username=server.credentials.username,
-            password=SecretStr(password),
-            verify_ssl=_settings.xui_verify_ssl,
-        )
-        async with SanaeiXUIClient(config) as client:
-            inbounds = await client.list_inbounds()
+        if is_pasarguard(server):
+            from services.pasarguard.client import PasarGuardClient, PasarGuardClientConfig
+            pg_config = PasarGuardClientConfig(
+                base_url=server.base_url,
+                username=server.credentials.username,
+                password=SecretStr(password),
+                verify_ssl=_settings.pasarguard_verify_ssl,
+            )
+            async with PasarGuardClient(pg_config) as client:
+                await client.login()
+                remote = await client.get_groups()
+        else:
+            from services.xui.client import SanaeiXUIClient, XUIClientConfig
+            config = XUIClientConfig(
+                base_url=server.base_url,
+                username=server.credentials.username,
+                password=SecretStr(password),
+                verify_ssl=_settings.xui_verify_ssl,
+            )
+            async with SanaeiXUIClient(config) as client:
+                # NOTE: was a latent bug — client.list_inbounds() doesn't exist;
+                # the method is get_inbounds(). Fixed here.
+                remote = await client.get_inbounds()
     except Exception as exc:
         server.health_status = "error"
         await session.commit()
@@ -384,4 +402,4 @@ async def test_connection(server_id: UUID, auth: AuthDep) -> dict[str, Any]:
 
     server.health_status = "ok"
     await session.commit()
-    return {"ok": True, "inbound_count": len(inbounds)}
+    return {"ok": True, "inbound_count": len(remote)}

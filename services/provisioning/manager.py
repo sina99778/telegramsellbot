@@ -19,9 +19,12 @@ from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.settings import AppSettingsRepository
 from schemas.internal.xui import XUIClient
 from services.plan_inventory import PlanStockError, release_plan_sale, reserve_plan_sale
+from services.panels.adapter import is_pasarguard, record_is_pasarguard
 from services.wallet.manager import WalletManager
 from services.xui.client import SanaeiXUIClient
 from services.xui.runtime import build_sub_link, build_vless_uri, create_xui_client_for_server, ensure_inbound_server_loaded
+from services.pasarguard.runtime import create_pasarguard_client_for_server
+from schemas.internal.pasarguard import PGUserCreate, PGUserModify
 
 
 logger = logging.getLogger(__name__)
@@ -125,6 +128,18 @@ class ProvisioningManager:
         if server.credentials is None:
             return False, "اطلاعات ورود به سرور موجود نیست."
 
+        if is_pasarguard(server):
+            try:
+                async with create_pasarguard_client_for_server(server) as client:
+                    await client.get_current_admin()
+                return True, None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("preflight_check_plan: PG panel %s unreachable: %s", server.name, exc)
+                return False, (
+                    "اتصال به سرور موقتاً برقرار نشد. لطفاً چند دقیقه‌ی دیگر "
+                    "دوباره تلاش کنید — وجهی از حساب شما کم نشد."
+                )
+
         try:
             async with self._get_xui_client_for_server(server) as xui_client:
                 await xui_client.login()
@@ -161,6 +176,19 @@ class ProvisioningManager:
             return False, "اطلاعات سرور این سرویس ناقص است."
         if not server.is_active or server.credentials is None:
             return False, "سرور این سرویس در حال حاضر در دسترس نیست."
+
+        if is_pasarguard(server):
+            try:
+                async with create_pasarguard_client_for_server(server) as client:
+                    await client.get_current_admin()
+                return True, None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("preflight_check_subscription: PG panel %s unreachable: %s", server.name, exc)
+                return False, (
+                    "اتصال به سرور موقتاً برقرار نشد. لطفاً چند دقیقه‌ی دیگر "
+                    "دوباره تلاش کنید — وجهی از حساب شما کم نشد."
+                )
+
         try:
             async with self._get_xui_client_for_server(server) as xui_client:
                 await xui_client.login()
@@ -262,6 +290,17 @@ class ProvisioningManager:
             ) or 0
             if active_count >= server.max_clients:
                 raise ProvisioningError("ظرفیت این سرور تکمیل شده است. لطفاً به پشتیبانی اطلاع دهید.")
+
+        # PasarGuard servers provision via the user-centric API (own path).
+        if is_pasarguard(server):
+            return await self._provision_pasarguard(
+                user_id=user_id,
+                plan=plan,
+                order=order,
+                inbound=inbound,
+                server=server,
+                config_name=config_name,
+            )
 
         client_uuid, _username, _email, sub_id = await self._generate_unique_client_identity()
         # Use config_name as the display name in X-UI panel
@@ -377,6 +416,154 @@ class ProvisioningManager:
             xui_client=xui_record,
             vless_uri=vless_uri,
             sub_link=sub_link,
+        )
+
+    async def _generate_unique_pg_username(self, config_name: str) -> str:
+        """A PasarGuard-valid username ([a-z0-9_], 3-32) unique in OUR DB.
+        High entropy (8 hex) so a panel-side collision is astronomically
+        unlikely; we also guard our own UNIQUE columns."""
+        import re
+
+        base = re.sub(r"[^a-z0-9_]", "", (config_name or "vpn").lower())
+        base = base[:20] or "vpn"
+        if not base[0].isalpha():
+            base = ("u" + base)[:20]
+        for _ in range(12):
+            candidate = f"{base}_{secrets.token_hex(4)}"
+            exists = await self.session.scalar(
+                select(XUIClientRecord.id).where(
+                    (XUIClientRecord.panel_username == candidate)
+                    | (XUIClientRecord.username == candidate)
+                    | (XUIClientRecord.email == candidate)
+                )
+            )
+            if exists is None:
+                return candidate
+        raise ProvisioningConflictError("Could not generate a unique PasarGuard username.")
+
+    async def _provision_pasarguard(
+        self,
+        *,
+        user_id: UUID,
+        plan: Plan,
+        order: Order,
+        inbound: XUIInboundRecord,
+        server: XUIServerRecord,
+        config_name: str,
+    ) -> ProvisioningResult:
+        """Provision a config on a PasarGuard panel.
+
+        Mirrors provision_subscription's savepoint discipline: reserve stock →
+        write DB rows → call the panel → fill sub_link from the panel response.
+        A panel failure rolls back the savepoint; a post-success DB failure
+        triggers a compensating delete_user so the panel keeps no orphan.
+
+        first_use activation maps to PasarGuard `on_hold`: the timer starts when
+        the user first connects, and the usage-sync job reads the panel's
+        status/expire to flip our Subscription to active.
+        """
+        pg_username = await self._generate_unique_pg_username(config_name)
+        duration_days = int(plan.duration_days or 0)
+        data_limit = int(plan.volume_bytes) or None  # 0 => unlimited on the panel
+        group_id = int(inbound.xui_inbound_remote_id)
+
+        if duration_days > 0:
+            create_payload = PGUserCreate(
+                username=pg_username,
+                status="on_hold",
+                data_limit=data_limit,
+                group_ids=[group_id],
+                on_hold_expire_duration=duration_days * 86400,
+                note=f"user:{user_id};order:{order.id}",
+            )
+        else:
+            # Unlimited-duration plan — nothing to hold; activate immediately.
+            create_payload = PGUserCreate(
+                username=pg_username,
+                status="active",
+                data_limit=data_limit,
+                group_ids=[group_id],
+                note=f"user:{user_id};order:{order.id}",
+            )
+
+        stock_reserved = False
+        pg_created = False
+        try:
+            stock_reserved = await reserve_plan_sale(self.session, plan.id)
+
+            async with self.session.begin_nested():
+                subscription = Subscription(
+                    user_id=user_id,
+                    order_id=order.id,
+                    plan_id=plan.id,
+                    status="pending_activation",
+                    activation_mode="first_use",
+                    starts_at=None,
+                    ends_at=None,
+                    activated_at=None,
+                    expired_at=None,
+                    volume_bytes=plan.volume_bytes,
+                    used_bytes=0,
+                    sub_link=None,
+                )
+                self.session.add(subscription)
+                await self.session.flush()
+
+                xui_record = XUIClientRecord(
+                    subscription_id=subscription.id,
+                    inbound_id=inbound.id,
+                    panel_kind="pasarguard",
+                    panel_username=pg_username,
+                    xui_client_remote_id=None,
+                    # Mirror the PG username into email/username (both UNIQUE) so
+                    # the generic config views keep working. client_uuid is a
+                    # throwaway uuid4 to satisfy the NOT-NULL/UNIQUE column — PG
+                    # has no per-config UUID and it is never sent to the panel.
+                    email=pg_username,
+                    client_uuid=str(uuid4()),
+                    username=pg_username,
+                    sub_link=None,
+                    usage_bytes=0,
+                    is_active=True,
+                )
+                self.session.add(xui_record)
+                order.status = "provisioned"
+                await self.session.flush()
+
+                async with create_pasarguard_client_for_server(server) as client:
+                    pg_user = await client.create_user(create_payload)
+                pg_created = True
+
+                sub_link = pg_user.absolute_subscription_url(server.base_url)
+                subscription.sub_link = sub_link
+                xui_record.sub_link = sub_link
+                if pg_user.id is not None:
+                    xui_record.xui_client_remote_id = str(pg_user.id)
+                await self.session.flush()
+
+            await self.session.refresh(subscription)
+            await self.session.refresh(xui_record)
+        except PlanStockError as exc:
+            raise ProvisioningError("Plan stock is sold out.") from exc
+        except Exception:
+            if stock_reserved:
+                await release_plan_sale(self.session, plan.id)
+            if pg_created:
+                try:
+                    async with create_pasarguard_client_for_server(server) as client:
+                        await client.delete_user(pg_username)
+                except Exception as cleanup_exc:  # noqa: BLE001
+                    logger.error(
+                        "Failed to compensate orphan PasarGuard user %s: %s",
+                        pg_username, cleanup_exc,
+                    )
+            raise
+
+        return ProvisioningResult(
+            subscription=subscription,
+            xui_client=xui_record,
+            vless_uri="",  # PasarGuard is subscription-URL based; no direct URI
+            sub_link=subscription.sub_link or "",
         )
 
     async def _provision_ready_config(
@@ -577,6 +764,8 @@ class ProvisioningManager:
         xui = sub.xui_client
         if xui is None:
             raise MigrationError("این سرویس کانفیگ X-UI ندارد و قابل انتقال نیست.")
+        if record_is_pasarguard(xui):
+            raise MigrationError("تغییر سرور برای کانفیگ‌های PasarGuard فعلاً پشتیبانی نمی‌شود.")
         if xui.inbound_id == target_inbound_id:
             raise MigrationError("این سرویس از قبل روی همین اینباند است.")
 
@@ -1426,6 +1615,11 @@ class ProvisioningManager:
 
         out: dict = {"checked": 0, "fixed": 0, "no_data": 0, "skipped": 0, "details": [], "panel_emails": []}
 
+        # PasarGuard has no X-UI-style legacy-migration backlog (no client_stats
+        # shape to read), so there is nothing to reconcile here.
+        if is_pasarguard(server):
+            return out
+
         # Re-fetch the server WITH credentials eager-loaded. build_xui_client_config
         # reads server.credentials; if the caller passed a server without that
         # relationship loaded, accessing it inside the async panel context would
@@ -1649,6 +1843,11 @@ class ProvisioningManager:
                 selectinload(Subscription.xui_client)
                 .selectinload(XUIClientRecord.inbound)
                 .selectinload(XUIInboundRecord.server)
+                # Load credentials too: both the X-UI and PasarGuard disable
+                # paths need them, and without eager-loading they would lazy-load
+                # (forbidden in async → silent best-effort failure, leaving a
+                # banned user's config still live on the panel).
+                .selectinload(XUIServerRecord.credentials)
             )
             .where(
                 Subscription.user_id == user_id,
@@ -1675,6 +1874,17 @@ class ProvisioningManager:
             disabled_count += 1
         return disabled_count
 
+    async def _disable_pasarguard_client(self, xui_record: XUIClientRecord) -> None:
+        """Disable a PasarGuard config (PUT status=disabled). PG keeps the sub
+        link valid but blocks traffic — same UX intent as the X-UI disable."""
+        inbound = xui_record.inbound
+        if inbound is None:
+            raise ProvisioningError("Panel inbound mapping is missing.")
+        server = ensure_inbound_server_loaded(inbound)
+        username = xui_record.panel_username or xui_record.username
+        async with create_pasarguard_client_for_server(server) as client:
+            await client.modify_user(username, PGUserModify(status="disabled"))
+
     async def _disable_xui_client(
         self,
         *,
@@ -1682,6 +1892,11 @@ class ProvisioningManager:
         volume_bytes: int,
         ends_at: datetime | None,
     ) -> None:
+        # PasarGuard configs disable via their own (user-centric) API.
+        if record_is_pasarguard(xui_record):
+            await self._disable_pasarguard_client(xui_record)
+            return
+
         inbound = xui_record.inbound
         if inbound is None:
             raise ProvisioningError("X-UI inbound mapping is missing.")

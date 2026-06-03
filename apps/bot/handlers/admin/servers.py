@@ -28,6 +28,7 @@ from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerCredential, X
 from repositories.audit import AuditLogRepository
 from repositories.settings import AppSettingsRepository
 from services.xui.client import SanaeiXUIClient, XUIAuthenticationError, XUIClientConfig, XUIRequestError
+from services.panels.adapter import is_pasarguard
 from apps.bot.utils.button_style import styled_button
 from apps.bot.utils.messaging import safe_edit_or_send
 from apps.bot.utils.panels import admin_panel, status_label
@@ -188,8 +189,41 @@ async def list_servers(
 @router.callback_query(F.data == "admin:servers:add")
 async def add_server_start(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
+    await state.clear()
+    await state.set_state(AddServerStates.waiting_for_panel_type)
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🟦 X-UI (Sanaei)", callback_data="admin:servers:add:type:xui")
+    builder.button(text="🟩 PasarGuard", callback_data="admin:servers:add:type:pg")
+    builder.button(text=AdminButtons.BACK, callback_data="admin:servers")
+    builder.adjust(2, 1)
+    await safe_edit_or_send(
+        callback,
+        "نوعِ پنل را انتخاب کن:\n\n"
+        "• <b>X-UI (Sanaei)</b> — همان پنل قبلی\n"
+        "• <b>PasarGuard</b> — پنلِ کاربر-محور (مرزبان‌بنیان)",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+
+
+@router.callback_query(F.data == "admin:servers:add:type:xui")
+async def add_server_pick_xui(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.update_data(panel_type="sanaei_xui")
     await state.set_state(AddServerStates.waiting_for_name)
     await safe_edit_or_send(callback, AdminMessages.ENTER_SERVER_NAME)
+
+
+@router.callback_query(F.data == "admin:servers:add:type:pg")
+async def add_server_pick_pasarguard(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.update_data(panel_type="pasarguard")
+    await state.set_state(AddServerStates.waiting_for_name)
+    await safe_edit_or_send(
+        callback,
+        f"{AdminMessages.ENTER_SERVER_NAME}\n\n🟩 پنل: <b>PasarGuard</b>",
+        parse_mode="HTML",
+    )
 
 
 @router.message(AddServerStates.waiting_for_name)
@@ -243,6 +277,20 @@ async def add_server_password(
         urls_to_try.append("https://" + base_url[7:])
     elif base_url.startswith("https://"):
         urls_to_try.append("http://" + base_url[8:])
+
+    # PasarGuard panels use a completely different (user-centric) API, so they
+    # get their own connect-and-sync path. The X-UI body below is untouched.
+    if str(form_data.get("panel_type") or "sanaei_xui") == "pasarguard":
+        await _create_pasarguard_server(
+            message=message,
+            state=state,
+            session=session,
+            admin_user=admin_user,
+            form_data=form_data,
+            urls_to_try=urls_to_try,
+            password=password,
+        )
+        return
 
     remote_inbounds = None
     last_error = None
@@ -327,6 +375,99 @@ async def add_server_password(
     )
 
 
+async def _create_pasarguard_server(
+    *,
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    admin_user: User,
+    form_data: dict,
+    urls_to_try: list[str],
+    password: str,
+) -> None:
+    """Connect to a PasarGuard panel, persist the server + credentials, and sync
+    its GROUPS into XUIInboundRecord rows (a group == an 'inbound' for the rest
+    of the bot). Mirrors the X-UI add-server tail, but user-centric."""
+    groups = None
+    last_error = None
+    working_url = urls_to_try[0]
+    for url in urls_to_try:
+        try:
+            logger.info("Trying to connect to PasarGuard panel at: %s", url)
+            groups = await _fetch_remote_groups(
+                base_url=url,
+                username=str(form_data["username"]),
+                password=password,
+            )
+            working_url = url
+            logger.info("Connected to PasarGuard panel at: %s", url)
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            logger.warning("Failed to connect to PasarGuard %s: %s", url, exc)
+
+    if groups is None:
+        error_detail = str(last_error)[:300] if last_error else "خطای نامشخص"
+        await message.answer(
+            "❌ خطا در اتصال به پنلِ PasarGuard.\n\n"
+            "آدرس‌های امتحان‌شده:\n"
+            + "\n".join(f"• {u}" for u in urls_to_try)
+            + f"\n\nخطا: {error_detail}"
+        )
+        await state.clear()
+        return
+
+    server = XUIServerRecord(
+        name=str(form_data["name"]),
+        base_url=working_url,
+        panel_type="pasarguard",
+        is_active=True,
+        health_status="healthy",
+        # PasarGuard serves the subscription on the panel origin itself; the
+        # sub_link is taken verbatim from the API, so this port is unused.
+        subscription_port=0,
+    )
+    session.add(server)
+    await session.flush()
+
+    session.add(
+        XUIServerCredential(
+            server_id=server.id,
+            username=str(form_data["username"]),
+            password_encrypted=encrypt_secret(password),
+            session_cookie_encrypted=None,
+        )
+    )
+
+    created_inbounds, synced_count, _ = _sync_remote_groups(
+        server_id=server.id,
+        existing_inbounds=[],
+        groups=groups,
+    )
+    session.add_all(created_inbounds)
+    await session.flush()
+
+    await AuditLogRepository(session).log_action(
+        actor_user_id=admin_user.id,
+        action="create_server",
+        entity_type="server",
+        entity_id=server.id,
+        payload={
+            "name": server.name,
+            "base_url": server.base_url,
+            "panel_type": "pasarguard",
+            "groups_synced": synced_count,
+        },
+    )
+
+    await state.clear()
+    await message.answer(
+        AdminMessages.SERVER_CREATED.format(name=server.name)
+        + f"\n\n🟩 پنل PasarGuard — {synced_count} گروه دریافت و ثبت شد.\n"
+        "حالا می‌تونی برای هر گروه یک «پلن» بسازی."
+    )
+
+
 @router.callback_query(ServerActionCallback.filter(F.action == "sync"))
 async def sync_server_inbounds(
     callback: CallbackQuery,
@@ -345,6 +486,40 @@ async def sync_server_inbounds(
         return
     if server.credentials is None:
         await safe_edit_or_send(callback, "اطلاعات ورود سرور موجود نیست.")
+        return
+
+    # PasarGuard servers re-sync GROUPS (not X-UI inbounds).
+    if is_pasarguard(server):
+        try:
+            groups = await _fetch_remote_groups(
+                base_url=server.base_url,
+                username=server.credentials.username,
+                password=decrypt_secret(server.credentials.password_encrypted),
+            )
+        except Exception as exc:  # noqa: BLE001
+            await safe_edit_or_send(callback, f"خطا در اتصال به پنل:\n<code>{exc}</code>", parse_mode="HTML")
+            return
+        created_inbounds, synced_count, disabled_count = _sync_remote_groups(
+            server_id=server.id,
+            existing_inbounds=server.inbounds,
+            groups=groups,
+        )
+        session.add_all(created_inbounds)
+        await session.flush()
+        await AuditLogRepository(session).log_action(
+            actor_user_id=admin_user.id,
+            action="sync_inbounds",
+            entity_type="server",
+            entity_id=server.id,
+            payload={"synced": synced_count, "disabled": disabled_count, "total_remote": len(groups), "panel_type": "pasarguard"},
+        )
+        await safe_edit_or_send(
+            callback,
+            "سینک گروه‌های PasarGuard انجام شد.\n"
+            f"گروه جدید: {synced_count}\n"
+            f"گروه غیرفعال‌شده: {disabled_count}\n"
+            f"کل گروه‌های پنل: {len(groups)}",
+        )
         return
 
     try:
@@ -447,6 +622,10 @@ async def restart_xray_core_handler(
         return
     if server.credentials is None:
         await safe_edit_or_send(callback, "اطلاعات ورود سرور موجود نیست.")
+        return
+
+    if is_pasarguard(server):
+        await safe_edit_or_send(callback, "ℹ️ «ریستارت هسته» برای پنل PasarGuard کاربرد ندارد.")
         return
 
     from core.config import settings as _app_settings
@@ -871,14 +1050,21 @@ async def edit_url_receive(
         await message.answer(AdminMessages.SERVER_NOT_FOUND)
         return
 
-    # Test connection with the new URL
+    # Test connection with the new URL (panel-aware).
     password = decrypt_secret(server.credentials.password_encrypted)
     try:
-        remote_inbounds, _ = await _fetch_remote_inbounds(
-            base_url=new_url,
-            username=server.credentials.username,
-            password=password,
-        )
+        if is_pasarguard(server):
+            await _fetch_remote_groups(
+                base_url=new_url,
+                username=server.credentials.username,
+                password=password,
+            )
+        else:
+            await _fetch_remote_inbounds(
+                base_url=new_url,
+                username=server.credentials.username,
+                password=password,
+            )
     except Exception as exc:
         await message.answer(
             f"❌ اتصال به آدرس جدید ناموفق بود:\n{exc}\n\nلطفاً آدرس صحیح را وارد کنید."
@@ -969,13 +1155,20 @@ async def edit_creds_password(
         await message.answer(AdminMessages.SERVER_NOT_FOUND)
         return
 
-    # Test connection with new credentials
+    # Test connection with new credentials (panel-aware).
     try:
-        await _fetch_remote_inbounds(
-            base_url=server.base_url,
-            username=new_username,
-            password=new_password,
-        )
+        if is_pasarguard(server):
+            await _fetch_remote_groups(
+                base_url=server.base_url,
+                username=new_username,
+                password=new_password,
+            )
+        else:
+            await _fetch_remote_inbounds(
+                base_url=server.base_url,
+                username=new_username,
+                password=new_password,
+            )
     except Exception as exc:
         await message.answer(
             f"❌ ورود با اعتبارنامه جدید ناموفق بود:\n{exc}\n\n"
@@ -1132,6 +1325,73 @@ async def _fetch_remote_inbounds(*, base_url: str, username: str, password: str)
         except Exception:
             settings = {}
         return inbounds, settings
+
+
+async def _fetch_remote_groups(*, base_url: str, username: str, password: str):
+    """Log in to a PasarGuard panel and return its groups (inbound bundles)."""
+    from core.config import settings as _app_settings
+    from services.pasarguard.client import PasarGuardClient, PasarGuardClientConfig
+
+    async with PasarGuardClient(
+        PasarGuardClientConfig(
+            base_url=base_url,
+            username=username,
+            password=SecretStr(password),
+            timeout_seconds=15.0,
+            verify_ssl=_app_settings.pasarguard_verify_ssl,
+        )
+    ) as client:
+        await client.login()
+        return await client.get_groups()
+
+
+def _sync_remote_groups(
+    *,
+    server_id: UUID,
+    existing_inbounds: Sequence[XUIInboundRecord],
+    groups,
+) -> tuple[list[XUIInboundRecord], int, int]:
+    """Map PasarGuard groups onto XUIInboundRecord rows (one row per group), so
+    the rest of the bot (plan picker, provisioning) treats a group like an
+    inbound. Same shape/return as _sync_remote_inbounds."""
+    remote_by_id = {g.id: g for g in groups}
+    existing_by_remote_id = {ib.xui_inbound_remote_id: ib for ib in existing_inbounds}
+    created: list[XUIInboundRecord] = []
+    created_count = 0
+    disabled_count = 0
+
+    for remote_id, inbound in existing_by_remote_id.items():
+        g = remote_by_id.get(remote_id)
+        if g is None:
+            if inbound.is_active:
+                inbound.is_active = False
+                disabled_count += 1
+            continue
+        inbound.remark = g.name
+        inbound.tag = g.name
+        inbound.protocol = "pasarguard"
+        inbound.port = None
+        inbound.is_active = not g.is_disabled
+        inbound.metadata_ = {"pasarguard_group": True, "inbound_tags": list(g.inbound_tags or [])}
+
+    for g in groups:
+        if g.id in existing_by_remote_id:
+            continue
+        created.append(
+            XUIInboundRecord(
+                server_id=server_id,
+                xui_inbound_remote_id=g.id,
+                remark=g.name,
+                protocol="pasarguard",
+                port=None,
+                tag=g.name,
+                is_active=not g.is_disabled,
+                metadata_={"pasarguard_group": True, "inbound_tags": list(g.inbound_tags or [])},
+            )
+        )
+        created_count += 1
+
+    return created, created_count, disabled_count
 
 
 # ─────────────────────────────────────────────────────────────────────────────

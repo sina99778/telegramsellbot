@@ -1567,6 +1567,12 @@ async def _finalize_purchase(
 
     payment_label = "کیف پول" if payment_method == "wallet" else "درگاه پرداخت"
 
+    # PasarGuard configs have no "direct config" URI (only the sub link), so
+    # vless_uri is empty — omit the block entirely instead of showing it blank.
+    direct_block = (
+        f"📋 <b>کانفیگ مستقیم:</b>\n<code>{esc(vless_uri)}</code>\n\n" if vless_uri else ""
+    )
+
     text = (
         "✅ <b>کانفیگ شما آماده است!</b>\n\n"
         f"📛 نام: <b>{esc(config_name)}</b>\n"
@@ -1581,8 +1587,7 @@ async def _finalize_purchase(
         "🔗 <b>لینک اشتراک (برای وارد کردن در اپ):</b>\n"
         "👆 روی متن زیر بزنید تا کپی شود:\n"
         f"<code>{esc(sub_link)}</code>\n\n"
-        "📋 <b>کانفیگ مستقیم:</b>\n"
-        f"<code>{esc(vless_uri)}</code>\n\n"
+        f"{direct_block}"
         "━━━━━━━━━━━━━━━━\n"
         "⚡ برای اتصال سریع روی دکمه‌های زیر بزنید 👇"
     )

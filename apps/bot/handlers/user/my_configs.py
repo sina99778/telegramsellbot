@@ -38,6 +38,7 @@ from services.provisioning.manager import (
     ProvisioningManager,
 )
 from services.xui.runtime import build_vless_uri
+from services.panels.adapter import record_is_pasarguard
 
 
 logger = logging.getLogger(__name__)
@@ -507,8 +508,9 @@ async def my_config_detail_handler(
     sub_link = sub.sub_link or (xui.sub_link if xui else None) or "-"
 
     # Dynamically rebuild sub_link from current server settings
-    # This ensures users always see the correct link even if admin changed server config
-    if xui and xui.inbound and xui.inbound.server and sub_link != "-" and "/" in sub_link:
+    # This ensures users always see the correct link even if admin changed server config.
+    # PasarGuard serves its own sub URL (stored verbatim) — never rebuild it the X-UI way.
+    if xui and not record_is_pasarguard(xui) and xui.inbound and xui.inbound.server and sub_link != "-" and "/" in sub_link:
         try:
             from services.xui.runtime import build_sub_link
             stored_sub_id = sub_link.rsplit("/", 1)[-1]
@@ -525,9 +527,10 @@ async def my_config_detail_handler(
         except Exception as exc:
             logger.warning("Failed to rebuild sub_link for sub %s: %s", sub.id, exc)
 
-    # Try to build vless URI from xui record
+    # Try to build vless URI from xui record (X-UI only; PasarGuard has no
+    # per-inbound URI — the sub link IS the config).
     vless_uri = None
-    if xui and xui.inbound:
+    if xui and xui.inbound and not record_is_pasarguard(xui):
         try:
             inbound = xui.inbound
             if inbound.server:
@@ -614,10 +617,12 @@ async def my_config_detail_handler(
         builder.button(text="🔄 تغییر لینک", callback_data=MyConfigCallback(action="reset_uuid", subscription_id=sub.id).pack())
 
         # New Feature: Move to another inbound (works around DPI / dead-server issues).
-        builder.button(
-            text="🛠 تغییر سرور (رفع اتصال)",
-            callback_data=MyConfigCallback(action="change_inbound", subscription_id=sub.id).pack(),
-        )
+        # X-UI only — PasarGuard has no inbound-migration concept.
+        if not (xui and record_is_pasarguard(xui)):
+            builder.button(
+                text="🛠 تغییر سرور (رفع اتصال)",
+                callback_data=MyConfigCallback(action="change_inbound", subscription_id=sub.id).pack(),
+            )
 
         # New Feature: Toggle enable status — red when it turns the config OFF,
         # green when it turns it back ON (overrides the callback heuristic, which
@@ -847,6 +852,31 @@ async def reset_uuid_handler(
         await safe_edit_or_send(callback, "❌ سرور خاموش یا حذف شده است.")
         return
 
+    # PasarGuard: rotate the subscription via revoke_sub (no UUID concept).
+    if record_is_pasarguard(xui_record):
+        from services.xui.runtime import ensure_inbound_server_loaded
+        from services.pasarguard.runtime import create_pasarguard_client_for_server
+
+        username = xui_record.panel_username or xui_record.username
+        try:
+            server = ensure_inbound_server_loaded(xui_record.inbound)
+            async with create_pasarguard_client_for_server(server) as client:
+                pg_user = await client.revoke_sub(username)
+            new_sub_link = pg_user.absolute_subscription_url(server.base_url)
+            sub.sub_link = new_sub_link
+            xui_record.sub_link = new_sub_link
+            await session.flush()
+            await safe_edit_or_send(
+                callback,
+                "✅ لینک کانفیگ شما با موفقیت تغییر کرد!\n\n"
+                f"🔗 ساب لینک جدید:\n{new_sub_link}\n\n"
+                "⚠️ لینک قبلی دیگر کار نمی‌کند.",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to revoke PasarGuard sub %s: %s", sub.id, exc, exc_info=True)
+            await safe_edit_or_send(callback, f"❌ خطا در تغییر لینک:\n{str(exc)[:150]}")
+        return
+
     import uuid as uuid_mod
     from schemas.internal.xui import XUIClient
     from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded, build_sub_link
@@ -997,9 +1027,32 @@ async def toggle_enable_handler(
         await safe_edit_or_send(callback, "❌ سرور خاموش یا حذف شده است.")
         return
 
+    # PasarGuard: enable/disable via PUT status.
+    if record_is_pasarguard(xui_record):
+        from services.xui.runtime import ensure_inbound_server_loaded
+        from services.pasarguard.runtime import create_pasarguard_client_for_server
+        from schemas.internal.pasarguard import PGUserModify
+
+        new_enable = not xui_record.is_active
+        username = xui_record.panel_username or xui_record.username
+        try:
+            server = ensure_inbound_server_loaded(xui_record.inbound)
+            async with create_pasarguard_client_for_server(server) as client:
+                await client.modify_user(
+                    username, PGUserModify(status="active" if new_enable else "disabled")
+                )
+            xui_record.is_active = new_enable
+            await session.flush()
+            status_text = "روشن" if new_enable else "خاموش"
+            await safe_edit_or_send(callback, f"✅ کانفیگ با موفقیت {status_text} شد. برای اعمال تغییرات از لیست کانفیگ‌ها رفرش کنید.")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Failed to toggle PasarGuard enable for sub %s: %s", sub.id, exc)
+            await safe_edit_or_send(callback, "❌ خطا در اجرای درخواست (برقراری ارتباط با سرور ناموفق بود).")
+        return
+
     from schemas.internal.xui import XUIClient
     from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
-    
+
     new_enable_status = not xui_record.is_active
     expiry_ms = int(sub.ends_at.timestamp() * 1000) if sub.ends_at else 0
     security_settings = await AppSettingsRepository(session).get_service_security_settings()
@@ -1106,16 +1159,23 @@ async def cancel_and_refund_config(
             xui_record.is_active = False
         else:
             try:
-                from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
+                from services.xui.runtime import ensure_inbound_server_loaded
                 server = ensure_inbound_server_loaded(xui_record.inbound)
-                async with create_xui_client_for_server(server) as xui_client:
-                    await xui_client.delete_client(
-                        inbound_id=xui_record.inbound.xui_inbound_remote_id,
-                        client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
-                    )
+                if record_is_pasarguard(xui_record):
+                    from services.pasarguard.runtime import create_pasarguard_client_for_server
+                    username = xui_record.panel_username or xui_record.username
+                    async with create_pasarguard_client_for_server(server) as client:
+                        await client.delete_user(username)
+                else:
+                    from services.xui.runtime import create_xui_client_for_server
+                    async with create_xui_client_for_server(server) as xui_client:
+                        await xui_client.delete_client(
+                            inbound_id=xui_record.inbound.xui_inbound_remote_id,
+                            client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+                        )
                 xui_record.is_active = False
             except Exception as exc:
-                logger.error("Failed to delete X-UI client on refund: %s", exc, exc_info=True)
+                logger.error("Failed to delete config on refund: %s", exc, exc_info=True)
                 xui_deleted = False
                 xui_error = str(exc)[:150]
 
@@ -1204,15 +1264,22 @@ async def delete_expired_config(
         server_obj = xui_record.inbound.server
         if server_obj.health_status != "deleted" and server_obj.is_active:
             try:
-                from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
+                from services.xui.runtime import ensure_inbound_server_loaded
                 server = ensure_inbound_server_loaded(xui_record.inbound)
-                async with create_xui_client_for_server(server) as xui_client:
-                    await xui_client.delete_client(
-                        inbound_id=xui_record.inbound.xui_inbound_remote_id,
-                        client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
-                    )
+                if record_is_pasarguard(xui_record):
+                    from services.pasarguard.runtime import create_pasarguard_client_for_server
+                    username = xui_record.panel_username or xui_record.username
+                    async with create_pasarguard_client_for_server(server) as client:
+                        await client.delete_user(username)
+                else:
+                    from services.xui.runtime import create_xui_client_for_server
+                    async with create_xui_client_for_server(server) as xui_client:
+                        await xui_client.delete_client(
+                            inbound_id=xui_record.inbound.xui_inbound_remote_id,
+                            client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+                        )
             except Exception as exc:
-                logger.error("Failed to delete X-UI client: %s", exc)
+                logger.error("Failed to delete config: %s", exc)
         xui_record.is_active = False
 
     sub.status = "cancelled"

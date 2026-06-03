@@ -358,12 +358,17 @@ async def create_plan_start(callback: CallbackQuery, state: FSMContext, session:
     builder = InlineKeyboardBuilder()
     for inbound in inbounds:
         server_name = inbound.server.name if inbound.server else "?"
-        label = (
-            f"{inbound.remark or 'بدون نام'} | "
-            f"{inbound.protocol or '?'} | "
-            f"Port: {inbound.port or '?'} | "
-            f"سرور: {server_name}"
-        )
+        meta = inbound.metadata_ or {}
+        if (inbound.protocol or "") == "pasarguard" or meta.get("pasarguard_group"):
+            # PasarGuard groups have no port/protocol in the X-UI sense.
+            label = f"🟩 PasarGuard | گروه: {inbound.remark or 'بدون نام'} | سرور: {server_name}"
+        else:
+            label = (
+                f"{inbound.remark or 'بدون نام'} | "
+                f"{inbound.protocol or '?'} | "
+                f"Port: {inbound.port or '?'} | "
+                f"سرور: {server_name}"
+            )
         builder.button(
             text=label,
             callback_data=InboundSelectCallback(inbound_id=inbound.id).pack(),

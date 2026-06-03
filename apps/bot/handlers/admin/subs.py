@@ -38,6 +38,8 @@ from models.user import User
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.audit import AuditLogRepository
 from services.renewal import apply_renewal
+from services.panels.adapter import record_is_pasarguard
+from services.pasarguard.runtime import create_pasarguard_client_for_server
 from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
 
 logger = logging.getLogger(__name__)
@@ -530,14 +532,18 @@ async def zero_usage_refund(
         if xui_record and xui_record.inbound:
             try:
                 server = ensure_inbound_server_loaded(xui_record.inbound)
-                async with create_xui_client_for_server(server) as xui_client:
-                    await xui_client.delete_client(
-                        inbound_id=xui_record.inbound.xui_inbound_remote_id,
-                        client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
-                    )
+                if record_is_pasarguard(xui_record):
+                    async with create_pasarguard_client_for_server(server) as _pg:
+                        await _pg.delete_user(xui_record.panel_username or xui_record.username)
+                else:
+                    async with create_xui_client_for_server(server) as xui_client:
+                        await xui_client.delete_client(
+                            inbound_id=xui_record.inbound.xui_inbound_remote_id,
+                            client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+                        )
                 xui_record.is_active = False
             except Exception as exc:
-                logger.warning("Could not delete X-UI client on refund: %s", exc)
+                logger.warning("Could not delete config on refund: %s", exc)
 
         await AuditLogRepository(session).log_action(
             actor_user_id=admin_user.id,
@@ -586,13 +592,17 @@ async def revoke_user_config(
     if xui_record is not None and xui_record.inbound is not None:
         try:
             server = ensure_inbound_server_loaded(xui_record.inbound)
-            async with create_xui_client_for_server(server) as xui_client:
-                await xui_client.delete_client(
-                    inbound_id=xui_record.inbound.xui_inbound_remote_id,
-                    client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
-                )
+            if record_is_pasarguard(xui_record):
+                async with create_pasarguard_client_for_server(server) as _pg:
+                    await _pg.delete_user(xui_record.panel_username or xui_record.username)
+            else:
+                async with create_xui_client_for_server(server) as xui_client:
+                    await xui_client.delete_client(
+                        inbound_id=xui_record.inbound.xui_inbound_remote_id,
+                        client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+                    )
         except Exception as exc:
-            logger.error("Failed to delete X-UI client on admin revoke: %s", exc)
+            logger.error("Failed to delete config on admin revoke: %s", exc)
         xui_record.is_active = False
 
     subscription.status = "cancelled"

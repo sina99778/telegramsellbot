@@ -12,6 +12,9 @@ from models.plan import Plan
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.settings import AppSettingsRepository, RenewalSettings, ServiceSecuritySettings
+from services.panels.adapter import record_is_pasarguard
+from services.pasarguard.runtime import create_pasarguard_client_for_server
+from schemas.internal.pasarguard import PGUserModify
 from services.xui.client import SanaeiXUIClient, XUIClient
 from services.xui.runtime import build_xui_client_config, ensure_inbound_server_loaded
 
@@ -200,6 +203,11 @@ async def _sync_xui_limits(
     if xui_full is None or xui_full.inbound is None or xui_full.inbound.server is None:
         return
 
+    # PasarGuard configs renew via the user-centric API.
+    if record_is_pasarguard(xui_full):
+        await _sync_pasarguard_limits(subscription, xui_full)
+        return
+
     try:
         server = ensure_inbound_server_loaded(xui_full.inbound)
         config = build_xui_client_config(server)
@@ -256,4 +264,46 @@ async def _sync_xui_limits(
         logger.error("Failed to sync X-UI limits after renewal: %s", exc, exc_info=True)
         raise RenewalXUISyncError(
             f"Renewal could not be applied on X-UI panel: {exc}"
+        ) from exc
+
+
+async def _sync_pasarguard_limits(
+    subscription: Subscription,
+    xui_full: XUIClientRecord,
+) -> None:
+    """Push renewed limits to PasarGuard (PUT data_limit / expire / status).
+
+    apply_renewal already did the panel-agnostic column math (volume/time +
+    lifetime accumulation), so we just mirror the resulting state to the panel.
+    Notes:
+      * PG `expire` is UNIX SECONDS (X-UI used ms).
+      * We only force status="active" + expire when the sub is already active
+        (e.g. an expired sub that apply_renewal just reactivated). A still
+        on_hold (pending_activation) sub gets ONLY its data_limit bumped, so its
+        first-connect timer stays intact.
+    """
+    server = xui_full.inbound.server
+    username = xui_full.panel_username or xui_full.username
+    now_utc = datetime.now(timezone.utc)
+
+    data_limit = int(subscription.volume_bytes) or None  # 0 => unlimited
+
+    if subscription.status == "active":
+        if subscription.ends_at and subscription.ends_at > now_utc:
+            expire = int(subscription.ends_at.timestamp())  # seconds
+        else:
+            expire = None  # unlimited duration
+        payload = PGUserModify(status="active", expire=expire, data_limit=data_limit)
+    else:
+        # Still on_hold — only adjust the quota; keep the first-use timer.
+        payload = PGUserModify(data_limit=data_limit)
+
+    try:
+        async with create_pasarguard_client_for_server(server) as client:
+            await client.modify_user(username, payload)
+        xui_full.is_active = True
+    except Exception as exc:
+        logger.error("Failed to sync PasarGuard limits after renewal: %s", exc, exc_info=True)
+        raise RenewalXUISyncError(
+            f"Renewal could not be applied on PasarGuard panel: {exc}"
         ) from exc

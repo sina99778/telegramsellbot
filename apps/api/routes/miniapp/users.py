@@ -323,7 +323,16 @@ def _subscription_to_view(sub: Subscription) -> SubscriptionView:
     # UI falls back to just the sub_link.
     vless_uri: str | None = None
     xui = sub.xui_client
-    if xui is not None and xui.inbound is not None and xui.inbound.server is not None and sub.sub_link:
+    # PasarGuard has no per-inbound VLESS URI (the sub_link IS the config), so
+    # never try to synthesise one — the UI falls back to the sub_link.
+    from services.panels.adapter import record_is_pasarguard
+    if (
+        xui is not None
+        and not record_is_pasarguard(xui)
+        and xui.inbound is not None
+        and xui.inbound.server is not None
+        and sub.sub_link
+    ):
         try:
             from services.xui.runtime import build_vless_uri
             # sub_id is the last path segment of the sub_link
