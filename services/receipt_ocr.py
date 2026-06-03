@@ -79,7 +79,7 @@ def _ocr_bytes(blob: bytes) -> str | None:
         import pytesseract
         from PIL import Image
     except ImportError:
-        logger.info("pytesseract/tesseract not installed — receipt OCR skipped")
+        logger.warning("receipt OCR: pytesseract is not installed")
         return None
     try:
         img = Image.open(io.BytesIO(blob))
@@ -87,10 +87,47 @@ def _ocr_bytes(blob: bytes) -> str | None:
         if img.width < 1000:
             scale = 1000 / max(img.width, 1)
             img = img.resize((int(img.width * scale), int(img.height * scale)))
-        return pytesseract.image_to_string(img, lang="fas+eng")
     except Exception as exc:  # noqa: BLE001
-        logger.warning("OCR failed: %s", exc)
+        logger.warning("receipt OCR: cannot open image: %s", exc)
         return None
+    # Try Persian+English, then English alone (still reads the card DIGITS — the
+    # main fraud signal — when the 'fas' language pack is missing), then default.
+    for lang in ("fas+eng", "eng", None):
+        try:
+            text = (
+                pytesseract.image_to_string(img, lang=lang)
+                if lang
+                else pytesseract.image_to_string(img)
+            )
+            if text and text.strip():
+                return text
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("receipt OCR failed (lang=%s): %s", lang, exc)
+    return None
+
+
+def ocr_status() -> dict:
+    """Diagnose the OCR engine for the admin 'test OCR' button."""
+    try:
+        import pytesseract
+    except ImportError:
+        return {"available": False, "reason": "کتابخانه‌ی pytesseract نصب نیست."}
+    try:
+        version = str(pytesseract.get_tesseract_version())
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "reason": f"باینریِ tesseract پیدا/اجرا نشد: {str(exc)[:160]}"}
+    try:
+        langs = list(pytesseract.get_languages(config=""))
+    except Exception:  # noqa: BLE001
+        langs = []
+    has_fas = "fas" in langs
+    return {
+        "available": True,
+        "version": version,
+        "langs": langs,
+        "has_fas": has_fas,
+        "reason": "آماده ✅" if has_fas else "آماده، ولی زبانِ fas نصب نیست — فقط ارقام خوانده می‌شود ⚠️",
+    }
 
 
 async def ocr_receipt_text(file_id: str) -> str | None:

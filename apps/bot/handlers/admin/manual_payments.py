@@ -447,9 +447,50 @@ async def show_receipts_list(callback: CallbackQuery, session: AsyncSession) -> 
         toman = int(p.pay_amount or 0)
         lines.append(f"{_payment_status_fa(p.payment_status)} • {toman:,}ت • {_esc(uname)}")
         builder.button(text=f"🧾 {toman:,}ت — {uname}"[:60], callback_data=f"rcpt:show:{p.id}")
+    builder.button(text="🔬 تستِ OCR", callback_data="admin:ocr_test")
     builder.button(text="🔙 بازگشت", callback_data="admin:finance")
     builder.adjust(1)
     lines.append("\nبرای دیدن عکسِ هر رسید، دکمه‌اش را بزن.")
+    await safe_edit_caption_or_text(callback, "\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "admin:ocr_test")
+async def ocr_test(callback: CallbackQuery, session: AsyncSession) -> None:
+    """Diagnose the receipt-OCR engine: is tesseract installed, is the Persian
+    pack present, and does it actually read the latest receipt?"""
+    await callback.answer("⏳ در حال تست…")
+    from services.receipt_ocr import ocr_receipt_text, ocr_status
+
+    st = ocr_status()
+    lines = ["🔬 <b>تشخیصِ OCR</b>\n"]
+    if not st.get("available"):
+        lines.append(f"❌ OCR کار نمی‌کند:\n<code>{_esc(st.get('reason'))}</code>")
+        lines.append("\n💡 معمولاً یعنی <b>tesseract روی سرور نصب نشده</b>. مطمئن شو دیپلوی با Dockerfileِ جدید build شده.")
+    else:
+        lines.append(f"✅ tesseract نسخه <b>{_esc(st.get('version'))}</b>")
+        lines.append(f"🌐 زبانِ فارسی (fas): {'✅ نصب است' if st.get('has_fas') else '❌ نصب نیست'}")
+        if not st.get("has_fas"):
+            lines.append("⚠️ بدونِ fas فقط شماره‌کارت (ارقام) خوانده می‌شود — برای تشخیصِ نام، fas لازم است.")
+        # Try OCR on the most recent card receipt with a photo.
+        latest = await session.scalar(
+            select(Payment)
+            .where(Payment.provider == "card_to_card")
+            .order_by(Payment.created_at.desc())
+            .limit(1)
+        )
+        if latest:
+            payload = latest.callback_payload or {}
+            fid = payload.get("receipt_file_id") or latest.provider_payment_id
+            if fid:
+                text = await ocr_receipt_text(str(fid))
+                if text and text.strip():
+                    lines.append(f"\n🧾 آخرین رسید: <b>{len(text.strip())}</b> کاراکتر خوانده شد ✅")
+                else:
+                    lines.append("\n⚠️ روی آخرین رسید متنی خوانده نشد (شاید دانلودِ عکس یا کیفیتِ تصویر).")
+            else:
+                lines.append("\nℹ️ آخرین پرداختِ کارت‌به‌کارت عکسِ رسید ندارد.")
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔙 بازگشت", callback_data="admin:receipts")
     await safe_edit_caption_or_text(callback, "\n".join(lines), reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
