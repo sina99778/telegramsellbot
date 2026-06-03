@@ -60,6 +60,8 @@ def _build_admin_main_markup() -> InlineKeyboardMarkup:
     styled_button(builder, "فروش آماده", callback_data="admin:ready_configs", role="info")
     styled_button(builder, "کاربران", callback_data="admin:users", role="info")
     styled_button(builder, "مشتریان", callback_data="admin:customers", role="info")
+    # Global config search → assign any config to any member.
+    styled_button(builder, "جستجوی کانفیگ", callback_data="admin:config_search", role="info")
     styled_button(builder, "پیام همگانی", callback_data="admin:broadcast", role="info")
     styled_button(builder, "تیکت‌ها", callback_data="admin:tickets", role="info")
     styled_button(builder, "ریتارگتینگ", callback_data="admin:retargeting", role="info")
@@ -72,7 +74,7 @@ def _build_admin_main_markup() -> InlineKeyboardMarkup:
     styled_button(builder, "تخفیف‌ها", callback_data="admin:discounts", role="info")
     styled_button(builder, "بازیابی پرداخت‌ها", callback_data="admin:recovery", role="info")
     styled_button(builder, "دریافت بکاپ", callback_data="admin:backup", role="confirm")
-    builder.adjust(2, 2, 2, 2, 2, 2, 2, 1)
+    builder.adjust(2, 2, 2, 2, 2, 2, 2, 2)
     return builder.as_markup()
 
 

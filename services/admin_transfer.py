@@ -24,13 +24,15 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from models.audit import AuditLog
+from models.plan import Plan
 from models.subscription import Subscription
 from models.user import User
+from models.xui import XUIClientRecord
 
 
 logger = logging.getLogger(__name__)
@@ -109,6 +111,123 @@ async def list_transferable_configs(
         .order_by(Subscription.created_at.desc())
     )
     return list(result.scalars().all())
+
+
+def _looks_like_telegram_id(query: str) -> int | None:
+    """If `query` is a bare numeric Telegram id (optionally @-prefixed), return
+    it as an int; otherwise None. Kept pure so it can be unit-tested without a DB."""
+    s = (query or "").strip().lstrip("@")
+    if s.isdigit() and 3 <= len(s) <= 15:
+        try:
+            return int(s)
+        except (ValueError, OverflowError):
+            return None
+    return None
+
+
+def owner_label(user: User | None) -> str:
+    """Short, human label for a config's owner (for the admin search list)."""
+    if user is None:
+        return "بدون مالک"
+    if user.username:
+        return f"@{user.username}"
+    name = (user.first_name or "").strip()
+    if name:
+        return f"{name} ({user.telegram_id})"
+    return str(user.telegram_id)
+
+
+def config_search_label(sub: Subscription) -> str:
+    """Label for the GLOBAL search list: `config name · status · owner`.
+
+    Safe only when xui_client + plan + user were eager-loaded (search_configs
+    does this)."""
+    return f"{config_label(sub)} · 👤 {owner_label(getattr(sub, 'user', None))}"
+
+
+def _config_search_filter(query: str):
+    """Build the WHERE expression for a global config search.
+
+    Returns a SQLAlchemy boolean expression, or None to match EVERYTHING
+    (empty query, or the explicit "show all" tokens). Pure/synchronous so the
+    matching rules are easy to reason about and test.
+    """
+    q = (query or "").strip()
+    if not q or q in {"*", "همه", "all", "*همه*"}:
+        return None
+    like = f"%{q}%"
+    conditions = [
+        XUIClientRecord.username.ilike(like),
+        XUIClientRecord.email.ilike(like),
+        XUIClientRecord.client_uuid.ilike(like),
+        XUIClientRecord.sub_link.ilike(like),
+        Subscription.legacy_remark.ilike(like),
+        Subscription.user_note.ilike(like),
+        Subscription.sub_link.ilike(like),
+        Plan.name.ilike(like),
+        User.username.ilike(like),
+        User.first_name.ilike(like),
+    ]
+    tid = _looks_like_telegram_id(q)
+    if tid is not None:
+        conditions.append(User.telegram_id == tid)
+    return or_(*conditions)
+
+
+async def search_configs(
+    session: AsyncSession,
+    query: str | None,
+    *,
+    limit: int = 8,
+    offset: int = 0,
+) -> tuple[list[Subscription], int]:
+    """Search across EVERY config in the system (all owners) — admin tool.
+
+    Matches `query` (case-insensitive substring) against the config's panel
+    identity (username / email / uuid / sub-link), the subscription's legacy
+    remark and user note, the plan name, and the owner (username / first name).
+    A bare numeric query ALSO matches the owner's telegram_id exactly. An empty
+    query (or "*" / "همه" / "all") lists everything, most-recent first.
+
+    Returns (page_rows, total_count). Rows are eager-loaded with xui_client,
+    plan and user so config_search_label() / detail rendering are safe.
+
+    All joins are one-to-one (xui_client) or many-to-one (plan, user), so there
+    is no row fan-out — limit/offset paginate accurately.
+    """
+    where = _config_search_filter(query or "")
+
+    def _with_joins(stmt):
+        stmt = (
+            stmt.join(User, User.id == Subscription.user_id)
+            .outerjoin(XUIClientRecord, XUIClientRecord.subscription_id == Subscription.id)
+            .outerjoin(Plan, Plan.id == Subscription.plan_id)
+        )
+        if where is not None:
+            stmt = stmt.where(where)
+        return stmt
+
+    count_stmt = _with_joins(
+        select(func.count(func.distinct(Subscription.id))).select_from(Subscription)
+    )
+    total = int(await session.scalar(count_stmt) or 0)
+    if total == 0:
+        return [], 0
+
+    rows_stmt = (
+        _with_joins(select(Subscription))
+        .options(
+            selectinload(Subscription.xui_client),
+            selectinload(Subscription.plan),
+            selectinload(Subscription.user),
+        )
+        .order_by(Subscription.created_at.desc())
+        .limit(max(1, limit))
+        .offset(max(0, offset))
+    )
+    result = await session.execute(rows_stmt)
+    rows = list(result.scalars().unique().all())
+    return rows, total
 
 
 async def admin_transfer_configs(

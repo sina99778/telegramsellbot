@@ -46,6 +46,13 @@ class ManageUserStates(StatesGroup):
     waiting_for_transfer_target = State()
 
 
+class ConfigSearchStates(StatesGroup):
+    # Global config search + assign-to-any-member flow
+    # (apps/bot/handlers/admin/config_search.py).
+    waiting_for_query = State()
+    waiting_for_assign_target = State()
+
+
 
 
 class BroadcastStates(StatesGroup):

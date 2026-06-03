@@ -15,6 +15,7 @@ from apps.bot.handlers.admin.gifts import router as gifts_router
 from apps.bot.handlers.admin.recovery import router as recovery_router
 from apps.bot.handlers.admin.manual_payments import router as manual_payments_router
 from apps.bot.handlers.admin.customers import router as customers_router
+from apps.bot.handlers.admin.config_search import router as config_search_router
 from apps.bot.handlers.admin.legacy_import import router as legacy_import_router
 from apps.bot.middlewares.menu_escape import MainMenuEscapeMiddleware
 
@@ -42,6 +43,7 @@ router.include_router(gifts_router)
 router.include_router(recovery_router)
 router.include_router(manual_payments_router)
 router.include_router(customers_router)
+router.include_router(config_search_router)
 router.include_router(legacy_import_router)
 
 __all__ = ["router"]
