@@ -87,6 +87,15 @@ class XUIClientRecord(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     sub_link: Mapped[str | None] = mapped_column(Text, nullable=True)
     usage_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    # Panel dispatch for non-X-UI panels. NULL/"xui" => this is an X-UI client
+    # (the historical default — every existing row keeps its behaviour). For a
+    # PasarGuard config this is "pasarguard" and `panel_username` holds the
+    # canonical username used by the panel's /api/user/{username} endpoints
+    # (we still mirror it into `email`/`username` so the generic config views
+    # keep working). Both nullable so scripts/...999_auto_sync_columns adds
+    # them on deploy with no hand-written migration.
+    panel_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    panel_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     subscription: Mapped[Subscription] = relationship("Subscription", back_populates="xui_client")
     inbound: Mapped[XUIInboundRecord] = relationship("XUIInboundRecord", back_populates="clients")
