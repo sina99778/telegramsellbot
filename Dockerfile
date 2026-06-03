@@ -38,7 +38,9 @@ RUN "${VENV_PATH}/bin/pip" install \
     tenacity \
     cryptography \
     segno \
-    pillow
+    pillow \
+    pytesseract \
+    "sentry-sdk[fastapi]"
 
 
 # ─── Stage 2: Vue 3 dashboard build ─────────────────────────────────────
