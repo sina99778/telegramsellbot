@@ -2055,9 +2055,10 @@ async def force_join_check(callback: CallbackQuery, session: AsyncSession) -> No
         await safe_edit_or_send(callback, "✅ عضویت تأیید شد! لطفاً دوباره از منو استفاده کنید.")
         return
 
+    from apps.bot.middlewares.force_join import _normalize_channel
     try:
         member = await callback.bot.get_chat_member(
-            chat_id=gw.force_join_channel.strip(),
+            chat_id=_normalize_channel(gw.force_join_channel),
             user_id=callback.from_user.id,
         )
         if member.status in ("member", "administrator", "creator"):
@@ -2065,8 +2066,17 @@ async def force_join_check(callback: CallbackQuery, session: AsyncSession) -> No
             await safe_edit_or_send(callback, "✅ عضویت تأیید شد! لطفاً دوباره از منو استفاده کنید.")
         else:
             await callback.answer("❌ هنوز عضو کانال نشده‌اید!", show_alert=True)
-    except Exception:
-        await callback.answer("❌ خطا در بررسی عضویت. لطفاً دوباره تلاش کنید.", show_alert=True)
+    except Exception as exc:
+        # The bot can't verify (it likely isn't an admin of the channel). Don't
+        # leave the user stuck on a wall they can't pass — the middleware fails
+        # open on this same error, so let them continue.
+        logger.error(
+            "Force join check: cannot verify membership for %s — letting the user "
+            "through. FIX: make the bot an ADMIN of the channel. (%s)",
+            gw.force_join_channel, exc,
+        )
+        await callback.answer("✅ عضویت تأیید شد!", show_alert=True)
+        await safe_edit_or_send(callback, "✅ تأیید شد! لطفاً دوباره از منو استفاده کنید.")
 
 
 # ─── Button-style (Bot API 9.4 inline button colors) ───────────────────────

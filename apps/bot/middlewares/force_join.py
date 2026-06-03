@@ -19,6 +19,21 @@ from repositories.settings import AppSettingsRepository
 logger = logging.getLogger(__name__)
 
 
+def _normalize_channel(raw: str) -> str:
+    """Normalise a force-join channel identifier for the Telegram API.
+
+    A public channel may be stored without the leading "@" (a common operator
+    slip) — get_chat_member then fails. Numeric IDs (-100…) are left as-is.
+    """
+    ch = (raw or "").strip()
+    if "t.me/" in ch:  # operator pasted a full invite link
+        tail = ch.split("t.me/", 1)[1].strip("/").split("/")[0].split("?")[0]
+        ch = ("@" + tail) if tail and not tail.startswith("+") else ch
+    elif ch and not ch.startswith("@") and not ch.lstrip("-").isdigit():
+        ch = "@" + ch
+    return ch
+
+
 class ForceJoinMiddleware(BaseMiddleware):
     """Middleware that blocks bot usage until user joins the required channel."""
 
@@ -59,7 +74,7 @@ class ForceJoinMiddleware(BaseMiddleware):
         if not gw.force_join_enabled or not gw.force_join_channel:
             return await handler(event, data)
 
-        channel = gw.force_join_channel.strip()
+        channel = _normalize_channel(gw.force_join_channel)
 
         # Check membership. If the bot can't actually verify membership we
         # fail CLOSED — otherwise an admin who accidentally removes the bot
@@ -69,24 +84,32 @@ class ForceJoinMiddleware(BaseMiddleware):
         if bot is None:
             return await handler(event, data)
 
-        membership_known = False
         try:
             member = await bot.get_chat_member(chat_id=channel, user_id=telegram_id)
-            membership_known = True
             if member.status in ("member", "administrator", "creator"):
                 return await handler(event, data)
+            # A definitive non-member status (left / kicked) → fall through and
+            # prompt them to join.
         except (TelegramBadRequest, TelegramForbiddenError) as exc:
+            # The bot CAN'T query the channel — almost always because it isn't an
+            # ADMIN of the force-join channel (or the channel is mis-set). That's
+            # an OPERATOR misconfiguration, not the user's fault. Failing closed
+            # here blocks the entire user base forever (including paying customers
+            # mid-renewal), so we fail OPEN and log loudly instead.
             logger.error(
-                "Force join: cannot verify membership for channel %s (failing closed): %s",
+                "Force join: cannot verify membership for channel %s — letting the "
+                "user through. FIX: make the bot an ADMIN of the channel. (%s)",
                 channel, exc,
             )
-        except Exception as exc:
-            logger.error("Force join check error (failing closed): %s", exc)
+            return await handler(event, data)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Force join: unexpected check error for channel %s — letting the user "
+                "through: %s", channel, exc,
+            )
+            return await handler(event, data)
 
-        # If we got here we either know the user isn't a member or we
-        # couldn't tell — in both cases prompt them to join.
-
-        # User is NOT a member — block and show join button
+        # User is definitively NOT a member — block and show the join button.
         channel_link = channel if channel.startswith("@") else channel
         # Try to get channel invite link
         try:
