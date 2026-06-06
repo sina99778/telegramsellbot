@@ -93,19 +93,26 @@ def register_default_caches() -> None:
 
 async def run_cache_invalidation_listener() -> None:
     """Background task: refresh local caches when another process changes a
-    setting. Reconnects on failure; cancel to stop."""
+    setting. Reconnects on failure; cancel to stop.
+
+    The PubSub is entered with `async with` so its dedicated Redis connection is
+    ALWAYS released back to the pool on every loop iteration — including on a
+    reconnect. The previous version created a new pubsub on each retry without
+    closing the old one, leaking one connection per reconnect until the pool was
+    exhausted (surfacing elsewhere as MaxConnectionsError).
+    """
     while True:
         try:
-            pubsub = get_redis().pubsub()
-            await pubsub.subscribe(_CHANNEL)
-            logger.info("cache invalidation listener subscribed (%s)", _CHANNEL)
-            async for message in pubsub.listen():
-                if message.get("type") != "message":
-                    continue
-                name = message.get("data")
-                if isinstance(name, (bytes, bytearray)):
-                    name = name.decode()
-                await _run(str(name))
+            async with get_redis().pubsub() as pubsub:
+                await pubsub.subscribe(_CHANNEL)
+                logger.info("cache invalidation listener subscribed (%s)", _CHANNEL)
+                async for message in pubsub.listen():
+                    if message.get("type") != "message":
+                        continue
+                    name = message.get("data")
+                    if isinstance(name, (bytes, bytearray)):
+                        name = name.decode()
+                    await _run(str(name))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001

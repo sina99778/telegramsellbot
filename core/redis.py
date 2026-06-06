@@ -28,13 +28,30 @@ end
 
 
 def get_redis() -> aioredis.Redis:
-    """Return the shared Redis client instance."""
+    """Return the shared Redis client instance.
+
+    Uses a BOUNDED, BLOCKING, health-checked connection pool:
+      * max_connections — bounds the pool so a connection leak or burst can't
+        open thousands of sockets to the Redis server.
+      * BlockingConnectionPool — when every connection is busy, callers WAIT
+        (up to redis_pool_timeout) for one to free up instead of immediately
+        raising MaxConnectionsError. A brief wait under load is far better UX
+        than a hard error mid-renewal.
+      * health_check_interval — idle connections are pinged and recycled, so
+        connections silently dropped by the network/Redis don't pile up as
+        dead-but-counted sockets that eventually exhaust the pool.
+    """
     global _redis_client
     if _redis_client is None:
-        _redis_client = aioredis.from_url(
-            settings.redis_url,
-            encoding="utf-8",
-            decode_responses=True,
+        _redis_client = aioredis.Redis(
+            connection_pool=aioredis.BlockingConnectionPool.from_url(
+                settings.redis_url,
+                max_connections=settings.redis_max_connections,
+                timeout=settings.redis_pool_timeout,
+                encoding="utf-8",
+                decode_responses=True,
+                health_check_interval=30,
+            )
         )
     return _redis_client
 

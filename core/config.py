@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     database_connect_timeout: int = 10
 
     redis_url: str = "redis://localhost:6379/0"
+    # Per-process cap on Redis connections. A BLOCKING pool waits up to
+    # redis_pool_timeout seconds for a free connection instead of erroring under
+    # a burst, so a momentary spike no longer surfaces as MaxConnectionsError.
+    # Each of bot/worker/api gets its own pool, so total server load is
+    # ~3 × this (well under Redis's default 10000 maxclients).
+    redis_max_connections: int = 50
+    redis_pool_timeout: float = 20.0
 
     bot_token: SecretStr = SecretStr("CHANGE_ME")
     bot_username: str | None = None
