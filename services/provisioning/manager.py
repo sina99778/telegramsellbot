@@ -19,12 +19,11 @@ from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.settings import AppSettingsRepository
 from schemas.internal.xui import XUIClient
 from services.plan_inventory import PlanStockError, release_plan_sale, reserve_plan_sale
-from services.panels.adapter import is_pasarguard, record_is_pasarguard
+from services.panels.marzban import is_marzban_family, marzban_client_for_server, record_is_marzban_family
 from services.wallet.manager import WalletManager
 from services.xui.client import SanaeiXUIClient
 from services.xui.runtime import build_sub_link, build_vless_uri, create_xui_client_for_server, ensure_inbound_server_loaded
-from services.pasarguard.runtime import create_pasarguard_client_for_server
-from schemas.internal.pasarguard import PGUserCreate, PGUserModify
+from schemas.internal.pasarguard import PGUserModify
 
 
 logger = logging.getLogger(__name__)
@@ -128,9 +127,9 @@ class ProvisioningManager:
         if server.credentials is None:
             return False, "اطلاعات ورود به سرور موجود نیست."
 
-        if is_pasarguard(server):
+        if is_marzban_family(server):
             try:
-                async with create_pasarguard_client_for_server(server) as client:
+                async with marzban_client_for_server(server) as client:
                     await client.get_current_admin()
                 return True, None
             except Exception as exc:  # noqa: BLE001
@@ -177,9 +176,9 @@ class ProvisioningManager:
         if not server.is_active or server.credentials is None:
             return False, "سرور این سرویس در حال حاضر در دسترس نیست."
 
-        if is_pasarguard(server):
+        if is_marzban_family(server):
             try:
-                async with create_pasarguard_client_for_server(server) as client:
+                async with marzban_client_for_server(server) as client:
                     await client.get_current_admin()
                 return True, None
             except Exception as exc:  # noqa: BLE001
@@ -292,7 +291,7 @@ class ProvisioningManager:
                 raise ProvisioningError("ظرفیت این سرور تکمیل شده است. لطفاً به پشتیبانی اطلاع دهید.")
 
         # PasarGuard servers provision via the user-centric API (own path).
-        if is_pasarguard(server):
+        if is_marzban_family(server):
             return await self._provision_pasarguard(
                 user_id=user_id,
                 plan=plan,
@@ -463,28 +462,17 @@ class ProvisioningManager:
         status/expire to flip our Subscription to active.
         """
         pg_username = await self._generate_unique_pg_username(config_name)
+        panel_kind = (server.panel_type or "pasarguard").strip().lower()
         duration_days = int(plan.duration_days or 0)
         data_limit = int(plan.volume_bytes) or None  # 0 => unlimited on the panel
-        group_id = int(inbound.xui_inbound_remote_id)
+        bundle_id = int(inbound.xui_inbound_remote_id)  # group (PasarGuard) or service (Rebecca)
 
+        # first_use → on_hold (timer starts on first connect); an unlimited-
+        # duration plan activates immediately.
         if duration_days > 0:
-            create_payload = PGUserCreate(
-                username=pg_username,
-                status="on_hold",
-                data_limit=data_limit,
-                group_ids=[group_id],
-                on_hold_expire_duration=duration_days * 86400,
-                note=f"user:{user_id};order:{order.id}",
-            )
+            create_status, on_hold_seconds = "on_hold", duration_days * 86400
         else:
-            # Unlimited-duration plan — nothing to hold; activate immediately.
-            create_payload = PGUserCreate(
-                username=pg_username,
-                status="active",
-                data_limit=data_limit,
-                group_ids=[group_id],
-                note=f"user:{user_id};order:{order.id}",
-            )
+            create_status, on_hold_seconds = "active", None
 
         stock_reserved = False
         pg_created = False
@@ -512,7 +500,7 @@ class ProvisioningManager:
                 xui_record = XUIClientRecord(
                     subscription_id=subscription.id,
                     inbound_id=inbound.id,
-                    panel_kind="pasarguard",
+                    panel_kind=panel_kind,
                     panel_username=pg_username,
                     xui_client_remote_id=None,
                     # Mirror the PG username into email/username (both UNIQUE) so
@@ -530,8 +518,16 @@ class ProvisioningManager:
                 order.status = "provisioned"
                 await self.session.flush()
 
-                async with create_pasarguard_client_for_server(server) as client:
-                    pg_user = await client.create_user(create_payload)
+                async with marzban_client_for_server(server) as client:
+                    pg_user = await client.create_user_in_bundle(
+                        username=pg_username,
+                        status=create_status,
+                        expire=None,
+                        data_limit=data_limit,
+                        bundle_id=bundle_id,
+                        on_hold_expire_duration=on_hold_seconds,
+                        note=f"user:{user_id};order:{order.id}",
+                    )
                 pg_created = True
 
                 sub_link = pg_user.absolute_subscription_url(server.base_url)
@@ -550,7 +546,7 @@ class ProvisioningManager:
                 await release_plan_sale(self.session, plan.id)
             if pg_created:
                 try:
-                    async with create_pasarguard_client_for_server(server) as client:
+                    async with marzban_client_for_server(server) as client:
                         await client.delete_user(pg_username)
                 except Exception as cleanup_exc:  # noqa: BLE001
                     logger.error(
@@ -764,7 +760,7 @@ class ProvisioningManager:
         xui = sub.xui_client
         if xui is None:
             raise MigrationError("این سرویس کانفیگ X-UI ندارد و قابل انتقال نیست.")
-        if record_is_pasarguard(xui):
+        if record_is_marzban_family(xui):
             raise MigrationError("تغییر سرور برای کانفیگ‌های PasarGuard فعلاً پشتیبانی نمی‌شود.")
         if xui.inbound_id == target_inbound_id:
             raise MigrationError("این سرویس از قبل روی همین اینباند است.")
@@ -801,7 +797,7 @@ class ProvisioningManager:
         # X-UI inbound-migration only: a PasarGuard server/group can't host an
         # X-UI client, so reject it here too (defence in depth — the picker also
         # filters these out).
-        if is_pasarguard(target_server):
+        if is_marzban_family(target_server):
             raise MigrationError("انتقال به سرورِ PasarGuard پشتیبانی نمی‌شود.")
 
         # Capacity check for the target server (same rule as provisioning).
@@ -1622,7 +1618,7 @@ class ProvisioningManager:
 
         # PasarGuard has no X-UI-style legacy-migration backlog (no client_stats
         # shape to read), so there is nothing to reconcile here.
-        if is_pasarguard(server):
+        if is_marzban_family(server):
             return out
 
         # Re-fetch the server WITH credentials eager-loaded. build_xui_client_config
@@ -1887,7 +1883,7 @@ class ProvisioningManager:
             raise ProvisioningError("Panel inbound mapping is missing.")
         server = ensure_inbound_server_loaded(inbound)
         username = xui_record.panel_username or xui_record.username
-        async with create_pasarguard_client_for_server(server) as client:
+        async with marzban_client_for_server(server) as client:
             await client.modify_user(username, PGUserModify(status="disabled"))
 
     async def _disable_xui_client(
@@ -1898,7 +1894,7 @@ class ProvisioningManager:
         ends_at: datetime | None,
     ) -> None:
         # PasarGuard configs disable via their own (user-centric) API.
-        if record_is_pasarguard(xui_record):
+        if record_is_marzban_family(xui_record):
             await self._disable_pasarguard_client(xui_record)
             return
 

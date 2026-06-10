@@ -28,7 +28,7 @@ from sqlalchemy.orm import selectinload
 
 from apps.api.routes.dashboard._deps import require_dashboard_admin
 from core.security import decrypt_secret, encrypt_secret
-from services.panels.adapter import is_pasarguard
+from services.panels.adapter import is_marzban_family
 from models.dashboard_admin import DashboardAdmin
 from models.subscription import Subscription
 from models.xui import (
@@ -382,17 +382,16 @@ async def test_connection(server_id: UUID, auth: AuthDep) -> dict[str, Any]:
     try:
         from pydantic import SecretStr
         from core.config import settings as _settings
-        if is_pasarguard(server):
-            from services.pasarguard.client import PasarGuardClient, PasarGuardClientConfig
-            pg_config = PasarGuardClientConfig(
+        if is_marzban_family(server):
+            from services.panels.marzban import marzban_client_from_credentials
+            async with marzban_client_from_credentials(
+                server.panel_type,
                 base_url=server.base_url,
                 username=server.credentials.username,
-                password=SecretStr(password),
-                verify_ssl=_settings.pasarguard_verify_ssl,
-            )
-            async with PasarGuardClient(pg_config) as client:
+                password=password,
+            ) as client:
                 await client.login()
-                remote = await client.get_groups()
+                remote = await client.list_bundles()
         else:
             from services.xui.client import SanaeiXUIClient, XUIClientConfig
             config = XUIClientConfig(

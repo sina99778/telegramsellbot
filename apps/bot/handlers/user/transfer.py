@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from apps.bot.handlers.user.my_configs import MyConfigCallback
 from apps.bot.utils.messaging import safe_edit_or_send
-from services.panels.adapter import record_is_pasarguard
+from services.panels.adapter import record_is_marzban_family
 from models.audit import AuditLog
 from models.subscription import Subscription
 from models.user import User
@@ -63,15 +63,15 @@ async def _rotate_config_identity_for_transfer(
 
     # PasarGuard: rotate the subscription via revoke_sub (kills the sender's old
     # link), then mirror the new sub URL into the DB.
-    if record_is_pasarguard(xui_record):
+    if record_is_marzban_family(xui_record):
         from services.xui.runtime import ensure_inbound_server_loaded
-        from services.pasarguard.runtime import create_pasarguard_client_for_server
+        from services.panels.marzban import marzban_client_for_server
 
         username = xui_record.panel_username or xui_record.username
         try:
             server = ensure_inbound_server_loaded(xui_record.inbound)
             async with session.begin_nested():
-                async with create_pasarguard_client_for_server(server) as client:
+                async with marzban_client_for_server(server) as client:
                     pg_user = await client.revoke_sub(username)
                 new_sub_link = pg_user.absolute_subscription_url(server.base_url)
                 xui_record.sub_link = new_sub_link

@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from services.panels.base import PanelStrategy
-from services.panels.pasarguard_strategy import PasarGuardStrategy
+from services.panels.marzban import MarzbanFamilyStrategy
 from services.panels.xui_strategy import XUIStrategy
 
 
@@ -21,19 +21,22 @@ class PanelNotRegisteredError(Exception):
     """Raised when a server's panel_type has no registered strategy."""
 
 
-# Stateless singletons.
+# Stateless singletons. PasarGuard + Rebecca are Marzban forks → one shared
+# strategy, parameterised by kind.
 _XUI = XUIStrategy()
-_PASARGUARD = PasarGuardStrategy()
+_PASARGUARD = MarzbanFamilyStrategy("pasarguard")
+_REBECCA = MarzbanFamilyStrategy("rebecca")
 
 # panel_type / panel_kind string -> strategy. X-UI is the historical default:
 # empty/None and every X-UI flavour map to the one X-UI strategy. To add a
-# panel, register ONE entry (e.g. register_panel("rebka", RebkaStrategy())).
+# panel, register ONE entry.
 _REGISTRY: dict[str, PanelStrategy] = {
     "": _XUI,
     "xui": _XUI,
     "sanaei_xui": _XUI,
     "alireza_xui": _XUI,
     "pasarguard": _PASARGUARD,
+    "rebecca": _REBECCA,
 }
 
 

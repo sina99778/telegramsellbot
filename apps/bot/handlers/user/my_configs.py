@@ -38,7 +38,7 @@ from services.provisioning.manager import (
     ProvisioningManager,
 )
 from services.xui.runtime import build_vless_uri
-from services.panels.adapter import record_is_pasarguard
+from services.panels.adapter import record_is_marzban_family
 from services.panels.registry import strategy_for_record
 
 
@@ -856,14 +856,14 @@ async def reset_uuid_handler(
         return
 
     # PasarGuard: rotate the subscription via revoke_sub (no UUID concept).
-    if record_is_pasarguard(xui_record):
+    if record_is_marzban_family(xui_record):
         from services.xui.runtime import ensure_inbound_server_loaded
-        from services.pasarguard.runtime import create_pasarguard_client_for_server
+        from services.panels.marzban import marzban_client_for_server
 
         username = xui_record.panel_username or xui_record.username
         try:
             server = ensure_inbound_server_loaded(xui_record.inbound)
-            async with create_pasarguard_client_for_server(server) as client:
+            async with marzban_client_for_server(server) as client:
                 pg_user = await client.revoke_sub(username)
             new_sub_link = pg_user.absolute_subscription_url(server.base_url)
             sub.sub_link = new_sub_link
@@ -1031,16 +1031,16 @@ async def toggle_enable_handler(
         return
 
     # PasarGuard: enable/disable via PUT status.
-    if record_is_pasarguard(xui_record):
+    if record_is_marzban_family(xui_record):
         from services.xui.runtime import ensure_inbound_server_loaded
-        from services.pasarguard.runtime import create_pasarguard_client_for_server
+        from services.panels.marzban import marzban_client_for_server
         from schemas.internal.pasarguard import PGUserModify
 
         new_enable = not xui_record.is_active
         username = xui_record.panel_username or xui_record.username
         try:
             server = ensure_inbound_server_loaded(xui_record.inbound)
-            async with create_pasarguard_client_for_server(server) as client:
+            async with marzban_client_for_server(server) as client:
                 await client.modify_user(
                     username, PGUserModify(status="active" if new_enable else "disabled")
                 )
@@ -1345,9 +1345,8 @@ async def _list_available_inbounds(
             XUIServerRecord.is_active.is_(True),
             # X-UI migration targets ONLY. A PasarGuard "group" can't host an
             # X-UI client, and this picker is only ever shown for X-UI sources,
-            # so never offer PasarGuard servers/groups as a destination.
-            XUIServerRecord.panel_type != "pasarguard",
-            XUIInboundRecord.protocol.is_distinct_from("pasarguard"),
+            # so never offer a Marzban-family bundle (PasarGuard/Rebecca) as a target.
+            XUIServerRecord.panel_type.notin_(("pasarguard", "rebecca")),
         )
         .order_by(XUIServerRecord.priority.asc(), XUIInboundRecord.created_at.asc())
     )

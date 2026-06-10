@@ -359,9 +359,14 @@ async def create_plan_start(callback: CallbackQuery, state: FSMContext, session:
     for inbound in inbounds:
         server_name = inbound.server.name if inbound.server else "?"
         meta = inbound.metadata_ or {}
-        if (inbound.protocol or "") == "pasarguard" or meta.get("pasarguard_group"):
-            # PasarGuard groups have no port/protocol in the X-UI sense.
-            label = f"🟩 PasarGuard | گروه: {inbound.remark or 'بدون نام'} | سرور: {server_name}"
+        proto = (inbound.protocol or "").lower()
+        # Marzban-family bundle (PasarGuard group / Rebecca service). The
+        # pasarguard_group key is kept for rows synced before the rename.
+        if proto in ("pasarguard", "rebecca") or meta.get("marzban_bundle") or meta.get("pasarguard_group"):
+            if proto == "rebecca":
+                label = f"🟪 Rebecca | سرویس: {inbound.remark or 'بدون نام'} | سرور: {server_name}"
+            else:
+                label = f"🟩 PasarGuard | گروه: {inbound.remark or 'بدون نام'} | سرور: {server_name}"
         else:
             label = (
                 f"{inbound.remark or 'بدون نام'} | "

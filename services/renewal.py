@@ -12,8 +12,7 @@ from models.plan import Plan
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.settings import AppSettingsRepository, RenewalSettings, ServiceSecuritySettings
-from services.panels.adapter import record_is_pasarguard
-from services.pasarguard.runtime import create_pasarguard_client_for_server
+from services.panels.marzban import marzban_client_for_server, record_is_marzban_family
 from schemas.internal.pasarguard import PGUserModify
 from services.xui.client import SanaeiXUIClient, XUIClient
 from services.xui.runtime import build_xui_client_config, ensure_inbound_server_loaded
@@ -230,8 +229,8 @@ async def _sync_xui_limits(
     if xui_full is None or xui_full.inbound is None or xui_full.inbound.server is None:
         return
 
-    # PasarGuard configs renew via the user-centric API.
-    if record_is_pasarguard(xui_full):
+    # Marzban-family panels (PasarGuard / Rebecca) renew via the user-centric API.
+    if record_is_marzban_family(xui_full):
         await _sync_pasarguard_limits(subscription, xui_full)
         return
 
@@ -326,11 +325,11 @@ async def _sync_pasarguard_limits(
         payload = PGUserModify(data_limit=data_limit)
 
     try:
-        async with create_pasarguard_client_for_server(server) as client:
+        async with marzban_client_for_server(server) as client:
             await client.modify_user(username, payload)
         xui_full.is_active = True
     except Exception as exc:
-        logger.error("Failed to sync PasarGuard limits after renewal: %s", exc, exc_info=True)
+        logger.error("Failed to sync Marzban-family limits after renewal: %s", exc, exc_info=True)
         raise RenewalXUISyncError(
-            f"Renewal could not be applied on PasarGuard panel: {exc}"
+            f"Renewal could not be applied on the panel: {exc}"
         ) from exc

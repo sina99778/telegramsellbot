@@ -14,9 +14,12 @@ from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.settings import AppSettingsRepository, ServiceSecuritySettings
 from schemas.internal.xui import XUIClient
-from services.panels.adapter import is_pasarguard, record_is_pasarguard
+from services.panels.marzban import (
+    is_marzban_family,
+    marzban_client_for_server,
+    record_is_marzban_family,
+)
 from services.pasarguard.client import PasarGuardError
-from services.pasarguard.runtime import create_pasarguard_client_for_server
 from services.xui.client import SanaeiXUIClient, XUIClientError, XUIRequestError
 from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
 
@@ -208,7 +211,7 @@ async def sync_pasarguard_usage_and_status(
     expose per-user IPs in our surface).
     """
     now = utcnow()
-    async with create_pasarguard_client_for_server(server) as client:
+    async with marzban_client_for_server(server) as client:
         for subscription in subscriptions:
             # Per-row isolation: a single bad row (e.g. the panel returns a 200
             # whose JSON fails PGUserResponse validation, which is NOT a
@@ -350,7 +353,7 @@ async def sync_all_subscription_states() -> None:
             server = ensure_inbound_server_loaded(sample_inbound)
 
             # PasarGuard servers sync via the user-centric API (no Xray restart).
-            if is_pasarguard(server):
+            if is_marzban_family(server):
                 try:
                     await sync_pasarguard_usage_and_status(session, server, group)
                 except Exception as exc:  # noqa: BLE001
@@ -614,7 +617,7 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
     xui_record.inbound = inbound
 
     # PasarGuard configs read realtime usage/status from the user-centric API.
-    if record_is_pasarguard(xui_record):
+    if record_is_marzban_family(xui_record):
         return await _pasarguard_realtime_usage(session, subscription, xui_record, inbound)
 
     try:
@@ -736,7 +739,7 @@ async def _pasarguard_realtime_usage(
     )
     now = utcnow()
 
-    async with create_pasarguard_client_for_server(server) as client:
+    async with marzban_client_for_server(server) as client:
         pg_user = await client.get_user(username)
 
     if pg_user is None:

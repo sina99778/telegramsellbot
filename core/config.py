@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     # PasarGuard panels usually run behind a real cert, so default to verifying
     # TLS. Set PASARGUARD_VERIFY_SSL=false for a self-signed PasarGuard panel.
     pasarguard_verify_ssl: bool = True
+    # Rebecca (another Marzban fork) — same default; REBECCA_VERIFY_SSL=false for
+    # a self-signed Rebecca panel.
+    rebecca_verify_ssl: bool = True
 
     nowpayments_api_key: SecretStr = SecretStr("CHANGE_ME")
     nowpayments_base_url: str = "https://api.nowpayments.io/v1"

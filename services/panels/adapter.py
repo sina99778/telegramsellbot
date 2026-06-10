@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from services.panels.base import PanelCapabilities
+from services.panels.marzban import is_marzban_family, record_is_marzban_family  # noqa: F401  (re-exported)
 from services.panels.registry import PanelNotRegisteredError, strategy_for_server
 
 

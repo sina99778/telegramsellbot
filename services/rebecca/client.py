@@ -1,16 +1,11 @@
 """
-Async HTTP client for the PasarGuard panel.
+Async HTTP client for the Rebecca panel (Marzban fork, user-centric).
 
-Mirrors services/xui/client.py (dataclass config, owned httpx.AsyncClient,
-retry/backoff `_send`, `__aenter__/__aexit__/aclose`) but speaks PasarGuard's
-token-based REST API instead of X-UI's cookie/session API:
-
-- login -> POST /api/admin/token (OAuth2 password *form*), cache the bearer
-  token on the client's Authorization header; re-login once on 401/403.
-- user CRUD + usage via /api/user/{username}; groups via /api/groups.
-
-Errors mirror the X-UI naming (PasarGuard{,Auth,Request}Error). RequestError
-carries `.status_code` so callers can branch (e.g. treat 404 as "already gone").
+Rebecca's user API is Marzban-compatible — identical to PasarGuard's for token
+auth and user CRUD — so this client mirrors services/pasarguard/client.py. The
+only differences: the inbound bundle is a "service" (GET /api/v2/services) and a
+config is assigned a single `service_id`. User responses reuse the shared
+Marzban schemas (RebeccaUser == PGUserResponse).
 """
 from __future__ import annotations
 
@@ -23,35 +18,34 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import SecretStr
 
-from schemas.internal.pasarguard import (
-    PGGroup,
-    PGGroupsResponse,
-    PGToken,
-    PGUserCreate,
-    PGUserModify,
-    PGUserResponse,
+from schemas.internal.rebecca import (
+    RebeccaServicesResponse,
+    RebeccaToken,
+    RebeccaUser,
+    RebeccaUserCreate,
+    RebeccaUserModify,
 )
 
 
 logger = logging.getLogger(__name__)
 
 
-class PasarGuardError(Exception):
+class RebeccaError(Exception):
     pass
 
 
-class PasarGuardAuthError(PasarGuardError):
+class RebeccaAuthError(RebeccaError):
     pass
 
 
-class PasarGuardRequestError(PasarGuardError):
+class RebeccaRequestError(RebeccaError):
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
 
 
 @dataclass(slots=True, frozen=True)
-class PasarGuardClientConfig:
+class RebeccaClientConfig:
     base_url: str
     username: str
     password: SecretStr
@@ -60,18 +54,16 @@ class PasarGuardClientConfig:
 
 
 def _origin(base_url: str) -> str:
-    """scheme://host[:port] from a URL, ignoring any path. PasarGuard serves its
-    API at the origin root (/api/...), so we never want an accidental path."""
     raw = base_url if "://" in base_url else f"http://{base_url}"
     parts = urlsplit(raw)
     scheme = parts.scheme or "http"
     return f"{scheme}://{parts.netloc}"
 
 
-class PasarGuardClient:
+class RebeccaClient:
     def __init__(
         self,
-        config: PasarGuardClientConfig,
+        config: RebeccaClientConfig,
         *,
         http_client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -80,8 +72,8 @@ class PasarGuardClient:
         self._origin = _origin(config.base_url)
         if not config.verify_ssl:
             logger.warning(
-                "PasarGuard client TLS verification DISABLED for %s — set "
-                "PASARGUARD_VERIFY_SSL=true to enable",
+                "Rebecca client TLS verification DISABLED for %s — set "
+                "REBECCA_VERIFY_SSL=true to enable",
                 self._origin,
             )
         self._client = http_client or httpx.AsyncClient(
@@ -94,7 +86,7 @@ class PasarGuardClient:
         self._authenticated = False
         self._token: str | None = None
 
-    async def __aenter__(self) -> "PasarGuardClient":
+    async def __aenter__(self) -> "RebeccaClient":
         return self
 
     async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
@@ -106,8 +98,7 @@ class PasarGuardClient:
 
     # ── auth ─────────────────────────────────────────────────────────────────
 
-    async def login(self) -> PGToken:
-        """POST /api/admin/token (OAuth2 password grant, form-encoded)."""
+    async def login(self) -> RebeccaToken:
         response = await self._send(
             "POST",
             "api/admin/token",
@@ -118,80 +109,64 @@ class PasarGuardClient:
             },
         )
         if response.status_code != 200:
-            raise PasarGuardAuthError(
-                "PasarGuard login failed "
+            raise RebeccaAuthError(
+                "Rebecca login failed "
                 f"(HTTP {response.status_code}: {self._safe_text(response)}). "
                 "Verify the URL, username, and password."
             )
         try:
-            token = PGToken.model_validate(response.json())
+            token = RebeccaToken.model_validate(response.json())
         except Exception as exc:  # noqa: BLE001
-            raise PasarGuardAuthError("PasarGuard returned an invalid token payload.") from exc
+            raise RebeccaAuthError("Rebecca returned an invalid token payload.") from exc
         self._token = token.access_token
         self._client.headers["Authorization"] = f"Bearer {token.access_token}"
         self._authenticated = True
         return token
 
-    async def get_current_admin(self) -> dict[str, Any]:
-        """GET /api/admin — used as a token/health probe."""
-        response = await self._request("GET", "api/admin")
-        return response.json() if response.content else {}
+    # ── services (inbound bundles) ─────────────────────────────────────────────
 
-    # ── groups ───────────────────────────────────────────────────────────────
-
-    async def get_groups(self) -> list[PGGroup]:
-        """GET /api/groups → all groups (inbound bundles)."""
-        response = await self._request("GET", "api/groups")
-        return PGGroupsResponse.model_validate(response.json()).groups
+    async def get_services(self):
+        """GET /api/v2/services → all services (limit high enough for any operator)."""
+        response = await self._request("GET", "api/v2/services", params={"offset": 0, "limit": 1000})
+        return RebeccaServicesResponse.model_validate(response.json()).services
 
     # ── users (== configs) ───────────────────────────────────────────────────
 
-    async def create_user(self, payload: PGUserCreate) -> PGUserResponse:
+    async def create_user(self, payload: RebeccaUserCreate) -> RebeccaUser:
         response = await self._request(
             "POST", "api/user", json=payload.to_payload(), expected=(200, 201)
         )
-        return PGUserResponse.model_validate(response.json())
+        return RebeccaUser.model_validate(response.json())
 
-    async def get_user(self, username: str) -> PGUserResponse | None:
-        """GET /api/user/{username}. Returns None when the user no longer exists
-        on the panel (404) — callers treat that as 'gone'."""
-        response = await self._request(
-            "GET", f"api/user/{username}", expected=(200, 404)
-        )
+    async def get_user(self, username: str) -> RebeccaUser | None:
+        response = await self._request("GET", f"api/user/{username}", expected=(200, 404))
         if response.status_code == 404:
             return None
-        return PGUserResponse.model_validate(response.json())
+        return RebeccaUser.model_validate(response.json())
 
-    async def modify_user(self, username: str, payload: PGUserModify) -> PGUserResponse:
-        response = await self._request(
-            "PUT", f"api/user/{username}", json=payload.to_payload()
-        )
-        return PGUserResponse.model_validate(response.json())
+    async def modify_user(self, username: str, payload: RebeccaUserModify) -> RebeccaUser:
+        response = await self._request("PUT", f"api/user/{username}", json=payload.to_payload())
+        return RebeccaUser.model_validate(response.json())
 
     async def delete_user(self, username: str) -> None:
-        """DELETE /api/user/{username}. 404 is treated as already-deleted."""
-        await self._request(
-            "DELETE", f"api/user/{username}", expected=(200, 204, 404)
-        )
+        await self._request("DELETE", f"api/user/{username}", expected=(200, 204, 404))
 
-    async def reset_user_usage(self, username: str) -> PGUserResponse:
+    async def reset_user_usage(self, username: str) -> RebeccaUser:
         response = await self._request("POST", f"api/user/{username}/reset")
-        return PGUserResponse.model_validate(response.json())
+        return RebeccaUser.model_validate(response.json())
 
-    async def revoke_sub(self, username: str) -> PGUserResponse:
-        """Rotate the subscription link (and proxy ids) for a user."""
+    async def revoke_sub(self, username: str) -> RebeccaUser:
         response = await self._request("POST", f"api/user/{username}/revoke_sub")
-        return PGUserResponse.model_validate(response.json())
+        return RebeccaUser.model_validate(response.json())
 
-    # ── uniform Marzban-family interface (shared with Rebecca) ────────────────
+    # ── uniform Marzban-family interface (shared with PasarGuard) ─────────────
 
     async def list_bundles(self):
-        """List inbound bundles as panel-agnostic RemoteGroup objects."""
         from services.panels.base import RemoteGroup
 
         return [
-            RemoteGroup(remote_id=g.id, name=g.name, is_disabled=g.is_disabled, tags=list(g.inbound_tags or []))
-            for g in await self.get_groups()
+            RemoteGroup(remote_id=s.id, name=s.name, is_disabled=s.is_disabled, tags=[])
+            for s in await self.get_services()
         ]
 
     async def create_user_in_bundle(
@@ -204,21 +179,21 @@ class PasarGuardClient:
         bundle_id: int,
         on_hold_expire_duration: int | None = None,
         note: str | None = None,
-    ) -> PGUserResponse:
-        """Create a config assigned to ONE bundle (PasarGuard: group_ids=[bundle])."""
+    ) -> RebeccaUser:
+        """Create a config assigned to ONE bundle (Rebecca: service_id=bundle)."""
         return await self.create_user(
-            PGUserCreate(
+            RebeccaUserCreate(
                 username=username,
                 status=status,
                 expire=expire,
                 data_limit=data_limit,
-                group_ids=[int(bundle_id)],
+                service_id=int(bundle_id),
                 on_hold_expire_duration=on_hold_expire_duration,
                 note=note,
             )
         )
 
-    # ── plumbing ─────────────────────────────────────────────────────────────
+    # ── plumbing (identical to PasarGuard) ────────────────────────────────────
 
     async def _request(
         self,
@@ -233,14 +208,13 @@ class PasarGuardClient:
 
         response = await self._send(method, path, **kwargs)
         if response.status_code in {401, 403}:
-            # Token likely expired — re-auth once and retry.
             self._authenticated = False
             await self.login()
             response = await self._send(method, path, **kwargs)
 
         if response.status_code not in expected:
-            raise PasarGuardRequestError(
-                f"PasarGuard request to '{path}' failed with status "
+            raise RebeccaRequestError(
+                f"Rebecca request to '{path}' failed with status "
                 f"{response.status_code}: {self._safe_text(response)}",
                 status_code=response.status_code,
             )
@@ -256,9 +230,7 @@ class PasarGuardClient:
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
-                raise PasarGuardRequestError(
-                    f"Timed out while calling PasarGuard endpoint '{path}'."
-                ) from exc
+                raise RebeccaRequestError(f"Timed out while calling Rebecca endpoint '{path}'.") from exc
             except httpx.RequestError as exc:
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
@@ -268,12 +240,10 @@ class PasarGuardClient:
                     if exc.__cause__
                     else ""
                 )
-                raise PasarGuardRequestError(
-                    f"{type(exc).__name__} while calling PasarGuard endpoint '{path}'{cause}"
+                raise RebeccaRequestError(
+                    f"{type(exc).__name__} while calling Rebecca endpoint '{path}'{cause}"
                 ) from exc
 
-            # Retry transient 5xx; return everything else (incl. 4xx) for the
-            # caller (_request) to interpret.
             if response.status_code >= 500 and attempt < max_retries - 1:
                 last_response = response
                 await asyncio.sleep(2 ** attempt)
@@ -282,7 +252,7 @@ class PasarGuardClient:
 
         if last_response is not None:
             return last_response
-        raise PasarGuardRequestError(f"All {max_retries} retries exhausted for '{path}'.")
+        raise RebeccaRequestError(f"All {max_retries} retries exhausted for '{path}'.")
 
     @staticmethod
     def _safe_text(response: httpx.Response) -> str:

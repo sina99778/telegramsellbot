@@ -65,7 +65,7 @@ def test_register_panel_enables_a_new_kind():
 
 @pytest.mark.asyncio
 async def test_pasarguard_delete_dispatches(monkeypatch):
-    import services.panels.pasarguard_strategy as pg
+    import services.panels.marzban as pg
 
     calls: list = []
 
@@ -73,7 +73,7 @@ async def test_pasarguard_delete_dispatches(monkeypatch):
         async def delete_user(self, username):
             calls.append(username)
 
-    monkeypatch.setattr(pg, "create_pasarguard_client_for_server", _cm(FakePG()))
+    monkeypatch.setattr(pg, "marzban_client_for_server", _cm(FakePG()))
     rec = NS(panel_kind="pasarguard", panel_username="u_abc", username="u_abc")
     await strategy_for_record(rec).delete_config(server=NS(base_url="http://h"), record=rec)
     assert calls == ["u_abc"]

@@ -50,7 +50,7 @@ async def test_renewal_active_pushes_status_expire_and_data_limit(monkeypatch):
     import services.renewal as rmod
 
     fake = FakePGClient()
-    monkeypatch.setattr(rmod, "create_pasarguard_client_for_server", _fake_cm(fake))
+    monkeypatch.setattr(rmod, "marzban_client_for_server", _fake_cm(fake))
 
     ends = datetime.now(timezone.utc) + timedelta(days=10)
     sub = NS(status="active", ends_at=ends, volume_bytes=10 * 1024**3, id=uuid4())
@@ -77,7 +77,7 @@ async def test_renewal_pending_only_bumps_data_limit(monkeypatch):
     import services.renewal as rmod
 
     fake = FakePGClient()
-    monkeypatch.setattr(rmod, "create_pasarguard_client_for_server", _fake_cm(fake))
+    monkeypatch.setattr(rmod, "marzban_client_for_server", _fake_cm(fake))
 
     sub = NS(status="pending_activation", ends_at=None, volume_bytes=5 * 1024**3, id=uuid4())
     xui_full = NS(
@@ -120,7 +120,7 @@ async def test_usage_sync_activates_pending_when_panel_active(monkeypatch, mock_
 
     exp = int((datetime.now(timezone.utc) + timedelta(days=30)).timestamp())
     pg_user = PGUserResponse(id=1, username="u1", status="active", used_traffic=12345, expire=exp, subscription_url="/sub/x")
-    monkeypatch.setattr(sj, "create_pasarguard_client_for_server", _fake_cm(FakePGClient(pg_user)))
+    monkeypatch.setattr(sj, "marzban_client_for_server", _fake_cm(FakePGClient(pg_user)))
 
     sub = _sub(status="pending_activation", xui_client=NS(panel_username="u1", username="u1", usage_bytes=0, is_active=False))
     await sj.sync_pasarguard_usage_and_status(mock_session, NS(base_url="http://h"), [sub])
@@ -137,7 +137,7 @@ async def test_usage_sync_marks_expired_when_panel_limited(monkeypatch, mock_ses
     import apps.worker.jobs.subscriptions as sj
 
     pg_user = PGUserResponse(id=1, username="u1", status="limited", used_traffic=999, subscription_url="")
-    monkeypatch.setattr(sj, "create_pasarguard_client_for_server", _fake_cm(FakePGClient(pg_user)))
+    monkeypatch.setattr(sj, "marzban_client_for_server", _fake_cm(FakePGClient(pg_user)))
 
     sub = _sub(status="active")
     await sj.sync_pasarguard_usage_and_status(mock_session, NS(base_url="http://h"), [sub])
@@ -151,7 +151,7 @@ async def test_usage_sync_gone_strikes_to_expired(monkeypatch, mock_session):
     import apps.worker.jobs.subscriptions as sj
 
     # get_user returns None (404 on panel) → strike; threshold is 5.
-    monkeypatch.setattr(sj, "create_pasarguard_client_for_server", _fake_cm(FakePGClient(None)))
+    monkeypatch.setattr(sj, "marzban_client_for_server", _fake_cm(FakePGClient(None)))
 
     sub = _sub(status="active", usage_sync_failures=4)
     await sj.sync_pasarguard_usage_and_status(mock_session, NS(base_url="http://h"), [sub])
@@ -173,7 +173,7 @@ async def test_usage_sync_isolates_one_bad_row(monkeypatch, mock_session):
                 raise ValueError("malformed panel response")  # stand-in for ValidationError
             return PGUserResponse(id=1, username=username, status="active", used_traffic=777, subscription_url="/sub/x")
 
-    monkeypatch.setattr(sj, "create_pasarguard_client_for_server", _fake_cm(FlakyPG()))
+    monkeypatch.setattr(sj, "marzban_client_for_server", _fake_cm(FlakyPG()))
 
     bad = _sub(status="active", xui_client=NS(panel_username="bad", username="bad", usage_bytes=0, is_active=True))
     good = _sub(status="active", xui_client=NS(panel_username="good", username="good", usage_bytes=0, is_active=True))
@@ -189,7 +189,7 @@ async def test_usage_sync_updates_usage_for_active(monkeypatch, mock_session):
     import apps.worker.jobs.subscriptions as sj
 
     pg_user = PGUserResponse(id=1, username="u1", status="active", used_traffic=500, subscription_url="/sub/x")
-    monkeypatch.setattr(sj, "create_pasarguard_client_for_server", _fake_cm(FakePGClient(pg_user)))
+    monkeypatch.setattr(sj, "marzban_client_for_server", _fake_cm(FakePGClient(pg_user)))
 
     sub = _sub(status="active", used_bytes=100)
     await sj.sync_pasarguard_usage_and_status(mock_session, NS(base_url="http://h"), [sub])
