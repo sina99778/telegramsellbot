@@ -21,7 +21,7 @@ from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -165,9 +165,19 @@ class ServerCreateBody(BaseModel):
     base_url: str = Field(..., min_length=4, max_length=1024)
     panel_username: str = Field(..., min_length=1, max_length=128)
     panel_password: str = Field(..., min_length=1, max_length=256)
-    # "sanaei_xui" (default, back-compat) or "pasarguard". For PasarGuard,
-    # sync its groups afterwards from the bot's server-manage menu.
-    panel_type: str = Field("sanaei_xui", pattern="^(sanaei_xui|pasarguard)$")
+    # Any REGISTERED panel kind (default "sanaei_xui"). Validated against the
+    # panel registry so a newly-registered panel (e.g. Rebka) auto-enables here
+    # without editing this regex — and an unknown kind is rejected (never stored
+    # as a server that would be silently driven with the wrong client).
+    panel_type: str = Field("sanaei_xui")
+
+    @field_validator("panel_type")
+    @classmethod
+    def _panel_type_must_be_registered(cls, v: str) -> str:
+        from services.panels.registry import is_known_panel_type, known_panel_types
+        if not is_known_panel_type(v):
+            raise ValueError(f"نوعِ پنل نامعتبر است. مجاز: {sorted(known_panel_types())}")
+        return v
     config_domain: str | None = Field(None, max_length=255)
     sub_domain: str | None = Field(None, max_length=255)
     subscription_port: int = Field(2096, ge=1, le=65535)

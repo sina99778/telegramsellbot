@@ -323,12 +323,12 @@ def _subscription_to_view(sub: Subscription) -> SubscriptionView:
     # UI falls back to just the sub_link.
     vless_uri: str | None = None
     xui = sub.xui_client
-    # PasarGuard has no per-inbound VLESS URI (the sub_link IS the config), so
-    # never try to synthesise one — the UI falls back to the sub_link.
-    from services.panels.adapter import record_is_pasarguard
+    # Only panels that synthesise a vless:// URI get one here; PasarGuard/Rebka
+    # serve a ready sub_link, so the UI just falls back to it.
+    from services.panels.registry import strategy_for_record
     if (
         xui is not None
-        and not record_is_pasarguard(xui)
+        and strategy_for_record(xui).caps.has_vless_uri
         and xui.inbound is not None
         and xui.inbound.server is not None
         and sub.sub_link

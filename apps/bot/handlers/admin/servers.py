@@ -28,7 +28,7 @@ from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerCredential, X
 from repositories.audit import AuditLogRepository
 from repositories.settings import AppSettingsRepository
 from services.xui.client import SanaeiXUIClient, XUIAuthenticationError, XUIClientConfig, XUIRequestError
-from services.panels.adapter import is_pasarguard
+from services.panels.adapter import capabilities_for, is_pasarguard
 from apps.bot.utils.button_style import styled_button
 from apps.bot.utils.messaging import safe_edit_or_send
 from apps.bot.utils.panels import admin_panel, status_label
@@ -624,8 +624,8 @@ async def restart_xray_core_handler(
         await safe_edit_or_send(callback, "اطلاعات ورود سرور موجود نیست.")
         return
 
-    if is_pasarguard(server):
-        await safe_edit_or_send(callback, "ℹ️ «ریستارت هسته» برای پنل PasarGuard کاربرد ندارد.")
+    if not capabilities_for(server).xray_restart:
+        await safe_edit_or_send(callback, "ℹ️ «ریستارت هسته» برای این نوع پنل کاربرد ندارد.")
         return
 
     from core.config import settings as _app_settings

@@ -17,9 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from models.xui import XUIServerRecord
-from services.panels.adapter import is_pasarguard
-from services.pasarguard.runtime import create_pasarguard_client_for_server
-from services.xui.runtime import create_xui_client_for_server
+from services.panels.registry import strategy_for_server
 from services.xui.client import XUIClientError
 
 logger = logging.getLogger(__name__)
@@ -29,18 +27,11 @@ _FAILURE_STRIKES = 3
 
 
 async def _probe(server: XUIServerRecord) -> tuple[bool, str]:
-    """Return (ok, error_message). Full connectivity = login + list inbounds
-    (X-UI) or login + list groups (PasarGuard)."""
+    """Return (ok, error_message). Connectivity is panel-specific (login + list
+    inbounds/groups), delegated to the server's panel strategy."""
     try:
-        if is_pasarguard(server):
-            async with create_pasarguard_client_for_server(server) as client:
-                await client.login()
-                groups = await client.get_groups()
-            logger.info("[HEALTH] ✅ %s — OK (PasarGuard, %d groups)", server.name or server.base_url, len(groups))
-            return True, ""
-        async with create_xui_client_for_server(server) as xui_client:
-            inbounds = await xui_client.get_inbounds()
-        logger.info("[HEALTH] ✅ %s — OK (%d inbounds)", server.name or server.base_url, len(inbounds))
+        await strategy_for_server(server).health_probe(server)
+        logger.info("[HEALTH] ✅ %s — OK", server.name or server.base_url)
         return True, ""
     except XUIClientError as exc:
         return False, str(exc)[:200]

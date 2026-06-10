@@ -45,7 +45,7 @@ from core.config import settings
 from models.user import User
 from models.xui import XUIServerRecord
 from repositories.settings import AppSettingsRepository
-from services.panels.adapter import is_pasarguard
+from services.panels.adapter import capabilities_for
 from services.xui.client import XUIClientError
 from services.xui.runtime import create_xui_client_for_server
 
@@ -133,11 +133,12 @@ async def _dump_xui_databases(session: AsyncSession) -> list[tuple[str, bytes]]:
     for server in servers:
         if server.credentials is None:
             continue
-        # PasarGuard is Postgres-backed (no downloadable SQLite DB via API); the
-        # operator backs up its DB separately. Our own DB dump already holds the
-        # PasarGuard config rows. Skip it here.
-        if is_pasarguard(server):
-            logger.info("Skipping DB dump for PasarGuard server '%s' (no SQLite API)", server.name)
+        # Skip panels that expose no downloadable DB (e.g. PasarGuard is
+        # Postgres-backed; its data is backed up separately and our own DB dump
+        # already holds the config rows). Capability-driven so a new panel that
+        # also lacks a DB-export is skipped automatically.
+        if not capabilities_for(server).db_backup:
+            logger.info("Skipping DB dump for server '%s' (panel has no DB export)", server.name)
             continue
         try:
             async with create_xui_client_for_server(server) as xui_client:
