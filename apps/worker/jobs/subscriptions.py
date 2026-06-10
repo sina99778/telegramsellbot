@@ -179,7 +179,17 @@ async def sync_xui_usage_and_status(
                 subscription.id, expiry_reason, xui_record.email,
             )
 
-    await asyncio.gather(*(sync_one(subscription) for subscription in subscriptions))
+    # return_exceptions=True so one row raising an UNEXPECTED (non-XUI) error —
+    # e.g. malformed JSON / a pydantic ValidationError from the panel response —
+    # cannot abort the whole batch and skip the flush below (which would discard
+    # every other row's usage/status updates and bypass the cycle's commit).
+    results = await asyncio.gather(
+        *(sync_one(subscription) for subscription in subscriptions),
+        return_exceptions=True,
+    )
+    for subscription, res in zip(subscriptions, results):
+        if isinstance(res, Exception):
+            logger.warning("[SYNC] unexpected error syncing sub %s: %s", subscription.id, res)
     await session.flush()
     return any_expired
 
@@ -200,87 +210,90 @@ async def sync_pasarguard_usage_and_status(
     now = utcnow()
     async with create_pasarguard_client_for_server(server) as client:
         for subscription in subscriptions:
-            xui_record = subscription.xui_client
-            if xui_record is None:
-                continue
-            username = xui_record.panel_username or xui_record.username
-            plan_duration_days = (
-                subscription.plan.duration_days
-                if subscription.plan is not None
-                else DEFAULT_PLAN_DURATION_DAYS
-            )
-
+            # Per-row isolation: a single bad row (e.g. the panel returns a 200
+            # whose JSON fails PGUserResponse validation, which is NOT a
+            # PasarGuardError) must NOT abort syncing the rest of the batch.
             try:
-                pg_user = await client.get_user(username)
-            except PasarGuardError as exc:
-                logger.warning("[SYNC][PG] error fetching user '%s': %s", username, exc)
-                continue
-
-            if pg_user is None:
-                # 404 — config gone on the panel. Strike before trusting it.
-                strikes = (subscription.usage_sync_failures or 0) + 1
-                subscription.usage_sync_failures = strikes
-                if strikes >= USAGE_GONE_STRIKES:
-                    subscription.status = "expired"
-                    subscription.expired_at = now
-                    xui_record.is_active = False
-                    logger.warning(
-                        "[SYNC][PG] user '%s' gone %d cycles — expired (sub=%s)",
-                        username, strikes, subscription.id,
-                    )
-                continue
-
-            # Usage (panel is the source of truth).
-            used = int(pg_user.used_traffic or 0)
-            subscription.used_bytes = used
-            xui_record.usage_bytes = used
-            subscription.last_usage_sync_at = now
-            subscription.usage_sync_failures = 0
-
-            status = (pg_user.status or "").lower()
-            pg_expire = pg_user.expire_ts
-            pg_ends_at = (
-                datetime.fromtimestamp(pg_expire, tz=timezone.utc) if pg_expire else None
-            )
-
-            # First-connect activation: PasarGuard flips on_hold→active and sets
-            # expire itself — we just record it (no panel write).
-            if subscription.status == "pending_activation" and status == "active":
-                subscription.status = "active"
-                subscription.activated_at = now
-                subscription.starts_at = now
-                subscription.ends_at = pg_ends_at or (now + timedelta(days=plan_duration_days))
-                xui_record.is_active = True
-                logger.info(
-                    "[SYNC][PG] sub %s activated (first connect) ends_at=%s",
-                    subscription.id, subscription.ends_at,
+                xui_record = subscription.xui_client
+                if xui_record is None:
+                    continue
+                username = xui_record.panel_username or xui_record.username
+                plan_duration_days = (
+                    subscription.plan.duration_days
+                    if subscription.plan is not None
+                    else DEFAULT_PLAN_DURATION_DAYS
                 )
-                continue
 
-            # Panel says finished → expire on our side too.
-            if status in {"expired", "limited"}:
-                if subscription.status != "expired":
-                    subscription.status = "expired"
-                    subscription.expired_at = now
-                    xui_record.is_active = False
-                    logger.info("[SYNC][PG] sub %s expired (panel status=%s)", subscription.id, status)
-                continue
+                pg_user = await client.get_user(username)
 
-            # Recover a falsely-expired sub that the panel reports alive.
-            if subscription.status == "expired" and status == "active":
-                subscription.status = "active"
-                subscription.expired_at = None
-                xui_record.is_active = True
-                if pg_ends_at is not None:
-                    subscription.ends_at = pg_ends_at
-                logger.info("[SYNC][PG] reactivated sub %s (alive on panel)", subscription.id)
-                continue
+                if pg_user is None:
+                    # 404 — config gone on the panel. Strike before trusting it.
+                    strikes = (subscription.usage_sync_failures or 0) + 1
+                    subscription.usage_sync_failures = strikes
+                    if strikes >= USAGE_GONE_STRIKES:
+                        subscription.status = "expired"
+                        subscription.expired_at = now
+                        xui_record.is_active = False
+                        logger.warning(
+                            "[SYNC][PG] user '%s' gone %d cycles — expired (sub=%s)",
+                            username, strikes, subscription.id,
+                        )
+                    continue
 
-            # Active & alive — keep ends_at aligned with the panel's authority.
-            if subscription.status == "active" and status == "active":
-                if pg_ends_at is not None:
-                    subscription.ends_at = pg_ends_at
-                xui_record.is_active = True
+                # Usage (panel is the source of truth).
+                used = int(pg_user.used_traffic or 0)
+                subscription.used_bytes = used
+                xui_record.usage_bytes = used
+                subscription.last_usage_sync_at = now
+                subscription.usage_sync_failures = 0
+
+                status = (pg_user.status or "").lower()
+                pg_expire = pg_user.expire_ts
+                pg_ends_at = (
+                    datetime.fromtimestamp(pg_expire, tz=timezone.utc) if pg_expire else None
+                )
+
+                # First-connect activation: PasarGuard flips on_hold→active and sets
+                # expire itself — we just record it (no panel write).
+                if subscription.status == "pending_activation" and status == "active":
+                    subscription.status = "active"
+                    subscription.activated_at = now
+                    subscription.starts_at = now
+                    subscription.ends_at = pg_ends_at or (now + timedelta(days=plan_duration_days))
+                    xui_record.is_active = True
+                    logger.info(
+                        "[SYNC][PG] sub %s activated (first connect) ends_at=%s",
+                        subscription.id, subscription.ends_at,
+                    )
+                    continue
+
+                # Panel says finished → expire on our side too.
+                if status in {"expired", "limited"}:
+                    if subscription.status != "expired":
+                        subscription.status = "expired"
+                        subscription.expired_at = now
+                        xui_record.is_active = False
+                        logger.info("[SYNC][PG] sub %s expired (panel status=%s)", subscription.id, status)
+                    continue
+
+                # Recover a falsely-expired sub that the panel reports alive.
+                if subscription.status == "expired" and status == "active":
+                    subscription.status = "active"
+                    subscription.expired_at = None
+                    xui_record.is_active = True
+                    if pg_ends_at is not None:
+                        subscription.ends_at = pg_ends_at
+                    logger.info("[SYNC][PG] reactivated sub %s (alive on panel)", subscription.id)
+                    continue
+
+                # Active & alive — keep ends_at aligned with the panel's authority.
+                if subscription.status == "active" and status == "active":
+                    if pg_ends_at is not None:
+                        subscription.ends_at = pg_ends_at
+                    xui_record.is_active = True
+            except Exception as exc:  # noqa: BLE001 — isolate one bad row
+                logger.warning("[SYNC][PG] error syncing sub %s: %s", subscription.id, exc)
+                continue
 
     await session.flush()
 

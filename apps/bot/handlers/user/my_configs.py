@@ -1360,6 +1360,11 @@ async def _list_available_inbounds(
         .where(
             XUIInboundRecord.is_active.is_(True),
             XUIServerRecord.is_active.is_(True),
+            # X-UI migration targets ONLY. A PasarGuard "group" can't host an
+            # X-UI client, and this picker is only ever shown for X-UI sources,
+            # so never offer PasarGuard servers/groups as a destination.
+            XUIServerRecord.panel_type != "pasarguard",
+            XUIInboundRecord.protocol.is_distinct_from("pasarguard"),
         )
         .order_by(XUIServerRecord.priority.asc(), XUIInboundRecord.created_at.asc())
     )

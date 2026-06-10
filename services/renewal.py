@@ -25,6 +25,27 @@ class RenewalXUISyncError(Exception):
     """Raised when renewal was computed but X-UI panel sync failed."""
 
 
+class RenewalNotAllowedError(Exception):
+    """Raised when a renewal is not permitted (e.g. extending TIME on a config
+    that hasn't been activated yet). Carries a user-facing Persian message."""
+
+
+# A TIME renewal applied BEFORE first connect is silently discarded: on first
+# use the activation recomputes ends_at from scratch on BOTH panels (X-UI via
+# _update_xui_expiry_on_activation, PasarGuard via the on_hold timer + usage
+# sync), so the pre-activation days never survive. Block it instead of taking
+# money for nothing — volume can still be added while pending.
+PENDING_TIME_RENEWAL_MSG = (
+    "⏳ این سرویس هنوز فعال نشده (زمان از اولین اتصال شروع می‌شود). "
+    "تمدیدِ زمان بعد از فعال‌سازی ممکن است؛ فعلاً فقط می‌توانید حجم اضافه کنید."
+)
+
+
+def time_renewal_blocked(subscription, renew_type: str) -> bool:
+    """True for a TIME renewal of a not-yet-activated (pending_activation) config."""
+    return renew_type == "time" and getattr(subscription, "status", None) == "pending_activation"
+
+
 async def average_active_plan_renewal_rates(
     session: AsyncSession, settings: RenewalSettings
 ) -> tuple[float, float]:
@@ -107,6 +128,12 @@ async def apply_renewal(
 
     The xui_client is loaded via an explicit query BEFORE the savepoint.
     """
+    # Safety net: never extend TIME on a not-yet-activated config (the days are
+    # discarded on first connect). Callers should block this earlier with a nice
+    # message; this guard protects any path that doesn't.
+    if time_renewal_blocked(subscription, renew_type):
+        raise RenewalNotAllowedError(PENDING_TIME_RENEWAL_MSG)
+
     now_utc = datetime.now(timezone.utc)
     sub_id = subscription.id
 

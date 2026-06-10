@@ -205,7 +205,22 @@ async def config_search_page(
 ) -> None:
     await callback.answer()
     data = await state.get_data()
-    q = data.get("cfgsearch_query", "") or ""
+    q = data.get("cfgsearch_query")
+    # No active query in state means the search session was lost (e.g. /cancel
+    # or another flow cleared the FSM). Do NOT fall through to an empty query —
+    # that would list EVERY config of every user. Ask the admin to search again.
+    # (An explicit "show all" search stores "*", which is truthy and passes.)
+    if not q:
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🔎 جستجوی جدید", callback_data="admin:config_search")
+        builder.button(text=AdminButtons.BACK, callback_data="admin:main")
+        builder.adjust(1)
+        await safe_edit_or_send(
+            callback,
+            "⌛ نشستِ جستجو منقضی شد. دوباره جستجو کن.",
+            reply_markup=builder.as_markup(),
+        )
+        return
     page = max(callback_data.page, 0)
     rows, total = await search_configs(session, q, limit=_PAGE_SIZE, offset=page * _PAGE_SIZE)
     if total == 0:

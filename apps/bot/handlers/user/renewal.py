@@ -16,7 +16,7 @@ from sqlalchemy.orm import selectinload
 from apps.bot.handlers.user.my_configs import MyConfigCallback
 from apps.bot.keyboards.inline import build_renewal_keyboard
 from apps.bot.states.renew import RenewStates
-from core.redis import distributed_lock
+from core.redis import distributed_lock, renewal_lock_key
 from core.texts import Buttons, Messages
 from models.order import Order
 from models.plan import Plan
@@ -239,9 +239,23 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
     if renew_type == "volume" and amount < _MIN_VOLUME_GB:
         await message.answer(f"❌ حداقل حجم قابل افزودن {_MIN_VOLUME_GB} گیگابایت است.")
         return
-    if renew_type == "time" and amount < _MIN_TIME_DAYS:
-        await message.answer("❌ حداقل مدت قابل افزودن ۱ روز است.")
-        return
+    if renew_type == "time":
+        if amount < _MIN_TIME_DAYS:
+            await message.answer("❌ حداقل مدت قابل افزودن ۱ روز است.")
+            return
+        # Whole days only — the price uses the full float but apply_renewal
+        # truncates to int(days), so a fractional value would be charged-for
+        # but not applied.
+        if int(amount) != amount:
+            await message.answer("❌ مدت باید عددِ صحیح (تعداد روز) باشد. مثال: 30")
+            return
+        # Block time renewal on a not-yet-activated config (days are lost on
+        # first connect — see services.renewal.time_renewal_blocked).
+        from services.renewal import PENDING_TIME_RENEWAL_MSG
+        sub_status = await session.scalar(select(Subscription.status).where(Subscription.id == sub_id))
+        if sub_status == "pending_activation":
+            await message.answer(PENDING_TIME_RENEWAL_MSG)
+            return
 
     settings_repo = AppSettingsRepository(session)
     renewal_settings = await settings_repo.get_renewal_settings()
@@ -423,6 +437,13 @@ async def renew_pay_wallet(
         await safe_edit_or_send(callback, "سرویس نامعتبر است.")
         return
 
+    # Defensive: never debit for a TIME renewal of a not-yet-activated config
+    # (the days are discarded on first connect).
+    from services.renewal import time_renewal_blocked, PENDING_TIME_RENEWAL_MSG
+    if time_renewal_blocked(sub, renew_type):
+        await safe_edit_or_send(callback, PENDING_TIME_RENEWAL_MSG)
+        return
+
     if sub.plan_id is None:
         await safe_edit_or_send(callback, "پلن این سرویس حذف شده. امکان تمدید وجود ندارد.")
         return
@@ -471,7 +492,9 @@ async def renew_pay_wallet(
         return
 
     # ─── Distributed Redis lock (prevents double-tap / double-charge) ────────
-    lock_key = f"renewal_lock:{callback.from_user.id}:{sub_id}"
+    # Keyed ONLY on sub_id so it mutually excludes across ALL renewal surfaces
+    # (bot, mini-app, auto-renew worker) — they must share this exact key.
+    lock_key = renewal_lock_key(sub_id)
     async with distributed_lock(lock_key, ttl_seconds=60) as acquired:
         if not acquired:
             await callback.answer("⛔ تمدید در حال پردازش است — لطفاً صبر کنید.", show_alert=True)
@@ -585,6 +608,14 @@ async def renew_pay_wallet(
 
             # Clear alert dedup keys so user gets re-notified in next cycle
             await _clear_sub_alert_keys(sub.id)
+
+            # Commit the renewal BEFORE releasing the distributed lock — the
+            # middleware otherwise commits only after the handler returns (i.e.
+            # after the lock is released), leaving a window where a second
+            # tapped renewal could acquire the freed lock and re-renew. Also
+            # makes the success notify/admin-message failures non-destructive
+            # (the renewal is already durable).
+            await session.commit()
 
             success_text = Messages.RENEWAL_SUCCESS
             if loading_msg:

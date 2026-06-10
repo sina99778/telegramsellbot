@@ -25,8 +25,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from core.database import utcnow
-from core.redis import distributed_lock
+from core.database import AsyncSessionFactory, utcnow
+from core.redis import distributed_lock, renewal_lock_key
 from models.app_setting import AppSetting
 from models.order import Order
 from models.subscription import Subscription
@@ -54,17 +54,13 @@ async def run_auto_renew(session: AsyncSession, bot: Bot) -> None:
     window_end = now + _RENEW_WITHIN
     window_start = now - _GRACE_AFTER_EXPIRY
 
-    result = await session.execute(
-        select(Subscription)
-        .options(
-            selectinload(Subscription.user).selectinload(User.wallet),
-            selectinload(Subscription.plan),
-            selectinload(Subscription.xui_client)
-            .selectinload(XUIClientRecord.inbound)
-            .selectinload(XUIInboundRecord.server)
-            .selectinload(XUIServerRecord.credentials),
-        )
-        .where(
+    # Load only the candidate IDs on the shared session. Each subscription is
+    # then processed in its OWN session/transaction below — so a rollback on one
+    # failing sub cannot expire the shared session and crash every subsequent
+    # sub with a greenlet lazy-load error (the old "one bad sub stops the rest"
+    # bug — rollback() expires ALL loaded ORM instances).
+    id_rows = await session.execute(
+        select(Subscription.id).where(
             Subscription.auto_renew_enabled.is_(True),
             Subscription.plan_id.isnot(None),
             Subscription.status.in_(("active", "expired")),
@@ -73,17 +69,38 @@ async def run_auto_renew(session: AsyncSession, bot: Bot) -> None:
             Subscription.ends_at >= window_start,
         )
     )
-    subs = list(result.scalars().all())
-    if not subs:
+    sub_ids = [row[0] for row in id_rows.all()]
+    if not sub_ids:
         return
 
     renewal_settings = await settings_repo.get_renewal_settings()
-    for sub in subs:
+    for sub_id in sub_ids:
         try:
-            await _try_auto_renew(session, bot, sub, renewal_settings)
+            async with AsyncSessionFactory() as sub_session:
+                sub = await sub_session.scalar(
+                    select(Subscription)
+                    .options(
+                        selectinload(Subscription.user).selectinload(User.wallet),
+                        selectinload(Subscription.plan),
+                        selectinload(Subscription.xui_client)
+                        .selectinload(XUIClientRecord.inbound)
+                        .selectinload(XUIInboundRecord.server)
+                        .selectinload(XUIServerRecord.credentials),
+                    )
+                    .where(
+                        Subscription.id == sub_id,
+                        # Re-check eligibility (it may have changed since the scan).
+                        Subscription.auto_renew_enabled.is_(True),
+                        Subscription.status.in_(("active", "expired")),
+                    )
+                )
+                if sub is None:
+                    continue
+                await _try_auto_renew(sub_session, bot, sub, renewal_settings)
         except Exception as exc:  # noqa: BLE001 — one bad sub must not stop the rest
-            logger.error("auto-renew failed for sub %s: %s", sub.id, exc, exc_info=True)
-            await session.rollback()
+            logger.error("auto-renew failed for sub %s: %s", sub_id, exc, exc_info=True)
+            # The per-sub session rolls back + closes on its own context exit;
+            # the next sub gets a fresh session, so failures don't cascade.
 
 
 async def _try_auto_renew(session, bot, sub, renewal_settings) -> None:
@@ -99,7 +116,9 @@ async def _try_auto_renew(session, bot, sub, renewal_settings) -> None:
         renew_type="time", amount=float(days), settings=renewal_settings, plan=plan
     )
 
-    lock_key = f"autorenew_lock:{sub.id}"
+    # Canonical renewal lock (shared with the bot + mini-app surfaces) so the
+    # worker can't auto-renew a sub while the user is manually renewing it.
+    lock_key = renewal_lock_key(sub.id)
     async with distributed_lock(lock_key, ttl_seconds=120) as acquired:
         if not acquired:
             return

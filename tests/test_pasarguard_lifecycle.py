@@ -162,6 +162,29 @@ async def test_usage_sync_gone_strikes_to_expired(monkeypatch, mock_session):
 
 
 @pytest.mark.asyncio
+async def test_usage_sync_isolates_one_bad_row(monkeypatch, mock_session):
+    """A single malformed panel response (raises mid-loop, e.g. ValidationError)
+    must NOT abort the batch — every other row still syncs."""
+    import apps.worker.jobs.subscriptions as sj
+
+    class FlakyPG:
+        async def get_user(self, username):
+            if username == "bad":
+                raise ValueError("malformed panel response")  # stand-in for ValidationError
+            return PGUserResponse(id=1, username=username, status="active", used_traffic=777, subscription_url="/sub/x")
+
+    monkeypatch.setattr(sj, "create_pasarguard_client_for_server", _fake_cm(FlakyPG()))
+
+    bad = _sub(status="active", xui_client=NS(panel_username="bad", username="bad", usage_bytes=0, is_active=True))
+    good = _sub(status="active", xui_client=NS(panel_username="good", username="good", usage_bytes=0, is_active=True))
+
+    # Must not raise, and the good row must still be updated.
+    await sj.sync_pasarguard_usage_and_status(mock_session, NS(base_url="http://h"), [bad, good])
+    assert good.used_bytes == 777
+    assert good.xui_client.usage_bytes == 777
+
+
+@pytest.mark.asyncio
 async def test_usage_sync_updates_usage_for_active(monkeypatch, mock_session):
     import apps.worker.jobs.subscriptions as sj
 

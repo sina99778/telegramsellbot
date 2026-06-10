@@ -326,6 +326,11 @@ async def extend_submit(
         await message.answer(AdminMessages.SUBSCRIPTION_NOT_FOUND)
         return
 
+    from services.renewal import time_renewal_blocked, PENDING_TIME_RENEWAL_MSG
+    if time_renewal_blocked(sub, "time"):
+        await message.answer(PENDING_TIME_RENEWAL_MSG)
+        return
+
     await apply_renewal(
         session=session,
         subscription=sub,

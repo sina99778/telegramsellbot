@@ -66,8 +66,12 @@ async def check_rate_limit(
 
     try:
         current = await redis.incr(key)
-        if current == 1:
-            await redis.expire(key, window)
+        # Attach a TTL whenever the key has none (nx=True). The old code only set
+        # the TTL when current==1, so if the process died between INCR and EXPIRE
+        # the key was orphaned with NO TTL and blocked the user forever. Running
+        # expire(nx=True) every call self-heals such an orphan on the next request
+        # while never extending an existing window.
+        await redis.expire(key, window, nx=True)
 
         if current > max_req:
             ttl = await redis.ttl(key)

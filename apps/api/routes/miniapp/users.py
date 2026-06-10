@@ -2701,41 +2701,51 @@ async def renew_subscription(
     if user.wallet.balance < price:
         raise HTTPException(status_code=402, detail="موجودی کیف پول برای تمدید کافی نیست.")
 
-    order = Order(
-        user_id=user.id,
-        plan_id=subscription.plan_id,
-        amount=price,
-        currency="USD",
-        status="completed",
-        source="miniapp",
-    )
-    session.add(order)
-    await session.flush()
-    subscription.order = order
+    # Serialize the debit+apply with the SAME lock the bot/worker use, so a
+    # double-tapped web request (or a concurrent auto-renew) can't double-charge.
+    # We commit INSIDE the lock so it isn't released before the renewal is
+    # durable (the request session otherwise commits only after this returns).
+    from core.redis import distributed_lock, renewal_lock_key
+    async with distributed_lock(renewal_lock_key(subscription.id), ttl_seconds=60) as acquired:
+        if not acquired:
+            raise HTTPException(status_code=409, detail="تمدید این سرویس در حال پردازش است؛ چند لحظه صبر کنید.")
 
-    await WalletManager(session).process_transaction(
-        user_id=user.id,
-        amount=price,
-        transaction_type="renewal",
-        direction="debit",
-        currency="USD",
-        reference_type="order",
-        reference_id=order.id,
-        description=f"Renewal of subscription {subscription.id}",
-        metadata={
-            "sub_id": str(subscription.id),
-            "type": body.renew_type,
-            "amount": body.amount,
-            "source": "miniapp",
-        },
-    )
-    await apply_renewal(
-        session=session,
-        subscription=subscription,
-        renew_type=body.renew_type,
-        amount=body.amount,
-    )
-    await session.refresh(user.wallet)
+        order = Order(
+            user_id=user.id,
+            plan_id=subscription.plan_id,
+            amount=price,
+            currency="USD",
+            status="completed",
+            source="miniapp",
+        )
+        session.add(order)
+        await session.flush()
+        subscription.order = order
+
+        await WalletManager(session).process_transaction(
+            user_id=user.id,
+            amount=price,
+            transaction_type="renewal",
+            direction="debit",
+            currency="USD",
+            reference_type="order",
+            reference_id=order.id,
+            description=f"Renewal of subscription {subscription.id}",
+            metadata={
+                "sub_id": str(subscription.id),
+                "type": body.renew_type,
+                "amount": body.amount,
+                "source": "miniapp",
+            },
+        )
+        await apply_renewal(
+            session=session,
+            subscription=subscription,
+            renew_type=body.renew_type,
+            amount=body.amount,
+        )
+        await session.commit()
+        await session.refresh(user.wallet)
 
     # ── Sales notification — prefers the dedicated channel ──
     try:
@@ -2797,6 +2807,15 @@ def _validate_renewal_request(subscription: Subscription, renew_type: str, amoun
         raise HTTPException(status_code=400, detail="نوع تمدید نامعتبر است.")
     if amount <= 0:
         raise HTTPException(status_code=400, detail="مقدار تمدید باید بیشتر از صفر باشد.")
+    if renew_type == "time":
+        # Whole days only (apply_renewal truncates to int(days), so a fraction
+        # would be charged-for but not applied), and not while pending (the days
+        # are discarded on first connect).
+        if int(amount) != amount:
+            raise HTTPException(status_code=400, detail="مدت باید عددِ صحیح (تعداد روز) باشد.")
+        if subscription.status == "pending_activation":
+            from services.renewal import PENDING_TIME_RENEWAL_MSG
+            raise HTTPException(status_code=400, detail=PENDING_TIME_RENEWAL_MSG)
 
 
 # ─── Wallet Transactions ────────────────────────────────────────────────────

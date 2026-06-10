@@ -64,6 +64,18 @@ async def close_redis() -> None:
         _redis_client = None
 
 
+def renewal_lock_key(subscription_id: object) -> str:
+    """The ONE canonical Redis lock key for renewing a subscription.
+
+    Keyed solely on the subscription id so EVERY renewal surface — the bot
+    handler, the mini-app endpoint, and the auto-renew worker — mutually
+    excludes. They must all use this helper; a per-surface key (e.g. one that
+    also includes the telegram id) silently allows two surfaces to renew the
+    same sub concurrently and double-charge.
+    """
+    return f"renewal_lock:{subscription_id}"
+
+
 @asynccontextmanager
 async def distributed_lock(
     key: str,

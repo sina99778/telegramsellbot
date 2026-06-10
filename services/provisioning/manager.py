@@ -798,6 +798,11 @@ class ProvisioningManager:
         target_server = ensure_inbound_server_loaded(target_inbound)
         if not target_server.is_active:
             raise MigrationError("سرور اینباند هدف فعال نیست.")
+        # X-UI inbound-migration only: a PasarGuard server/group can't host an
+        # X-UI client, so reject it here too (defence in depth — the picker also
+        # filters these out).
+        if is_pasarguard(target_server):
+            raise MigrationError("انتقال به سرورِ PasarGuard پشتیبانی نمی‌شود.")
 
         # Capacity check for the target server (same rule as provisioning).
         if target_server.max_clients is not None:
