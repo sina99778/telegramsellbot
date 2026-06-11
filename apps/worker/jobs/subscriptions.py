@@ -352,29 +352,36 @@ async def sync_all_subscription_states() -> None:
                 continue
             server = ensure_inbound_server_loaded(sample_inbound)
 
-            # PasarGuard servers sync via the user-centric API (no Xray restart).
+            # PasarGuard/Rebecca servers sync via the user-centric API (no Xray restart).
             if is_marzban_family(server):
                 try:
                     await sync_pasarguard_usage_and_status(session, server, group)
                 except Exception as exc:  # noqa: BLE001
                     logger.error("[SYNC] PasarGuard sync failed for server %s: %s", server.name, exc)
-                continue
+            else:
+                try:
+                    async with create_xui_client_for_server(server) as xui_client:
+                        any_expired = await sync_xui_usage_and_status(session, xui_client, group, security_settings)
+                        # Restart Xray core after expiry to enforce limits immediately
+                        if any_expired:
+                            try:
+                                await xui_client.restart_xray_core()
+                                logger.info("[SYNC] Xray core restarted on server '%s' after config expiry", server.name)
+                            except Exception as restart_exc:
+                                logger.warning("[SYNC] Failed to restart Xray on server '%s': %s", server.name, restart_exc)
+                except XUIClientError as exc:
+                    logger.error("[SYNC] Failed to connect to server %s: %s", server.name, exc)
 
+            # Commit per server: a single transaction (and the row locks it holds)
+            # is NOT kept open across the whole fleet, and one server's progress
+            # survives a later server's failure. Safe because AsyncSessionFactory
+            # uses expire_on_commit=False, so later groups' pre-loaded objects keep
+            # their attributes after this commit. Mirrors run_reconcile_migrated_usage.
             try:
-                async with create_xui_client_for_server(server) as xui_client:
-                    any_expired = await sync_xui_usage_and_status(session, xui_client, group, security_settings)
-                    # Restart Xray core after expiry to enforce limits immediately
-                    if any_expired:
-                        try:
-                            await xui_client.restart_xray_core()
-                            logger.info("[SYNC] Xray core restarted on server '%s' after config expiry", server.name)
-                        except Exception as restart_exc:
-                            logger.warning("[SYNC] Failed to restart Xray on server '%s': %s", server.name, restart_exc)
-            except XUIClientError as exc:
-                logger.error("[SYNC] Failed to connect to server %s: %s", server.name, exc)
-                continue
-
-        await session.commit()
+                await session.commit()
+            except Exception as exc:  # noqa: BLE001
+                await session.rollback()
+                logger.error("[SYNC] commit failed for server %s: %s", getattr(server, "name", "?"), exc)
 
 
 

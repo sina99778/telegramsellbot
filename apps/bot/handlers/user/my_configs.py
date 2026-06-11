@@ -554,7 +554,9 @@ async def my_config_detail_handler(
         from models.ready_config import ReadyConfigItem
         ready_item = await session.scalar(select(ReadyConfigItem).where(ReadyConfigItem.subscription_id == sub.id))
         if ready_item:
-            vless_uri = ready_item.content.split("|")[0].strip()
+            # content is "vless_uri|optional_custom_sub_link" (see provisioning
+            # manager's split("|", 1)); take the URI before the first separator.
+            vless_uri = ready_item.content.split("|", 1)[0].strip()
 
     # Build message with HTML
     import html

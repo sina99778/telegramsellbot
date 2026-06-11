@@ -15,6 +15,27 @@ from aiogram.types import CallbackQuery, Message
 logger = logging.getLogger(__name__)
 
 
+async def _rollback_session(data: dict[str, Any]) -> None:
+    """Roll back the request DB session on an unhandled handler error.
+
+    CRITICAL: this middleware runs INSIDE DatabaseSessionMiddleware (which is on
+    the `update` observer). If we swallow the exception and return None, the
+    OUTER DatabaseSessionMiddleware sees a successful result and COMMITS — so a
+    handler that debited a wallet and then crashed would have the debit committed
+    without delivering anything. Rolling back here discards that partial work;
+    the outer commit then becomes a no-op on the clean session. Work a handler
+    deliberately committed earlier (e.g. a renewal committed inside its lock)
+    is in a prior transaction and is NOT affected.
+    """
+    session = data.get("session")
+    if session is None:
+        return
+    try:
+        await session.rollback()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("error-handler: session rollback failed: %s", exc)
+
+
 class GlobalErrorMiddleware(BaseMiddleware):
     """Catch unhandled exceptions and reply with a useful message.
 
@@ -26,6 +47,8 @@ class GlobalErrorMiddleware(BaseMiddleware):
       * FloodWait (Telegram rate-limit) gets its own message because it's
         the most common transient error and "خطایی رخ داد" hides the fix
         ("just wait N seconds").
+      * The partial DB transaction is ROLLED BACK (see _rollback_session) so a
+        swallowed error never gets committed by the outer DB middleware.
     """
 
     async def __call__(
@@ -37,6 +60,7 @@ class GlobalErrorMiddleware(BaseMiddleware):
         try:
             return await handler(event, data)
         except TelegramRetryAfter as exc:
+            await _rollback_session(data)
             wait = int(exc.retry_after) + 1
             msg = (
                 "⏸️ درخواست‌های زیادی فرستادید.\n"
@@ -45,6 +69,7 @@ class GlobalErrorMiddleware(BaseMiddleware):
             await _safe_reply(event, msg)
             return None
         except Exception as exc:
+            await _rollback_session(data)
             # Short trace code so user + log can be linked.
             trace_code = secrets.token_hex(3).upper()
             user_id = _extract_user_id(event)

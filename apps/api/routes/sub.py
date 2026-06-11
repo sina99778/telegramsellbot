@@ -64,7 +64,10 @@ async def get_subscription_content(
         )
 
         if item:
-            vless_uri = item.content.split("|")[0].strip()
+            # content is "vless_uri|optional_custom_sub_link" — the provisioning
+            # manager parses it the same way (split("|", 1)); the URI is the part
+            # before the first separator.
+            vless_uri = item.content.split("|", 1)[0].strip()
             content_bytes = vless_uri.encode("utf-8")
             b64_content = base64.b64encode(content_bytes).decode("utf-8")
             return PlainTextResponse(b64_content)

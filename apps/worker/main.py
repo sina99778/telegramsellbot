@@ -35,6 +35,7 @@ from apps.worker.jobs.card_autoconfirm import run_card_autoconfirm
 from apps.worker.jobs.crypto_autoconfirm import run_crypto_autoconfirm
 from apps.worker.jobs.reconciliation import run_reconciliation
 from apps.worker.jobs.migration_usage import run_reconcile_migrated_usage
+from apps.worker.jobs.plan_cleanup import cleanup_orphaned_custom_plans
 from core.config import settings
 from core.database import AsyncSessionFactory
 
@@ -162,6 +163,16 @@ async def main() -> None:
         max_instances=1,
         coalesce=True,
     )
+    # Once a day, sweep custom-purchase plans abandoned before payment so the
+    # plans table doesn't grow without bound. Cheap (one indexed DELETE).
+    scheduler.add_job(
+        run_cleanup_orphaned_custom_plans,
+        "cron",
+        hour=4,
+        minute=20,
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.start()
 
     # Keep this process's settings caches in sync with dashboard/bot changes.
@@ -192,6 +203,13 @@ async def run_sync_subscriptions() -> None:
         await sync_all_subscription_states()
     except Exception as exc:
         logger.error("sync_all_subscription_states failed: %s", exc, exc_info=True)
+
+
+async def run_cleanup_orphaned_custom_plans() -> None:
+    try:
+        await cleanup_orphaned_custom_plans()
+    except Exception as exc:
+        logger.error("cleanup_orphaned_custom_plans failed: %s", exc, exc_info=True)
 
 
 async def run_broadcast_queue(bot: PremiumEmojiBot) -> None:

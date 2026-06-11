@@ -41,6 +41,17 @@ BATCH_PER_SERVER = 200
 
 
 async def run_reconcile_migrated_usage() -> None:
+    # Top-level isolation so a failure in the SETUP phase (session creation, the
+    # pending-count gate, the server query) can't escape to APScheduler — the
+    # per-server loop below is already guarded, but the setup before it was not.
+    # Mirrors the run_* error-isolated wrappers in apps/worker/main.py.
+    try:
+        await _reconcile_migrated_usage()
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[MIGRATE-USAGE] run failed: %s", exc, exc_info=True)
+
+
+async def _reconcile_migrated_usage() -> None:
     async with AsyncSessionFactory() as session:
         # Cheap gate: is there ANY migrated config still needing reconciliation?
         # If not, skip entirely so we never hit the panel for nothing.
