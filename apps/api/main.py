@@ -131,14 +131,19 @@ if DASHBOARD_DIST_DIR.exists():
 
     _index = DASHBOARD_DIST_DIR / "index.html"
 
+    from apps.api.spa import resolve_dashboard_file
+
     @app.get("/dashboard")
     @app.get("/dashboard/")
     @app.get("/dashboard/{path:path}")
     async def _serve_dashboard(path: str = "") -> _DashboardResp:
-        # Direct hits for top-level files (favicon, robots.txt, …)
+        # Direct hits for top-level files (favicon, robots.txt, …).
+        # SECURITY: resolve_dashboard_file resolves ".." and serves only files
+        # contained in the dist dir — without it, /dashboard/..%2f..%2f.env
+        # would return the app's .env (every secret in the system).
         if path:
-            candidate = DASHBOARD_DIST_DIR / path
-            if candidate.is_file():
+            candidate = resolve_dashboard_file(DASHBOARD_DIST_DIR, path)
+            if candidate is not None:
                 return _DashboardFile(str(candidate))
         # Vue Router fallback: any unknown sub-path serves the SPA shell.
         return _DashboardFile(

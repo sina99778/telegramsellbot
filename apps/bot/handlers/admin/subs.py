@@ -511,6 +511,21 @@ async def zero_usage_refund(
         await safe_edit_or_send(callback, "❌ سفارش مرتبط یافت نشد.")
         return
 
+    # Re-load the order under a row lock and re-check its status. Without this,
+    # a double-tapped button (two concurrent updates) or a stale detail message
+    # in scrollback passes the used_bytes==0 guard twice and credits the wallet
+    # twice — the refund must be once-only per order. The second caller blocks
+    # on the lock until the first commits, then sees status="refunded" here.
+    order = await session.scalar(
+        select(Order)
+        .where(Order.id == order.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if order is None or order.status == "refunded" or sub.status == "cancelled":
+        await safe_edit_or_send(callback, "❌ این سفارش قبلاً بازپرداخت شده است.")
+        return
+
     # Refund to wallet
     from services.wallet.manager import WalletManager
     try:

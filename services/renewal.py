@@ -159,14 +159,18 @@ async def apply_renewal(
             # Only modify COLUMN attributes — never touch relationships!
             if renew_type == "volume":
                 subscription.volume_bytes += int(amount * 1024**3)
-                # Roll the current cycle's consumption into the lifetime
-                # counter BEFORE resetting. Resellers bill on (lifetime
-                # + current) so this 1-line accumulator is what keeps
-                # the total "delivered bytes" honest across renewals.
-                subscription.lifetime_used_bytes = (
-                    (subscription.lifetime_used_bytes or 0) + (subscription.used_bytes or 0)
-                )
-                subscription.used_bytes = 0
+                # Deliberately NO lifetime accumulation / used_bytes reset here.
+                # The panel traffic counter is CUMULATIVE and is never reset on
+                # renewal, and the usage-sync job writes it back absolutely
+                # (subscription.used_bytes = panel counter) within a minute. So
+                # used_bytes is cumulative per panel client, volume_bytes is
+                # cumulative per subscription, and Total = lifetime + used stays
+                # continuously correct. Rolling used into lifetime here (the old
+                # behavior) double-counted the entire cumulative usage on every
+                # volume renewal once the sync restored used_bytes.
+                # lifetime_used_bytes accumulates ONLY where a new panel client
+                # (counter genuinely back to 0) replaces the old one — the
+                # migration paths in services/provisioning/manager.py.
             elif renew_type == "time":
                 days_to_add = int(amount)
                 if subscription.ends_at is None:

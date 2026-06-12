@@ -342,18 +342,33 @@ async def _handle_direct_purchase(
             f"🔗 ساب لینک:\n{sub_link}\n\n"
             f"📋 کانفیگ مستقیم:\n{vless_uri}"
         )
-        await bot.send_message(user.telegram_id, text)
-        logger.info("[PROVISION] Config sent to user %s", user.telegram_id)
+        # Delivery errors must NOT reach the outer except below: provisioning
+        # has already succeeded (panel client created, order marked
+        # "provisioned"), so refunding here would leave the user with both the
+        # money AND an active config — and a later retry would provision a
+        # second one. If Telegram delivery fails (user blocked the bot,
+        # flood-wait, network), we keep the sale; the config stays reachable
+        # from «سرویس‌های من» and the mini-app.
+        try:
+            await bot.send_message(user.telegram_id, text)
+            logger.info("[PROVISION] Config sent to user %s", user.telegram_id)
 
-        # QR Code
-        from core.qr import make_qr_bytes
-        from aiogram.types import BufferedInputFile
-        qr_bytes = make_qr_bytes(vless_uri)
-        if qr_bytes:
-            await bot.send_photo(
-                chat_id=user.telegram_id,
-                photo=BufferedInputFile(qr_bytes, filename="config_qr.png"),
-                caption=f"📷 QR کد کانفیگ {config_name}",
+            # QR Code
+            from core.qr import make_qr_bytes
+            from aiogram.types import BufferedInputFile
+            qr_bytes = make_qr_bytes(vless_uri)
+            if qr_bytes:
+                await bot.send_photo(
+                    chat_id=user.telegram_id,
+                    photo=BufferedInputFile(qr_bytes, filename="config_qr.png"),
+                    caption=f"📷 QR کد کانفیگ {config_name}",
+                )
+        except Exception as exc:
+            logger.error(
+                "[PROVISION] Config provisioned but Telegram delivery failed "
+                "for user %s: %s — NOT refunding (config remains active and "
+                "visible in my-configs)",
+                user.telegram_id, exc,
             )
 
         # Sales notification — polished, sectioned format. Builder lives in
