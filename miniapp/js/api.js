@@ -41,8 +41,12 @@ const API = (() => {
     }
 
     async function request(method, path, body = null) {
+        // Fresh Telegram initData always wins: the bot-signed ?session= token
+        // is frozen at keyboard render time (24h TTL) and would lock users
+        // out once expired, while initData is re-issued on every launch.
+        // The session token is only a fallback when no initData exists.
         const sessionToken = getSessionToken();
-        const initData = sessionToken ? '' : getInitData();
+        const initData = getInitData();
 
         // Send initData as query parameter (avoids header stripping by proxies)
         const separator = path.includes('?') ? '&' : '?';
@@ -79,8 +83,10 @@ const API = (() => {
      * `_auth`/`_session` query param like the JSON `request()`.
      */
     async function requestForm(method, path, formData) {
+        // Same precedence as request(): fresh initData first, session token
+        // only as a fallback when no initData exists.
         const sessionToken = getSessionToken();
-        const initData = sessionToken ? '' : getInitData();
+        const initData = getInitData();
         const separator = path.includes('?') ? '&' : '?';
         let url = `/api/miniapp${path}`;
         if (initData) {

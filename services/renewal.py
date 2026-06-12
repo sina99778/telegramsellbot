@@ -45,6 +45,27 @@ def time_renewal_blocked(subscription, renew_type: str) -> bool:
     return renew_type == "time" and getattr(subscription, "status", None) == "pending_activation"
 
 
+# A VOLUME renewal cannot resurrect a TIME-expired config: apply_renewal would
+# flip status to active while ends_at stays in the past — X-UI then gets
+# expiryTime=0 (briefly UNLIMITED until the next sync re-expires it) and the
+# Marzban payload drops expire=None entirely so the panel user stays expired —
+# either way the user paid for volume on a dead config. Block it and tell the
+# user to renew time first (or together); volume-expired configs with remaining
+# time renew normally.
+TIME_EXPIRED_VOLUME_RENEWAL_MSG = (
+    "⏳ مدت‌زمان این سرویس به پایان رسیده است. "
+    "ابتدا زمان سرویس را تمدید کنید؛ بعد از آن می‌توانید حجم اضافه کنید."
+)
+
+
+def volume_renewal_blocked(subscription, renew_type: str) -> bool:
+    """True for a VOLUME renewal of a config whose TIME has already run out."""
+    if renew_type != "volume":
+        return False
+    ends_at = getattr(subscription, "ends_at", None)
+    return ends_at is not None and ends_at <= datetime.now(timezone.utc)
+
+
 async def average_active_plan_renewal_rates(
     session: AsyncSession, settings: RenewalSettings
 ) -> tuple[float, float]:
@@ -132,6 +153,10 @@ async def apply_renewal(
     # message; this guard protects any path that doesn't.
     if time_renewal_blocked(subscription, renew_type):
         raise RenewalNotAllowedError(PENDING_TIME_RENEWAL_MSG)
+    # Safety net #2: never add VOLUME to a time-expired config (it cannot come
+    # back to life from volume alone — see TIME_EXPIRED_VOLUME_RENEWAL_MSG).
+    if volume_renewal_blocked(subscription, renew_type):
+        raise RenewalNotAllowedError(TIME_EXPIRED_VOLUME_RENEWAL_MSG)
 
     now_utc = datetime.now(timezone.utc)
     sub_id = subscription.id

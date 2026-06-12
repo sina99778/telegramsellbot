@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 from uuid import uuid4
 
@@ -69,8 +70,11 @@ async def inline_query_handler(inline_query: InlineQuery, session: AsyncSession)
         used = format_volume_bytes(sub.used_bytes)
         total = format_volume_bytes(sub.volume_bytes)
 
+        # HTML parse mode + escaping: legacy Markdown chokes on the '_' that
+        # marzban-family/trial config names always contain, which made
+        # answerInlineQuery fail with 400 and show zero results.
         text = (
-            f"🚀 **کانفیگ من: {config_name}**\n\n"
+            f"🚀 <b>کانفیگ من: {html.escape(config_name)}</b>\n\n"
             f"📊 مصرف: {used} از {total}\n"
             f"⚡ سریع‌ترین کانفیگ‌های V2Ray در ربات ما!"
         )
@@ -86,7 +90,7 @@ async def inline_query_handler(inline_query: InlineQuery, session: AsyncSession)
                 description=f"مصرف: {used} / {total}",
                 input_message_content=InputTextMessageContent(
                     message_text=text,
-                    parse_mode="Markdown"
+                    parse_mode="HTML"
                 ),
                 reply_markup=kb,
             )
@@ -100,13 +104,21 @@ async def inline_query_handler(inline_query: InlineQuery, session: AsyncSession)
             description="لینک دعوت خود را به گروه‌ها و دوستان بفرستید",
             input_message_content=InputTextMessageContent(
                 message_text=(
-                    f"🎁 **سرویس‌های پرسرعت و پایدار V2Ray**\n\n"
+                    f"🎁 <b>سرویس‌های پرسرعت و پایدار V2Ray</b>\n\n"
                     f"با استفاده از لینک زیر وارد ربات شوید و تست رایگان دریافت کنید:\n"
                     f"👉 https://t.me/telegramsellbot?start=ref_{user.ref_code}"
                 ),
-                parse_mode="Markdown"
+                parse_mode="HTML"
             ),
         )
     )
 
-    await inline_query.answer(results, cache_time=5, is_personal=True)
+    # Backstop: GlobalErrorMiddleware is not registered for inline queries,
+    # so an unexpected Telegram error here would otherwise go unhandled and
+    # roll back the session (losing e.g. the ref_code backfill above).
+    try:
+        await inline_query.answer(results, cache_time=5, is_personal=True)
+    except Exception:
+        logger.exception(
+            "Failed to answer inline query for user %s", inline_query.from_user.id
+        )

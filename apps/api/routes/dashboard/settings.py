@@ -279,12 +279,11 @@ async def trigger_backup_now(auth: AuthDep) -> dict[str, Any]:
     try:
         # manual_requester_id=None → goes to the configured channel(s),
         # NOT the dashboard admin's DM (which they don't necessarily own
-        # in Telegram). Bypasses the interval gate because we pass
-        # `manual_requester_id` indirectly via the routing logic; but
-        # to truly bypass the interval gate the caller must NOT be None.
-        # Compromise: route to channels (None) but also stamp the gate
-        # so the next scheduled tick doesn't immediately re-fire.
-        await _run(session, bot, manual_requester_id=None)
+        # in Telegram). force=True bypasses the interval gate so this
+        # button ALWAYS produces a backup; a successful delivery still
+        # stamps last_run_at so the next scheduled tick doesn't
+        # immediately re-fire.
+        await _run(session, bot, manual_requester_id=None, force=True)
     finally:
         await bot.session.close()
 

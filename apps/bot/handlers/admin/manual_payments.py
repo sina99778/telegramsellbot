@@ -161,7 +161,15 @@ async def approve_manual_payment_preview(
         await safe_edit_caption_or_text(callback, "❌ شناسه پرداخت نامعتبر.")
         return
 
-    payment = await session.get(Payment, payment_id)
+    # Row-lock here too: _build_payment_context WRITES callback_payload
+    # (receipt_phash). With a plain session.get, that whole-JSON write raced a
+    # concurrent confirmation (autoconfirm worker / another admin's final
+    # approve) and clobbered its markers (wallet credit flags, processed
+    # hashes) — last writer wins on a JSON column. The lock serializes us
+    # behind/ahead of any confirmation of the SAME payment.
+    payment = await session.scalar(
+        select(Payment).where(Payment.id == payment_id).with_for_update()
+    )
     if payment is None:
         await safe_edit_caption_or_text(callback, "❌ پرداخت یافت نشد.")
         return

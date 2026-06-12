@@ -1487,6 +1487,12 @@ class ProvisioningManager:
                 # Collect (inbound_remote_id, client_id) to delete.
                 to_delete: list[tuple[int, str]] = []
                 for ib in inbounds:
+                    # Panel schema (XUIInbound) exposes the remote inbound id
+                    # as `id` — `xui_inbound_remote_id` is the DB column name
+                    # and does not exist here. Tolerate odd payloads.
+                    inbound_remote_id = getattr(ib, "id", None)
+                    if inbound_remote_id is None:
+                        continue
                     settings = ib.settings or {}
                     if isinstance(settings, str):
                         try:
@@ -1503,7 +1509,7 @@ class ProvisioningManager:
                             or (old_uuid and cid == old_uuid)
                         )
                         if matches and cid:
-                            to_delete.append((ib.xui_inbound_remote_id, cid))
+                            to_delete.append((int(inbound_remote_id), cid))
 
                 # COLLATERAL-DELETION GUARD: the `email == legacy_remark`
                 # heuristic can match a DIFFERENT user's live config if their

@@ -99,6 +99,14 @@ read_env_value() {
   grep -E "^${key}=" "${ENV_FILE}" | tail -n 1 | sed -E "s/^${key}=//" || true
 }
 
+read_env_value_from() {
+  # Like read_env_value, but reads from an arbitrary env file (e.g. the
+  # bundle's staged .env instead of the host's).
+  local file="$1" key="$2"
+  [[ -f "${file}" ]] || return 0
+  grep -E "^${key}=" "${file}" | tail -n 1 | sed -E "s/^${key}=//" || true
+}
+
 ask_passphrase() {
   # Echoes the passphrase to stdout. Sources, in order: --passphrase-file,
   # env var BUNDLE_PASSPHRASE, interactive terminal prompt.
@@ -307,7 +315,79 @@ cmd_restore() {
   cat "${stage}/manifest.json" | sed 's/^/    /'
   echo
 
-  # ── .env handling ──
+  # ── Read DB identities from BOTH .envs ──
+  # The postgres volume keeps the credentials it was initialised with (the
+  # CURRENT host's .env); the bundle's .env carries the OLD server's
+  # credentials. Every psql call below therefore connects as the volume's
+  # existing role (docker-exec local trust auth); the bundle's password is
+  # synced into that role only after the restore succeeds.
+  local volume_db_user bundle_db_user bundle_db_name bundle_db_password
+  volume_db_user="$(read_env_value POSTGRES_USER)"; volume_db_user="${volume_db_user:-telegramsellbot}"
+  bundle_db_user="$(read_env_value_from "${stage}/.env" POSTGRES_USER)"; bundle_db_user="${bundle_db_user:-telegramsellbot}"
+  bundle_db_name="$(read_env_value_from "${stage}/.env" POSTGRES_DB)";   bundle_db_name="${bundle_db_name:-telegramsellbot}"
+  bundle_db_password="$(read_env_value_from "${stage}/.env" POSTGRES_PASSWORD)"
+
+  if [[ ! "${bundle_db_name}" =~ ^[A-Za-z0-9_]+$ ]]; then
+    err "Bundle POSTGRES_DB contains unsafe characters: ${bundle_db_name}"
+    exit 1
+  fi
+  if [[ ! "${bundle_db_user}" =~ ^[A-Za-z0-9_]+$ ]]; then
+    err "Bundle POSTGRES_USER contains unsafe characters: ${bundle_db_user}"
+    exit 1
+  fi
+
+  require_postgres_running
+
+  # Abort BEFORE touching anything if the bundle's DB role does not exist
+  # in this postgres volume — after the .env swap the stack could never
+  # authenticate, and fixing that needs an operator decision.
+  if [[ "${bundle_db_user}" != "${volume_db_user}" ]]; then
+    local role_exists
+    role_exists="$(docker exec "${POSTGRES_CONTAINER}" psql -U "${volume_db_user}" -d postgres -tAc \
+        "SELECT 1 FROM pg_roles WHERE rolname='${bundle_db_user}'" 2>/dev/null || true)"
+    if [[ "${role_exists}" != "1" ]]; then
+      err "Bundle POSTGRES_USER '${bundle_db_user}' does not exist in this postgres volume (volume role: '${volume_db_user}')."
+      err "Nothing was changed. Re-install with a matching POSTGRES_USER (or create the role manually), then retry."
+      err "کاربر دیتابیس داخل باندل با این سرور همخوانی ندارد؛ هیچ تغییری اعمال نشد. ابتدا نصب را با همان POSTGRES_USER انجام دهید و دوباره تلاش کنید."
+      exit 1
+    fi
+  fi
+
+  # If the target DB is populated, refuse without explicit OVERWRITE.
+  local row_count
+  row_count="$(docker exec "${POSTGRES_CONTAINER}" psql -U "${volume_db_user}" -d "${bundle_db_name}" -tAc \
+      "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'" 2>/dev/null || echo 0)"
+  if [[ "${row_count:-0}" -gt 0 ]]; then
+    warn "Target DB already has ${row_count} table(s). Restore will WIPE them."
+    read -r -p "Type OVERWRITE to continue (anything else aborts): " confirm
+    if [[ "${confirm}" != "OVERWRITE" ]]; then
+      warn "Aborted by operator. Nothing was changed (.env and DB both intact)."
+      exit 1
+    fi
+  fi
+
+  # ── Postgres restore ──
+  # api/bot/worker keep idle SQLAlchemy pool connections open, which makes
+  # DROP DATABASE fail with "database is being accessed by other users"
+  # and abort the whole script. Stop them first (the next-steps deploy
+  # starts them again), then terminate any straggler sessions — the same
+  # statement restore.sh uses.
+  info "Stopping app containers (api/bot/worker) holding DB connections…"
+  docker stop telegramsellbot-api telegramsellbot-bot telegramsellbot-worker >/dev/null 2>&1 || true
+
+  info "Terminating remaining connections to ${bundle_db_name}…"
+  docker exec "${POSTGRES_CONTAINER}" psql -U "${volume_db_user}" -d postgres \
+      -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${bundle_db_name}';" \
+      >/dev/null 2>&1 || true
+
+  info "Restoring PostgreSQL…"
+  docker exec "${POSTGRES_CONTAINER}" psql -U "${volume_db_user}" -d postgres -c "DROP DATABASE IF EXISTS \"${bundle_db_name}\";" >/dev/null
+  docker exec "${POSTGRES_CONTAINER}" psql -U "${volume_db_user}" -d postgres -c "CREATE DATABASE \"${bundle_db_name}\" OWNER \"${bundle_db_user}\";" >/dev/null
+  gunzip -c "${stage}/db.sql.gz" | docker exec -i "${POSTGRES_CONTAINER}" psql -U "${volume_db_user}" -d "${bundle_db_name}" >/dev/null
+  ok "PostgreSQL restored"
+
+  # ── .env handling — deliberately AFTER the DB restore, so any failure
+  #    or abort above leaves the host with its own working .env. ──
   if [[ -f "${ENV_FILE}" ]]; then
     warn "An existing .env is already present at ${ENV_FILE}."
     local env_backup="${ENV_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
@@ -318,31 +398,30 @@ cmd_restore() {
   chmod 600 "${ENV_FILE}"
   ok ".env restored (mode 600)"
 
-  # ── Postgres restore ──
-  require_postgres_running
-
-  # If the target DB is populated, refuse without explicit OVERWRITE.
-  local row_count
-  row_count="$(docker exec "${POSTGRES_CONTAINER}" psql -U "$(read_env_value POSTGRES_USER || echo telegramsellbot)" \
-      -d "$(read_env_value POSTGRES_DB || echo telegramsellbot)" -tAc \
-      "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'" 2>/dev/null || echo 0)"
-  if [[ "${row_count:-0}" -gt 0 ]]; then
-    warn "Target DB already has ${row_count} table(s). Restore will WIPE them."
-    read -r -p "Type OVERWRITE to continue (anything else aborts): " confirm
-    if [[ "${confirm}" != "OVERWRITE" ]]; then
-      warn "Aborted by operator. .env was restored; DB left intact."
+  # ── Sync the volume's role password to the restored .env ──
+  # An initialised postgres volume keeps the password it was created with;
+  # the POSTGRES_PASSWORD env var is ignored on later boots. Without this
+  # ALTER, api/bot/worker would all fail TCP auth after './deploy.sh full'
+  # (and deploy.sh's failure hint would suggest deleting the volume we
+  # just restored into).
+  if [[ -n "${bundle_db_password}" ]]; then
+    info "Syncing postgres role password to the restored .env…"
+    local pw_sql
+    pw_sql=${bundle_db_password//\'/\'\'}   # double single quotes for the SQL literal
+    if ! docker exec -i "${POSTGRES_CONTAINER}" psql -U "${volume_db_user}" -d postgres \
+          -q -v ON_ERROR_STOP=1 >/dev/null <<SQL
+ALTER ROLE "${bundle_db_user}" WITH PASSWORD '${pw_sql}';
+SQL
+    then
+      err "DB restored, but syncing the role password failed. Fix it manually before deploying:"
+      err "  docker exec -it ${POSTGRES_CONTAINER} psql -U ${volume_db_user} -d postgres -c \"ALTER ROLE \\\"${bundle_db_user}\\\" WITH PASSWORD '<POSTGRES_PASSWORD from .env>';\""
+      err "دیتابیس بازیابی شد اما همگام‌سازی رمز دیتابیس ناموفق بود؛ پیش از دیپلوی، دستور بالا را اجرا کنید."
       exit 1
     fi
+    ok "Role password synced — restored .env now matches the postgres volume"
+  else
+    warn "Bundle .env has no POSTGRES_PASSWORD — role password left unchanged; deploy may fail to authenticate."
   fi
-
-  info "Restoring PostgreSQL…"
-  local db_user db_name
-  db_user="$(read_env_value POSTGRES_USER)"; db_user="${db_user:-telegramsellbot}"
-  db_name="$(read_env_value POSTGRES_DB)";   db_name="${db_name:-telegramsellbot}"
-  docker exec "${POSTGRES_CONTAINER}" psql -U "${db_user}" -d postgres -c "DROP DATABASE IF EXISTS \"${db_name}\";" >/dev/null
-  docker exec "${POSTGRES_CONTAINER}" psql -U "${db_user}" -d postgres -c "CREATE DATABASE \"${db_name}\";" >/dev/null
-  gunzip -c "${stage}/db.sql.gz" | docker exec -i "${POSTGRES_CONTAINER}" psql -U "${db_user}" -d "${db_name}" >/dev/null
-  ok "PostgreSQL restored"
 
   # ── ready_configs ──
   if [[ -d "${stage}/ready_configs" ]]; then
@@ -359,6 +438,7 @@ cmd_restore() {
   echo -e "  1. ${BOLD}./deploy.sh full${NC}   (build images + run schema migrations)"
   echo -e "  2. ${BOLD}./doctor.sh${NC}        (verify everything is green)"
   echo
+  echo -e "${DIM}api/bot/worker were stopped for the restore — step 1 starts them again.${NC}"
   echo -e "${DIM}The previous .env (if any) was snapshotted alongside as .env.bak.<ts>.${NC}"
 }
 

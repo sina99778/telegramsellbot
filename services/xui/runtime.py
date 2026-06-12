@@ -128,10 +128,15 @@ def build_vless_uri(
     # --- Security-specific settings ---
     if security == "tls":
         tls_settings = stream.get("tlsSettings", {})
+        # 3x-ui nests the uTLS fingerprint under tlsSettings.settings; older/flat
+        # exports keep it at the top level. Support both shapes.
+        tls_nested = tls_settings.get("settings")
+        if not isinstance(tls_nested, dict):
+            tls_nested = {}
         sni = tls_settings.get("serverName", "")
         if sni:
             params["sni"] = sni
-        fp = tls_settings.get("fingerprint", "")
+        fp = tls_nested.get("fingerprint") or tls_settings.get("fingerprint", "")
         if fp:
             params["fp"] = fp
         alpn = tls_settings.get("alpn", [])
@@ -139,11 +144,27 @@ def build_vless_uri(
             params["alpn"] = ",".join(alpn)
     elif security == "reality":
         reality_settings = stream.get("realitySettings", {})
-        pbk = reality_settings.get("publicKey", "")
-        sid = reality_settings.get("shortId", "")
-        sni = reality_settings.get("serverName", "")
-        fp = reality_settings.get("fingerprint", "")
-        spx = reality_settings.get("spiderX", "")
+        # 3x-ui stores publicKey/fingerprint/spiderX nested under
+        # realitySettings.settings and the SNI / short id as plural lists
+        # (serverNames/shortIds) at the top level; older/flat exports use
+        # singular top-level keys. Support both shapes.
+        reality_nested = reality_settings.get("settings")
+        if not isinstance(reality_nested, dict):
+            reality_nested = {}
+        server_names = reality_settings.get("serverNames")
+        short_ids = reality_settings.get("shortIds")
+        pbk = reality_nested.get("publicKey") or reality_settings.get("publicKey", "")
+        sid = (
+            (short_ids[0] if isinstance(short_ids, list) and short_ids else "")
+            or reality_settings.get("shortId", "")
+        )
+        sni = (
+            (server_names[0] if isinstance(server_names, list) and server_names else "")
+            or reality_settings.get("serverName", "")
+            or reality_nested.get("serverName", "")
+        )
+        fp = reality_nested.get("fingerprint") or reality_settings.get("fingerprint", "")
+        spx = reality_nested.get("spiderX") or reality_settings.get("spiderX", "")
         if pbk:
             params["pbk"] = pbk
         if sid:

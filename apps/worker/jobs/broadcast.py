@@ -112,8 +112,13 @@ async def process_broadcast_queue(session: AsyncSession, bot: Bot) -> None:
                 job.failed_recipients += 1
 
             # Persist progress incrementally so a worker crash doesn't lose it.
-            payload["delivered_user_ids"] = sorted(delivered)
-            job.payload = payload
+            # IMPORTANT: assign a brand-new dict every time. payload is a plain
+            # JSONB column (no MutableDict), so after the first flush the
+            # committed snapshot holds a reference to the assigned dict object;
+            # mutating it in place and re-assigning the SAME object compares
+            # equal to itself and the UPDATE silently drops the payload column —
+            # delivered_user_ids would then never advance past the first send.
+            job.payload = {**payload, "delivered_user_ids": sorted(delivered)}
             sent_since_commit += 1
             if sent_since_commit >= _COMMIT_EVERY:
                 await session.commit()

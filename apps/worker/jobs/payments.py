@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from core.database import AsyncSessionFactory
 from models.payment import Payment
@@ -10,17 +11,61 @@ from services.payment import review_gateway_payment
 
 logger = logging.getLogger(__name__)
 
+# Gateway-native pending statuses (NowPayments vocabulary; TetraPay/Tronado
+# invoices also start at "waiting").
+PENDING_GATEWAY_STATUSES = ("waiting", "confirming", "partially_paid", "sending")
+
+# Tronado's unpaid review/webhook branch overwrites payment_status with the
+# provider's FREE-FORM OrderStatusTitle (or the "not_paid" fallback) — see
+# services/payment.py::_review_tronado_payment — which is never in
+# PENDING_GATEWAY_STATUSES, so after one unpaid tick the payment would drop
+# out of this sweep forever and a missed IPN could never be recovered.
+# Tronado rows are therefore swept by EXCLUSION: any status outside this
+# terminal/handled set is still pending and must keep being polled.
+TRONADO_TERMINAL_STATUSES = (
+    "finished",       # paid + processed
+    "expired",        # reconciliation expired the abandoned invoice
+    "failed",         # admin recovery marked it failed
+    "refunded",       # admin recovery refunded it
+    "rejected",       # admin rejected it
+    "manual_review",  # reconciliation escalated it to a human
+)
+
+# Don't poll abandoned Tronado invoices forever — same 48h horizon as the
+# reconciliation job's RETRY_MAX_AGE and the stale waiting_hash cleanup below.
+TRONADO_SWEEP_MAX_AGE = timedelta(hours=48)
+
+
+def _is_sweepable(payment: Payment) -> bool:
+    """True while this sweep should still poll the payment's provider."""
+    if payment.payment_status in PENDING_GATEWAY_STATUSES:
+        return True
+    return (
+        payment.provider == "tronado"
+        and payment.payment_status not in TRONADO_TERMINAL_STATUSES
+    )
+
 
 async def sync_pending_payments() -> None:
     # First, collect candidate payment IDs WITHOUT a lock — just to know what to
     # look at this tick.
+    tronado_cutoff = datetime.now(timezone.utc) - TRONADO_SWEEP_MAX_AGE
     async with AsyncSessionFactory() as session:
         result = await session.execute(
             select(Payment.id).where(
-                Payment.payment_status.in_(
-                    ["waiting", "confirming", "partially_paid", "sending"]
-                ),
-                Payment.provider.in_(["nowpayments", "tetrapay", "tronado"]),
+                or_(
+                    and_(
+                        Payment.payment_status.in_(list(PENDING_GATEWAY_STATUSES)),
+                        Payment.provider.in_(["nowpayments", "tetrapay", "tronado"]),
+                    ),
+                    # Tronado-by-exclusion (see TRONADO_TERMINAL_STATUSES),
+                    # time-bounded so abandoned invoices age out of the sweep.
+                    and_(
+                        Payment.provider == "tronado",
+                        Payment.payment_status.notin_(list(TRONADO_TERMINAL_STATUSES)),
+                        Payment.created_at >= tronado_cutoff,
+                    ),
+                )
             )
         )
         payment_ids = [row[0] for row in result.all()]
@@ -41,7 +86,7 @@ async def sync_pending_payments() -> None:
             if payment is None:
                 # Locked by a concurrent IPN, or no longer exists — skip.
                 continue
-            if payment.payment_status not in {"waiting", "confirming", "partially_paid", "sending"}:
+            if not _is_sweepable(payment):
                 # Status changed between listing and locking (e.g. the IPN
                 # finished it). Nothing to do.
                 continue
@@ -55,8 +100,6 @@ async def sync_pending_payments() -> None:
 
     # Cleanup stale manual crypto payments (waiting_hash > 48h) — bulk, no lock
     # contention, its own transaction.
-    from datetime import datetime, timedelta, timezone
-
     cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
     async with AsyncSessionFactory() as session:
         stale_result = await session.execute(

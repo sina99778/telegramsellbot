@@ -66,17 +66,21 @@ async def process_successful_payment(
     tests and is redundant in production.
     """
     logger.info("[PAYMENT] Processing payment %s (kind=%s, amount=%s)", payment.id, payment.kind, amount_to_credit)
-    payment.payment_status = "finished"
 
     # Idempotency: skip wallet credit if already done, but still allow provisioning retry
     wallet_already_credited = payment.actually_paid is not None
 
     if not wallet_already_credited:
-        # Flush immediately so concurrent IPN retries see the marker before we credit
-        payment.actually_paid = amount_to_credit
-        await session.flush()
-
-        # 1. Top up wallet
+        # 1. Top up wallet FIRST — the credited markers are written only after
+        # this succeeds. The old order (flush actually_paid/"finished" before
+        # the credit) permanently branded the payment as credited even when the
+        # credit raised: the wallet write lives in its own SAVEPOINT, so its
+        # rollback kept the already-flushed markers alive, and swallow-then-
+        # commit callers (webhooks, manual approval) committed that half-state
+        # — every retry then skipped the credit forever (silent money loss).
+        # The flush-early "so concurrent retries see it" rationale was wrong:
+        # callers hold FOR UPDATE on the payment row, and uncommitted flushes
+        # are invisible across transactions anyway.
         logger.info("[PAYMENT] Step 1: Credit wallet for user %s", payment.user_id)
         wallet_manager = WalletManager(session)
         await wallet_manager.process_transaction(
@@ -91,11 +95,15 @@ async def process_successful_payment(
             metadata={
                 "provider": payment.provider,
                 "provider_payment_id": payment.provider_payment_id,
-                "payment_status": payment.payment_status,
+                "payment_status": "finished",
             },
         )
+        payment.payment_status = "finished"
+        payment.actually_paid = amount_to_credit
+        await session.flush()
         logger.info("[PAYMENT] Wallet credited OK")
     else:
+        payment.payment_status = "finished"
         logger.info("[PAYMENT] Wallet already credited — skipping credit step")
 
 
@@ -126,6 +134,11 @@ async def process_successful_payment(
     elif payment.kind == "direct_renewal":
         if payment.callback_payload and payment.callback_payload.get("renewal_applied"):
             logger.info("[PAYMENT] Renewal already applied — skipping")
+            return
+        if payment.callback_payload and payment.callback_payload.get("renewal_refused"):
+            # Terminal: the sub was disabled/banned when the IPN landed; the
+            # money stayed in the wallet. Retrying would refuse again forever.
+            logger.info("[PAYMENT] Renewal was refused (sub status) — not retrying")
             return
 
         logger.info("[PAYMENT] Step 3: Direct renewal — applying renewal")
@@ -497,7 +510,67 @@ async def _handle_direct_renewal(
         logger.error("[RENEWAL] Subscription %s not found for renewal payment %s", sub_id_str, payment.id)
         return False
 
+    # Status gate (mirrors renew_config_start / renew_pay_wallet): a sub that
+    # was punitively disabled (IP-abuse enforcer, admin ban) after the invoice
+    # was created must NOT be re-enabled by paying an old renewal button. The
+    # gateway money was already credited to the wallet in step 1 — refusing
+    # here simply leaves it there, so the user loses nothing.
+    if subscription.status not in ("active", "pending_activation", "expired"):
+        logger.warning(
+            "[RENEWAL] Refusing renewal of sub %s with status=%s (payment %s) — funds stay in wallet",
+            sub_id_str, subscription.status, payment.id,
+        )
+        payload = dict(payment.callback_payload or {})
+        payload["renewal_refused"] = True
+        payload["renewal_refused_status"] = subscription.status
+        payment.callback_payload = payload
+        try:
+            bot = _get_shared_bot()
+            try:
+                user = await session.scalar(select(User).where(User.id == payment.user_id))
+                if user:
+                    await bot.send_message(
+                        user.telegram_id,
+                        "⚠️ این سرویس غیرفعال شده و قابل تمدید نیست.\n"
+                        "مبلغ پرداختی به کیف پول شما اضافه شد. برای پیگیری با پشتیبانی تماس بگیرید.",
+                    )
+            finally:
+                await bot.session.close()
+        except Exception:
+            pass
+        return False
+
     logger.info("[RENEWAL] Applying renewal: sub=%s, type=%s, amount=%s", sub_id_str, renew_type, renew_amount)
+
+    # Canonical per-subscription renewal lock — the same key the bot handler,
+    # mini-app and auto-renew take. Without it, an IPN racing auto-renew (or a
+    # user clicking renew in the bot at IPN time) interleaves two debit+apply
+    # sequences on the same sub. On lock-miss we return False WITHOUT setting
+    # renewal_applied, so the pending-payment sweep retries shortly.
+    from core.redis import distributed_lock, renewal_lock_key
+
+    async with distributed_lock(renewal_lock_key(subscription.id), ttl_seconds=60) as acquired:
+        if not acquired:
+            logger.warning(
+                "[RENEWAL] Could not acquire renewal lock for sub %s (payment %s) — deferring to retry",
+                sub_id_str, payment.id,
+            )
+            return False
+        return await _apply_direct_renewal_locked(
+            session, payment, subscription, renew_type, renew_amount, sub_id_str
+        )
+
+
+async def _apply_direct_renewal_locked(
+    session: AsyncSession,
+    payment: Payment,
+    subscription: Subscription,
+    renew_type: str,
+    renew_amount,
+    sub_id_str: str,
+) -> bool:
+    """Debit + apply_renewal under the renewal lock (see _handle_direct_renewal)."""
+    from services.renewal import apply_renewal
 
     wallet_manager = WalletManager(session)
     payload = dict(payment.callback_payload or {})

@@ -175,9 +175,18 @@ class TestProcessSuccessfulPayment:
         )
         subscription = MagicMock()
         subscription.id = sub_id
+        subscription.status = "active"  # the IPN status gate refuses disabled subs
         mock_session.scalar.return_value = subscription
 
+        # The IPN renewal path now takes the canonical renewal lock — fake it.
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def fake_lock(key, ttl_seconds=60):
+            yield True
+
         with patch("services.payment.WalletManager") as MockWM, \
+             patch("core.redis.distributed_lock", fake_lock), \
              patch("services.renewal.apply_renewal", new_callable=AsyncMock) as mock_apply:
             mock_wm = AsyncMock()
             mock_wm.process_transaction = AsyncMock(return_value=MagicMock())
@@ -213,9 +222,17 @@ class TestProcessSuccessfulPayment:
         )
         subscription = MagicMock()
         subscription.id = sub_id
+        subscription.status = "active"  # the IPN status gate refuses disabled subs
         mock_session.scalar.return_value = subscription
 
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def fake_lock(key, ttl_seconds=60):
+            yield True
+
         with patch("services.payment.WalletManager") as MockWM, \
+             patch("core.redis.distributed_lock", fake_lock), \
              patch("services.renewal.apply_renewal", new_callable=AsyncMock):
             mock_wm = AsyncMock()
             MockWM.return_value = mock_wm

@@ -147,6 +147,13 @@ async def _get_current_user(
     user = result.scalar_one_or_none()
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+    if user.status == "banned":
+        # Mirror the bot's UserAccessMiddleware ban check so banned users
+        # cannot keep purchasing/renewing/topping-up through the mini-app.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="دسترسی شما به ربات محدود شده است. برای پیگیری با پشتیبانی تماس بگیرید.",
+        )
     return user, session
 
 
@@ -3015,8 +3022,14 @@ async def refresh_payment(
     auth: tuple[User, AsyncSession] = Depends(_get_current_user),
 ) -> dict[str, Any]:
     user, session = auth
+    # Row-lock the payment: process_successful_payment requires the caller to
+    # hold SELECT ... FOR UPDATE (see services/payment.py), matching the
+    # webhook handlers — otherwise a double-tap on refresh (or a race with the
+    # IPN webhook / worker) could double-debit and double-provision.
     payment = await session.scalar(
-        select(Payment).where(Payment.id == payment_id, Payment.user_id == user.id)
+        select(Payment)
+        .where(Payment.id == payment_id, Payment.user_id == user.id)
+        .with_for_update()
     )
     if payment is None:
         raise HTTPException(status_code=404, detail="پرداخت پیدا نشد.")

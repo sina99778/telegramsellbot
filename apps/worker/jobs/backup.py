@@ -252,6 +252,7 @@ async def run_backup(
     session: AsyncSession,
     bot: Bot,
     manual_requester_id: int | None = None,
+    force: bool = False,
 ) -> None:
     """Build + send a single comprehensive backup bundle.
 
@@ -262,7 +263,10 @@ async def run_backup(
       `system.backup_interval_hours` and skip if not enough time has
       passed — that way operators can change the cadence at any time
       from the dashboard with no worker restart. Manual presses
-      (manual_requester_id set) always run regardless.
+      (manual_requester_id set) always run regardless. `force=True`
+      also bypasses the gate WITHOUT changing delivery routing — the
+      dashboard "run now" button uses it so the backup still goes to
+      the configured channel(s), not a personal DM.
 
     Routing (priority order):
       1. `manual_requester_id` set       → that one chat only.
@@ -274,8 +278,9 @@ async def run_backup(
     now = datetime.now(timezone.utc)
     ts = now.strftime("%Y%m%d_%H%M%S")
 
-    # Interval-gate only the auto path; manual presses always run.
-    if manual_requester_id is None:
+    # Interval-gate only the auto path; manual presses and forced runs
+    # (dashboard "run now") always run.
+    if manual_requester_id is None and not force:
         try:
             interval_hours = await repo.get_backup_interval_hours()
             last_iso = await repo.get_backup_last_run_iso()

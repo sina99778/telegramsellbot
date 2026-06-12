@@ -27,7 +27,13 @@ class XUIAuthenticationError(XUIClientError):
 
 
 class XUIRequestError(XUIClientError):
-    pass
+    """``status_code`` is set when the panel answered with an HTTP error status
+    (None for transport failures and success=false payloads), so callers can
+    classify e.g. 404 "client gone" without substring-matching the message."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass(slots=True, frozen=True)
@@ -74,14 +80,17 @@ class SanaeiXUIClient:
             "password": self._config.password.get_secret_value(),
         }
         # Try JSON login first (newer X-UI versions)
+        # Login is idempotent (re-login just issues a fresh session), so it
+        # keeps the full timeout-retry behaviour.
         try:
-            response = await self._send("POST", "login", json=login_data)
+            response = await self._send("POST", "login", json=login_data, idempotent=True)
         except XUIRequestError:
             # Fallback: try form-encoded login (older X-UI versions)
             response = await self._send(
                 "POST", "login",
                 data=login_data,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
+                idempotent=True,
             )
 
         # Some X-UI versions return HTML on login — check for cookies first
@@ -132,10 +141,12 @@ class SanaeiXUIClient:
         client: XUIClient,
     ) -> XUIAPIResponse[Any]:
         payload = XUIUpdateClientRequest.from_client(inbound_id, client)
+        # Full overwrite of one client with the same payload — safe to re-send.
         response = await self._request(
             "POST",
             f"panel/api/inbounds/updateClient/{client_id}",
             json=payload.model_dump(mode="json"),
+            idempotent=True,
         )
         api_response = XUIAPIResponse[Any].model_validate(response or {"success": True, "obj": None})
         if api_response.success is False:
@@ -198,7 +209,8 @@ class SanaeiXUIClient:
         return XUIClientTraffic.model_validate(payload)
 
     async def get_client_ips(self, email: str) -> list[str]:
-        response = await self._request("POST", f"panel/api/inbounds/clientIps/{email}")
+        # Read-only despite being a POST — safe to re-send.
+        response = await self._request("POST", f"panel/api/inbounds/clientIps/{email}", idempotent=True)
         if isinstance(response, dict) and "obj" in response:
             wrapper = XUIAPIResponse[Any].model_validate(response)
             if wrapper.success is False:
@@ -209,14 +221,16 @@ class SanaeiXUIClient:
         return self._normalize_client_ips(payload)
 
     async def clear_client_ips(self, email: str) -> XUIAPIResponse[Any]:
-        response = await self._request("POST", f"panel/api/inbounds/clearClientIps/{email}")
+        # Clearing twice yields the same state — safe to re-send.
+        response = await self._request("POST", f"panel/api/inbounds/clearClientIps/{email}", idempotent=True)
         api_response = XUIAPIResponse[Any].model_validate(response or {"success": True, "obj": None})
         if api_response.success is False:
             raise XUIRequestError(api_response.msg or "Failed to clear client IPs.")
         return api_response
 
     async def get_panel_settings(self) -> dict[str, Any]:
-        response = await self._request("POST", "panel/setting/all")
+        # Read-only despite being a POST — safe to re-send.
+        response = await self._request("POST", "panel/setting/all", idempotent=True)
         if isinstance(response, dict) and "obj" in response:
             wrapper = XUIAPIResponse[dict[str, Any]].model_validate(response)
             if wrapper.success is False:
@@ -251,27 +265,41 @@ class SanaeiXUIClient:
 
         raise XUIRequestError(f"Failed to download X-UI DB from any endpoint. Last response: {last_error}")
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any] | list[Any] | None:
+    async def _request(
+        self, method: str, path: str, *, idempotent: bool | None = None, **kwargs: Any
+    ) -> dict[str, Any] | list[Any] | None:
         if not self._authenticated:
             await self.login()
 
-        response = await self._send(method, path, **kwargs)
+        response = await self._send(method, path, idempotent=idempotent, **kwargs)
         if response.status_code in {401, 403}:
             self._authenticated = False
             await self.login()
-            response = await self._send(method, path, **kwargs)
+            response = await self._send(method, path, idempotent=idempotent, **kwargs)
         return self._decode_response(response)
 
-    async def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+    async def _send(
+        self, method: str, path: str, *, idempotent: bool | None = None, **kwargs: Any
+    ) -> httpx.Response:
         import asyncio
         max_retries = 3
+        # Mutating POSTs (addClient/delClient/...) must NOT be blindly re-sent
+        # after a mid-flight timeout/disconnect: the panel may have already
+        # committed the first attempt, so the retry yields 'Duplicate email'
+        # (orphan panel client) or 'client not found' (masking a successful
+        # delete). Non-idempotent requests are therefore only retried on
+        # connection-phase failures, where the request provably never reached
+        # the panel. Read-only/overwrite POSTs opt in via idempotent=True.
+        if idempotent is None:
+            idempotent = method.upper() in {"GET", "HEAD"}
         for attempt in range(max_retries):
             try:
                 response = await self._client.request(method, path, **kwargs)
                 response.raise_for_status()
                 return response
             except httpx.TimeoutException as exc:
-                if attempt < max_retries - 1:
+                never_sent = isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout))
+                if (idempotent or never_sent) and attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
                 raise XUIRequestError(f"Timed out while calling X-UI endpoint '{path}'.") from exc
@@ -281,10 +309,12 @@ class SanaeiXUIClient:
                     continue
                 raise XUIRequestError(
                     f"X-UI request to '{path}' failed with status {exc.response.status_code}: "
-                    f"{self._safe_response_text(exc.response)}"
+                    f"{self._safe_response_text(exc.response)}",
+                    status_code=exc.response.status_code,
                 ) from exc
             except httpx.RequestError as exc:
-                if attempt < max_retries - 1:
+                never_sent = isinstance(exc, httpx.ConnectError)
+                if (idempotent or never_sent) and attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
                 cause = f" (caused by {type(exc.__cause__).__name__}: {exc.__cause__})" if exc.__cause__ else ""

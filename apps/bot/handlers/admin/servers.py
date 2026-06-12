@@ -12,7 +12,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from pydantic import SecretStr
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -768,7 +768,25 @@ async def delete_server(
         action_payload: dict[str, object] = {"mode": "soft_delete", "active_clients": active_client_count}
     else:
         action_payload = {"mode": "hard_delete", "active_clients": 0}
-        await session.delete(server)
+        # `XUIServerRecord.inbounds` declares no delete cascade, so an ORM
+        # `session.delete(server)` would try to nullify the NOT NULL
+        # `xui_inbounds.server_id` FK and crash with an IntegrityError.
+        # Delete children explicitly in FK order (clients -> inbounds ->
+        # credentials -> server) with bulk statements instead, so the
+        # unit-of-work never touches the loaded relationship.
+        server_inbound_ids = select(XUIInboundRecord.id).where(XUIInboundRecord.server_id == server.id)
+        await session.execute(
+            delete(XUIClientRecord).where(XUIClientRecord.inbound_id.in_(server_inbound_ids))
+        )
+        await session.execute(
+            delete(XUIInboundRecord).where(XUIInboundRecord.server_id == server.id)
+        )
+        await session.execute(
+            delete(XUIServerCredential).where(XUIServerCredential.server_id == server.id)
+        )
+        await session.execute(
+            delete(XUIServerRecord).where(XUIServerRecord.id == server.id)
+        )
 
     await AuditLogRepository(session).log_action(
         actor_user_id=admin_user.id,

@@ -100,6 +100,7 @@ if [[ "${FORMAT}" == "bundle" ]]; then
 fi
 
 # ── .env handling (bundle path only) ────────────────────────────────────
+BAK=""
 if [[ "${FORMAT}" == "bundle" && -f "${STAGE}/env" ]]; then
   echo
   warn "Bundle contains a .env file."
@@ -129,6 +130,41 @@ fi
 if [[ ! "${DB_USER}" =~ ^[A-Za-z0-9_]+$ ]]; then
   err "POSTGRES_USER contains unsafe characters: ${DB_USER}"
   exit 1
+fi
+
+# ── Sync the volume's role password to the restored .env (bundle only) ──
+# An initialised postgres volume keeps the password it was created with —
+# the POSTGRES_PASSWORD env var is ignored on later boots. After the .env
+# swap above (e.g. restoring on a NEW host that install.sh initialised
+# with a random password), the restored password no longer matches the
+# volume and api/bot/worker would all fail TCP auth after './deploy.sh
+# full'. docker-exec psql rides on local trust auth, so the ALTER works
+# regardless of the mismatch. Runs BEFORE the destructive steps below so
+# a failure aborts with the DB untouched (and rolls the .env back).
+if [[ "${FORMAT}" == "bundle" && -f "${STAGE}/env" ]]; then
+  DB_PASSWORD="$(read_env_value POSTGRES_PASSWORD)"
+  if [[ -n "${DB_PASSWORD}" ]]; then
+    info "Syncing postgres role password to the restored .env…"
+    PW_SQL=${DB_PASSWORD//\'/\'\'}   # double single quotes for the SQL literal
+    if ! docker exec -i "${POSTGRES_CONTAINER}" psql -U "${DB_USER}" -d postgres \
+          -q -v ON_ERROR_STOP=1 >/dev/null <<SQL
+ALTER ROLE "${DB_USER}" WITH PASSWORD '${PW_SQL}';
+SQL
+    then
+      err "Could not sync the postgres role password (does role '${DB_USER}' exist in this volume?)."
+      err "Aborting BEFORE touching the database — nothing was wiped."
+      err "همگام‌سازی رمز دیتابیس ناموفق بود؛ پیش از هر تغییری در دیتابیس، عملیات متوقف شد."
+      if [[ -n "${BAK}" ]]; then
+        cp -p "${BAK}" "${ENV_FILE}"
+        warn "Rolled the previous .env back from ${BAK}."
+        warn "فایل .env قبلی از نسخهٔ پشتیبان بازگردانده شد."
+      fi
+      exit 1
+    fi
+    ok "Role password synced — restored .env now matches the postgres volume."
+  else
+    warn "Restored .env has no POSTGRES_PASSWORD — role password left unchanged; deploy may fail to authenticate."
+  fi
 fi
 
 # ── Confirm before wiping the DB ────────────────────────────────────────

@@ -20,13 +20,21 @@ XUI_CAPS = PanelCapabilities(
 )
 
 
-def _client_is_gone(error_msg: str) -> bool:
+def _client_is_gone(exc: Exception) -> bool:
     """The panel ACTIVELY says the client no longer exists (vs a transient blip)."""
-    low = error_msg.lower()
+    # Structured check first: an HTTP 404 answered by the panel is definitive
+    # (XUIRequestError.status_code) — no substring matching on the message.
+    if getattr(exc, "status_code", None) == 404:
+        return True
+    low = str(exc).lower()
+    # Transport errors (timeouts / connection failures) embed the request path
+    # — which contains the user-chosen email — in the message. Never classify
+    # those as "gone": a config named e.g. 'x404' must not match.
+    if "while calling x-ui endpoint" in low:
+        return False
     return (
         "no traffic stats found" in low
-        or "404" in error_msg
-        or "not found" in low  # covers "Inbound Not Found For Email"
+        or "not found" in low  # covers "Inbound Not Found For Email" / gorm "record not found"
     )
 
 
@@ -43,7 +51,7 @@ class XUIStrategy:
             try:
                 traffic = await client.get_client_traffic(record.email)
             except XUIRequestError as exc:
-                if _client_is_gone(str(exc)):
+                if _client_is_gone(exc):
                     return UsageInfo(gone=True)
                 raise
         return UsageInfo(used_bytes=traffic.used_bytes)
@@ -54,7 +62,15 @@ class XUIStrategy:
             raise ValueError("X-UI client record has no inbound mapping.")
         ensure_inbound_server_loaded(inbound)
         async with create_xui_client_for_server(server) as client:
-            await client.delete_client(
-                inbound_id=inbound.xui_inbound_remote_id,
-                client_id=record.xui_client_remote_id or record.client_uuid,
-            )
+            try:
+                await client.delete_client(
+                    inbound_id=inbound.xui_inbound_remote_id,
+                    client_id=record.xui_client_remote_id or record.client_uuid,
+                )
+            except XUIRequestError as exc:
+                # Contract (base.py): delete is idempotent — an already-gone
+                # client counts as a successful delete, so refund flows that
+                # gate on "panel delete succeeded" are never blocked.
+                if _client_is_gone(exc):
+                    return
+                raise

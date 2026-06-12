@@ -123,6 +123,11 @@ class RebeccaClient:
         self._authenticated = True
         return token
 
+    async def get_current_admin(self) -> dict[str, Any]:
+        """GET /api/admin — used as a token/health probe (mirrors PasarGuard)."""
+        response = await self._request("GET", "api/admin")
+        return response.json() if response.content else {}
+
     # ── services (inbound bundles) ─────────────────────────────────────────────
 
     async def get_services(self):

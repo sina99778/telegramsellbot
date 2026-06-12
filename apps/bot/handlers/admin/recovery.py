@@ -330,8 +330,11 @@ async def recovery_review_gateway_payment(
 ) -> None:
     await callback.answer("â³ Ø¯Ø± Ø­Ø§Ù„ Ø¨Ø§Ø²Ø¨ÛŒÙ†ÛŒ...")
 
+    # Row-lock the payment: review_gateway_payment reaches
+    # process_successful_payment, whose contract requires the caller to hold
+    # SELECT ... FOR UPDATE (serializes with webhooks and double-clicks).
     payment = await session.scalar(
-        select(Payment).where(Payment.id == callback_data.payment_id)
+        select(Payment).where(Payment.id == callback_data.payment_id).with_for_update()
     )
     if payment is None:
         await safe_edit_or_send(callback, "Ù¾Ø±Ø¯Ø§Ø®Øª ÛŒØ§ÙØª Ù†Ø´Ø¯.")
@@ -362,8 +365,13 @@ async def recovery_retry_provisioning(
 ) -> None:
     await callback.answer("⏳ در حال تلاش مجدد...")
 
+    # Row-lock the payment so a double-click (or a race with the
+    # reconciliation worker) cannot debit and provision twice —
+    # process_successful_payment's contract requires the caller to hold
+    # SELECT ... FOR UPDATE. The provisioned re-check below then reads
+    # fresh, lock-serialized state.
     payment = await session.scalar(
-        select(Payment).where(Payment.id == callback_data.payment_id)
+        select(Payment).where(Payment.id == callback_data.payment_id).with_for_update()
     )
     if payment is None:
         await safe_edit_or_send(callback, "پرداخت یافت نشد.")

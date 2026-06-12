@@ -400,6 +400,12 @@ async def add_volume_submit(
         await message.answer(AdminMessages.SUBSCRIPTION_NOT_FOUND)
         return
 
+    # Volume can't resurrect a time-expired config — extend days first.
+    from services.renewal import TIME_EXPIRED_VOLUME_RENEWAL_MSG, volume_renewal_blocked
+    if volume_renewal_blocked(sub, "volume"):
+        await message.answer(TIME_EXPIRED_VOLUME_RENEWAL_MSG)
+        return
+
     old_vol = sub.volume_bytes
     await apply_renewal(
         session=session,

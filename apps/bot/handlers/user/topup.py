@@ -701,6 +701,25 @@ async def topup_pay_manual(
         await safe_edit_or_send(callback, Messages.TOPUP_AMOUNT_GT_ZERO)
         return
 
+    # Renewal-via-manual-crypto: the renewal handlers stash their metadata in
+    # FSM state right before delegating here. With it present, the Payment is
+    # created as kind="direct_renewal" carrying the renewal keys, so on
+    # confirmation process_successful_payment actually APPLIES the renewal —
+    # previously the metadata was dropped, the payment landed as a plain
+    # wallet_topup, and the promised automatic renewal never happened.
+    # Consume-on-read so a stale value can never leak into a later plain topup.
+    renewal_meta = data.get("renewal_meta")
+    if renewal_meta is not None:
+        await state.update_data(renewal_meta=None)
+    if not (
+        isinstance(renewal_meta, dict)
+        and renewal_meta.get("purpose") == "renewal"
+        and renewal_meta.get("sub_id")
+        and renewal_meta.get("renew_type")
+        and renewal_meta.get("renew_amount")
+    ):
+        renewal_meta = None
+
     amount = Decimal(amount_str)
     currency = (selected_wallet or {}).get("currency") or gw.manual_crypto_currency or "Crypto"
     address = (selected_wallet or {}).get("address") or gw.manual_crypto_address
@@ -789,10 +808,26 @@ async def topup_pay_manual(
         await safe_edit_or_send(callback, "حساب پیدا نشد.")
         return
 
+    manual_payload = {
+        "manual": True,
+        "currency": currency,
+        "address": address,
+        "crypto_amount": str(crypto_amount) if crypto_amount else None,
+        "unit_price": str(unit_price) if unit_price else None,
+        # Autoconfirm metadata — the worker uses these.
+        "autoconfirm_enabled": bool(autoconfirm),
+        "autoconfirm_processed_hashes": [],
+    }
+    if renewal_meta:
+        # Same payload shape the gateway renewal handlers persist (sub_id /
+        # renew_type / renew_amount / total_renew_cost ...), so the IPN-side
+        # _handle_direct_renewal works identically for manual crypto.
+        manual_payload.update(renewal_meta)
+
     payment = Payment(
         user_id=user.id,
         provider="manual_crypto",
-        kind="wallet_topup",
+        kind="direct_renewal" if renewal_meta else "wallet_topup",
         order_id=local_order_id,
         payment_status="waiting_hash",
         pay_currency=currency,
@@ -801,16 +836,7 @@ async def topup_pay_manual(
         pay_amount=Decimal(str(crypto_amount)) if crypto_amount is not None else None,
         price_currency="USD",
         price_amount=amount,
-        callback_payload={
-            "manual": True,
-            "currency": currency,
-            "address": address,
-            "crypto_amount": str(crypto_amount) if crypto_amount else None,
-            "unit_price": str(unit_price) if unit_price else None,
-            # Autoconfirm metadata — the worker uses these.
-            "autoconfirm_enabled": bool(autoconfirm),
-            "autoconfirm_processed_hashes": [],
-        },
+        callback_payload=manual_payload,
     )
     session.add(payment)
     await session.flush()

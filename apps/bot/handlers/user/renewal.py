@@ -236,9 +236,18 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
         return
 
     # Minimum amount validation
-    if renew_type == "volume" and amount < _MIN_VOLUME_GB:
-        await message.answer(f"❌ حداقل حجم قابل افزودن {_MIN_VOLUME_GB} گیگابایت است.")
-        return
+    if renew_type == "volume":
+        if amount < _MIN_VOLUME_GB:
+            await message.answer(f"❌ حداقل حجم قابل افزودن {_MIN_VOLUME_GB} گیگابایت است.")
+            return
+        # Volume can't resurrect a time-expired config — block at invoice
+        # time with a clear message (the pay buttons would refuse anyway).
+        from types import SimpleNamespace
+        from services.renewal import TIME_EXPIRED_VOLUME_RENEWAL_MSG, volume_renewal_blocked
+        sub_ends_at = await session.scalar(select(Subscription.ends_at).where(Subscription.id == sub_id))
+        if volume_renewal_blocked(SimpleNamespace(ends_at=sub_ends_at), "volume"):
+            await message.answer(TIME_EXPIRED_VOLUME_RENEWAL_MSG)
+            return
     if renew_type == "time":
         if amount < _MIN_TIME_DAYS:
             await message.answer("❌ حداقل مدت قابل افزودن ۱ روز است.")
@@ -347,7 +356,15 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
 
 
 async def _get_renewal_data(callback_data: RenewPayCallback, session: AsyncSession, user_id: int):
-    """Extract and validate renewal data from callback data directly."""
+    """Extract and validate renewal data from callback data directly.
+
+    Ownership + status gate: RenewPay buttons are self-contained (sub_id packed
+    in callback data) and live forever in chat history, so EVERY payment-method
+    handler funnels through here. Without re-validating, a forged callback could
+    renew someone else's sub, and a sub punitively disabled (IP-abuse / ban)
+    AFTER the buttons were rendered could be re-enabled on the panel by paying —
+    the same gate renew_config_start and renew_pay_wallet already enforce.
+    """
     sub_id = UUID(callback_data.s)
     renew_type = "volume" if callback_data.t == "v" else "time"
     try:
@@ -359,6 +376,22 @@ async def _get_renewal_data(callback_data: RenewPayCallback, session: AsyncSessi
 
     user = await UserRepository(session).get_by_telegram_id(user_id)
     if user is None:
+        return None
+
+    sub = await session.scalar(
+        select(Subscription).where(
+            Subscription.id == sub_id,
+            Subscription.user_id == user.id,
+        )
+    )
+    if sub is None or sub.status not in ("active", "pending_activation", "expired"):
+        return None
+
+    # Same money-safety pre-checks as the wallet path: a TIME renewal of a
+    # pending config is discarded on first connect, and a VOLUME renewal of a
+    # time-expired config can't bring it back — don't invoice either.
+    from services.renewal import time_renewal_blocked, volume_renewal_blocked
+    if time_renewal_blocked(sub, renew_type) or volume_renewal_blocked(sub, renew_type):
         return None
 
     settings_repo = AppSettingsRepository(session)
@@ -439,9 +472,19 @@ async def renew_pay_wallet(
 
     # Defensive: never debit for a TIME renewal of a not-yet-activated config
     # (the days are discarded on first connect).
-    from services.renewal import time_renewal_blocked, PENDING_TIME_RENEWAL_MSG
+    from services.renewal import (
+        PENDING_TIME_RENEWAL_MSG,
+        TIME_EXPIRED_VOLUME_RENEWAL_MSG,
+        time_renewal_blocked,
+        volume_renewal_blocked,
+    )
     if time_renewal_blocked(sub, renew_type):
         await safe_edit_or_send(callback, PENDING_TIME_RENEWAL_MSG)
+        return
+    # ...and never debit for a VOLUME renewal of a time-expired config (volume
+    # alone can't resurrect it — the panel would stay dead or go unlimited).
+    if volume_renewal_blocked(sub, renew_type):
+        await safe_edit_or_send(callback, TIME_EXPIRED_VOLUME_RENEWAL_MSG)
         return
 
     if sub.plan_id is None:
@@ -896,8 +939,20 @@ async def renew_pay_manual(
 
     price = rd["price"]
 
-    # Store the topup amount and redirect to manual crypto handler
-    await state.update_data(topup_amount=str(price))
+    # Store the topup amount + renewal metadata and redirect to the manual
+    # crypto handler. The metadata makes topup_pay_manual create the Payment
+    # as kind="direct_renewal", so confirmation actually applies the renewal
+    # (without it the money would only land in the wallet).
+    await state.update_data(
+        topup_amount=str(price),
+        renewal_meta={
+            "purpose": "renewal",
+            "sub_id": str(rd["sub_id"]),
+            "renew_type": rd["renew_type"],
+            "renew_amount": rd["amount"],
+            "total_renew_cost": float(price),
+        },
+    )
 
     from apps.bot.handlers.user.topup import topup_pay_manual
     await topup_pay_manual(callback, state, session)
@@ -1255,7 +1310,13 @@ async def renew_pay_partial_manual(
     if setup is None:
         await safe_edit_or_send(callback, "❌ اطلاعات تمدید نامعتبر است.")
         return
-    await state.update_data(topup_amount=str(setup["gap"]))
+    # Pass the renewal metadata through FSM state so the manual payment is
+    # created as kind="direct_renewal" (gap from gateway + rest from wallet),
+    # exactly like the other partial buttons — not a plain wallet top-up.
+    await state.update_data(
+        topup_amount=str(setup["gap"]),
+        renewal_meta=_partial_meta(setup),
+    )
     from apps.bot.handlers.user.topup import topup_pay_manual
     await topup_pay_manual(callback, state, session)
 
