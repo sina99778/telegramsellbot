@@ -138,6 +138,12 @@ full_deploy() {
   # idempotent (re-runnable, no-op when already applied). add_*.py-style
   # one-off scripts live there; the deploy pulls them in automatically
   # so the operator can never forget.
+  #
+  # NOTE: the repo-root migrations/*.sql files are NOT executed by any
+  # deploy path — they are manual/operational history (docs/DATABASE.md).
+  # Anything every install must converge on has to be mirrored as an
+  # idempotent Python script here (e.g. 005_money_constraints_and_
+  # payment_unique.py mirrors 011 + 012).
   if [[ -d "scripts/migrations" ]]; then
     shopt -s nullglob
     migrations=(scripts/migrations/*.py)

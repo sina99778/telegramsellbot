@@ -41,6 +41,9 @@ services:
     image: telegramsellbot:latest
     container_name: telegramsellbot-api
     restart: unless-stopped
+    labels:
+      # Restarted by the autoheal sidecar when the healthcheck fails.
+      autoheal: "true"
     env_file:
       - .env
     depends_on:
@@ -66,6 +69,9 @@ services:
     image: telegramsellbot:latest
     container_name: telegramsellbot-bot
     restart: unless-stopped
+    labels:
+      # Restarted by the autoheal sidecar when the heartbeat goes stale.
+      autoheal: "true"
     env_file:
       - .env
     depends_on:
@@ -92,6 +98,9 @@ services:
     image: telegramsellbot:latest
     container_name: telegramsellbot-worker
     restart: unless-stopped
+    labels:
+      # Restarted by the autoheal sidecar when the heartbeat goes stale.
+      autoheal: "true"
     env_file:
       - .env
     depends_on:
@@ -108,6 +117,28 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
+  autoheal:
+    # Plain (non-Swarm) docker compose never acts on health status — a
+    # container marked "unhealthy" by its healthcheck just stays running
+    # (restart: unless-stopped only fires when PID 1 exits). This sidecar
+    # closes the loop: it restarts any container labeled autoheal=true once
+    # Docker reports it unhealthy, so a hung bot/worker dispatcher recovers
+    # without an operator running doctor.sh.
+    # SECURITY: mounting docker.sock gives this container root-equivalent
+    # control over the Docker host. Mitigations: the image is pinned to a
+    # fixed release, and network_mode: none cuts off all network access —
+    # it can only talk to the local Docker socket. Do not add ports or
+    # networks to this service.
+    image: willfarrell/autoheal:1.2.0
+    container_name: telegramsellbot-autoheal
+    restart: always
+    network_mode: none
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: "10"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
 
 volumes:
   postgres_data:

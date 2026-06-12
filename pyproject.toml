@@ -39,7 +39,11 @@ dependencies = [
   "segno>=1.6.0,<2.0.0",
   "pillow>=10.4.0,<11.0.0",
   "sentry-sdk[fastapi]>=2.0.0,<3.0.0",
-  "pytesseract>=0.3.10,<0.4.0"
+  "pytesseract>=0.3.10,<0.4.0",
+  # Persian text shaping for rendered banners (services/banner.py) — must stay
+  # in sync with the Dockerfile's explicit pin list.
+  "arabic-reshaper>=3.0.0,<4.0.0",
+  "python-bidi>=0.6.0,<0.7.0"
 ]
 
 [project.optional-dependencies]

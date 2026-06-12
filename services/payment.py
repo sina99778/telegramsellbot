@@ -778,7 +778,18 @@ async def _review_nowpayments_payment(session: AsyncSession, payment: Payment) -
     if payment_status not in {"finished", "confirmed"}:
         return "not_paid"
 
-    if payment.actually_paid is not None and (payment.kind != "direct_purchase" or payload.get("provisioned")):
+    # "Already processed" must mean the FOLLOW-UP action is done too, not just
+    # the wallet credit: a credited-but-unapplied direct_renewal (e.g. apply
+    # failed and was refunded, or a crash before apply) must stay reviewable so
+    # this path can retry applying it — mirrors the Tronado reviewer below.
+    if payment.actually_paid is not None and (
+        (payment.kind == "direct_purchase" and payload.get("provisioned"))
+        or (
+            payment.kind == "direct_renewal"
+            and (payload.get("renewal_applied") or payload.get("renewal_refused"))
+        )
+        or payment.kind not in {"direct_purchase", "direct_renewal"}
+    ):
         return "already_processed"
 
     paid_amount = status_payload.get("price_amount") or payment.price_amount
@@ -815,7 +826,16 @@ async def _review_tetrapay_payment(session: AsyncSession, payment: Payment) -> s
         return "not_paid"
 
     payment.payment_status = "finished"
-    if payment.actually_paid is not None and (payment.kind != "direct_purchase" or payload.get("provisioned")):
+    # Same follow-up-aware guard as the NowPayments reviewer above: a credited
+    # direct_renewal whose apply never happened must remain retryable.
+    if payment.actually_paid is not None and (
+        (payment.kind == "direct_purchase" and payload.get("provisioned"))
+        or (
+            payment.kind == "direct_renewal"
+            and (payload.get("renewal_applied") or payload.get("renewal_refused"))
+        )
+        or payment.kind not in {"direct_purchase", "direct_renewal"}
+    ):
         return "already_processed"
 
     await process_successful_payment(
@@ -861,7 +881,10 @@ async def _review_tronado_payment(session: AsyncSession, payment: Payment) -> st
         payment.actually_paid is not None
         and (
             (payment.kind == "direct_purchase" and payload.get("provisioned"))
-            or (payment.kind == "direct_renewal" and payload.get("renewal_applied"))
+            or (
+                payment.kind == "direct_renewal"
+                and (payload.get("renewal_applied") or payload.get("renewal_refused"))
+            )
             or payment.kind not in {"direct_purchase", "direct_renewal"}
         )
     ):

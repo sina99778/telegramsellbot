@@ -277,7 +277,7 @@ async def recovery_payment_detail(
     # Show relevant actions based on state
     if payment.provider in {"nowpayments", "tetrapay", "tronado"} and payment.actually_paid is None:
         builder.button(
-            text="ðŸ” Ø¨Ø§Ø²Ø¨ÛŒÙ†ÛŒ Ø®ÙˆØ¯Ú©Ø§Ø± Ø¯Ø±Ú¯Ø§Ù‡",
+            text="🔍 بازبینی خودکار درگاه",
             callback_data=RecoveryPaymentCallback(action="review", payment_id=payment.id).pack(),
         )
 
@@ -328,7 +328,7 @@ async def recovery_review_gateway_payment(
     session: AsyncSession,
     admin_user: User,
 ) -> None:
-    await callback.answer("â³ Ø¯Ø± Ø­Ø§Ù„ Ø¨Ø§Ø²Ø¨ÛŒÙ†ÛŒ...")
+    await callback.answer("⏳ در حال بازبینی...")
 
     # Row-lock the payment: review_gateway_payment reaches
     # process_successful_payment, whose contract requires the caller to hold
@@ -337,7 +337,7 @@ async def recovery_review_gateway_payment(
         select(Payment).where(Payment.id == callback_data.payment_id).with_for_update()
     )
     if payment is None:
-        await safe_edit_or_send(callback, "Ù¾Ø±Ø¯Ø§Ø®Øª ÛŒØ§ÙØª Ù†Ø´Ø¯.")
+        await safe_edit_or_send(callback, "پرداخت یافت نشد.")
         return
 
     from services.payment import review_gateway_payment

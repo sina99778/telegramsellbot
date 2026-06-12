@@ -98,18 +98,53 @@ async def sync_pending_payments() -> None:
                 await session.rollback()
                 logger.error("Unexpected error syncing payment %s: %s", pid, exc, exc_info=True)
 
-    # Cleanup stale manual crypto payments (waiting_hash > 48h) — bulk, no lock
-    # contention, its own transaction.
+    # Cleanup stale manual crypto payments (waiting_hash > 48h). The admin
+    # approve handler accepts waiting_hash payments of ANY age and holds the
+    # row FOR UPDATE across process_successful_payment, so an unlocked
+    # read-modify-write here would queue behind that lock and then overwrite
+    # the just-approved payment's 'finished' status with 'expired'
+    # (last-writer-wins). Same two-phase pattern as the sweep above: list
+    # candidate ids without a lock, then expire each row in its own locked
+    # transaction with the eligibility re-checked under the lock.
     cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
     async with AsyncSessionFactory() as session:
         stale_result = await session.execute(
-            select(Payment).where(
+            select(Payment.id).where(
                 Payment.payment_status == "waiting_hash",
                 Payment.created_at < cutoff,
             )
         )
-        stale_payments = list(stale_result.scalars().all())
-        for sp in stale_payments:
-            sp.payment_status = "expired"
-            logger.info("Expired stale waiting_hash payment %s (created %s)", sp.id, sp.created_at)
-        await session.commit()
+        stale_ids = [row[0] for row in stale_result.all()]
+
+    for pid in stale_ids:
+        async with AsyncSessionFactory() as session:
+            try:
+                payment = await session.scalar(
+                    select(Payment)
+                    .where(
+                        Payment.id == pid,
+                        # Re-check under the lock — an admin may have
+                        # approved/rejected it between listing and locking.
+                        Payment.payment_status == "waiting_hash",
+                        # Belt-and-braces: never expire a payment that was
+                        # already credited.
+                        Payment.actually_paid.is_(None),
+                    )
+                    .with_for_update(skip_locked=True)
+                )
+                if payment is None:
+                    # Locked by a concurrent admin approval, or already
+                    # resolved — skip.
+                    continue
+                payment.payment_status = "expired"
+                logger.info(
+                    "Expired stale waiting_hash payment %s (created %s)",
+                    payment.id, payment.created_at,
+                )
+                await session.commit()
+            except Exception as exc:
+                await session.rollback()
+                logger.error(
+                    "Failed to expire stale waiting_hash payment %s: %s",
+                    pid, exc, exc_info=True,
+                )

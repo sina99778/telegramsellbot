@@ -21,6 +21,13 @@ class Payment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     provider: Mapped[str] = mapped_column(String(24), nullable=False, default="nowpayments")
     kind: Mapped[str] = mapped_column(String(24), nullable=False, default="wallet_topup")
+    # NOTE: deliberately non-unique here — manual crypto payments may
+    # legitimately reuse a TX hash across rows. The webhook-replay guard is
+    # a partial UNIQUE index on (provider, provider_payment_id) scoped to
+    # automated providers (nowpayments/tetrapay/tronado), applied by
+    # scripts/migrations/005_money_constraints_and_payment_unique.py
+    # (mirrors migrations/011_restore_provider_payment_unique.sql, which no
+    # deploy path executes).
     provider_payment_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     provider_invoice_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)

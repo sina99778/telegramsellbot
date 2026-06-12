@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from core.database import AsyncSessionFactory
 from models.order import Order
 from models.plan import Plan
 from models.ready_config import ReadyConfigItem, ReadyConfigPool
@@ -202,6 +203,45 @@ class ProvisioningManager:
                 "دوباره تلاش کنید — وجهی از حساب شما کم نشد."
             )
 
+    async def _reserve_stock(self, plan_id: UUID) -> bool:
+        """Reserve one unit of plan stock in its OWN short-lived transaction.
+
+        reserve_plan_sale takes SELECT … FOR UPDATE on the PlanInventory row.
+        Run on self.session that lock would be held until the OUTER
+        transaction commits — i.e. across the panel network call (transport
+        retries + backoff can take ~a minute on a degraded panel) and the
+        rest of the handler, serializing every concurrent buyer of a
+        stock-limited plan while each blocked buyer pins a pooled DB
+        connection. A dedicated session that commits immediately keeps the
+        locked window DB-only. Callers MUST compensate with _release_stock
+        on any later failure (a crash in between leaks the counter in the
+        SAFE direction: the plan shows sold-out one sale early, never
+        over-sells). Propagates PlanStockError when the plan is sold out.
+        """
+        async with AsyncSessionFactory() as stock_session:
+            async with stock_session.begin():
+                return await reserve_plan_sale(stock_session, plan_id)
+
+    async def _release_stock(self, plan_id: UUID) -> None:
+        """Compensate a _reserve_stock claim, again in its own short
+        transaction — independent of self.session, whose transaction may be
+        poisoned/aborted by the very failure we are compensating for.
+
+        Errors are logged loudly but swallowed: raising here would mask the
+        original provisioning failure, and a failed release only leaks the
+        counter in the safe (under-sell) direction.
+        """
+        try:
+            async with AsyncSessionFactory() as stock_session:
+                async with stock_session.begin():
+                    await release_plan_sale(stock_session, plan_id)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Failed to release reserved stock for plan %s — the plan will "
+                "appear sold out one sale early until an admin adjusts it",
+                plan_id,
+            )
+
     async def provision_subscription(
         self,
         *,
@@ -237,7 +277,7 @@ class ProvisioningManager:
         )
         if ready_pool is not None:
             try:
-                stock_reserved = await reserve_plan_sale(self.session, plan.id)
+                stock_reserved = await self._reserve_stock(plan.id)
                 return await self._provision_ready_config(
                     user_id=user_id,
                     plan=plan,
@@ -248,7 +288,7 @@ class ProvisioningManager:
                 raise ProvisioningError("Plan stock is sold out.") from exc
             except Exception:
                 if stock_reserved:
-                    await release_plan_sale(self.session, plan.id)
+                    await self._release_stock(plan.id)
                 raise
 
         # Use the plan's specific inbound instead of random selection
@@ -349,11 +389,12 @@ class ProvisioningManager:
         _ip_limit = plan.effective_ip_limit(security_settings.xui_limit_ip)
 
         stock_reserved = False
+        xui_call_attempted = False
         xui_call_succeeded = False
         savepoint_committed = False
         last_dup_exc: Exception | None = None
         try:
-            stock_reserved = await reserve_plan_sale(self.session, plan.id)
+            stock_reserved = await self._reserve_stock(plan.id)
 
             for attempt_idx, (attempt_username, attempt_email) in enumerate(identity_candidates):
                 # After a failed attempt the savepoint rolled back; refresh
@@ -415,6 +456,7 @@ class ProvisioningManager:
                         await self.session.flush()
 
                         async with self._get_xui_client_for_server(server) as xui_client:
+                            xui_call_attempted = True
                             await xui_client.add_client_to_inbound(
                                 inbound.xui_inbound_remote_id, xui_payload
                             )
@@ -458,10 +500,16 @@ class ProvisioningManager:
             raise ProvisioningError("Plan stock is sold out.") from exc
         except Exception:
             if stock_reserved:
-                await release_plan_sale(self.session, plan.id)
-            if xui_call_succeeded:
-                # X-UI created the client but the surrounding work failed —
-                # try to delete it so the panel doesn't keep an orphan.
+                await self._release_stock(plan.id)
+            if xui_call_attempted:
+                # The addClient call may have committed panel-side even though
+                # it raised: a mid-flight timeout/disconnect surfaces as an
+                # error without retrying (the outcome is UNCERTAIN), so the
+                # success flag alone would skip cleanup and leave a live,
+                # full-quota orphan on the panel forever. Best-effort delete
+                # by the freshly-generated client uuid — exclusively ours, so
+                # this can never touch another user's client, and deleting a
+                # never-created client just fails harmlessly below.
                 try:
                     async with self._get_xui_client_for_server(server) as xui_client:
                         await xui_client.delete_client(
@@ -470,7 +518,7 @@ class ProvisioningManager:
                         )
                 except Exception as cleanup_exc:
                     logger.error(
-                        "Failed to compensate orphan X-UI client %s on inbound %s: %s",
+                        "Failed to compensate possibly-orphaned X-UI client %s on inbound %s: %s",
                         client_uuid, inbound.xui_inbound_remote_id, cleanup_exc,
                     )
             raise
@@ -539,9 +587,9 @@ class ProvisioningManager:
             create_status, on_hold_seconds = "active", None
 
         stock_reserved = False
-        pg_created = False
+        pg_create_attempted = False
         try:
-            stock_reserved = await reserve_plan_sale(self.session, plan.id)
+            stock_reserved = await self._reserve_stock(plan.id)
 
             async with self.session.begin_nested():
                 subscription = Subscription(
@@ -583,6 +631,7 @@ class ProvisioningManager:
                 await self.session.flush()
 
                 async with marzban_client_for_server(server) as client:
+                    pg_create_attempted = True
                     pg_user = await client.create_user_in_bundle(
                         username=pg_username,
                         status=create_status,
@@ -592,7 +641,6 @@ class ProvisioningManager:
                         on_hold_expire_duration=on_hold_seconds,
                         note=f"user:{user_id};order:{order.id}",
                     )
-                pg_created = True
 
                 sub_link = pg_user.absolute_subscription_url(server.base_url)
                 subscription.sub_link = sub_link
@@ -607,15 +655,23 @@ class ProvisioningManager:
             raise ProvisioningError("Plan stock is sold out.") from exc
         except Exception:
             if stock_reserved:
-                await release_plan_sale(self.session, plan.id)
-            if pg_created:
+                await self._release_stock(plan.id)
+            if pg_create_attempted:
+                # The create may have committed panel-side even though it
+                # raised: the transport retries POST api/user on timeout/5xx,
+                # so a lost response turns the retry into a 409 uniqueness
+                # error (or the timeout itself surfaces) while the user is
+                # live on the panel. A success-only flag would skip cleanup
+                # and leave a full-quota orphan forever — the high-entropy
+                # username is never reused. delete_user treats 404 as
+                # already-gone, so this is safe when nothing was created.
                 try:
                     async with marzban_client_for_server(server) as client:
                         await client.delete_user(pg_username)
                 except Exception as cleanup_exc:  # noqa: BLE001
                     logger.error(
-                        "Failed to compensate orphan PasarGuard user %s: %s",
-                        pg_username, cleanup_exc,
+                        "Failed to compensate possibly-orphaned %s user %s: %s",
+                        panel_kind, pg_username, cleanup_exc,
                     )
             raise
 

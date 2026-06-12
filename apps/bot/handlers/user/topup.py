@@ -27,6 +27,11 @@ from apps.bot.utils.messaging import safe_edit_or_send
 
 router = Router(name="user-topup")
 
+# Sanity cap on a single top-up (USD). Decimal happily parses 'Infinity' and
+# huge exponents like '1E+1000000' — both would otherwise end up as garbage
+# Payment rows; anything above this is bad input, not a real top-up.
+_MAX_TOPUP_AMOUNT = Decimal("100000")
+
 
 @router.message(MenuText(Buttons.PROFILE_WALLET))
 async def wallet_profile_handler(message: Message, session: AsyncSession) -> None:
@@ -150,8 +155,19 @@ async def topup_preset_handler(
 ) -> None:
     await callback.answer()
     raw_amount = callback.data.rsplit(":", 1)[-1]
-    amount = Decimal(raw_amount)
-    
+    # Callback data can be forged: 'NaN'/'Infinity' parse as Decimal and a
+    # non-numeric tail would raise InvalidOperation uncaught. Keep the order —
+    # NaN must be rejected by is_finite() BEFORE any <= comparison (which
+    # itself raises InvalidOperation on NaN).
+    try:
+        amount = Decimal(raw_amount)
+    except InvalidOperation:
+        await safe_edit_or_send(callback, Messages.TOPUP_INVALID_AMOUNT)
+        return
+    if not amount.is_finite() or amount <= Decimal("0") or amount > _MAX_TOPUP_AMOUNT:
+        await safe_edit_or_send(callback, Messages.TOPUP_INVALID_AMOUNT)
+        return
+
     await state.update_data(topup_amount=str(amount))
     
     from apps.bot.keyboards.inline import build_gateway_selection_keyboard
@@ -193,8 +209,19 @@ async def topup_custom_amount_handler(
         await message.answer(Messages.TOPUP_INVALID_AMOUNT)
         return
 
+    # Decimal('NaN')/Decimal('Infinity') parse without error, but comparing
+    # NaN with <= raises InvalidOperation OUTSIDE the except above, and
+    # Infinity would flow into Payment.price_amount — reject non-finite first.
+    if not amount.is_finite():
+        await message.answer(Messages.TOPUP_INVALID_AMOUNT)
+        return
+
     if amount <= Decimal("0"):
         await message.answer(Messages.TOPUP_AMOUNT_GT_ZERO)
+        return
+
+    if amount > _MAX_TOPUP_AMOUNT:
+        await message.answer(f"❌ حداکثر مبلغ هر شارژ {_MAX_TOPUP_AMOUNT} دلار است.")
         return
 
     await state.update_data(topup_amount=str(amount))

@@ -399,12 +399,16 @@ async def my_configs_search_handler(
 
     await state.clear()
 
+    # Escape the echoed query: bot default parse_mode is HTML, a raw '<' breaks the send.
+    import html as _html
+    safe_query = _html.escape(query)
+
     if not subs:
         builder = InlineKeyboardBuilder()
         builder.button(text="🔄 بازگشت", callback_data=MyConfigListCallback(action="page", page=0).pack())
         builder.adjust(1)
         await message.answer(
-            f"🔍 هیچ کانفیگی با '‏{query}‏' یافت نشد.",
+            f"🔍 هیچ کانفیگی با '‏{safe_query}‏' یافت نشد.",
             reply_markup=builder.as_markup(),
         )
         return
@@ -419,7 +423,7 @@ async def my_configs_search_handler(
     builder.adjust(1)
 
     await message.answer(
-        f"🔍 نتایج جستجو برای '‏{query}‏' ({len(subs)} کانفیگ):",
+        f"🔍 نتایج جستجو برای '‏{safe_query}‏' ({len(subs)} کانفیگ):",
         reply_markup=builder.as_markup(),
     )
 

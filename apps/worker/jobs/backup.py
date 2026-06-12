@@ -34,6 +34,7 @@ import re
 import tarfile
 import time
 from datetime import datetime, timezone
+from urllib.parse import unquote, urlsplit
 
 from aiogram import Bot
 from aiogram.types import BufferedInputFile
@@ -60,6 +61,14 @@ logger = logging.getLogger(__name__)
 # the bundle is well under 30 MB so this is just a safety net.
 _MAX_BUNDLE_BYTES = 48 * 1024 * 1024
 
+# Throttle for the pg_dump-failure alert. The scheduler tick retries a
+# failed backup every 30 minutes (backup_last_run_at is only stamped on
+# success), which used to DM every admin on EVERY tick for as long as the
+# failure persisted — 48 messages per admin per day. Alert at most once
+# per this interval per worker process; manual/forced runs always alert.
+_FAILURE_NOTIFY_MIN_INTERVAL_SECONDS = 6 * 3600
+_last_failure_notified_monotonic: float | None = None
+
 
 async def _get_admin_telegram_ids(session: AsyncSession) -> set[int]:
     ids: set[int] = set()
@@ -80,14 +89,18 @@ async def _dump_postgres() -> bytes | None:
     """Run pg_dump for the bot DB and return its bytes."""
     db_url = settings.database_url
     try:
-        clean = db_url.split("://", 1)[1]
-        userpass, hostdb = clean.rsplit("@", 1)
-        user, password = userpass.split(":", 1)
-        hostport, dbname = hostdb.split("/", 1)
-        if ":" in hostport:
-            host, port = hostport.split(":", 1)
-        else:
-            host, port = hostport, "5432"
+        # urlsplit + unquote instead of hand-rolled string splitting:
+        # percent-encoded credentials (e.g. p%40ss for "p@ss") must be
+        # decoded before they reach PGPASSWORD, and a query string
+        # (?sslmode=require etc.) must not end up glued onto the dbname.
+        parts = urlsplit(db_url)
+        user = unquote(parts.username) if parts.username else ""
+        password = unquote(parts.password) if parts.password else ""
+        host = parts.hostname or "localhost"
+        port = str(parts.port) if parts.port is not None else "5432"
+        dbname = unquote(parts.path.lstrip("/"))
+        if not user or not dbname:
+            raise ValueError("DATABASE_URL is missing the user or database name")
     except (ValueError, IndexError) as exc:
         logger.error("Failed to parse DATABASE_URL for pg_dump: %s", exc)
         return None
@@ -305,20 +318,34 @@ async def run_backup(
 
     logger.info("[BACKUP] Starting at %s (manual=%s)", ts, bool(manual_requester_id))
 
+    global _last_failure_notified_monotonic
+
     pg_data = await _dump_postgres()
     if not pg_data:
-        # Surface the failure so admins know to fix it.
+        # Surface the failure so admins know to fix it. Manual/forced runs
+        # always alert; the scheduled path throttles the alert because the
+        # 30-minute cron retries a failed backup on every tick (last_run_at
+        # is only stamped on success).
         targets: set[int] = set()
         if manual_requester_id is not None:
             targets.add(manual_requester_id)
-        else:
+        elif force or _last_failure_notified_monotonic is None or (
+            time.monotonic() - _last_failure_notified_monotonic
+            >= _FAILURE_NOTIFY_MIN_INTERVAL_SECONDS
+        ):
+            _last_failure_notified_monotonic = time.monotonic()
             targets = await _get_admin_telegram_ids(session)
+        else:
+            logger.info("[BACKUP] pg_dump failed again — admin alert throttled.")
         for tg_id in targets:
             try:
                 await bot.send_message(tg_id, "⚠️ بکاپ خودکار ناموفق بود — pg_dump خطا داد.")
             except Exception:
                 pass
         return
+
+    # pg_dump succeeded — a future failure is a new episode, alert again.
+    _last_failure_notified_monotonic = None
 
     env_data = _read_env_file()
     ready_data = _read_ready_configs_dir()

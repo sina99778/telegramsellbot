@@ -21,7 +21,7 @@ from datetime import timedelta
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -116,6 +116,22 @@ async def _try_auto_renew(session, bot, sub, renewal_settings) -> None:
         renew_type="time", amount=float(days), settings=renewal_settings, plan=plan
     )
 
+    # Snapshot the primitives the insufficient-balance notifier needs BEFORE the
+    # debit attempt: its failure path rolls back the session, which expires every
+    # loaded ORM instance, and touching an expired attribute on an AsyncSession
+    # raises MissingGreenlet — the notification would be silently lost.
+    notify_args = {
+        "sub_id": sub.id,
+        "sub_name": (
+            sub.xui_client.username
+            if (sub.xui_client and sub.xui_client.username)
+            else str(sub.id)[:8]
+        ),
+        "user_id": user.id,
+        "telegram_id": user.telegram_id,
+        "is_bot_blocked": bool(user.is_bot_blocked),
+    }
+
     # Canonical renewal lock (shared with the bot + mini-app surfaces) so the
     # worker can't auto-renew a sub while the user is manually renewing it.
     lock_key = renewal_lock_key(sub.id)
@@ -150,7 +166,7 @@ async def _try_auto_renew(session, bot, sub, renewal_settings) -> None:
             return
 
         if user.wallet.balance < price:
-            await _notify_insufficient(session, bot, sub, user, float(price))
+            await _notify_insufficient(session, bot, price=float(price), **notify_args)
             return
 
         order = Order(
@@ -181,8 +197,10 @@ async def _try_auto_renew(session, bot, sub, renewal_settings) -> None:
                     metadata={"sub_id": str(sub.id), "type": "time", "auto": True},
                 )
             except InsufficientBalanceError:
+                # rollback() expires every loaded ORM instance — only the
+                # primitives snapshotted above may be used past this point.
                 await session.rollback()
-                await _notify_insufficient(session, bot, sub, user, float(price))
+                await _notify_insufficient(session, bot, price=float(price), **notify_args)
                 return
 
         try:
@@ -242,20 +260,32 @@ async def _notify_success(bot, sub, user, days: int, price: float) -> None:
         logger.warning("auto-renew success notify failed for %s: %s", user.telegram_id, exc)
 
 
-async def _notify_insufficient(session: AsyncSession, bot, sub, user, price: float) -> None:
+async def _notify_insufficient(
+    session: AsyncSession,
+    bot,
+    *,
+    sub_id,
+    sub_name: str,
+    user_id,
+    telegram_id: int,
+    is_bot_blocked: bool,
+    price: float,
+) -> None:
     """Tell the user their wallet was too low — at most once per service per
-    approach (deduped via an AppSetting key, cleared on any successful renewal)."""
-    if user.is_bot_blocked:
+    approach (deduped via an AppSetting key, cleared on any successful renewal).
+
+    Takes primitive snapshots instead of ORM instances: the debit-race caller
+    invokes this right after session.rollback(), which expires every loaded
+    instance, and reading an expired attribute on an AsyncSession raises
+    MissingGreenlet — losing the notification entirely."""
+    if is_bot_blocked:
         return
-    key = f"alert.sub.{sub.id}.autorenew_low"
+    key = f"alert.sub.{sub_id}.autorenew_low"
     if await session.get(AppSetting, key) is not None:
         return
     session.add(AppSetting(key=key, value_json={"sent_at": utcnow().isoformat()}))
     await session.commit()
 
-    sub_name = (
-        sub.xui_client.username if (sub.xui_client and sub.xui_client.username) else str(sub.id)[:8]
-    )
     builder = InlineKeyboardBuilder()
     from apps.bot.handlers.user.my_configs import MyConfigCallback
     builder.button(
@@ -264,7 +294,7 @@ async def _notify_insufficient(session: AsyncSession, bot, sub, user, price: flo
     )
     builder.button(
         text="⚙️ مشاهده سرویس",
-        callback_data=MyConfigCallback(action="view", subscription_id=sub.id).pack(),
+        callback_data=MyConfigCallback(action="view", subscription_id=sub_id).pack(),
     )
     builder.adjust(1)
     text = (
@@ -275,11 +305,16 @@ async def _notify_insufficient(session: AsyncSession, bot, sub, user, price: flo
         "برای جلوگیری از قطع سرویس، کیف پول را شارژ کنید — دفعه‌ی بعد خودکار تمدید می‌شود."
     )
     try:
-        await bot.send_message(user.telegram_id, text, reply_markup=builder.as_markup(), parse_mode="HTML")
+        await bot.send_message(telegram_id, text, reply_markup=builder.as_markup(), parse_mode="HTML")
     except TelegramForbiddenError:
-        user.is_bot_blocked = True
+        # User blocked the bot — persist the flag with a plain UPDATE (the ORM
+        # instance may be expired by the rollback that led us here).
+        await session.execute(
+            update(User).where(User.id == user_id).values(is_bot_blocked=True)
+        )
+        await session.commit()
     except Exception as exc:
-        logger.warning("auto-renew low-balance notify failed for %s: %s", user.telegram_id, exc)
+        logger.warning("auto-renew low-balance notify failed for %s: %s", telegram_id, exc)
 
 
 async def _clear_sub_alert_keys(session: AsyncSession, sub_id) -> None:

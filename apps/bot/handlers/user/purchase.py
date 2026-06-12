@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import re
 from decimal import Decimal
 from uuid import UUID, uuid4
@@ -42,6 +43,11 @@ from apps.bot.utils.messaging import safe_edit_or_send
 logger = logging.getLogger(__name__)
 
 router = Router(name="user-purchase")
+
+# Sanity caps on custom-purchase input. 100k GB / 100k days (~274 years, still
+# below datetime.max) — anything larger is garbage input, not a purchase.
+_MAX_CUSTOM_VOLUME_GB = 100_000
+_MAX_CUSTOM_DAYS = 100_000
 
 # Allowed config name pattern: letters, digits, underscores, dashes, 3-32 chars
 CONFIG_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_\-]{3,32}$")
@@ -254,6 +260,11 @@ async def custom_purchase_volume_entered(message: Message, state: FSMContext) ->
         return
     try:
         volume_gb = float(message.text.strip().replace(",", "."))
+        # 'nan'/'inf' parse as float and slip past `<= 0` (NaN comparisons are
+        # always False), then crash plan creation at int(nan * 1024**3) —
+        # reject non-finite values and absurd magnitudes here.
+        if not math.isfinite(volume_gb) or volume_gb > _MAX_CUSTOM_VOLUME_GB:
+            raise ValueError
     except ValueError:
         await message.answer("حجم معتبر نیست. مثال: 25")
         return
@@ -275,6 +286,10 @@ async def custom_purchase_days_entered(
         return
     try:
         duration_days = int(message.text.strip().replace(",", ""))
+        # int() can't yield NaN/inf, but an astronomically large day count
+        # overflows datetime arithmetic downstream — cap it at parse time.
+        if duration_days > _MAX_CUSTOM_DAYS:
+            raise ValueError
     except ValueError:
         await message.answer("مدت معتبر نیست. مثال: 30")
         return

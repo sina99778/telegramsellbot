@@ -1485,8 +1485,13 @@ def _normalize_integer_input(raw_value: str) -> str:
     for character in raw_value.strip():
         if character in {"\u200e", "\u200f", "\u202a", "\u202b", "\u202c", "\u2066", "\u2067", "\u2069"}:
             continue
-        if character.isspace() or character in DECIMAL_SEPARATORS:
+        if character.isspace():
             continue
+        if character in DECIMAL_SEPARATORS:
+            # Never silently drop separators: "1.5" must NOT become 15.
+            # Integer fields reject decimal/thousands separators outright;
+            # callers catch ValueError and show the Persian error message.
+            raise ValueError(f"non-integer input: {raw_value!r}")
         try:
             normalized_characters.append(str(unicodedata.decimal(character)))
         except (TypeError, ValueError):

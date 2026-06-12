@@ -40,24 +40,47 @@ router = APIRouter()
 
 
 # ── In-memory rate-limit on /login (per-process) ─────────────────────────
+# Keys are attacker-controlled (any unauthenticated POST body), so the dict
+# is pruned on every check and hard-capped to stay bounded in memory.
 _LOGIN_FAILURES: dict[str, deque[float]] = {}
 _LOGIN_FAIL_WINDOW = 300  # seconds
 _LOGIN_FAIL_THRESHOLD = 5
+_LOGIN_FAILURES_MAX_KEYS = 10_000  # hard cap on tracked usernames
+
+
+def _prune_login_failures(now: float) -> None:
+    """Drop timestamps older than the window and delete empty buckets.
+
+    Without this, every distinct username ever submitted would keep a dict
+    entry forever (slow memory-exhaustion DoS from unauthenticated requests).
+    """
+    cutoff = now - _LOGIN_FAIL_WINDOW
+    for key in list(_LOGIN_FAILURES):
+        bucket = _LOGIN_FAILURES[key]
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if not bucket:
+            del _LOGIN_FAILURES[key]
 
 
 def _check_login_rate(username_key: str) -> int:
     """Return 0 if allowed, else seconds-to-wait."""
     now = time.time()
-    bucket = _LOGIN_FAILURES.setdefault(username_key, deque())
-    while bucket and bucket[0] < now - _LOGIN_FAIL_WINDOW:
-        bucket.popleft()
-    if len(bucket) >= _LOGIN_FAIL_THRESHOLD:
+    _prune_login_failures(now)
+    bucket = _LOGIN_FAILURES.get(username_key)
+    if bucket and len(bucket) >= _LOGIN_FAIL_THRESHOLD:
         retry_after = int(_LOGIN_FAIL_WINDOW - (now - bucket[0])) + 1
         return max(retry_after, 1)
     return 0
 
 
 def _record_login_failure(username_key: str) -> None:
+    # Safety valve: if pruning alone can't keep the dict under the cap
+    # (burst of distinct usernames inside one window), evict the
+    # oldest-inserted keys before adding a new one.
+    if username_key not in _LOGIN_FAILURES:
+        while len(_LOGIN_FAILURES) >= _LOGIN_FAILURES_MAX_KEYS:
+            del _LOGIN_FAILURES[next(iter(_LOGIN_FAILURES))]
     _LOGIN_FAILURES.setdefault(username_key, deque()).append(time.time())
 
 

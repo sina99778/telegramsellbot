@@ -102,6 +102,33 @@ const Pages = (() => {
         }[ch]));
     }
 
+    /**
+     * Encode a value for embedding inside a single-quoted JS string in an
+     * inline onclick attribute (decoded back with decodeURIComponent at call
+     * time). encodeURIComponent alone leaves ' ! ( ) * unescaped, so an
+     * apostrophe in the data (e.g. a plan named "Nowruz's Offer") would
+     * terminate the JS string — breaking the button and allowing injection.
+     * escapeHtml can't help here: attribute values are entity-decoded before
+     * the JS parser sees them.
+     */
+    function encodeJsArg(value) {
+        return encodeURIComponent(value ?? '').replace(
+            /[!'()*]/g,
+            ch => '%' + ch.charCodeAt(0).toString(16).toUpperCase()
+        );
+    }
+
+    /**
+     * UI.daysLeft() returns a Number (days remaining, 0 = time elapsed) or
+     * null (no expiry yet — e.g. pending-activation/on-hold configs).
+     * Format it for display so a literal 'null' never reaches the UI.
+     */
+    function formatDaysLeft(days) {
+        if (days === null || days === undefined) return '—';
+        if (days === 0) return 'منقضی';
+        return `${days} روز`;
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // DASHBOARD
     // ═══════════════════════════════════════════════════════════════════════
@@ -222,14 +249,16 @@ const Pages = (() => {
     function getConfigHealth(sub) {
         const pct = UI.getUsagePercent(sub.used_bytes, sub.volume_bytes);
         const remainingBytes = Math.max((sub.volume_bytes || 0) - (sub.used_bytes || 0), 0);
-        const daysLabel = UI.daysLeft(sub.ends_at);
-        const isExpired = sub.status === 'expired' || sub.status === 'disabled' || daysLabel === 'منقضی' || pct >= 100;
+        // UI.daysLeft() returns Number|null — compare numerically (0 = time
+        // elapsed, 1 = less than one day left thanks to Math.ceil).
+        const days = UI.daysLeft(sub.ends_at);
+        const isExpired = sub.status === 'expired' || sub.status === 'disabled' || days === 0 || pct >= 100;
         let warning = '';
         if (isExpired) {
             warning = 'این سرویس به پایان رسیده و دسترسی آن باید قطع باشد.';
         } else if (pct >= 90) {
             warning = 'حجم سرویس رو به پایان است.';
-        } else if (daysLabel === '1 روز') {
+        } else if (days === 1) {
             warning = 'کمتر از یک روز تا پایان سرویس باقی مانده است.';
         }
         return {
@@ -238,7 +267,7 @@ const Pages = (() => {
             statusText: UI.getStatusText(isExpired && sub.status === 'active' ? 'expired' : sub.status),
             statusClass: UI.getStatusClass(isExpired ? 'expired' : sub.status),
             remainingBytes,
-            daysLabel,
+            daysLabel: formatDaysLeft(days),
             isExpired,
             isNearLimit: pct >= 90,
             warning,
@@ -254,7 +283,7 @@ const Pages = (() => {
             health.isExpired ? 'expired-card' : '',
             health.isNearLimit ? 'near-limit' : '',
         ].filter(Boolean).join(' ');
-        const safeSubLink = sub.sub_link ? encodeURIComponent(sub.sub_link) : '';
+        const safeSubLink = sub.sub_link ? encodeJsArg(sub.sub_link) : '';
 
         return `
             <div class="${cardClass}" onclick="Pages.showConfigDetail('${sub.id}')">
@@ -339,18 +368,18 @@ const Pages = (() => {
                     ${rawSub ? `
                     <div class="config-detail-link-block">
                         <p class="form-label">🔗 لینک اشتراک (Sub-Link)</p>
-                        <div class="copy-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(rawSub)}'))">${escapeHtml(rawSub)}</div>
+                        <div class="copy-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeJsArg(rawSub)}'))">${escapeHtml(rawSub)}</div>
                     </div>` : ''}
 
                     ${rawVless ? `
                     <div class="config-detail-link-block">
                         <p class="form-label">📋 کانفیگ مستقیم (VLESS)</p>
-                        <div class="copy-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(rawVless)}'))">${escapeHtml(rawVless)}</div>
+                        <div class="copy-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeJsArg(rawVless)}'))">${escapeHtml(rawVless)}</div>
                     </div>` : ''}
 
                     <div class="config-detail-actions">
-                        ${rawSub ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(rawSub)}'))">${UI.icon('copy')} کپی ساب</button>` : ''}
-                        ${rawVless ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(rawVless)}'))">${UI.icon('copy')} کپی VLESS</button>` : ''}
+                        ${rawSub ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${encodeJsArg(rawSub)}'))">${UI.icon('copy')} کپی ساب</button>` : ''}
+                        ${rawVless ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${encodeJsArg(rawVless)}'))">${UI.icon('copy')} کپی VLESS</button>` : ''}
                         ${rawSub ? `<a href="v2rayng://install-sub/?url=${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">V2rayNG</a>` : ''}
                         ${rawSub ? `<a href="v2box://install-sub/?url=${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">V2Box</a>` : ''}
                         ${rawSub ? `<a href="streisand://import/${safeSubLink}" class="btn btn-primary btn-sm" style="text-decoration:none">Streisand</a>` : ''}
@@ -506,7 +535,7 @@ const Pages = (() => {
                 UI.showModal(`
                     <div class="modal-title">فاکتور تمدید آماده است</div>
                     <p class="form-hint" style="text-align:center;margin-bottom:14px">${escapeHtml(result.message)}</p>
-                    <button class="btn btn-primary btn-block" onclick="Pages.openInvoice(decodeURIComponent('${encodeURIComponent(result.invoice_url)}'))">پرداخت فاکتور</button>
+                    <button class="btn btn-primary btn-block" onclick="Pages.openInvoice(decodeURIComponent('${encodeJsArg(result.invoice_url)}'))">پرداخت فاکتور</button>
                     <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">بستن</button>
                 `);
             } else {
@@ -667,7 +696,7 @@ const Pages = (() => {
                 UI.showModal(`
                     <div class="modal-title">فاکتور آماده است</div>
                     <p class="form-hint" style="text-align:center;margin-bottom:14px">${escapeHtml(result.message)}</p>
-                    <button class="btn btn-primary btn-block" onclick="Pages.openInvoice(decodeURIComponent('${encodeURIComponent(result.invoice_url)}'))">پرداخت فاکتور</button>
+                    <button class="btn btn-primary btn-block" onclick="Pages.openInvoice(decodeURIComponent('${encodeJsArg(result.invoice_url)}'))">پرداخت فاکتور</button>
                     <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">بستن</button>
                 `);
                 return;
@@ -675,8 +704,8 @@ const Pages = (() => {
             UI.showModal(`
                 <div class="modal-title">کانفیگ ساخته شد</div>
                 <p class="form-hint" style="text-align:center;margin-bottom:12px">${escapeHtml(result.message)}</p>
-                ${result.sub_link ? `<div class="copy-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(result.sub_link)}'))">${escapeHtml(result.sub_link)}</div>` : ''}
-                ${result.vless_uri ? `<div class="copy-box" style="margin-top:10px" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(result.vless_uri)}'))">${escapeHtml(result.vless_uri)}</div>` : ''}
+                ${result.sub_link ? `<div class="copy-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeJsArg(result.sub_link)}'))">${escapeHtml(result.sub_link)}</div>` : ''}
+                ${result.vless_uri ? `<div class="copy-box" style="margin-top:10px" onclick="UI.copyToClipboard(decodeURIComponent('${encodeJsArg(result.vless_uri)}'))">${escapeHtml(result.vless_uri)}</div>` : ''}
                 <button class="btn btn-primary btn-block" style="margin-top:12px" onclick="UI.closeModal(); Pages.load_dashboard(); UI.navigate('configs')">مشاهده سرویس‌ها</button>
             `);
         } catch (e) {
@@ -741,7 +770,7 @@ const Pages = (() => {
                 UI.showModal(`
                     <div class="modal-title">فاکتور آماده است</div>
                     <p class="form-hint" style="text-align:center;margin-bottom:14px">${escapeHtml(result.message)}</p>
-                    <button class="btn btn-primary btn-block" onclick="Pages.openInvoice(decodeURIComponent('${encodeURIComponent(result.invoice_url)}'))">پرداخت فاکتور</button>
+                    <button class="btn btn-primary btn-block" onclick="Pages.openInvoice(decodeURIComponent('${encodeJsArg(result.invoice_url)}'))">پرداخت فاکتور</button>
                     <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">بستن</button>
                 `);
                 return;
@@ -750,8 +779,8 @@ const Pages = (() => {
             UI.showModal(`
                 <div class="modal-title">کانفیگ ساخته شد</div>
                 <p class="form-hint" style="text-align:center;margin-bottom:12px">${escapeHtml(result.message)}</p>
-                ${result.sub_link ? `<div class="copy-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(result.sub_link)}'))">${escapeHtml(result.sub_link)}</div>` : ''}
-                ${result.vless_uri ? `<div class="copy-box" style="margin-top:10px" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(result.vless_uri)}'))">${escapeHtml(result.vless_uri)}</div>` : ''}
+                ${result.sub_link ? `<div class="copy-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeJsArg(result.sub_link)}'))">${escapeHtml(result.sub_link)}</div>` : ''}
+                ${result.vless_uri ? `<div class="copy-box" style="margin-top:10px" onclick="UI.copyToClipboard(decodeURIComponent('${encodeJsArg(result.vless_uri)}'))">${escapeHtml(result.vless_uri)}</div>` : ''}
                 <button class="btn btn-primary btn-block" style="margin-top:12px" onclick="UI.closeModal(); Pages.load_dashboard(); UI.navigate('configs')">مشاهده سرویس‌ها</button>
             `);
         } catch (e) {
@@ -870,7 +899,7 @@ const Pages = (() => {
                         </span>
                     </div>
                     <div class="payment-actions">
-                        ${payment.invoice_url ? `<button class="btn btn-primary btn-sm" onclick="Pages.openInvoice(decodeURIComponent('${encodeURIComponent(payment.invoice_url)}'))">پرداخت</button>` : ''}
+                        ${payment.invoice_url ? `<button class="btn btn-primary btn-sm" onclick="Pages.openInvoice(decodeURIComponent('${encodeJsArg(payment.invoice_url)}'))">پرداخت</button>` : ''}
                         ${canRefresh ? `<button class="btn btn-secondary btn-sm" onclick="Pages.refreshPayment('${payment.id}')">${UI.icon('refresh')}</button>` : ''}
                     </div>
                 </div>
@@ -966,7 +995,7 @@ const Pages = (() => {
                 <div class="modal-title">فاکتور شارژ آماده است</div>
                 <p class="form-hint" style="text-align:center;margin-bottom:14px">${escapeHtml(result.message)}</p>
                 ${result.pay_amount ? `<div class="renewal-price-box"><span>مبلغ پرداخت</span><strong>${UI.formatMoney(result.pay_amount)} ${escapeHtml(result.pay_currency || '')}</strong></div>` : ''}
-                <button class="btn btn-primary btn-block" onclick="Pages.openInvoice(decodeURIComponent('${encodeURIComponent(result.invoice_url)}'))">پرداخت فاکتور</button>
+                <button class="btn btn-primary btn-block" onclick="Pages.openInvoice(decodeURIComponent('${encodeJsArg(result.invoice_url)}'))">پرداخت فاکتور</button>
                 <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal(); Pages.load_wallet()">بستن</button>
             `);
         } catch (e) {
@@ -1489,11 +1518,11 @@ const Pages = (() => {
                     <div class="admin-item">
                         <div>
                             <strong>${escapeHtml(sub.config_name || sub.plan_name || 'سرویس')}</strong>
-                            <span>${escapeHtml(sub.status)} | ${UI.formatBytes(sub.used_bytes)} / ${UI.formatBytes(sub.volume_bytes)} | ${UI.daysLeft(sub.ends_at)}</span>
+                            <span>${escapeHtml(sub.status)} | ${UI.formatBytes(sub.used_bytes)} / ${UI.formatBytes(sub.volume_bytes)} | ${formatDaysLeft(UI.daysLeft(sub.ends_at))}</span>
                         </div>
                         <div style="display:flex;gap:6px;flex-shrink:0">
                             <button class="btn btn-secondary btn-sm" onclick="Pages.transferUserConfigs('${user.id}', '${escapeHtml(sub.id)}', false)">انتقال</button>
-                            ${sub.sub_link ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(sub.sub_link)}'))">کپی</button>` : ''}
+                            ${sub.sub_link ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${encodeJsArg(sub.sub_link)}'))">کپی</button>` : ''}
                         </div>
                     </div>
                 `).join('') : '<div class="empty-state compact"><p>سرویسی برای این کاربر ثبت نشده</p></div>'}
@@ -1603,7 +1632,7 @@ const Pages = (() => {
     function getAdminActionHandler(section, action, item) {
         const id = escapeHtml(item.id);
         if (action === 'view_ticket') return `Pages.openAdminTicket('${id}')`;
-        if (action === 'edit_plan_name') return `Pages.showPlanNameEditor('${id}', '${encodeURIComponent(item.title || '')}')`;
+        if (action === 'edit_plan_name') return `Pages.showPlanNameEditor('${id}', '${encodeJsArg(item.title || '')}')`;
         if (action === 'edit_plan_duration') return `Pages.showPlanDurationEditor('${id}')`;
         if (action === 'edit_plan_price') return `Pages.showPlanPriceEditor('${id}')`;
         if (action === 'edit_plan_stock') return `Pages.showPlanStockEditor('${id}')`;
@@ -2037,12 +2066,12 @@ const Pages = (() => {
             ${data.ref_code ? `
                 <div class="referral-card">
                     <div class="form-label">لینک دعوت اختصاصی شما</div>
-                    <div class="ref-code-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeURIComponent(refLink)}'))" title="برای کپی، بزنید">
+                    <div class="ref-code-box" onclick="UI.copyToClipboard(decodeURIComponent('${encodeJsArg(refLink)}'))" title="برای کپی، بزنید">
                         <span>${escapeHtml(refLink)}</span>
                         <span class="btn btn-ghost btn-sm">${UI.icon('copy')}</span>
                     </div>
                     <p class="form-hint">برای کپی روی متن بزنید.</p>
-                    <button class="btn btn-primary btn-block" style="margin-block-start:var(--space-3)" onclick="shareRefLink(decodeURIComponent('${encodeURIComponent(refLink)}'))">
+                    <button class="btn btn-primary btn-block" style="margin-block-start:var(--space-3)" onclick="shareRefLink(decodeURIComponent('${encodeJsArg(refLink)}'))">
                         ${UI.icon('share')} اشتراک‌گذاری در تلگرام
                     </button>
                 </div>

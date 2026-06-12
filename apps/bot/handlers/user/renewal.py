@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from decimal import Decimal
 from uuid import UUID, uuid4
 
@@ -32,6 +33,9 @@ router = Router(name="user-renewal")
 
 _MIN_VOLUME_GB = 0.1
 _MIN_TIME_DAYS = 1
+# Sanity cap on user-entered renewal amounts (GB or days). 100k days is still
+# safely below datetime.max; anything larger is garbage input, not a renewal.
+_MAX_RENEWAL_AMOUNT = 100_000
 
 
 class RenewTypeCallback(CallbackData, prefix="renew"):
@@ -229,7 +233,10 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
 
     try:
         amount = float(message.text.strip().replace(",", "."))
-        if amount <= 0:
+        # NaN/inf slip past plain `<= 0` checks (NaN comparisons are always
+        # False) and crash the money path later — reject non-finite values
+        # and absurd magnitudes here.
+        if not math.isfinite(amount) or amount <= 0 or amount > _MAX_RENEWAL_AMOUNT:
             raise ValueError
     except ValueError:
         await message.answer(Messages.RENEWAL_INVALID_VALUE)
@@ -369,7 +376,10 @@ async def _get_renewal_data(callback_data: RenewPayCallback, session: AsyncSessi
     renew_type = "volume" if callback_data.t == "v" else "time"
     try:
         amount = float(callback_data.a)
-        if amount <= 0:
+        # Callback payloads outlive the chat and can be forged — apply the
+        # same non-finite/bounds gate as renew_value_entered ('nan' passes a
+        # bare `<= 0` check and crashes the wallet debit with InvalidOperation).
+        if not math.isfinite(amount) or amount <= 0 or amount > _MAX_RENEWAL_AMOUNT:
             return None
     except ValueError:
         return None
