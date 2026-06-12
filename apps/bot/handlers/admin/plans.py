@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 from decimal import Decimal, InvalidOperation
 import unicodedata
@@ -1282,15 +1283,33 @@ async def delete_plan(
     await list_plans(callback, PlanListPageCallback(page=callback_data.page), session)
 
 
+def _pack_uuid(value: UUID) -> str:
+    """UUID -> 22-char urlsafe-base64 (no padding) so two ids fit in callback data."""
+    return base64.urlsafe_b64encode(value.bytes).decode().rstrip("=")
+
+
+def _unpack_uuid(value: str) -> UUID:
+    """Inverse of _pack_uuid. Raises ValueError on malformed input."""
+    try:
+        return UUID(bytes=base64.urlsafe_b64decode(value + "=="))
+    except Exception as exc:  # binascii.Error / ValueError on bad input
+        raise ValueError(f"bad packed uuid: {value!r}") from exc
+
+
 class ChangeInboundCallback(CallbackData, prefix="chinb"):
-    inbound_id: UUID
+    # Telegram caps callback data at 64 bytes — two str(UUID)s don't fit, so
+    # both ids travel as 22-char packed base64. Carrying the TARGET PLAN id
+    # here (instead of a shared FSM key) makes a stale picker keyboard act on
+    # the plan it was rendered for, not whichever plan was opened last.
+    inbound_id: str
+    plan_id: str
+    page: int = 1
 
 
 @router.callback_query(PlanActionCallback.filter(F.action == "change_inbound"))
 async def change_inbound_start(
     callback: CallbackQuery,
     callback_data: PlanActionCallback,
-    state: FSMContext,
     session: AsyncSession,
 ) -> None:
     await callback.answer()
@@ -1302,12 +1321,6 @@ async def change_inbound_start(
     if plan is None:
         await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
         return
-
-    # Store plan_id in FSM state (callback data too large for 2 UUIDs - 84 bytes > 64 limit)
-    await state.update_data(
-        change_inbound_plan_id=str(plan.id),
-        change_inbound_page=callback_data.page,
-    )
 
     # Current inbound info
     if plan.inbound and plan.inbound.server:
@@ -1338,7 +1351,9 @@ async def change_inbound_start(
         builder.button(
             text=f"{is_current}{server_name} — {inb.remark} ({inb.protocol})",
             callback_data=ChangeInboundCallback(
-                inbound_id=inb.id,
+                inbound_id=_pack_uuid(inb.id),
+                plan_id=_pack_uuid(plan.id),
+                page=callback_data.page,
             ).pack(),
         )
     builder.button(
@@ -1359,21 +1374,22 @@ async def change_inbound_start(
 async def change_inbound_confirm(
     callback: CallbackQuery,
     callback_data: ChangeInboundCallback,
-    state: FSMContext,
     session: AsyncSession,
     admin_user: User,
 ) -> None:
     await callback.answer()
 
-    # Get plan_id from FSM state (was stored in change_inbound_start)
-    data = await state.get_data()
-    plan_id_str = data.get("change_inbound_plan_id")
-    page = data.get("change_inbound_page", 1)
-    if not plan_id_str:
+    # Both ids travel packed in the callback data, so the action always
+    # targets the plan this picker was rendered for (no shared FSM key).
+    try:
+        target_plan_id = _unpack_uuid(callback_data.plan_id)
+        target_inbound_id = _unpack_uuid(callback_data.inbound_id)
+    except ValueError:
         await safe_edit_or_send(callback, "\u274c \u0627\u0637\u0644\u0627\u0639\u0627\u062a \u067e\u0644\u0646 \u06cc\u0627\u0641\u062a \u0646\u0634\u062f. \u062f\u0648\u0628\u0627\u0631\u0647 \u062a\u0644\u0627\u0634 \u06a9\u0646\u06cc\u062f.")
         return
+    page = callback_data.page
 
-    plan = await session.get(Plan, UUID(plan_id_str))
+    plan = await session.get(Plan, target_plan_id)
     if plan is None:
         await safe_edit_or_send(callback, AdminMessages.PLAN_NOT_FOUND)
         return
@@ -1381,7 +1397,7 @@ async def change_inbound_confirm(
     new_inbound = await session.scalar(
         select(XUIInboundRecord)
         .options(selectinload(XUIInboundRecord.server))
-        .where(XUIInboundRecord.id == callback_data.inbound_id)
+        .where(XUIInboundRecord.id == target_inbound_id)
     )
     if new_inbound is None:
         await safe_edit_or_send(callback, "\u274c \u0627\u06cc\u0646\u0628\u0627\u0646\u062f \u067e\u06cc\u062f\u0627 \u0646\u0634\u062f.")
@@ -1402,9 +1418,6 @@ async def change_inbound_confirm(
             "new_server": new_inbound.server.name if new_inbound.server else None,
         },
     )
-
-    # Clean up FSM state
-    await state.update_data(change_inbound_plan_id=None, change_inbound_page=None)
 
     server_name = new_inbound.server.name if new_inbound.server else "\u0646\u0627\u0645\u0634\u062e\u0635"
     await callback.answer(f"\u2705 \u0633\u0631\u0648\u0631 \u067e\u0644\u0646 \u0628\u0647 {server_name} \u062a\u063a\u06cc\u06cc\u0631 \u06cc\u0627\u0641\u062a.", show_alert=True)

@@ -113,8 +113,6 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
                 payment=payment,
                 amount_to_credit=payment.price_amount,
             )
-            retried_purchase += 1
-            logger.info("[RECONCILIATION] Provisioning retry SUCCESS for payment %s", payment.id)
         except Exception as exc:
             # Increment retry count
             payload = dict(payment.callback_payload or {})
@@ -123,6 +121,24 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
             payment.callback_payload = payload
             await session.flush()
             logger.error("[RECONCILIATION] Provisioning retry FAILED for payment %s: %s", payment.id, exc)
+            continue
+
+        # "Did not raise" is NOT success: process_successful_payment swallows
+        # provisioning failures internally (services/payment.py: "Don't
+        # re-raise" / silent return on provisioned=False). The only reliable
+        # success signal is the `provisioned` flag it writes on real success —
+        # otherwise count this as a failed attempt so retry_count still grows
+        # and the MAX_RETRY_COUNT escalation stays reachable.
+        if (payment.callback_payload or {}).get("provisioned"):
+            retried_purchase += 1
+            logger.info("[RECONCILIATION] Provisioning retry SUCCESS for payment %s", payment.id)
+        else:
+            payload = dict(payment.callback_payload or {})
+            payload["retry_count"] = retry_count + 1
+            payload["last_error"] = "retry finished without provisioning (failure swallowed upstream)"
+            payment.callback_payload = payload
+            await session.flush()
+            logger.error("[RECONCILIATION] Provisioning retry FAILED (still unprovisioned) for payment %s", payment.id)
 
     # ─── AUTO-RETRY: paid but renewal not applied (direct_renewal) ───
     stuck_renewal_result = await session.execute(
@@ -172,8 +188,6 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
                 payment=payment,
                 amount_to_credit=payment.price_amount,
             )
-            retried_renewal += 1
-            logger.info("[RECONCILIATION] Renewal retry SUCCESS for payment %s", payment.id)
         except Exception as exc:
             payload = dict(payment.callback_payload or {})
             payload["retry_count"] = retry_count + 1
@@ -181,6 +195,28 @@ async def run_reconciliation(session: AsyncSession, bot: Bot) -> None:
             payment.callback_payload = payload
             await session.flush()
             logger.error("[RECONCILIATION] Renewal retry FAILED for payment %s: %s", payment.id, exc)
+            continue
+
+        # Same as the purchase loop: a swallowed renewal failure (debit →
+        # apply_renewal failed → refund → returns without raising) must not
+        # count as success. Only the `renewal_applied` flag written on real
+        # success does; otherwise grow retry_count so the payment eventually
+        # escalates to manual_review instead of re-debiting + DM-ing the user
+        # a failure message every cycle for 48h.
+        if (payment.callback_payload or {}).get("renewal_applied"):
+            retried_renewal += 1
+            logger.info("[RECONCILIATION] Renewal retry SUCCESS for payment %s", payment.id)
+        else:
+            payload = dict(payment.callback_payload or {})
+            payload["retry_count"] = retry_count + 1
+            payload["last_error"] = (
+                "renewal refused (terminal sub status)"
+                if payload.get("renewal_refused")
+                else "retry finished without applying renewal (failure swallowed upstream)"
+            )
+            payment.callback_payload = payload
+            await session.flush()
+            logger.error("[RECONCILIATION] Renewal retry FAILED (still unapplied) for payment %s", payment.id)
 
     # ─── Decide whether to ALERT ───
     # Only message the operator when the worker actually DID something this

@@ -64,6 +64,13 @@ class Settings(BaseSettings):
     xui_username: str = "admin"
     xui_password: SecretStr = SecretStr("CHANGE_ME")
     xui_verify_ssl: bool = True
+    # 3x-ui subscription URL path ("subPath" in the panel's settings, default
+    # "/sub/"). Operators who changed/randomized subPath on their panel MUST
+    # set XUI_SUB_PATH to the same value (e.g. XUI_SUB_PATH=mysecretpath),
+    # otherwise every generated subscription link 404s. Leading/trailing
+    # slashes are stripped when the link is built, so "sub", "/sub" and
+    # "/sub/" are all equivalent.
+    xui_sub_path: str = "sub"
     # PasarGuard panels usually run behind a real cert, so default to verifying
     # TLS. Set PASARGUARD_VERIFY_SSL=false for a self-signed PasarGuard panel.
     pasarguard_verify_ssl: bool = True

@@ -936,6 +936,12 @@ async def edit_domain_config(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "server:domain:skip_config")
 async def skip_config_domain(callback: CallbackQuery, state: FSMContext) -> None:
+    # The prompt keyboard stays in the chat after the flow ends — only act
+    # while this exact step is active, so a stale tap can't clobber another
+    # server's edit flow (or KeyError on empty FSM data).
+    if await state.get_state() != ServerManageStates.waiting_for_config_domain.state:
+        await callback.answer("⌛ این دکمه منقضی شده. دوباره از منوی سرور اقدام کنید.", show_alert=True)
+        return
     await callback.answer()
     await state.update_data(config_domain=None)
     await _prompt_sub_domain(callback.message, state)
@@ -963,6 +969,10 @@ async def edit_domain_sub(message: Message, state: FSMContext, session: AsyncSes
 
 @router.callback_query(F.data == "server:domain:skip_sub")
 async def skip_sub_domain(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    # Guard against stale keyboards (see skip_config_domain).
+    if await state.get_state() != ServerManageStates.waiting_for_sub_domain.state:
+        await callback.answer("⌛ این دکمه منقضی شده. دوباره از منوی سرور اقدام کنید.", show_alert=True)
+        return
     await callback.answer()
     await _save_domains(callback.message, state, session, None)
 
@@ -970,8 +980,12 @@ async def skip_sub_domain(callback: CallbackQuery, state: FSMContext, session: A
 async def _save_domains(message: Message, state: FSMContext, session: AsyncSession, sub_domain: str | None) -> None:
     data = await state.get_data()
     await state.clear()
-    
-    server_id = UUID(data["server_id"])
+
+    server_id_str = data.get("server_id")
+    if not server_id_str:
+        await message.answer("⌛ نشست ویرایش منقضی شد. دوباره از منوی سرور اقدام کنید.")
+        return
+    server_id = UUID(server_id_str)
     config_domain = data.get("config_domain")
     
     server = await session.get(XUIServerRecord, server_id)
@@ -1008,6 +1022,10 @@ async def edit_limit_start(
 
 @router.callback_query(F.data == "server:limit:unlimited")
 async def limit_unlimited(callback: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    # Guard against stale keyboards (see skip_config_domain).
+    if await state.get_state() != ServerManageStates.waiting_for_max_clients.state:
+        await callback.answer("⌛ این دکمه منقضی شده. دوباره از منوی سرور اقدام کنید.", show_alert=True)
+        return
     await callback.answer()
     await _save_limit(callback.message, state, session, None)
 
@@ -1029,8 +1047,12 @@ async def edit_limit_value(message: Message, state: FSMContext, session: AsyncSe
 async def _save_limit(message: Message, state: FSMContext, session: AsyncSession, limit: int | None) -> None:
     data = await state.get_data()
     await state.clear()
-    
-    server_id = UUID(data["server_id"])
+
+    server_id_str = data.get("server_id")
+    if not server_id_str:
+        await message.answer("⌛ نشست ویرایش منقضی شد. دوباره از منوی سرور اقدام کنید.")
+        return
+    server_id = UUID(server_id_str)
     server = await session.get(XUIServerRecord, server_id)
     if server:
         server.max_clients = limit

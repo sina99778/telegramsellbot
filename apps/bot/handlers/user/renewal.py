@@ -487,10 +487,6 @@ async def renew_pay_wallet(
         await safe_edit_or_send(callback, TIME_EXPIRED_VOLUME_RENEWAL_MSG)
         return
 
-    if sub.plan_id is None:
-        await safe_edit_or_send(callback, "پلن این سرویس حذف شده. امکان تمدید وجود ندارد.")
-        return
-
     if user.wallet.balance < price:
         # Partial-payment offer: instead of blocking, show buttons to
         # pay the gap (price - wallet_balance) via gateway. When the
@@ -573,21 +569,29 @@ async def renew_pay_wallet(
             except Exception:
                 pass
 
-            # Create order
-            order = Order(
-                user_id=user.id,
-                plan_id=sub.plan_id,
-                amount=price,
-                currency="USD",
-                status="completed",
-                source="bot",
-            )
-            session.add(order)
-            await session.flush()
+            # Create order. Order.plan_id is NOT NULL, so plan-less
+            # (migrated/imported) configs — priced by _get_renewal_data at the
+            # average of the active plans' rates — can't have one. For those we
+            # skip the Order and reference the subscription in the wallet
+            # ledger, exactly like the gateway renewal path
+            # (services.payment._handle_direct_renewal), which creates no
+            # Order either.
+            order = None
+            if sub.plan_id is not None:
+                order = Order(
+                    user_id=user.id,
+                    plan_id=sub.plan_id,
+                    amount=price,
+                    currency="USD",
+                    status="completed",
+                    source="bot",
+                )
+                session.add(order)
+                await session.flush()
 
-            # Link order to subscription
-            sub.order = order
-            await session.flush()
+                # Link order to subscription
+                sub.order = order
+                await session.flush()
 
             # Deduct from wallet using WalletManager if price > 0
             from services.wallet.manager import WalletManager, InsufficientBalanceError
@@ -600,8 +604,8 @@ async def renew_pay_wallet(
                         transaction_type="renewal",
                         direction="debit",
                         currency="USD",
-                        reference_type="order",
-                        reference_id=order.id,
+                        reference_type="order" if order is not None else "subscription",
+                        reference_id=order.id if order is not None else sub.id,
                         description=f"Renewal of subscription {sub.id}",
                         metadata={"sub_id": str(sub.id), "type": renew_type},
                     )
@@ -629,12 +633,13 @@ async def renew_pay_wallet(
                         transaction_type="refund",
                         direction="credit",
                         currency="USD",
-                        reference_type="order",
-                        reference_id=order.id,
+                        reference_type="order" if order is not None else "subscription",
+                        reference_id=order.id if order is not None else sub.id,
                         description="Refund: renewal failed (panel unreachable)",
                         metadata={"sub_id": str(sub.id), "error": str(exc)[:200]},
                     )
-                order.status = "failed"
+                if order is not None:
+                    order.status = "failed"
                 error_text = (
                     "❌ خطا در اعمال تمدید روی سرور!\n\n"
                     "ارتباط با پنل X-UI برقرار نشد. مبلغ تمدید به کیف پول شما برگردانده شد.\n"

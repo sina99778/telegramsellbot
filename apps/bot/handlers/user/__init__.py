@@ -24,6 +24,10 @@ router.message.middleware(UserAccessMiddleware())
 router.callback_query.middleware(UserAccessMiddleware())
 router.message.middleware(ForceJoinMiddleware())
 router.callback_query.middleware(ForceJoinMiddleware())
+# NOTE: the inline_query observer is NOT covered by the two middlewares above
+# (they only know how to extract/answer Message and CallbackQuery), so the
+# ban + force-join checks for inline mode are enforced directly inside
+# handlers/user/inline.py — keep them in sync if the middlewares change.
 router.include_router(start_router)
 router.include_router(topup_router)
 router.include_router(purchase_router)

@@ -240,8 +240,11 @@ async def _handle_direct_purchase(
     # Consume discount code NOW (after payment confirmed), not at invoice creation.
     # use_code re-validates inside a row lock and returns None if the code is no
     # longer applicable — in that case we just don't credit the discount.
+    # Idempotency: stamp discount_consumed (mirrors the wallet_debited marker) so
+    # provisioning RETRIES (IPN re-delivery, recovery, reconciliation — up to 10
+    # attempts) don't burn another use of the same code for the same purchase.
     discount_id_str = purchase_meta.get("discount_id")
-    if discount_id_str:
+    if discount_id_str and not purchase_meta.get("discount_consumed"):
         from repositories.discount import DiscountRepository
         from models.discount import DiscountCode
         dc = await session.get(DiscountCode, UUID(discount_id_str))
@@ -251,6 +254,15 @@ async def _handle_direct_purchase(
                 logger.info("[PROVISION] Consumed discount code %s", dc.id)
             else:
                 logger.warning("[PROVISION] Discount %s could not be consumed (expired/exhausted)", dc.id)
+            # Either way, never retry the consumption for this payment: a
+            # successful use must not double-burn, and an exhausted/expired
+            # verdict won't change on retry.
+            payload = dict(payment.callback_payload or {})
+            payload["discount_consumed"] = True
+            payment.callback_payload = payload
+            purchase_meta = dict(purchase_meta)
+            purchase_meta["discount_consumed"] = True
+            await session.flush()
 
     order = None
     existing_order_id = purchase_meta.get("order_id") if purchase_meta else None
@@ -881,16 +893,35 @@ async def _process_gateway_referral_bonus(
         return
 
     from models.order import Order as OrderModel
+    # Count only purchase-shaped orders (renewals are created directly with
+    # status="completed", trials carry source="trial") — see the twin filter
+    # in apps/bot/handlers/user/purchase.py::_process_referral_bonus.
     order_count = int(
         await session.scalar(
             sel(func.count()).select_from(OrderModel)
             .where(
                 OrderModel.user_id == user.id,
-                OrderModel.status.in_(["provisioned", "paid", "completed"]),
+                OrderModel.status.in_(["provisioned", "paid"]),
+                OrderModel.source != "trial",
             )
         ) or 0
     )
     if order_count != 1:
+        return
+
+    # Idempotency guard against concurrent first-purchase paths (mirrors the
+    # wallet-purchase twin in apps/bot/handlers/user/purchase.py): the bonus
+    # is paid at most once per referee, ever.
+    from models.wallet import WalletTransaction
+    already_paid = await session.scalar(
+        sel(func.count()).select_from(WalletTransaction).where(
+            WalletTransaction.user_id == user.referred_by_user_id,
+            WalletTransaction.type == "referral_bonus",
+            WalletTransaction.reference_type == "referral",
+            WalletTransaction.reference_id == user.id,
+        )
+    )
+    if already_paid:
         return
 
     wallet_manager = WalletManager(session)

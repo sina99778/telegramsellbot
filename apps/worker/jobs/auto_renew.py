@@ -123,6 +123,32 @@ async def _try_auto_renew(session, bot, sub, renewal_settings) -> None:
         if not acquired:
             return
 
+        # Re-verify the FULL eligibility predicate on fresh data now that we
+        # hold the lock: a manual renewal committed between the scan and this
+        # point pushes ends_at out of the renewal window, and without this
+        # re-check the user would be charged a second time. Column-only select
+        # so the eagerly-loaded relationships on `sub` stay intact (a refresh
+        # would expire them and break async lazy loads downstream).
+        fresh = (
+            await session.execute(
+                select(
+                    Subscription.auto_renew_enabled,
+                    Subscription.status,
+                    Subscription.ends_at,
+                ).where(Subscription.id == sub.id)
+            )
+        ).one_or_none()
+        now = utcnow()
+        if (
+            fresh is None
+            or not fresh.auto_renew_enabled
+            or fresh.status not in ("active", "expired")
+            or fresh.ends_at is None
+            or fresh.ends_at > now + _RENEW_WITHIN
+            or fresh.ends_at < now - _GRACE_AFTER_EXPIRY
+        ):
+            return
+
         if user.wallet.balance < price:
             await _notify_insufficient(session, bot, sub, user, float(price))
             return

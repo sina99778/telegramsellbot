@@ -285,6 +285,30 @@ const Pages = (() => {
         `;
     }
 
+    /**
+     * Build the URL of the local QR endpoint for an <img> tag.
+     * Rendering happens on our own backend (GET /api/miniapp/qr) instead of
+     * a third-party QR service so the vless:// credential never leaves our
+     * trust boundary (and keeps working when external domains are filtered).
+     * <img> can't send headers, so auth travels as the same _auth/_session
+     * query params API.request() already uses.
+     */
+    function localQrUrl(payload) {
+        let url = `/api/miniapp/qr?data=${encodeURIComponent(payload)}`;
+        const initData = API.getInitData();
+        if (initData) {
+            url += `&_auth=${encodeURIComponent(initData)}`;
+        } else {
+            let sessionToken = '';
+            try {
+                const params = new URLSearchParams(window.location.search.replace(/^[?]/, ''));
+                sessionToken = params.get('session') || sessionStorage.getItem('miniapp_session') || '';
+            } catch { /* ignore */ }
+            if (sessionToken) url += `&_session=${encodeURIComponent(sessionToken)}`;
+        }
+        return url;
+    }
+
     function showConfigDetail(subId) {
         const sub = [
             ...(dashboardData?.subscriptions || []),
@@ -306,11 +330,10 @@ const Pages = (() => {
             // QR points at the most useful payload: prefer the vless URI
             // (works directly in apps) and fall back to sub_link.
             const qrPayload = rawVless || rawSub;
-            const safeQr = encodeURIComponent(qrPayload);
 
             linkSection = `
                 <div class="config-detail-links">
-                    <img src="https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${safeQr}"
+                    <img src="${localQrUrl(qrPayload)}"
                          class="config-detail-qr" alt="QR Code" />
 
                     ${rawSub ? `
@@ -772,7 +795,7 @@ const Pages = (() => {
                     <div class="empty-icon">${UI.icon('package')}</div>
                     <p>هنوز سرویسی ندارید</p>
                     <p class="empty-hint">برای شروع، اولین کانفیگ خود را خریداری کنید.</p>
-                    <button class="btn btn-primary" onclick="UI.navigate('shop')">${UI.icon('plus')} خرید اولین سرویس</button>
+                    <button class="btn btn-primary" onclick="UI.navigate('store')">${UI.icon('plus')} خرید اولین سرویس</button>
                 </div>`;
             return;
         }

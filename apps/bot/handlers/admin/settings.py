@@ -408,6 +408,10 @@ async def toggle_premium_emoji(callback: CallbackQuery, session: AsyncSession) -
     settings_repo = AppSettingsRepository(session)
     current = await settings_repo.get_premium_emoji_settings()
     await settings_repo.update_premium_emoji_settings(enabled=not current.enabled)
+    # Commit BEFORE re-priming/publishing — the cache re-readers open NEW
+    # sessions and the pub/sub listeners react within ms, so they must see the
+    # committed row (the middleware's later commit is then a no-op).
+    await session.commit()
     clear_premium_emoji_cache()
     await _sync_premium_icon_cache()
     from core.cache_sync import publish
@@ -572,6 +576,9 @@ async def edit_premium_emoji_map_submit(message: Message, state: FSMContext, ses
     new_map.update(extracted)
 
     await settings_repo.update_premium_emoji_settings(enabled=True, emoji_map=new_map)
+    # Commit BEFORE re-priming/publishing so the new-session re-readers and
+    # the pub/sub listeners see the committed row (not the pre-commit value).
+    await session.commit()
     clear_premium_emoji_cache()
     await _sync_premium_icon_cache()
     from core.cache_sync import publish
@@ -639,6 +646,9 @@ async def clear_premium_emoji_map(callback: CallbackQuery, session: AsyncSession
     await callback.answer()
     settings_repo = AppSettingsRepository(session)
     await settings_repo.update_premium_emoji_settings(emoji_map={})
+    # Commit BEFORE re-priming/publishing so the new-session re-readers and
+    # the pub/sub listeners see the committed row (not the pre-commit value).
+    await session.commit()
     clear_premium_emoji_cache()
     await _sync_premium_icon_cache()
     from core.cache_sync import publish
@@ -2168,6 +2178,10 @@ async def toggle_button_styles(callback: CallbackQuery, session: AsyncSession) -
     repo = AppSettingsRepository(session)
     cfg = await repo.get_button_style_settings()
     await repo.update_button_style_settings(enabled=not cfg.enabled)
+    # Commit BEFORE re-priming/publishing — prime_button_style_cache opens a
+    # NEW session and the pub/sub listeners react within ms, so they must see
+    # the committed row (the middleware's later commit is then a no-op).
+    await session.commit()
     from apps.bot.utils.button_style import clear_button_style_cache, prime_button_style_cache
     clear_button_style_cache()
     await prime_button_style_cache()
@@ -2186,6 +2200,8 @@ async def cycle_button_style_role(callback: CallbackQuery, session: AsyncSession
     cfg = await repo.get_button_style_settings()
     new_style = _next_style(getattr(cfg, role))
     await repo.update_button_style_settings(**{role: new_style})
+    # Commit BEFORE re-priming/publishing (see toggle_button_styles).
+    await session.commit()
     from apps.bot.utils.button_style import clear_button_style_cache, prime_button_style_cache
     clear_button_style_cache()
     await prime_button_style_cache()
@@ -2202,6 +2218,8 @@ async def reset_button_styles(callback: CallbackQuery, session: AsyncSession) ->
         enabled=True, confirm="success", destructive="danger",
         navigation="primary", info="primary",
     )
+    # Commit BEFORE re-priming/publishing (see toggle_button_styles).
+    await session.commit()
     from apps.bot.utils.button_style import clear_button_style_cache, prime_button_style_cache
     clear_button_style_cache()
     await prime_button_style_cache()

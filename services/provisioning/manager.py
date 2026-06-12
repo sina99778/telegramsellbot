@@ -318,18 +318,6 @@ class ProvisioningManager:
             remark=config_name,
         )
 
-        xui_payload = XUIClient(
-            id=client_uuid,
-            uuid=client_uuid,
-            email=email,
-            limitIp=plan.effective_ip_limit(security_settings.xui_limit_ip),
-            totalGB=plan.volume_bytes,
-            expiryTime=expiry_ms,
-            enable=True,
-            subId=sub_id,
-            comment=f"user:{user_id};order:{order_id}",
-        )
-
         logger.info(
             "Provisioning config: inbound_remote_id=%s, protocol=%s, email=%s, config_name=%s",
             inbound.xui_inbound_remote_id,
@@ -338,55 +326,131 @@ class ProvisioningManager:
             config_name,
         )
 
+        # The chosen config name was only availability-checked at NAME-ENTRY
+        # time (bot purchase flow / mini-app). Deferred payments (card-to-card
+        # approval, gateway IPN) can confirm hours later, and another purchase
+        # may claim the same name in that window — `xui_clients.username` and
+        # `email` carry UNIQUE constraints, so a single attempt would crash
+        # AFTER the user already paid. Mirror the imported-migration retry
+        # below in this file: first attempt verbatim, then short hex suffixes
+        # on the INTERNAL identifiers only. The user-visible remark (the
+        # vless URI's #fragment) never changes.
+        identity_candidates: list[tuple[str, str]] = [(config_name, email)]
+        for _ in range(5):
+            _suffix = secrets.token_hex(2)
+            identity_candidates.append(
+                (f"{config_name}_{_suffix}", f"{config_name}_{_suffix}_{sub_id[:6]}")
+            )
+
+        # Snapshot plan scalars: after a savepoint rollback the ORM objects
+        # touched inside are expired, and re-reading them would async
+        # lazy-load (forbidden) — same convention as the migration retry loop.
+        _plan_volume_bytes = plan.volume_bytes
+        _ip_limit = plan.effective_ip_limit(security_settings.xui_limit_ip)
+
         stock_reserved = False
         xui_call_succeeded = False
+        savepoint_committed = False
+        last_dup_exc: Exception | None = None
         try:
             stock_reserved = await reserve_plan_sale(self.session, plan.id)
 
-            # Savepoint: write DB rows first, then call X-UI. If X-UI fails,
-            # the savepoint rolls back so we never end up with rows pointing
-            # at a non-existent panel client. If the DB flush fails after a
-            # successful X-UI call, we issue a compensating delete on the
-            # panel below.
-            async with self.session.begin_nested():
-                subscription = Subscription(
-                    user_id=user_id,
-                    order_id=order_id,
-                    plan_id=plan_id,
-                    status="pending_activation",
-                    activation_mode="first_use",
-                    starts_at=None,
-                    ends_at=None,
-                    activated_at=None,
-                    expired_at=None,
-                    volume_bytes=plan.volume_bytes,
-                    used_bytes=0,
-                    sub_link=sub_link,
+            for attempt_idx, (attempt_username, attempt_email) in enumerate(identity_candidates):
+                # After a failed attempt the savepoint rolled back; refresh
+                # `order` so the column write inside the next savepoint
+                # doesn't lazy-load an expired attribute.
+                if attempt_idx > 0:
+                    await self.session.refresh(order)
+
+                xui_payload = XUIClient(
+                    id=client_uuid,
+                    uuid=client_uuid,
+                    email=attempt_email,
+                    limitIp=_ip_limit,
+                    totalGB=_plan_volume_bytes,
+                    expiryTime=expiry_ms,
+                    enable=True,
+                    subId=sub_id,
+                    comment=f"user:{user_id};order:{order_id}",
                 )
-                self.session.add(subscription)
-                await self.session.flush()
 
-                xui_record = XUIClientRecord(
-                    subscription_id=subscription.id,
-                    inbound_id=inbound.id,
-                    xui_client_remote_id=client_uuid,
-                    email=email,
-                    client_uuid=client_uuid,
-                    username=config_name,
-                    sub_link=sub_link,
-                    usage_bytes=0,
-                    is_active=True,
-                )
-                self.session.add(xui_record)
+                try:
+                    # Savepoint: write DB rows first, then call X-UI. If X-UI fails,
+                    # the savepoint rolls back so we never end up with rows pointing
+                    # at a non-existent panel client. If the DB flush fails after a
+                    # successful X-UI call, we issue a compensating delete on the
+                    # panel below.
+                    async with self.session.begin_nested():
+                        subscription = Subscription(
+                            user_id=user_id,
+                            order_id=order_id,
+                            plan_id=plan_id,
+                            status="pending_activation",
+                            activation_mode="first_use",
+                            starts_at=None,
+                            ends_at=None,
+                            activated_at=None,
+                            expired_at=None,
+                            volume_bytes=_plan_volume_bytes,
+                            used_bytes=0,
+                            sub_link=sub_link,
+                        )
+                        self.session.add(subscription)
+                        await self.session.flush()
 
-                order.status = "provisioned"
-                await self.session.flush()
+                        xui_record = XUIClientRecord(
+                            subscription_id=subscription.id,
+                            inbound_id=inbound.id,
+                            xui_client_remote_id=client_uuid,
+                            email=attempt_email,
+                            client_uuid=client_uuid,
+                            username=attempt_username[:64],
+                            sub_link=sub_link,
+                            usage_bytes=0,
+                            is_active=True,
+                        )
+                        self.session.add(xui_record)
 
-                async with self._get_xui_client_for_server(server) as xui_client:
-                    await xui_client.add_client_to_inbound(
-                        inbound.xui_inbound_remote_id, xui_payload
+                        order.status = "provisioned"
+                        await self.session.flush()
+
+                        async with self._get_xui_client_for_server(server) as xui_client:
+                            await xui_client.add_client_to_inbound(
+                                inbound.xui_inbound_remote_id, xui_payload
+                            )
+                        xui_call_succeeded = True
+                    savepoint_committed = True
+                    if attempt_idx > 0:
+                        logger.info(
+                            "Provisioning succeeded on attempt #%d with username=%r",
+                            attempt_idx + 1, attempt_username,
+                        )
+                    break  # success — exit the retry loop
+                except Exception as inner_exc:
+                    low = str(inner_exc).lower()
+                    is_duplicate = (
+                        # X-UI panel-side rejection.
+                        "duplicate email" in low
+                        or "email already" in low
+                        # DB-side unique violation on the internal email /
+                        # username columns — both fixed by a suffixed retry.
+                        or "uq_xui_clients_email" in low
+                        or "uq_xui_clients_username" in low
                     )
-                xui_call_succeeded = True
+                    if is_duplicate and attempt_idx < len(identity_candidates) - 1:
+                        last_dup_exc = inner_exc
+                        logger.warning(
+                            "Provisioning identity %r collided (panel or DB), retrying with suffix…",
+                            attempt_username,
+                        )
+                        xui_call_succeeded = False  # savepoint rolled it back
+                        continue
+                    raise  # non-duplicate, or out of retries — outer handler compensates
+
+            if not savepoint_committed:
+                raise ProvisioningError(
+                    "ساخت کانفیگ با نام یکتا ممکن نشد — لطفاً با پشتیبانی تماس بگیرید."
+                ) from last_dup_exc
 
             await self.session.refresh(subscription)
             await self.session.refresh(xui_record)
@@ -678,6 +742,7 @@ class ProvisioningManager:
                 xui_record=xui_record,
                 volume_bytes=subscription.volume_bytes,
                 ends_at=None,
+                sub_link=subscription.sub_link,
             )
             xui_record.is_active = False
 
@@ -1354,9 +1419,17 @@ class ProvisioningManager:
                         if sub_was_expired:
                             # Migration of an expired imported sub effectively
                             # re-provisions; flip back to active so the user
-                            # can use it.
-                            sub.status = "active"
-                            sub.expired_at = None
+                            # can use it — but ONLY when the carried-over
+                            # expiry is unset or still in the future. A
+                            # date-expired import keeps its past ends_at, so
+                            # the new panel client is born expired (3x-ui
+                            # refuses traffic immediately); flipping the DB to
+                            # "active" would just lie about a dead config
+                            # until the next expiry sync. Keep it "expired" —
+                            # a time renewal then revives both DB and panel.
+                            if _target_ends_at is None or _target_ends_at > datetime.now(timezone.utc):
+                                sub.status = "active"
+                                sub.expired_at = None
 
                         await self.session.flush()
 
@@ -1872,6 +1945,7 @@ class ProvisioningManager:
                         xui_record=xui_record,
                         volume_bytes=subscription.volume_bytes,
                         ends_at=subscription.ends_at,
+                        sub_link=subscription.sub_link,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -1898,6 +1972,7 @@ class ProvisioningManager:
         xui_record: XUIClientRecord,
         volume_bytes: int,
         ends_at: datetime | None,
+        sub_link: str | None = None,
     ) -> None:
         # PasarGuard configs disable via their own (user-centric) API.
         if record_is_marzban_family(xui_record):
@@ -1918,6 +1993,16 @@ class ProvisioningManager:
             .where(Subscription.id == xui_record.subscription_id)
         )
         effective_ip_limit = plan_for_ip.effective_ip_limit(global_ip_limit) if plan_for_ip else global_ip_limit
+        # X-UI updateClient REPLACES the whole client object — omitting subId
+        # serializes as "subId": "" and permanently wipes the panel-side
+        # subscription id, so the user's saved sub link dies even if the
+        # client is later re-enabled after an unban (which restores nothing).
+        # Preserve it exactly like the worker sync paths do: extract the
+        # existing subId from the stored sub link.
+        existing_sub_id = ""
+        current_sub_link = sub_link or xui_record.sub_link or ""
+        if current_sub_link and "/" in current_sub_link:
+            existing_sub_id = current_sub_link.rsplit("/", 1)[-1]
         disabled_client = XUIClient(
             id=xui_record.xui_client_remote_id or xui_record.client_uuid,
             uuid=xui_record.client_uuid,
@@ -1926,6 +2011,7 @@ class ProvisioningManager:
             totalGB=volume_bytes,
             expiryTime=expiry_ms,
             enable=False,
+            subId=existing_sub_id,
             comment=f"disabled:{xui_record.subscription_id}",
         )
         async with self._get_xui_client_for_server(server) as xui_client:

@@ -28,7 +28,11 @@ def build_sub_link(server: XUIServerRecord, sub_id: str) -> str:
     (which may be HTTPS). Default is always 'http' unless sub_domain
     explicitly specifies 'https://'.
 
-    Result: <scheme>://<host>:<port>/sub/<sub_id>
+    The subscription path segment ("subPath" in 3x-ui, default "/sub/") is
+    operator-configurable on the panel; we honour the XUI_SUB_PATH setting
+    instead of hard-coding "/sub/".
+
+    Result: <scheme>://<host>:<port>/<sub_path>/<sub_id>
     """
     scheme = None
     if server.sub_domain:
@@ -42,7 +46,13 @@ def build_sub_link(server: XUIServerRecord, sub_id: str) -> str:
         scheme = "http"
 
     sub_port = server.subscription_port
-    return f"{scheme}://{host}:{sub_port}/sub/{sub_id}"
+    # 3x-ui's subscription path ("subPath") is configurable per panel.
+    # Honour XUI_SUB_PATH from .env (see core.config.settings.xui_sub_path);
+    # strip slashes defensively and fall back to the 3x-ui default "sub"
+    # when the setting is unset/blank.
+    from core.config import settings as _settings
+    sub_path = (_settings.xui_sub_path or "").strip().strip("/") or "sub"
+    return f"{scheme}://{host}:{sub_port}/{sub_path}/{sub_id}"
 
 
 def build_vless_uri(

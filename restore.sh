@@ -167,6 +167,43 @@ SQL
   fi
 fi
 
+# ── Validate the dump BEFORE any destructive step ───────────────────────
+# Earlier versions dropped the database first and only then ran gunzip;
+# a plain .sql input (documented as supported) or a corrupt/truncated
+# .sql.gz made the script die AFTER the wipe, leaving an empty DB.
+DB_FILE=""
+if [[ "${FORMAT}" == "bundle" ]]; then
+  DB_FILE="${STAGE}/db.sql.gz"
+else
+  DB_FILE="${BACKUP_FILE}"
+fi
+
+DB_READER=(gunzip -c)
+if [[ "$(head -c 2 "${DB_FILE}" | od -An -tx1 | tr -d ' \n')" == "1f8b" ]]; then
+  info "Validating gzip integrity of the dump…"
+  if ! gzip -t "${DB_FILE}" 2>/dev/null; then
+    err "Dump is gzip-compressed but corrupt/truncated: ${DB_FILE}"
+    err "Aborting BEFORE touching the database — nothing was wiped."
+    err "فایل پشتیبان خراب است؛ پیش از هر تغییری در دیتابیس، عملیات متوقف شد."
+    exit 1
+  fi
+else
+  # Not gzipped — treat as a plain .sql dump (legacy documented format).
+  DB_READER=(cat)
+fi
+
+# Peek at the first few KB and make sure it actually looks like a
+# PostgreSQL SQL dump, not some unrelated file. (`|| true` guards the
+# expected SIGPIPE when `head` closes the stream early under pipefail.)
+DUMP_HEAD="$( ("${DB_READER[@]}" "${DB_FILE}" 2>/dev/null || true) | head -c 4096 | tr -d '\0' )"
+if ! printf '%s' "${DUMP_HEAD}" | grep -qiE 'PostgreSQL database dump|CREATE TABLE|CREATE DATABASE|INSERT INTO|COPY .* FROM stdin|SET statement_timeout'; then
+  err "Input does not look like a PostgreSQL SQL dump: ${DB_FILE}"
+  err "Aborting BEFORE touching the database — nothing was wiped."
+  err "فایل انتخاب‌شده یک خروجی معتبر pg_dump نیست؛ دیتابیس دست‌نخورده باقی ماند."
+  exit 1
+fi
+ok "Backup input validated (readable, looks like a pg_dump SQL script)."
+
 # ── Confirm before wiping the DB ────────────────────────────────────────
 TABLE_COUNT="$(docker exec "${POSTGRES_CONTAINER}" psql -U "${DB_USER}" -d "${DB_NAME}" -tAc \
     "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'" 2>/dev/null || echo 0)"
@@ -181,13 +218,7 @@ if [[ "${TABLE_COUNT:-0}" -gt 0 ]]; then
 fi
 
 # ── DB restore ──────────────────────────────────────────────────────────
-DB_FILE=""
-if [[ "${FORMAT}" == "bundle" ]]; then
-  DB_FILE="${STAGE}/db.sql.gz"
-else
-  DB_FILE="${BACKUP_FILE}"
-fi
-
+# (DB_FILE and DB_READER were resolved + validated above, pre-wipe.)
 info "Terminating active connections to ${DB_NAME}…"
 docker exec "${POSTGRES_CONTAINER}" psql -U "${DB_USER}" -d postgres \
     -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${DB_NAME}';" \
@@ -197,8 +228,8 @@ info "Dropping + recreating database…"
 docker exec "${POSTGRES_CONTAINER}" psql -U "${DB_USER}" -d postgres -c "DROP DATABASE IF EXISTS \"${DB_NAME}\";" >/dev/null
 docker exec "${POSTGRES_CONTAINER}" psql -U "${DB_USER}" -d postgres -c "CREATE DATABASE \"${DB_NAME}\";" >/dev/null
 
-info "Restoring from ${DB_FILE} (decompressing on the fly)…"
-gunzip -c "${DB_FILE}" | docker exec -i "${POSTGRES_CONTAINER}" psql -U "${DB_USER}" -d "${DB_NAME}" >/dev/null
+info "Restoring from ${DB_FILE}…"
+"${DB_READER[@]}" "${DB_FILE}" | docker exec -i "${POSTGRES_CONTAINER}" psql -U "${DB_USER}" -d "${DB_NAME}" >/dev/null
 ok "Database restored."
 
 # ── ready_configs (bundle only) ─────────────────────────────────────────

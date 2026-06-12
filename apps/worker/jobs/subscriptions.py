@@ -19,6 +19,7 @@ from services.panels.marzban import (
     marzban_client_for_server,
     record_is_marzban_family,
 )
+from services.panels.xui_strategy import _client_is_gone
 from services.pasarguard.client import PasarGuardError
 from services.xui.client import SanaeiXUIClient, XUIClientError, XUIRequestError
 from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
@@ -63,16 +64,12 @@ async def sync_xui_usage_and_status(
             async with semaphore:
                 traffic = await xui_client.get_client_traffic(xui_record.email)
         except XUIRequestError as exc:
-            error_msg = str(exc)
-            low = error_msg.lower()
-            # Does the panel ACTIVELY say this client is gone? ("No traffic stats
-            # found", a 404, or "Inbound Not Found For Email"). A transient
-            # network/5xx error is NOT this and must never expire a config.
-            client_gone = (
-                "no traffic stats found" in low
-                or "404" in error_msg
-                or "not found" in low  # covers "Inbound Not Found For Email"
-            )
+            # Does the panel ACTIVELY say this client is gone? Delegated to the
+            # hardened structured classifier (HTTP 404 status_code / panel
+            # "not found" body) so a transient network/5xx error — or a config
+            # whose user-chosen name merely contains "404" — never counts as
+            # a strike toward expiry.
+            client_gone = _client_is_gone(exc)
             if client_gone:
                 # Count consecutive strikes. Only after several in a row do we
                 # trust it and expire — a single flaky response (the panel
@@ -116,12 +113,18 @@ async def sync_xui_usage_and_status(
             time_ok = subscription.ends_at is None or subscription.ends_at > now
             vol_ok = subscription.volume_bytes <= 0 or traffic.used_bytes < subscription.volume_bytes
             if time_ok and vol_ok:
-                subscription.status = "active"
+                # A never-activated (first-use) sub goes back to
+                # pending_activation so the first-traffic activation below
+                # still runs and sets ends_at; an already-activated sub is
+                # restored to active.
+                subscription.status = (
+                    "active" if subscription.activated_at is not None else "pending_activation"
+                )
                 subscription.expired_at = None
                 xui_record.is_active = True
                 logger.info(
-                    "[SYNC] Reactivated falsely-expired sub %s (alive on panel, time+volume OK)",
-                    subscription.id,
+                    "[SYNC] Reactivated falsely-expired sub %s as %s (alive on panel, time+volume OK)",
+                    subscription.id, subscription.status,
                 )
             else:
                 # Genuinely expired (time/volume) — leave as-is, don't reprocess.
@@ -289,6 +292,20 @@ async def sync_pasarguard_usage_and_status(
                     logger.info("[SYNC][PG] reactivated sub %s (alive on panel)", subscription.id)
                     continue
 
+                # Recover a falsely-expired FIRST-USE sub the panel still
+                # holds on_hold (the user never connected; it was strike-
+                # expired during a panel outage). Back to pending_activation —
+                # the on_hold timer hasn't started yet.
+                if subscription.status == "expired" and status == "on_hold":
+                    subscription.status = "pending_activation"
+                    subscription.expired_at = None
+                    xui_record.is_active = True
+                    logger.info(
+                        "[SYNC][PG] reactivated never-activated sub %s (on_hold on panel)",
+                        subscription.id,
+                    )
+                    continue
+
                 # Active & alive — keep ends_at aligned with the panel's authority.
                 if subscription.status == "active" and status == "active":
                     if pg_ends_at is not None:
@@ -325,6 +342,23 @@ async def sync_all_subscription_states() -> None:
                         Subscription.status == "expired",
                         Subscription.ends_at.isnot(None),
                         Subscription.ends_at > utcnow(),
+                        or_(
+                            Subscription.volume_bytes <= 0,
+                            Subscription.used_bytes < Subscription.volume_bytes,
+                        ),
+                    ),
+                    # Same recovery for first-use subs that NEVER activated:
+                    # they have ends_at NULL until activation, so the arm above
+                    # can never match them and a strike-expiry during a panel
+                    # outage would otherwise drop them out of sync forever.
+                    # Bounded by expired_at recency so ancient rows don't keep
+                    # the sweep loaded.
+                    and_(
+                        Subscription.status == "expired",
+                        Subscription.activated_at.is_(None),
+                        Subscription.ends_at.is_(None),
+                        Subscription.expired_at.isnot(None),
+                        Subscription.expired_at > utcnow() - timedelta(days=7),
                         or_(
                             Subscription.volume_bytes <= 0,
                             Subscription.used_bytes < Subscription.volume_bytes,

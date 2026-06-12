@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import html
 import json
 import logging
 import re
@@ -664,7 +665,14 @@ async def post_admin_action(
         return {"ok": True, "message": "محدودیت تست کاربر ریست شد."}
 
     if action == "review_payment":
-        payment = await session.get(Payment, target_id)
+        # Row-lock the payment: process_successful_payment requires the caller
+        # to hold SELECT ... FOR UPDATE (see services/payment.py), matching the
+        # refresh endpoint and webhook handlers — otherwise an admin double-tap
+        # (or a race with the IPN webhook / worker sweep) could double-debit
+        # and double-provision.
+        payment = await session.scalar(
+            select(Payment).where(Payment.id == target_id).with_for_update()
+        )
         if payment is None:
             raise HTTPException(status_code=404, detail="پرداخت پیدا نشد.")
         try:
@@ -1208,6 +1216,10 @@ async def send_admin_user_message(
     finally:
         await bot.session.close()
 
+    _record_admin_action(session, admin, "send_message", "user", target.id, {"telegram_id": target.telegram_id})
+    await session.flush()
+    return {"ok": True, "message": "پیام برای کاربر ارسال شد."}
+
 
 @router.post("/admin/users/{source_user_id}/transfer-configs")
 async def admin_transfer_user_configs(
@@ -1288,10 +1300,6 @@ async def admin_transfer_user_configs(
         "target_telegram_id": result["target_telegram_id"],
     }
 
-    _record_admin_action(session, admin, "send_message", "user", target.id, {"telegram_id": target.telegram_id})
-    await session.flush()
-    return {"ok": True, "message": "پیام برای کاربر ارسال شد."}
-
 
 @router.get("/admin/tickets/{ticket_id}")
 async def get_admin_ticket(
@@ -1329,8 +1337,11 @@ async def reply_admin_ticket(
     ticket.status = "answered"
     _record_admin_action(session, admin, "reply_ticket", "ticket", ticket.id, {"user_id": str(ticket.user_id)})
 
-    delivered = await _notify_ticket_user(ticket.user.telegram_id, ticket.id, text)
-    if not delivered:
+    delivery = await _notify_ticket_user(ticket.user.telegram_id, ticket.id, text)
+    delivered = delivery == "delivered"
+    # Only a TelegramForbiddenError ("blocked") means the user blocked the bot;
+    # a BadRequest (formatting/chat error) must not corrupt is_bot_blocked.
+    if delivery == "blocked":
         ticket.user.is_bot_blocked = True
 
     await session.flush()
@@ -1400,7 +1411,12 @@ def _serialize_ticket_for_admin(ticket: Ticket) -> dict[str, Any]:
     }
 
 
-async def _notify_ticket_user(telegram_id: int, ticket_id: UUID, text: str) -> bool:
+async def _notify_ticket_user(telegram_id: int, ticket_id: UUID, text: str) -> str:
+    """Send the admin's ticket reply to the customer.
+
+    Returns "delivered", "blocked" (user blocked the bot) or "failed"
+    (any other send error) — only "blocked" may flip User.is_bot_blocked.
+    """
     from apps.bot.handlers.admin.support import SupportTicketActionCallback
     from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -1425,14 +1441,20 @@ async def _notify_ticket_user(telegram_id: int, ticket_id: UUID, text: str) -> b
             text=(
                 f"💬 <b>پاسخ پشتیبانی</b> — تیکت #{str(ticket_id)[:8]}\n"
                 f"━━━━━━━━━━━━━━━━\n\n"
-                f"{text}"
+                # Escape: admin replies may contain literal '<' (e.g. "سرعت <10MB"),
+                # which HTML parse mode would otherwise reject.
+                f"{html.escape(text)}"
             ),
             reply_markup=builder.as_markup(),
             parse_mode="HTML",
         )
-        return True
-    except (TelegramBadRequest, TelegramForbiddenError):
-        return False
+        return "delivered"
+    except TelegramForbiddenError:
+        return "blocked"
+    except TelegramBadRequest as exc:
+        # Formatting/chat errors are NOT "user blocked the bot".
+        logger.warning("Ticket %s reply to %s failed: %s", ticket_id, telegram_id, exc)
+        return "failed"
     finally:
         await bot.session.close()
 
@@ -3270,17 +3292,21 @@ async def send_ticket_message(
             )
             try:
                 ticket_label = "تیکت جدید" if is_new_ticket else "پیام جدید"
+                # Escape user-controlled parts: a literal '<' in the message or
+                # name would make HTML parse mode reject the send for EVERY admin.
                 alert_text = (
                     f"🎫 <b>{ticket_label}</b> — #{str(ticket.id)[:8]}\n"
-                    f"👤 {user.first_name or '-'} | <code>{user.telegram_id}</code>\n"
+                    f"👤 {html.escape(user.first_name or '-')} | <code>{user.telegram_id}</code>\n"
                     f"━━━━━━━━━━━━━━━━\n"
-                    f"{text}"
+                    f"{html.escape(text)}"
                 )
                 for tg_id in admin_tg_ids:
                     try:
                         await bot.send_message(chat_id=tg_id, text=alert_text, parse_mode="HTML")
-                    except Exception:
-                        pass
+                    except Exception as send_exc:  # noqa: BLE001
+                        logger.warning(
+                            "Ticket %s admin alert to %s failed: %s", ticket.id, tg_id, send_exc
+                        )
             finally:
                 await bot.session.close()
     except Exception as exc:

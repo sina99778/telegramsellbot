@@ -251,7 +251,16 @@ async def toggle_subscription(
 ) -> None:
     await callback.answer()
 
-    sub = await session.scalar(select(Subscription).where(Subscription.id == callback_data.sid))
+    sub = await session.scalar(
+        select(Subscription)
+        .options(
+            selectinload(Subscription.xui_client)
+            .selectinload(XUIClientRecord.inbound)
+            .selectinload(XUIInboundRecord.server)
+            .selectinload(XUIServerRecord.credentials),
+        )
+        .where(Subscription.id == callback_data.sid)
+    )
     if sub is None:
         await safe_edit_or_send(callback, AdminMessages.SUBSCRIPTION_NOT_FOUND)
         return
@@ -266,15 +275,55 @@ async def toggle_subscription(
         if sub.ends_at and sub.ends_at < datetime.now(timezone.utc):
             sub.ends_at = datetime.now(timezone.utc) + timedelta(days=30)
 
+    # Push the new state to the VPN panel too. The DB flip alone left the
+    # panel client RUNNING after «⛔ غیرفعال کردن» (customer kept full VPN
+    # access) and dead after re-enable. Best-effort: a panel failure keeps the
+    # DB change and warns the admin instead of crashing the toggle.
+    panel_push_failed = False
+    xui_record = sub.xui_client
+    if xui_record is not None and xui_record.inbound is not None:
+        try:
+            if new_status == "cancelled":
+                from services.provisioning.manager import ProvisioningManager
+                await ProvisioningManager(session)._disable_xui_client(
+                    xui_record=xui_record,
+                    volume_bytes=sub.volume_bytes,
+                    ends_at=sub.ends_at,
+                    sub_link=sub.sub_link,
+                )
+                xui_record.is_active = False
+            else:
+                # Re-enable via the renewal sync: absolute push of
+                # enable=True + current quota/expiry (Marzban-family included).
+                from models.plan import Plan as _Plan
+                from repositories.settings import AppSettingsRepository as _ASR
+                from services.renewal import _sync_xui_limits
+                security = await _ASR(session).get_service_security_settings()
+                plan = (
+                    await session.scalar(select(_Plan).where(_Plan.id == sub.plan_id))
+                    if sub.plan_id is not None else None
+                )
+                await _sync_xui_limits(session, sub, xui_record, security, plan=plan)
+        except Exception as exc:  # noqa: BLE001
+            panel_push_failed = True
+            logger.warning("Admin toggle: panel push failed for sub %s: %s", sub.id, exc)
+
     await AuditLogRepository(session).log_action(
         actor_user_id=admin_user.id,
         action="toggle_subscription",
         entity_type="subscription",
         entity_id=sub.id,
-        payload={"old_status": old_status, "new_status": new_status},
+        payload={"old_status": old_status, "new_status": new_status, "panel_push_failed": panel_push_failed},
     )
     await session.flush()
     await _render_sub_detail(callback, sub.id, sub.user_id, callback_data.page, session)
+    if panel_push_failed:
+        try:
+            await callback.message.answer(
+                "⚠️ وضعیت در دیتابیس تغییر کرد اما اعمال روی پنل ناموفق بود — وضعیت کلاینت را روی پنل دستی بررسی کنید."
+            )
+        except Exception:
+            pass
 
 
 # ─── Extend Days ──────────────────────────────────────────────────────────────
@@ -330,20 +379,31 @@ async def extend_submit(
         await message.answer(PENDING_TIME_RENEWAL_MSG)
         return
 
-    await apply_renewal(
-        session=session,
-        subscription=sub,
-        renew_type="time",
-        amount=float(days),
-    )
+    # Canonical renewal lock: an admin extend racing a paid renewal (bot /
+    # mini-app / auto-renew share this key) interleaves two read-modify-write
+    # sequences on ends_at. Commit INSIDE the lock so the next holder reads
+    # the committed state (same invariant as the user renewal handler).
+    from core.redis import distributed_lock, renewal_lock_key
+    async with distributed_lock(renewal_lock_key(sub.id), ttl_seconds=60) as acquired:
+        if not acquired:
+            await message.answer("⛔ تمدید این سرویس در حال پردازش است — لطفاً چند لحظه بعد دوباره تلاش کنید.")
+            return
 
-    await AuditLogRepository(session).log_action(
-        actor_user_id=admin_user.id,
-        action="extend_subscription",
-        entity_type="subscription",
-        entity_id=sub.id,
-        payload={"days": days, "new_ends_at": sub.ends_at.isoformat()},
-    )
+        await apply_renewal(
+            session=session,
+            subscription=sub,
+            renew_type="time",
+            amount=float(days),
+        )
+
+        await AuditLogRepository(session).log_action(
+            actor_user_id=admin_user.id,
+            action="extend_subscription",
+            entity_type="subscription",
+            entity_id=sub.id,
+            payload={"days": days, "new_ends_at": sub.ends_at.isoformat()},
+        )
+        await session.commit()
 
     await message.answer(
         f"✅ اشتراک {str(sub.id)[:8]} به مدت {days} روز تمدید شد.\n"
@@ -406,21 +466,29 @@ async def add_volume_submit(
         await message.answer(TIME_EXPIRED_VOLUME_RENEWAL_MSG)
         return
 
-    old_vol = sub.volume_bytes
-    await apply_renewal(
-        session=session,
-        subscription=sub,
-        renew_type="volume",
-        amount=gb,
-    )
+    # Canonical renewal lock + commit-in-lock — see extend_submit above.
+    from core.redis import distributed_lock, renewal_lock_key
+    async with distributed_lock(renewal_lock_key(sub.id), ttl_seconds=60) as acquired:
+        if not acquired:
+            await message.answer("⛔ تمدید این سرویس در حال پردازش است — لطفاً چند لحظه بعد دوباره تلاش کنید.")
+            return
 
-    await AuditLogRepository(session).log_action(
-        actor_user_id=admin_user.id,
-        action="add_volume",
-        entity_type="subscription",
-        entity_id=sub.id,
-        payload={"added_gb": gb, "old_bytes": old_vol, "new_bytes": sub.volume_bytes},
-    )
+        old_vol = sub.volume_bytes
+        await apply_renewal(
+            session=session,
+            subscription=sub,
+            renew_type="volume",
+            amount=gb,
+        )
+
+        await AuditLogRepository(session).log_action(
+            actor_user_id=admin_user.id,
+            action="add_volume",
+            entity_type="subscription",
+            entity_id=sub.id,
+            payload={"added_gb": gb, "old_bytes": old_vol, "new_bytes": sub.volume_bytes},
+        )
+        await session.commit()
 
     await message.answer(
         f"✅ {gb:.1f} GB به اشتراک {str(sub.id)[:8]} اضافه شد.\n"

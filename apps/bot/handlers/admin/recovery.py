@@ -965,22 +965,32 @@ def _format_fixvol_report(agg: dict, *, applied: bool) -> str:
 async def _run_fixvol(session: AsyncSession, *, apply: bool) -> dict:
     from services.provisioning.manager import ProvisioningManager
 
-    servers = list(
-        (
-            await session.execute(
-                select(XUIServerRecord)
-                .options(selectinload(XUIServerRecord.credentials))
-                .where(XUIServerRecord.is_active.is_(True))
-            )
-        ).scalars().all()
-    )
+    # Snapshot plain (id, name) pairs up front: a per-server rollback (apply
+    # mode) expires EVERY ORM object loaded in this session, so touching a
+    # pre-loaded XUIServerRecord on the NEXT iteration would lazy-refresh and
+    # raise MissingGreenlet, aborting all remaining servers.
+    server_rows = (
+        await session.execute(
+            select(XUIServerRecord.id, XUIServerRecord.name)
+            .where(XUIServerRecord.is_active.is_(True))
+        )
+    ).all()
     manager = ProvisioningManager(session)
     agg: dict = {"checked": 0, "fixed": 0, "no_data": 0, "skipped": 0, "details": [], "panel_emails": [], "errors": []}
-    for server in servers:
-        # Capture the name BEFORE the call — after a rollback (apply mode) the
-        # ORM object is expired and reading .name would itself lazy-load.
-        server_name = server.name
+    for server_id, server_name in server_rows:
         try:
+            # Re-load the record fresh each iteration so a previous server's
+            # rollback can never leave us holding an expired instance.
+            server = (
+                await session.execute(
+                    select(XUIServerRecord)
+                    .options(selectinload(XUIServerRecord.credentials))
+                    .where(XUIServerRecord.id == server_id)
+                )
+            ).scalars().first()
+            if server is None:
+                # Deleted between the snapshot and this iteration — skip.
+                continue
             res = await manager.reconcile_migrated_usage_for_server(
                 server, limit=2000, force=True, dry_run=not apply,
             )

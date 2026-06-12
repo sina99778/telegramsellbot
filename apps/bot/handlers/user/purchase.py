@@ -1061,9 +1061,31 @@ async def _process_wallet_purchase(
         if dc:
             consumed = await repo.use_code(dc, plan_id=plan.id)
         if consumed is None:
-            final_price = original_price
-            discount_percent = 0
-            # Re-check affordability against the un-discounted price.
+            # The code is gone (exhausted/expired/deactivated since entry) —
+            # but the user's PERSONAL discount is a standing entitlement
+            # independent of the code (the shown price used max(code, personal)),
+            # so falling back to the FULL price would silently overcharge.
+            personal_pct = int(getattr(user, "personal_discount_percent", 0) or 0)
+            discount_percent = max(0, min(personal_pct, 100))
+            if discount_percent > 0:
+                final_price = (
+                    original_price * (Decimal(100 - discount_percent) / Decimal(100))
+                ).quantize(Decimal("0.01"))
+            else:
+                final_price = original_price
+            # Never debit a different amount than the user can see — tell them.
+            try:
+                await callback.message.answer(
+                    "⚠️ کد تخفیف دیگر معتبر نیست (منقضی یا تمام‌شده).\n"
+                    + (
+                        f"تخفیف شخصی {discount_percent}٪ شما اعمال شد و مبلغ نهایی <b>{final_price:.2f} {plan.currency}</b> است."
+                        if discount_percent > 0
+                        else f"مبلغ نهایی بدون تخفیف <b>{final_price:.2f} {plan.currency}</b> است."
+                    )
+                )
+            except Exception:
+                pass
+            # Re-check affordability against the recomputed price.
             if user.wallet.balance < final_price:
                 await safe_edit_or_send(
                     callback,
@@ -1680,13 +1702,18 @@ async def _process_referral_bonus(session, bot, user) -> None:
     if user.referred_by_user_id is None:
         return
 
-    # Check if this is the user's first completed order
+    # Check if this is the user's first PURCHASE. Count only purchase-shaped
+    # orders: renewals are created directly with status="completed" (wallet/
+    # mini-app/auto-renew) and free trials carry source="trial" — including
+    # either made the count overshoot 1 for users who renewed a migrated
+    # config or took a trial first, silently skipping the bonus forever.
     order_count = int(
         await session.scalar(
             sel(func.count()).select_from(Order)
             .where(
                 Order.user_id == user.id,
-                Order.status.in_(["provisioned", "paid", "completed"]),
+                Order.status.in_(["provisioned", "paid"]),
+                Order.source != "trial",
             )
         ) or 0
     )

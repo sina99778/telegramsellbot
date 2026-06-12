@@ -22,8 +22,12 @@ and whose `created_at` is older than `delay_minutes`:
 
 Safety
 ------
-* Wrapped in `session.begin_nested()` per payment so one failure doesn't
-  roll back already-confirmed siblings.
+* Candidate IDs are collected WITHOUT a lock; each payment is then
+  locked, processed and COMMITTED in its own short transaction (same
+  pattern as apps/worker/jobs/payments.py). No row lock ever spans a
+  Telegram API call, so the bot's manual approve/reject handler (which
+  takes a BLOCKING `with_for_update()` on the same rows) is never
+  stalled for the whole sweep.
 * `with_for_update(skip_locked=True)` honours the lock contract on
   `process_successful_payment` (same pattern as crypto_autoconfirm).
 * The exception list is checked at the User level (not Payment), so an
@@ -61,25 +65,47 @@ async def run_card_autoconfirm(session: AsyncSession, bot: Bot | None = None) ->
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=cfg.delay_minutes)
     exception_ids = set(cfg.exception_telegram_ids or [])
 
+    # Phase 1: collect candidate IDs WITHOUT any lock (mirrors
+    # apps/worker/jobs/payments.py). Batch-locking every pending payment FOR
+    # UPDATE and then doing Telegram sends inside the same transaction kept
+    # all those rows locked for the entire sweep, blocking the bot's manual
+    # approve/reject handler for tens of seconds.
     rows = await session.execute(
-        select(Payment)
-        .options(selectinload(Payment.user))
+        select(Payment.id)
         .where(
             Payment.provider == "card_to_card",
             Payment.payment_status == "pending_approval",
             Payment.created_at <= cutoff,
         )
-        .with_for_update(skip_locked=True)
+        .order_by(Payment.created_at.asc())
     )
-    pending: list[Payment] = list(rows.scalars().all())
-    if not pending:
+    candidate_ids = [row[0] for row in rows.all()]
+    if not candidate_ids:
         return {"checked": 0, "confirmed": 0}
 
     confirmed = 0
     skipped_exempt = 0
     failed = 0
 
-    for payment in pending:
+    # Phase 2: lock + process + COMMIT each payment in its own short
+    # transaction, so no row lock ever spans a Telegram API call.
+    for pid in candidate_ids:
+        payment: Payment | None = await session.scalar(
+            select(Payment)
+            .options(selectinload(Payment.user))
+            .where(
+                Payment.id == pid,
+                # Re-check eligibility under the lock — an admin may have
+                # approved/rejected it between listing and locking.
+                Payment.payment_status == "pending_approval",
+            )
+            .with_for_update(skip_locked=True)
+        )
+        if payment is None:
+            # Locked by the manual-approval handler, or already resolved.
+            await session.commit()
+            continue
+
         u: User | None = payment.user
         if u is not None and u.telegram_id in exception_ids:
             skipped_exempt += 1
@@ -87,30 +113,36 @@ async def run_card_autoconfirm(session: AsyncSession, bot: Bot | None = None) ->
                 "[CARD-AUTOCONFIRM] payment=%s user_telegram_id=%s on exception list — skipping",
                 payment.id, u.telegram_id,
             )
+            # Nothing was modified — commit just releases the row lock.
+            await session.commit()
             continue
 
         try:
-            async with session.begin_nested():
-                # Stamp the auto-confirm marker BEFORE credit so a re-run
-                # never double-credits even if process_successful_payment's
-                # own idempotency check somehow fails.
-                payload = dict(payment.callback_payload or {})
-                payload["card_autoconfirm_at"] = datetime.now(timezone.utc).isoformat()
-                payload["card_autoconfirm_delay_minutes"] = cfg.delay_minutes
-                payment.callback_payload = payload
-                await session.flush()
+            # Stamp the auto-confirm marker BEFORE credit so a re-run
+            # never double-credits even if process_successful_payment's
+            # own idempotency check somehow fails.
+            payload = dict(payment.callback_payload or {})
+            payload["card_autoconfirm_at"] = datetime.now(timezone.utc).isoformat()
+            payload["card_autoconfirm_delay_minutes"] = cfg.delay_minutes
+            payment.callback_payload = payload
+            await session.flush()
 
-                await process_successful_payment(
-                    session=session,
-                    payment=payment,
-                    amount_to_credit=Decimal(str(payment.price_amount)),
-                )
+            await process_successful_payment(
+                session=session,
+                payment=payment,
+                amount_to_credit=Decimal(str(payment.price_amount)),
+            )
+            # Commit per payment: releases the row lock before any Telegram
+            # I/O below and makes this confirmation durable even if a later
+            # payment in the sweep fails.
+            await session.commit()
         except Exception as exc:
             failed += 1
             logger.error(
                 "[CARD-AUTOCONFIRM] process_successful_payment failed for payment=%s: %s",
                 payment.id, exc, exc_info=True,
             )
+            await session.rollback()
             continue
 
         confirmed += 1
@@ -155,11 +187,11 @@ async def run_card_autoconfirm(session: AsyncSession, bot: Bot | None = None) ->
     if confirmed or failed or skipped_exempt:
         logger.info(
             "[CARD-AUTOCONFIRM] sweep — checked=%d confirmed=%d skipped_exempt=%d failed=%d delay=%dm",
-            len(pending), confirmed, skipped_exempt, failed, cfg.delay_minutes,
+            len(candidate_ids), confirmed, skipped_exempt, failed, cfg.delay_minutes,
         )
 
     return {
-        "checked": len(pending),
+        "checked": len(candidate_ids),
         "confirmed": confirmed,
         "skipped_exempt": skipped_exempt,
         "failed": failed,

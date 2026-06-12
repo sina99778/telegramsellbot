@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from core.redis import distributed_lock
 from core.texts import Buttons
 from apps.bot.utils.menu_match import MenuText
 from models.order import Order
@@ -94,31 +95,54 @@ async def free_trial_handler(message: Message, session: AsyncSession, bot: Bot) 
         await message.answer("فعلا پلن فعالی برای ساخت کانفیگ تست وجود ندارد.")
         return
 
-    order = Order(
-        user_id=user.id,
-        plan_id=plan.id,
-        status="processing",
-        source="trial",
-        amount=Decimal("0"),
-        currency=plan.currency,
-    )
-    session.add(order)
-    await session.flush()
+    # ─── Distributed Redis lock (prevents double-tap double-claim) ──────────
+    # Each tap runs in its own asyncio task with its own session, so N rapid
+    # taps would all read has_received_free_trial == False and provision N
+    # free configs. Serialize the claim per user.
+    async with distributed_lock(f"free_trial_lock:{user.id}", ttl_seconds=60) as acquired:
+        if not acquired:
+            await message.answer("⛔ درخواست کانفیگ تست شما در حال پردازش است — لطفاً صبر کنید.")
+            return
 
-    try:
-        result = await ProvisioningManager(session).provision_subscription(
+        # Re-check the flag INSIDE the lock — a concurrent handler may have
+        # claimed the trial and committed between our check above and the
+        # lock acquisition.
+        await session.refresh(user, attribute_names=["has_received_free_trial"])
+        if user.has_received_free_trial:
+            await message.answer("❌ شما قبلاً یک کانفیگ تست دریافت کرده‌اید.")
+            return
+
+        order = Order(
             user_id=user.id,
             plan_id=plan.id,
-            order_id=order.id,
-            config_name=f"trial_{user.telegram_id}",
+            status="processing",
+            source="trial",
+            amount=Decimal("0"),
+            currency=plan.currency,
         )
-    except ProvisioningError as exc:
-        order.status = "failed"
-        await message.answer(f"ساخت کانفیگ تست ناموفق بود:\n{exc}")
-        return
+        session.add(order)
+        await session.flush()
 
-    user.has_received_free_trial = True
-    order.status = "provisioned"
+        try:
+            result = await ProvisioningManager(session).provision_subscription(
+                user_id=user.id,
+                plan_id=plan.id,
+                order_id=order.id,
+                config_name=f"trial_{user.telegram_id}",
+            )
+        except ProvisioningError as exc:
+            order.status = "failed"
+            await message.answer(f"ساخت کانفیگ تست ناموفق بود:\n{exc}")
+            return
+
+        user.has_received_free_trial = True
+        order.status = "provisioned"
+        # Commit BEFORE releasing the lock — the middleware otherwise commits
+        # only after the handler returns (i.e. after the lock is released),
+        # leaving a window where a second tap could acquire the freed lock,
+        # still read the flag as False, and claim a second trial.
+        await session.commit()
+
     await message.answer(
         "کانفیگ تست شما آماده است:\n\n"
         f"Sub link:\n{result.sub_link}\n\n"

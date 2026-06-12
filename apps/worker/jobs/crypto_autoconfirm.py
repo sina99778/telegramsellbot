@@ -17,9 +17,13 @@ Design notes
 * Each successful auto-confirm appends the TX hash to a list on the
   payment row so the same hash never auto-confirms twice (replay
   protection on top of process_successful_payment's own idempotency).
-* Each match is wrapped in `session.begin_nested()` (a SAVEPOINT) so a
-  failure on one invoice does NOT roll back the matches that already
-  succeeded earlier in the same job run.
+* Pending invoices are snapshotted WITHOUT any lock; only the single
+  matched payment row is locked (`with_for_update(skip_locked=True)`)
+  and it is COMMITTED immediately after the credit (same pattern as
+  apps/worker/jobs/payments.py). So no row lock is ever held across a
+  blockchain HTTP poll or a Telegram send, the bot's manual approve/
+  reject handler can't be stalled by a sweep, and a failure on one
+  invoice does NOT roll back matches that already committed.
 * After a successful auto-confirm we also:
     - clear the buying user's FSM "waiting_for_manual_hash" state (so
       whatever they type next isn't interpreted as a TX hash);
@@ -58,12 +62,12 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
     """Public entry point used by apps/worker/main.py scheduler."""
     cutoff = datetime.now(timezone.utc) - _MAX_INVOICE_AGE
 
-    # `with_for_update(skip_locked=True)` honours the concurrency contract
-    # documented on `process_successful_payment`: callers MUST hold the
-    # payment row lock before crediting the wallet. `skip_locked` ensures
-    # a row currently being processed by a NowPayments IPN or manual-
-    # approval handler is silently skipped this cycle and picked up on
-    # the next one (30 s later) — no head-of-line blocking.
+    # Snapshot the pending invoices WITHOUT any lock. Batch-locking them FOR
+    # UPDATE here used to keep every row locked across the blockchain HTTP
+    # polls (8s httpx timeout per target) AND the per-match Telegram sends,
+    # blocking the bot's manual approve/reject handler for the whole sweep.
+    # The lock contract of `process_successful_payment` is honoured below by
+    # re-locking JUST the matched row right before crediting.
     rows = await session.execute(
         select(Payment)
         .where(
@@ -73,11 +77,13 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
             Payment.pay_currency.in_(tuple(AUTOCONFIRM_CURRENCIES)),
             Payment.pay_amount.is_not(None),
         )
-        .with_for_update(skip_locked=True)
     )
     pending: list[Payment] = list(rows.scalars().all())
     if not pending:
         return {"checked": 0, "confirmed": 0}
+    # End the read transaction so we don't sit idle-in-transaction during the
+    # explorer HTTP polls (objects keep their attributes: expire_on_commit=False).
+    await session.commit()
 
     # Group by (currency, address) so we only hit each blockchain API
     # once per unique deposit destination.
@@ -175,42 +181,72 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
                 unmatched_in_target += 1
                 continue
 
-            # Each match runs inside its own SAVEPOINT so a failure on
-            # this invoice (e.g. transient X-UI panel error, audit log
-            # FK constraint, …) doesn't roll back any matches that
-            # already succeeded earlier in the same job run.
+            # Each match is locked + credited + COMMITTED in its own short
+            # transaction so the row lock never spans the Telegram sends
+            # below, and a failure on this invoice (e.g. transient X-UI
+            # panel error, audit log FK constraint, …) doesn't roll back
+            # any matches that already committed earlier in the same run.
             try:
-                async with session.begin_nested():
-                    # Stamp hash + processed marker BEFORE
-                    # process_successful_payment. process_successful_payment
-                    # is itself idempotent (FOR UPDATE + actually_paid
-                    # guard); this list is the autoconfirm-specific
-                    # replay-protection.
-                    payload = dict(matched_payment.callback_payload or {})
-                    processed = list(payload.get("autoconfirm_processed_hashes") or [])
-                    processed.append(tx_hash)
-                    payload["autoconfirm_processed_hashes"] = processed
-                    payload["autoconfirm_tx_hash"] = tx_hash
-                    payload["autoconfirm_at"] = datetime.now(timezone.utc).isoformat()
-                    payload["tx_hash"] = tx_hash  # surface to admin recovery UI
-                    matched_payment.provider_payment_id = tx_hash
-                    matched_payment.callback_payload = payload
-                    await session.flush()
-
-                    await process_successful_payment(
-                        session=session,
-                        payment=matched_payment,
-                        amount_to_credit=Decimal(str(matched_payment.price_amount)),
+                # Lock JUST this row (process_successful_payment's contract)
+                # and refresh it — the snapshot above was read lock-free, so
+                # an admin may have approved/rejected it in the meantime.
+                locked = await session.scalar(
+                    select(Payment)
+                    .where(
+                        Payment.id == matched_payment.id,
+                        Payment.payment_status.in_(("waiting_hash", "waiting_receipt")),
                     )
+                    .with_for_update(skip_locked=True)
+                    .execution_options(populate_existing=True)
+                )
+                if locked is None:
+                    # Resolved (or being processed) elsewhere — drop the
+                    # invoice locally so later TXs don't re-match it.
+                    try:
+                        invoices.remove(matched_payment)
+                    except ValueError:
+                        pass
+                    await session.commit()
+                    continue
+
+                # Stamp hash + processed marker BEFORE
+                # process_successful_payment. process_successful_payment
+                # is itself idempotent (FOR UPDATE + actually_paid
+                # guard); this list is the autoconfirm-specific
+                # replay-protection. Re-check it against the FRESH row.
+                payload = dict(locked.callback_payload or {})
+                processed = list(payload.get("autoconfirm_processed_hashes") or [])
+                if tx_hash in processed:
+                    await session.commit()
+                    continue
+                processed.append(tx_hash)
+                payload["autoconfirm_processed_hashes"] = processed
+                payload["autoconfirm_tx_hash"] = tx_hash
+                payload["autoconfirm_at"] = datetime.now(timezone.utc).isoformat()
+                payload["tx_hash"] = tx_hash  # surface to admin recovery UI
+                locked.provider_payment_id = tx_hash
+                locked.callback_payload = payload
+                await session.flush()
+
+                await process_successful_payment(
+                    session=session,
+                    payment=locked,
+                    amount_to_credit=Decimal(str(locked.price_amount)),
+                )
+                # Commit per match: releases the row lock before the
+                # Telegram notifications below and makes the credit
+                # durable even if a later match in the same poll fails.
+                await session.commit()
             except Exception as exc:
                 logger.error(
                     "[CRYPTO-AUTOCONFIRM] process_successful_payment failed for %s: %s",
                     matched_payment.id, exc, exc_info=True,
                 )
+                await session.rollback()
                 # Skip the rest of the post-match steps for this invoice.
                 continue
 
-            # If we got here, the SAVEPOINT committed. Remove the
+            # If we got here, the credit COMMITTED. Remove the
             # matched invoice from the local list so a follow-up TX in
             # the same poll doesn't re-trigger this branch.
             try:

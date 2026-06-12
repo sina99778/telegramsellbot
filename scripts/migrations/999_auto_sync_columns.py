@@ -80,9 +80,18 @@ def _column_ddl(table_name: str, column) -> str:
     if not column.nullable:
         parts.append("NOT NULL")
     if column.server_default is not None:
-        # server_default can be a TextClause; rely on its str() rendering
-        # (e.g. `text("0")` → "0").
-        default = str(column.server_default.arg)  # type: ignore[attr-defined]
+        arg = column.server_default.arg  # type: ignore[attr-defined]
+        if isinstance(arg, str):
+            # A plain Python string is a LITERAL value (SQLAlchemy's own DDL
+            # compiler quotes these too). Render it as a single-quoted SQL
+            # string so e.g. server_default="user" doesn't compile to the
+            # USER keyword (= current_user) and "pending_activation" / the
+            # JSONB "{}" aren't DDL syntax errors that abort the deploy.
+            default = "'" + arg.replace("'", "''") + "'"
+        else:
+            # TextClause / SQL expressions (e.g. `text("0")`, `text("now()")`)
+            # are already SQL; rely on their str() rendering.
+            default = str(arg)
         parts.append(f"DEFAULT {default}")
     return " ".join(parts)
 

@@ -291,6 +291,16 @@ setup_env_builder() {
 
   backup_env
 
+  # Snapshot the existing .env so operator-set keys the wizard does NOT
+  # manage (XUI_VERIFY_SSL, SENTRY_DSN, PREMIUM_EMOJI_*, TRONADO_*, …)
+  # can be merged back after the template rewrite below — regenerating
+  # from the fixed template used to silently drop them all.
+  local old_env_copy=""
+  if [[ -f "${ENV_FILE}" ]]; then
+    old_env_copy="$(mktemp)"
+    cp "${ENV_FILE}" "${old_env_copy}"
+  fi
+
   cat > "${ENV_FILE}" <<EOF
 APP_ENV=production
 APP_DEBUG=false
@@ -327,6 +337,33 @@ TETRAPAY_CALLBACK_URL=${tetrapay_callback_url}
 WEB_BASE_URL=${web_base_url}
 SUPPORT_URL=${support_url}
 EOF
+
+  # Merge back every KEY=VALUE line from the previous .env whose key is
+  # not already present in the freshly written template, so re-running
+  # the wizard never reverts unmanaged settings to their code defaults.
+  if [[ -n "${old_env_copy}" ]]; then
+    local preserved=0 line key
+    while IFS= read -r key; do
+      if grep -qE "^${key}=" "${ENV_FILE}"; then
+        continue
+      fi
+      # Last occurrence wins — same semantics as read_env_value and
+      # docker compose env_file resolution.
+      line="$(grep -E "^${key}=" "${old_env_copy}" | tail -n 1)"
+      if [[ "${preserved}" -eq 0 ]]; then
+        {
+          echo ""
+          echo "# ── Preserved from previous .env (keys not managed by this wizard) ──"
+        } >> "${ENV_FILE}"
+      fi
+      printf '%s\n' "${line}" >> "${ENV_FILE}"
+      preserved=$((preserved + 1))
+    done < <(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "${old_env_copy}" | sed 's/=$//' | awk '!seen[$0]++')
+    rm -f "${old_env_copy}"
+    if [[ "${preserved}" -gt 0 ]]; then
+      success "Preserved ${preserved} existing key(s) the wizard does not manage."
+    fi
+  fi
 
   chmod 600 "${ENV_FILE}"
   success ".env updated at ${ENV_FILE} (mode 600)."
@@ -479,7 +516,14 @@ fetch_latest_code() {
       return 1
     fi
     info "Discarding local changes..."
-    (cd "${PROJECT_DIR}" && git reset --hard HEAD && git clean -fd)
+    # Protect operational files that live untracked in the repo dir from
+    # `git clean`: `.env.bak.<timestamp>` secret snapshots (the only copies
+    # of previous APP_SECRET_KEY / POSTGRES_PASSWORD — .gitignore's
+    # `*.env.bak` glob does NOT match the timestamped names), installer /
+    # doctor logs, and the host `ready_configs/` store that restore.sh
+    # re-creates. Without these excludes a routine DISCARD wipes them all.
+    (cd "${PROJECT_DIR}" && git reset --hard HEAD \
+      && git clean -fd -e '.env.bak.*' -e '*.log' -e 'ready_configs')
   fi
 
   info "Resetting local master to ${deploy_ref}..."

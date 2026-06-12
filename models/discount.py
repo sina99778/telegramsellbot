@@ -19,5 +19,13 @@ class DiscountCode(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     used_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Optional: limit to a specific plan
+    # Optional: limit to a specific plan.
+    # NOTE: ondelete="SET NULL" is dangerous here because the validators
+    # (repositories/discount.py) treat plan_id IS NULL as "valid for EVERY
+    # plan" — so a plan delete would silently widen a plan-restricted code
+    # into an all-plans code. Changing the FK action would need a real DB
+    # migration on existing installs, so the app layer compensates instead:
+    # any path that deletes Plan rows must deactivate (is_active=False) the
+    # codes scoped to that plan BEFORE deleting it (see
+    # apps/api/routes/dashboard/plans.py::delete_plan).
     plan_id: Mapped[UUID | None] = mapped_column(ForeignKey("plans.id", ondelete="SET NULL"), nullable=True)

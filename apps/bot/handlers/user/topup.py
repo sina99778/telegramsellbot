@@ -881,9 +881,30 @@ async def manual_hash_submitted(
         return
 
     from uuid import UUID
-    payment = await session.get(Payment, UUID(payment_id))
+    from sqlalchemy import select
+
+    # Row-lock the payment so we serialize against the crypto-autoconfirm
+    # worker (which credits under FOR UPDATE). Once the worker has confirmed
+    # the payment we must NOT regress it back to "pending_approval" — the
+    # admin card would then show an unverified-looking payment whose ❌ reject
+    # button marks an already-credited payment as rejected.
+    payment = await session.scalar(
+        select(Payment).where(Payment.id == UUID(payment_id)).with_for_update()
+    )
     if payment is None:
         await message.answer("❌ رکورد پرداخت یافت نشد.")
+        return
+
+    if payment.payment_status not in {"waiting_hash", "waiting_receipt"}:
+        if payment.payment_status == "finished":
+            await message.answer(
+                "✅ این پرداخت قبلاً به‌صورت خودکار تأیید شده است؛ "
+                "نیازی به ارسال هش تراکنش نیست."
+            )
+        else:
+            await message.answer(
+                f"⚠️ این پرداخت قبلاً پردازش شده.\nوضعیت: {payment.payment_status}"
+            )
         return
 
     # Update payment with hash

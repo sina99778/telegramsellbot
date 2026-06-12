@@ -1040,12 +1040,25 @@ async def toggle_enable_handler(
 
         new_enable = not xui_record.is_active
         username = xui_record.panel_username or xui_record.username
+        # Re-enabling a not-yet-started (first_use) config must RESTORE the
+        # panel's on_hold state — sending "active" would start the expiry timer
+        # before the user ever connects (and the sync job would then flip the
+        # pending sub to active). Mirror provisioning: first_use → on_hold with
+        # the plan's full duration. PGUserModify has extra="allow", so the
+        # on_hold_expire_duration extra rides through to_payload().
+        if not new_enable:
+            payload = PGUserModify(status="disabled")
+        elif sub.status == "pending_activation" and sub.plan and int(sub.plan.duration_days or 0) > 0:
+            payload = PGUserModify(
+                status="on_hold",
+                on_hold_expire_duration=int(sub.plan.duration_days) * 86400,
+            )
+        else:
+            payload = PGUserModify(status="active")
         try:
             server = ensure_inbound_server_loaded(xui_record.inbound)
             async with marzban_client_for_server(server) as client:
-                await client.modify_user(
-                    username, PGUserModify(status="active" if new_enable else "disabled")
-                )
+                await client.modify_user(username, payload)
             xui_record.is_active = new_enable
             await session.flush()
             status_text = "روشن" if new_enable else "خاموش"
@@ -1248,13 +1261,29 @@ async def delete_expired_config(
             Subscription.id == callback_data.subscription_id,
             Subscription.user_id == user.id,
         )
+        .with_for_update()
     )
     if sub is None:
         await safe_edit_or_send(callback, "کانفیگ پیدا نشد.")
         return
 
-    # Delete from X-UI (skip if server is deleted/inactive)
+    # Re-validate the button's precondition server-side: inline keyboards stay
+    # live forever, so a stale (or forged) callback from an old detail message
+    # must not delete a config that has since been renewed/reactivated. Mirrors
+    # the gate used when rendering the button (expired OR server-deleted).
     xui_record = sub.xui_client
+    server_deleted = False
+    if xui_record and xui_record.inbound:
+        server_obj = xui_record.inbound.server
+        if server_obj is None or server_obj.health_status == "deleted" or not server_obj.is_active:
+            server_deleted = True
+    elif xui_record and xui_record.inbound is None:
+        server_deleted = True
+    if sub.status != "expired" and not server_deleted:
+        await safe_edit_or_send(callback, "❌ این کانفیگ قابل حذف نیست (فقط کانفیگ‌های منقضی‌شده یا با سرور حذف‌شده قابل حذف هستند).")
+        return
+
+    # Delete from X-UI (skip if server is deleted/inactive)
     if xui_record and xui_record.inbound and xui_record.inbound.server:
         server_obj = xui_record.inbound.server
         if server_obj.health_status != "deleted" and server_obj.is_active:

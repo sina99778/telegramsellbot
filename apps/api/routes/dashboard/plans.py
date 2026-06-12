@@ -4,12 +4,13 @@ Dashboard plans CRUD:
     GET    /api/dashboard/plans               — list with sale counts
     POST   /api/dashboard/plans               — create
     PATCH  /api/dashboard/plans/{id}          — edit
-    DELETE /api/dashboard/plans/{id}          — delete (only if zero subs)
+    DELETE /api/dashboard/plans/{id}          — delete (only if zero subs/orders)
 
-A plan deletion that's referenced by existing subscriptions is REFUSED
-with a 400 — the operator should toggle `is_active=false` instead so
-the plan disappears from buy-screens but historical orders keep their
-plan_name. (Identical safety to how server deletion works.)
+A plan deletion that's referenced by existing subscriptions OR orders is
+REFUSED with a 400 — the operator should toggle `is_active=false` instead
+so the plan disappears from buy-screens but historical orders keep their
+plan_name. (Identical safety to how server deletion works. Orders carry an
+ondelete=RESTRICT FK, so deleting past it would 500 at commit anyway.)
 """
 from __future__ import annotations
 
@@ -21,12 +22,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from apps.api.routes.dashboard._deps import require_dashboard_admin
 from models.dashboard_admin import DashboardAdmin
+from models.discount import DiscountCode
+from models.order import Order
 from models.plan import Plan
 from models.subscription import Subscription
 from models.xui import XUIInboundRecord, XUIServerRecord
@@ -251,6 +254,32 @@ async def delete_plan(plan_id: UUID, auth: AuthDep) -> dict[str, Any]:
             status_code=400,
             detail=f"این پلن {sub_count} سرویس دارد. به‌جای حذف، آن را غیرفعال کن.",
         )
+
+    # Order.plan_id is ondelete=RESTRICT, and orders WITHOUT a subscription
+    # are a normal state (failed/refunded purchases never create one) — a
+    # blind delete would raise IntegrityError out of commit() as a raw 500.
+    # Refuse cleanly, mirroring the bot-side delete handler's fallback.
+    order_count = int(await session.scalar(
+        select(func.count(Order.id)).where(Order.plan_id == plan.id)
+    ) or 0)
+    if order_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"این پلن {order_count} سفارش ثبت‌شده دارد. به‌جای حذف، آن را غیرفعال کن.",
+        )
+
+    # DiscountCode.plan_id is ondelete=SET NULL and validation treats a NULL
+    # plan_id as "valid for every plan" (repositories/discount.py) — deleting
+    # the plan would silently widen plan-restricted codes to the whole shop.
+    # Deactivate them BEFORE the delete so the scope can't evaporate.
+    deactivated_codes = list((await session.execute(
+        update(DiscountCode)
+        .where(DiscountCode.plan_id == plan.id)
+        .values(is_active=False)
+        .returning(DiscountCode.code)
+        .execution_options(synchronize_session=False)
+    )).scalars().all())
+
     await session.delete(plan)
     try:
         await AuditLogRepository(session).log_action(
@@ -258,7 +287,11 @@ async def delete_plan(plan_id: UUID, auth: AuthDep) -> dict[str, Any]:
             action="dashboard_plan_delete",
             entity_type="plan",
             entity_id=plan.id,
-            payload={"dashboard_admin": admin.username, "code": plan.code},
+            payload={
+                "dashboard_admin": admin.username,
+                "code": plan.code,
+                "deactivated_discount_codes": deactivated_codes,
+            },
         )
     except Exception as exc:
         logger.warning("Audit log failed: %s", exc)
