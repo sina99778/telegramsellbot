@@ -103,6 +103,13 @@ services:
       autoheal: "true"
     env_file:
       - .env
+    volumes:
+      # The backup job packs the real .env FILE into every bundle (key
+      # "env" in the tar — restore.sh restores it). `env_file:` above only
+      # injects VARIABLES into the process; without this read-only mount
+      # there is no .env inside the container and bundles would ship with
+      # the "no .env / no APP_SECRET_KEY" warning instead of the file.
+      - ./.env:/app/.env:ro
     depends_on:
       postgres:
         condition: service_healthy

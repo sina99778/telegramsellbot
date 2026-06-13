@@ -175,6 +175,45 @@ def _read_env_file() -> bytes | None:
     return None
 
 
+def _reconstruct_env_from_settings() -> bytes:
+    """Regenerate an .env-equivalent from the LIVE settings.
+
+    Fallback for deployments where the worker container has no .env FILE:
+    docker-compose's `env_file:` injects variables into the process but does
+    not mount the file, so `_read_env_file` finds nothing and bundles used to
+    ship WITHOUT the secrets needed for a full restore (APP_SECRET_KEY above
+    all — without it the encrypted panel passwords are unrecoverable).
+    pydantic-settings maps each field to its upper-cased env key, so dumping
+    the field set reproduces a restore-ready .env.
+    """
+    from pydantic import SecretStr as _SecretStr
+
+    lines = [
+        "# Reconstructed by the backup job from the running configuration —",
+        "# the original .env file was not mounted into the worker container.",
+        "# Values reflect the live settings at backup time.",
+    ]
+    for name in type(settings).model_fields:
+        try:
+            value = getattr(settings, name)
+        except Exception:
+            continue
+        if value is None:
+            continue
+        if isinstance(value, _SecretStr):
+            value = value.get_secret_value()
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        value = str(value)
+        if value == "":
+            continue
+        # dotenv-style quoting only when needed (whitespace or comment char).
+        if any(ch in value for ch in (" ", "\t", "#", '"')):
+            value = '"' + value.replace('"', '\\"') + '"'
+        lines.append(f"{name.upper()}={value}")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
 def _read_ready_configs_dir() -> list[tuple[str, bytes]] | None:
     """If ready_configs/ exists in the project dir, return (relpath, bytes) pairs."""
     base = None
@@ -205,6 +244,7 @@ def _build_bundle(
     *,
     pg_dump_bytes: bytes,
     env_bytes: bytes | None,
+    env_reconstructed: bool = False,
     ready_configs: list[tuple[str, bytes]] | None,
     xui_dumps: list[tuple[str, bytes]],
     git_sha: str,
@@ -250,6 +290,9 @@ def _build_bundle(
             "contents": {
                 "db_dump": True,
                 "env": env_bytes is not None,
+                # True when the env entry was regenerated from live settings
+                # rather than read from an actual .env file.
+                "env_reconstructed": env_reconstructed,
                 "ready_configs": bool(ready_configs),
                 "xui_databases_count": len(xui_dumps),
             },
@@ -348,12 +391,25 @@ async def run_backup(
     _last_failure_notified_monotonic = None
 
     env_data = _read_env_file()
+    env_reconstructed = False
+    if env_data is None:
+        # No .env FILE in the container (compose env_file: injects variables,
+        # not the file) — regenerate one from the live settings so the bundle
+        # always carries APP_SECRET_KEY & co. for a full restore.
+        try:
+            env_data = _reconstruct_env_from_settings()
+            env_reconstructed = True
+            logger.info("[BACKUP] No .env file found — reconstructed it from live settings")
+        except Exception as exc:
+            logger.warning("[BACKUP] .env reconstruction failed: %s", exc)
+            env_data = None
     ready_data = _read_ready_configs_dir()
     xui_data = await _dump_xui_databases(session)
 
     bundle = _build_bundle(
         pg_dump_bytes=pg_data,
         env_bytes=env_data,
+        env_reconstructed=env_reconstructed,
         ready_configs=ready_data,
         xui_dumps=xui_data,
         git_sha=_run_git_sha(),
@@ -392,7 +448,12 @@ async def run_backup(
         f"🔑 اثرِ کلیدِ رمزنگاری: {key_fp}",
         "",
     ]
-    if env_data:
+    if env_data and env_reconstructed:
+        caption_lines.append(
+            "✅ فایلِ .env داخلِ بکاپ هست (بازسازی‌شده از تنظیماتِ در حالِ اجرا — "
+            "فایلِ اصلی داخلِ کانتینر mount نشده بود). با ./restore.sh کامل برمی‌گردد."
+        )
+    elif env_data:
         caption_lines.append("✅ فایلِ .env (کلیدِ رمزنگاری) داخلِ بکاپ هست — روی سرورِ جدید با ./restore.sh کامل برمی‌گردد.")
     else:
         caption_lines.append(
