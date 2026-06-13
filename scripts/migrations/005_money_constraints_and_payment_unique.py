@@ -50,7 +50,7 @@ import sys
 
 from sqlalchemy import text
 
-from core.database import AsyncSessionFactory
+from core.database import AsyncSessionFactory, engine
 
 
 logger = logging.getLogger("money_constraints_payment_unique")
@@ -164,12 +164,29 @@ async def _apply_payment_unique_index() -> tuple[str, list[str]]:
         return "created", []
 
 
+async def _run_all() -> tuple[tuple[int, int, list[str]], tuple[str, list[str]]]:
+    """Run BOTH phases inside ONE event loop.
+
+    Two separate asyncio.run() calls crashed in production: the module-global
+    engine pools asyncpg connections bound to the FIRST loop; the second
+    asyncio.run() creates a new loop, the pool's ping awaits a loop-A future
+    and dies with "attached to a different loop" / "Event loop is closed".
+    One loop for everything + an explicit engine.dispose() ON that loop closes
+    every pooled connection cleanly before the loop shuts down.
+    """
+    try:
+        checks = await _apply_check_constraints()
+        index = await _apply_payment_unique_index()
+    finally:
+        await engine.dispose()
+    return checks, index
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     logger.info("money_constraints_payment_unique: starting")
     try:
-        created, present, warnings = asyncio.run(_apply_check_constraints())
-        index_status, duplicates = asyncio.run(_apply_payment_unique_index())
+        (created, present, warnings), (index_status, duplicates) = asyncio.run(_run_all())
     except Exception as exc:
         logger.error("Migration failed: %s", exc, exc_info=True)
         return 1
