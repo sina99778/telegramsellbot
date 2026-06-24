@@ -10,8 +10,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from core.database import AsyncSessionFactory
-from models import User, Subscription, XUIClientRecord, Server
+from models import User, Subscription, XUIClientRecord, XUIServerRecord
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 def extract_text(msg_text):
     if isinstance(msg_text, str):
@@ -29,7 +30,6 @@ def extract_text(msg_text):
 def strip_html(text):
     text = re.sub(r'<br\s*/?>', '\n', text)
     text = re.sub(r'<[^>]+>', '', text)
-    # decode html entities like &quot; if any, but regex usually suffices
     return text
 
 async def main():
@@ -105,29 +105,21 @@ async def main():
         return
 
     async with AsyncSessionFactory() as session:
-        # Load all servers to map clients
-        servers = (await session.scalars(select(Server).where(Server.is_active == True))).all()
+        # Load all active XUI servers with credentials
+        servers = (await session.scalars(
+            select(XUIServerRecord)
+            .options(selectinload(XUIServerRecord.credentials))
+            .where(XUIServerRecord.is_active == True)
+        )).all()
         
-        # Build a huge dictionary of ALL clients currently on X-UI servers
         print("Fetching all clients from X-UI servers to find missing configs...")
         all_xui_clients = {}
         
+        from services.xui.runtime import create_xui_client_for_server
+
         for server in servers:
-            if server.panel_type != "xui":
-                continue
-                
-            from services.xui.client import SanaeiXUIClient, XUIClientConfig
-            from pydantic import SecretStr
-            
-            config = XUIClientConfig(
-                base_url=server.api_url,
-                username=server.api_username,
-                password=SecretStr(server.api_password),
-                verify_ssl=False
-            )
-            
             try:
-                async with SanaeiXUIClient(config) as client:
+                async with create_xui_client_for_server(server) as client:
                     await client.login()
                     inbounds = await client.get_inbounds()
                     for inbound in inbounds:
@@ -138,6 +130,7 @@ async def main():
                                 all_xui_clients[email] = {
                                     "server_id": server.id,
                                     "inbound_id": inbound.id,
+                                    "inbound_obj": inbound,
                                     "client_dict": c,
                                     "server_obj": server
                                 }
@@ -171,19 +164,10 @@ async def main():
             client_dict = xui_info["client_dict"]
             server_obj = xui_info["server_obj"]
             inbound_id = xui_info["inbound_id"]
-            
-            # Fetch client traffic to get volume and expiry
-            from services.xui.client import SanaeiXUIClient, XUIClientConfig
-            from pydantic import SecretStr
-            config = XUIClientConfig(
-                base_url=server_obj.api_url,
-                username=server_obj.api_username,
-                password=SecretStr(server_obj.api_password),
-                verify_ssl=False
-            )
+            inbound_obj = xui_info["inbound_obj"]
             
             try:
-                async with SanaeiXUIClient(config) as client:
+                async with create_xui_client_for_server(server_obj) as client:
                     await client.login()
                     traffic = await client.get_client_traffic(config_name)
                     
@@ -217,15 +201,30 @@ async def main():
                     session.add(sub)
                     await session.flush()
                     
+                    # We need the local DB XUIInboundRecord for xui_inbound_id!
+                    from models import XUIInboundRecord
+                    inbound_record = (await session.scalars(
+                        select(XUIInboundRecord)
+                        .where(XUIInboundRecord.server_id == server_obj.id)
+                        .where(XUIInboundRecord.xui_inbound_remote_id == inbound_id)
+                    )).first()
+
+                    if not inbound_record:
+                        print(f"  -> WARNING: Inbound {inbound_id} not found in DB! Skipping.")
+                        await session.rollback()
+                        continue
+
                     # Create XUIClientRecord
                     record = XUIClientRecord(
                         subscription_id=sub.id,
-                        server_id=server_obj.id,
-                        xui_inbound_id=inbound_id,
+                        inbound_id=inbound_record.id,
+                        xui_client_remote_id=client_dict.get("id"),
                         email=config_name,
-                        uuid=client_dict.get("id"),
-                        sub_id=client_dict.get("subId"),
-                        volume_bytes=total_bytes
+                        client_uuid=client_dict.get("id"),
+                        username=client_dict.get("email", config_name),
+                        sub_link=client_dict.get("subId", str(uuid.uuid4())),
+                        usage_bytes=used_bytes,
+                        is_active=traffic.enable,
                     )
                     session.add(record)
                     await session.commit()
@@ -235,6 +234,8 @@ async def main():
                     
             except Exception as e:
                 print(f"  -> Error recovering {config_name}: {e}")
+                import traceback
+                traceback.print_exc()
                 await session.rollback()
 
         print(f"\nRecovery complete. Recovered {recovered_count} subscriptions.")
