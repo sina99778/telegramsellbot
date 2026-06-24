@@ -396,8 +396,8 @@ async def sync_all_subscription_states() -> None:
                 try:
                     async with create_xui_client_for_server(server) as xui_client:
                         any_expired = await sync_xui_usage_and_status(session, xui_client, group, security_settings)
-                        # Restart Xray core after expiry to enforce limits immediately
-                        if any_expired:
+                        # Restart Xray core after expiry to enforce limits immediately if enabled
+                        if any_expired and security_settings.restart_xray_on_expiry:
                             try:
                                 await xui_client.restart_xray_core()
                                 logger.info("[SYNC] Xray core restarted on server '%s' after config expiry", server.name)

@@ -84,6 +84,7 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
                     ("limitIp پنل", security_settings.xui_limit_ip),
                     ("سقف IP مجاز", security_settings.max_distinct_ips),
                     ("ضد اشتراک‌گذاری", status_label(security_settings.auto_disable_ip_abuse)),
+                    ("ریستارت خودکار Xray", status_label(security_settings.restart_xray_on_expiry)),
                 ],
             ),
             (
@@ -131,6 +132,7 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
     builder.button(text="limitIp پنل", callback_data="admin:settings:xui_limit_ip")
     builder.button(text="سقف IP مجاز", callback_data="admin:settings:max_ips")
     builder.button(text="ضد اشتراک‌گذاری", callback_data="admin:settings:ip_guard_toggle")
+    builder.button(text="ریستارت خودکار Xray", callback_data="admin:settings:xray_restart_toggle")
 
     # ── Section: Gateways & onboarding
     builder.button(text="━━ 💳 درگاه و آن‌بوردینگ ━━", callback_data="admin:settings:noop")
@@ -158,9 +160,9 @@ async def bot_settings_menu(callback: CallbackQuery, session: AsyncSession) -> N
 
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
     # 1 header, 2 toggles, 1 header, 4 prices, 1 header, 3 custom,
-    # 1 header, 3 security, 1 header, 5 gateways, 1 header, 5 appearance,
+    # 1 header, 4 security, 1 header, 5 gateways, 1 header, 5 appearance,
     # 1 header, 1 sales-channel, 1 header, 1 legacy-import, 1 back.
-    builder.adjust(1, 2, 1, 4, 1, 3, 1, 3, 1, 5, 1, 5, 1, 1, 1, 1, 1)
+    builder.adjust(1, 2, 1, 4, 1, 3, 1, 4, 1, 5, 1, 5, 1, 1, 1, 1, 1)
 
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
@@ -190,6 +192,17 @@ async def toggle_renewals(callback: CallbackQuery, session: AsyncSession) -> Non
     await repo.update_user_actions_settings(renewals_enabled=new_val)
     status = "روشن ✅" if new_val else "خاموش 🔴"
     await callback.answer(f"تمدید سرویس: {status}", show_alert=True)
+    await bot_settings_menu(callback, session)
+
+
+@router.callback_query(F.data == "admin:settings:xray_restart_toggle")
+async def toggle_xray_restart(callback: CallbackQuery, session: AsyncSession) -> None:
+    settings_repo = AppSettingsRepository(session)
+    current = await settings_repo.get_service_security_settings()
+    new_val = not current.restart_xray_on_expiry
+    await settings_repo.update_service_security_settings(restart_xray_on_expiry=new_val)
+    status = "روشن ✅" if new_val else "خاموش 🔴"
+    await callback.answer(f"ریستارت خودکار Xray: {status}", show_alert=True)
     await bot_settings_menu(callback, session)
 
 

@@ -91,6 +91,7 @@ class ServiceSecuritySettings:
     xui_limit_ip: int
     max_distinct_ips: int
     auto_disable_ip_abuse: bool
+    restart_xray_on_expiry: bool = False
 
 
 @dataclass(slots=True)
@@ -261,12 +262,14 @@ class AppSettingsRepository:
                 xui_limit_ip=1,
                 max_distinct_ips=3,
                 auto_disable_ip_abuse=True,
+                restart_xray_on_expiry=False,
             )
         payload = dict(record.value_json or {})
         return ServiceSecuritySettings(
             xui_limit_ip=max(int(payload.get("xui_limit_ip", 1)), 0),
             max_distinct_ips=max(int(payload.get("max_distinct_ips", 3)), 0),
             auto_disable_ip_abuse=bool(payload.get("auto_disable_ip_abuse", True)),
+            restart_xray_on_expiry=bool(payload.get("restart_xray_on_expiry", False)),
         )
 
     async def update_service_security_settings(
@@ -275,6 +278,7 @@ class AppSettingsRepository:
         xui_limit_ip: int | None = None,
         max_distinct_ips: int | None = None,
         auto_disable_ip_abuse: bool | None = None,
+        restart_xray_on_expiry: bool | None = None,
     ) -> ServiceSecuritySettings:
         record = await self.session.get(AppSetting, SERVICE_SECURITY_SETTINGS_KEY)
         if record is None:
@@ -287,6 +291,8 @@ class AppSettingsRepository:
             payload["max_distinct_ips"] = max(int(max_distinct_ips), 0)
         if auto_disable_ip_abuse is not None:
             payload["auto_disable_ip_abuse"] = auto_disable_ip_abuse
+        if restart_xray_on_expiry is not None:
+            payload["restart_xray_on_expiry"] = restart_xray_on_expiry
 
         record.value_json = payload
         self.session.add(record)

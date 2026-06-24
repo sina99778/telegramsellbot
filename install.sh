@@ -218,6 +218,25 @@ extract_domain_from_url() {
   printf '%s' "${url%%/*}"
 }
 
+is_port_free() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ! ss -tln | grep -q ":${port} "
+  elif command -v netstat >/dev/null 2>&1; then
+    ! netstat -tln | grep -q ":${port} "
+  else
+    python3 -c "import socket; s = socket.socket(); s.bind(('127.0.0.1', ${port}))" >/dev/null 2>&1
+  fi
+}
+
+find_free_port() {
+  local port=8000
+  while ! is_port_free "${port}"; do
+    port=$((port + 1))
+  done
+  echo "${port}"
+}
+
 generate_fernet_key() {
   if ! python3 -c "from cryptography.fernet import Fernet" 2>/dev/null; then
     info "Installing cryptography for Fernet key generation..."
@@ -247,6 +266,7 @@ setup_env_builder() {
   local current_bot_token current_owner current_xui_base_url current_xui_username current_xui_password
   local current_nowpayments_api_key current_domain current_app_secret current_postgres_password
   local current_redis_password current_admin_api_key current_nowpayments_ipn_secret current_tetrapay_api_key
+  local current_api_port api_port
   local bot_token owner_telegram_id xui_base_url xui_username xui_password nowpayments_api_key domain_name
   local app_secret_key postgres_password redis_password admin_api_key nowpayments_ipn_secret tetrapay_api_key
   local postgres_user postgres_db database_url redis_url webhook_url support_url web_base_url tetrapay_callback_url
@@ -273,6 +293,14 @@ setup_env_builder() {
   prompt_with_default "NOWPayments API Key" nowpayments_api_key "${current_nowpayments_api_key}" 1
   prompt_with_default "TetraPay API Key (leave empty to skip)" tetrapay_api_key "${current_tetrapay_api_key}" 1
   prompt_with_default "Domain Name (for webhook/API)" domain_name "${current_domain}"
+
+  current_api_port="$(read_env_value API_PORT)"
+  if [[ -z "${current_api_port}" ]]; then
+    info "Checking for a free port on the host starting from 8000..."
+    current_api_port="$(find_free_port)"
+    info "Selected free port: ${current_api_port}"
+  fi
+  prompt_with_default "API Host Port" api_port "${current_api_port}"
 
   app_secret_key="${current_app_secret:-$(generate_fernet_key)}"
   postgres_password="${current_postgres_password:-$(generate_password)}"
@@ -306,6 +334,7 @@ APP_ENV=production
 APP_DEBUG=false
 LOG_LEVEL=INFO
 APP_SECRET_KEY=${app_secret_key}
+API_PORT=${api_port}
 
 BOT_TOKEN=${bot_token}
 BOT_PARSE_MODE=HTML
@@ -408,8 +437,10 @@ install_prerequisites_and_ssl() {
   systemctl enable --now docker
   systemctl enable --now nginx
 
-  local current_domain current_email="" email domain_name
+  local current_domain current_email="" email domain_name api_port
   current_domain="$(extract_domain_from_url "$(read_env_value WEB_BASE_URL)")"
+  api_port="$(read_env_value API_PORT)"
+  api_port="${api_port:-8000}"
 
   prompt_with_default "Email for Let's Encrypt" email "${current_email}"
   prompt_with_default "Domain pointing to this server" domain_name "${current_domain}"
@@ -420,7 +451,7 @@ server {
     server_name ${domain_name};
 
     location / {
-        proxy_pass http://127.0.0.1:8000;
+        proxy_pass http://127.0.0.1:${api_port};
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;

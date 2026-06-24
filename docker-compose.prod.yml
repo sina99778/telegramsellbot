@@ -57,7 +57,7 @@ services:
       # entry point — Docker would otherwise punch through UFW and expose
       # plain-HTTP :8000 to the internet. If you terminate TLS on another
       # host, change this to "<lan-ip>:8000:8000" deliberately.
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/docs >/dev/null || exit 1"]
       interval: 30s
