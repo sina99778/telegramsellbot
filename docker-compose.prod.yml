@@ -97,6 +97,7 @@ services:
       start_period: 30s
 
   worker:
+    user: root
     image: telegramsellbot:latest
     container_name: telegramsellbot-worker
     restart: unless-stopped
