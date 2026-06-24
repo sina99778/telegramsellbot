@@ -308,10 +308,15 @@ setup_env_builder() {
   admin_api_key="${current_admin_api_key:-$(generate_password)}"
   nowpayments_ipn_secret="${current_nowpayments_ipn_secret:-$(generate_password)}"
 
+  local encoded_postgres_password
+  encoded_postgres_password=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote_plus(sys.argv[1]))" "$postgres_password")
+  local encoded_redis_password
+  encoded_redis_password=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote_plus(sys.argv[1]))" "$redis_password")
+  
   postgres_user="telegramsellbot"
   postgres_db="telegramsellbot"
-  database_url="postgresql+asyncpg://${postgres_user}:${postgres_password}@postgres:5432/${postgres_db}"
-  redis_url="redis://default:${redis_password}@redis:6379/0"
+  database_url="postgresql+asyncpg://${postgres_user}:${encoded_postgres_password}@postgres:5432/${postgres_db}"
+  redis_url="redis://default:${encoded_redis_password}@redis:6379/0"
   webhook_url="https://${domain_name}/api/webhooks/nowpayments"
   tetrapay_callback_url="https://${domain_name}/api/webhooks/tetrapay"
   support_url="https://${domain_name}"
