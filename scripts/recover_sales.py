@@ -36,15 +36,20 @@ async def main():
     json_path = Path("result.json")
     html_path = Path("messages.html")
     
-    if not json_path.exists() and not Path("/opt/telegramsellbot/result.json").exists():
-        if not html_path.exists() and not Path("/opt/telegramsellbot/messages.html").exists():
-            print("ERROR: result.json or messages.html not found. Please upload it to /opt/telegramsellbot/messages.html")
+    if not json_path.exists() and not Path("/opt/telegramsellbot/result.json").exists() and not Path("/app/result.json").exists():
+        if not html_path.exists() and not Path("/opt/telegramsellbot/messages.html").exists() and not Path("/app/messages.html").exists():
+            print("ERROR: result.json or messages.html not found. Please put it in the same directory or upload to /app/messages.html")
             sys.exit(1)
             
     purchases = []
 
-    if Path("messages.html").exists() or Path("/opt/telegramsellbot/messages.html").exists():
-        target_path = Path("messages.html") if Path("messages.html").exists() else Path("/opt/telegramsellbot/messages.html")
+    if Path("messages.html").exists() or Path("/opt/telegramsellbot/messages.html").exists() or Path("/app/messages.html").exists():
+        if Path("messages.html").exists():
+            target_path = Path("messages.html")
+        elif Path("/app/messages.html").exists():
+            target_path = Path("/app/messages.html")
+        else:
+            target_path = Path("/opt/telegramsellbot/messages.html")
         print(f"Reading HTML file: {target_path}...")
         with open(target_path, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -64,7 +69,12 @@ async def main():
                     "config_name": config_name,
                 })
     else:
-        target_path = Path("result.json") if Path("result.json").exists() else Path("/opt/telegramsellbot/result.json")
+        if Path("result.json").exists():
+            target_path = Path("result.json")
+        elif Path("/app/result.json").exists():
+            target_path = Path("/app/result.json")
+        else:
+            target_path = Path("/opt/telegramsellbot/result.json")
         print(f"Reading JSON file: {target_path}...")
         with open(target_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
