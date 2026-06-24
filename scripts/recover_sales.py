@@ -123,7 +123,7 @@ async def main():
                     await client.login()
                     inbounds = await client.get_inbounds()
                     for inbound in inbounds:
-                        settings = json.loads(inbound.settings)
+                        settings = inbound.settings if isinstance(inbound.settings, dict) else json.loads(inbound.settings)
                         for c in settings.get("clients", []):
                             email = c.get("email")
                             if email:
@@ -145,22 +145,36 @@ async def main():
             telegram_id = p["telegram_id"]
             config_name = p["config_name"]
             
-            # Check if this config already exists in our database
+            # Find the actual config name in X-UI (it might have a _XXXXXX suffix)
+            actual_config_name = None
+            xui_info = None
+            
+            if config_name in all_xui_clients:
+                actual_config_name = config_name
+                xui_info = all_xui_clients[config_name]
+            else:
+                for x_email, info in all_xui_clients.items():
+                    if x_email.startswith(f"{config_name}_") or x_email == config_name:
+                        actual_config_name = x_email
+                        xui_info = info
+                        break
+            
+            if not actual_config_name:
+                print(f"Missing config found in DB: {config_name} (User: {telegram_id})")
+                print(f"  -> WARNING: {config_name} is missing from DB *and* not found on any X-UI server! Maybe deleted?")
+                continue
+                
+            # Check if this config already exists in our database using the actual name
             existing_record = (await session.scalars(
-                select(XUIClientRecord).where(XUIClientRecord.email == config_name)
+                select(XUIClientRecord).where(XUIClientRecord.email == actual_config_name)
             )).first()
             
             if existing_record:
                 # Already exists, skip
                 continue
                 
-            print(f"Missing config found in DB: {config_name} (User: {telegram_id})")
+            print(f"Missing config found in DB: {actual_config_name} (User: {telegram_id}, Original: {config_name})")
             
-            xui_info = all_xui_clients.get(config_name)
-            if not xui_info:
-                print(f"  -> WARNING: {config_name} is missing from DB *and* not found on any X-UI server! Maybe deleted?")
-                continue
-                
             client_dict = xui_info["client_dict"]
             server_obj = xui_info["server_obj"]
             inbound_id = xui_info["inbound_id"]
@@ -169,7 +183,7 @@ async def main():
             try:
                 async with create_xui_client_for_server(server_obj) as client:
                     await client.login()
-                    traffic = await client.get_client_traffic(config_name)
+                    traffic = await client.get_client_traffic(actual_config_name)
                     
                     # Ensure User exists
                     user = (await session.scalars(select(User).where(User.telegram_id == telegram_id))).first()
@@ -219,9 +233,9 @@ async def main():
                         subscription_id=sub.id,
                         inbound_id=inbound_record.id,
                         xui_client_remote_id=client_dict.get("id"),
-                        email=config_name,
+                        email=actual_config_name,
                         client_uuid=client_dict.get("id"),
-                        username=client_dict.get("email", config_name),
+                        username=client_dict.get("email", actual_config_name),
                         sub_link=client_dict.get("subId", str(uuid.uuid4())),
                         usage_bytes=used_bytes,
                         is_active=traffic.enable,
@@ -229,11 +243,11 @@ async def main():
                     session.add(record)
                     await session.commit()
                     
-                    print(f"  -> Successfully recovered {config_name} -> Subscription {sub.id}")
+                    print(f"  -> Successfully recovered {actual_config_name} -> Subscription {sub.id}")
                     recovered_count += 1
                     
             except Exception as e:
-                print(f"  -> Error recovering {config_name}: {e}")
+                print(f"  -> Error recovering {actual_config_name}: {e}")
                 import traceback
                 traceback.print_exc()
                 await session.rollback()
