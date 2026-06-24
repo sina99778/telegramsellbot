@@ -175,10 +175,18 @@ async def main():
                 
             print(f"Missing config found in DB: {actual_config_name} (User: {telegram_id}, Original: {config_name})")
             
-            client_dict = xui_info["client_dict"]
-            server_obj = xui_info["server_obj"]
+            server_id = xui_info["server_id"]
+            
+            # Refetch server_obj to avoid MissingGreenlet after session.commit() or session.rollback()
+            server_obj = (await session.scalars(
+                select(XUIServerRecord)
+                .options(selectinload(XUIServerRecord.credentials))
+                .where(XUIServerRecord.id == server_id)
+            )).first()
+            
             inbound_id = xui_info["inbound_id"]
             inbound_obj = xui_info["inbound_obj"]
+            client_dict = xui_info["client_dict"]
             
             try:
                 async with create_xui_client_for_server(server_obj) as client:
@@ -196,7 +204,7 @@ async def main():
                     # Create Subscription
                     total_bytes = traffic.total
                     used_bytes = traffic.up + traffic.down
-                    expiry_time = traffic.expiryTime
+                    expiry_time = traffic.expiry_time
                     
                     sub = Subscription(
                         user_id=user.id,
