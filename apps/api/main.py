@@ -44,6 +44,14 @@ app.include_router(tronado_webhook_router, prefix="/api/webhooks", tags=["webhoo
 app.include_router(dl_router, prefix="/api", tags=["dl"])
 app.include_router(sub_router, prefix="/api", tags=["sub"])
 
+from fastapi.responses import RedirectResponse
+
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    """Redirect base URL to the dashboard so users don't see a 404."""
+    return RedirectResponse(url="/dashboard")
+
+
 
 @app.on_event("startup")
 async def _start_cache_sync() -> None:
