@@ -419,18 +419,54 @@ async def run_backup(
 
     size = len(bundle)
     logger.info("[BACKUP] Bundle built: %d bytes (~%d MB)", size, size // (1024 * 1024))
+
+    # Save backup locally on the server
+    backup_dir = "backups"
+    os.makedirs(backup_dir, exist_ok=True)
+    fname = f"tsb_backup_{ts}.tar.gz"
+    local_path = os.path.join(backup_dir, fname)
+    try:
+        with open(local_path, "wb") as fh:
+            fh.write(bundle)
+        logger.info("[BACKUP] Saved locally to %s", local_path)
+    except Exception as exc:
+        logger.error("[BACKUP] Failed to save locally to %s: %s", local_path, exc)
+
+    # Prune old local backups
+    try:
+        import glob
+        pg_files = sorted(glob.glob(os.path.join(backup_dir, "tsb_backup_*.tar.gz")))
+        if len(pg_files) > 15:
+            for f in pg_files[:-15]:
+                try:
+                    os.remove(f)
+                    logger.info("[BACKUP] Deleted old local backup file: %s", f)
+                except Exception as e:
+                    logger.warning("[BACKUP] Failed to delete old backup %s: %s", f, e)
+    except Exception as exc:
+        logger.warning("[BACKUP] Error pruning backups: %s", exc)
+
     if size > _MAX_BUNDLE_BYTES:
         # Surface to ops; don't blow up.
         msg = (
             f"⚠️ بکاپ ساخته شد ({size // (1024*1024)} MB) ولی از سقف Telegram "
-            f"({_MAX_BUNDLE_BYTES // (1024*1024)} MB) بزرگ‌تر است.\n"
-            "از منوی نصب → Migration Bundle برای انتقال دستی استفاده کن."
+            f"({_MAX_BUNDLE_BYTES // (1024*1024)} MB) بزرگ‌تر است.\n\n"
+            f"📂 فایل بکاپ با موفقیت روی سرور ذخیره شد:\n"
+            f"<code>backups/{fname}</code>"
         )
         for tg_id in (manual_requester_id and {manual_requester_id}) or (await _get_admin_telegram_ids(session)):
             try:
                 await bot.send_message(tg_id, msg)
             except Exception:
                 pass
+        
+        # Stamp last_run anyway because the backup was successfully created and saved locally!
+        if manual_requester_id is None:
+            try:
+                await repo.set_backup_last_run_now()
+                await session.commit()
+            except Exception as exc:
+                logger.warning("[BACKUP] Could not stamp last_run_at: %s", exc)
         return
 
     fname = f"tsb_backup_{ts}.tar.gz"

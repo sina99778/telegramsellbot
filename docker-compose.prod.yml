@@ -74,6 +74,8 @@ services:
       autoheal: "true"
     env_file:
       - .env
+    volumes:
+      - ./backups:/app/backups
     depends_on:
       postgres:
         condition: service_healthy
@@ -110,6 +112,7 @@ services:
       # there is no .env inside the container and bundles would ship with
       # the "no .env / no APP_SECRET_KEY" warning instead of the file.
       - ./.env:/app/.env:ro
+      - ./backups:/app/backups
     depends_on:
       postgres:
         condition: service_healthy
