@@ -218,16 +218,16 @@ async def apply_renewal(
 
             await session.flush()
 
-    # ── Clear alert dedup keys (outside savepoint) ───────────────────────
+    # ── Clear alert dedup keys (with a savepoint) ────────────────────────
     try:
-        from sqlalchemy import delete
-        from models.app_setting import AppSetting
-        await session.execute(
-            delete(AppSetting).where(
-                AppSetting.key.like(f"alert.sub.{sub_id}.%")
+        async with session.begin_nested():
+            from sqlalchemy import delete
+            from models.app_setting import AppSetting
+            await session.execute(
+                delete(AppSetting).where(
+                    AppSetting.key.like(f"alert.sub.{sub_id}.%")
+                )
             )
-        )
-        await session.flush()
     except Exception as exc:
         logger.warning("Failed to clear alert keys for sub %s: %s", sub_id, exc)
 
