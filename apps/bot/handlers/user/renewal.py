@@ -137,10 +137,25 @@ async def renew_config_start(callback: CallbackQuery, callback_data: MyConfigCal
 
 
 @router.callback_query(RenewTypeCallback.filter())
-async def renew_type_selected(callback: CallbackQuery, callback_data: RenewTypeCallback, state: FSMContext) -> None:
+async def renew_type_selected(
+    callback: CallbackQuery,
+    callback_data: RenewTypeCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
     await callback.answer()
 
     await state.update_data(sub_id=str(callback_data.sub_id), renew_type=callback_data.type)
+
+    if callback_data.type == "plan":
+        class _Pseudo:
+            text = "1"
+            from_user = callback.from_user
+            async def answer(self, *a, **kw):
+                if callback.message:
+                    return await callback.message.edit_text(*a, **kw)
+        await renew_value_entered(_Pseudo(), state, session)
+        return
     # Don't lock the FSM into "waiting_for_X" yet — give the user preset
     # buttons first. Only when they tap "custom" do we go into waiting state.
 
@@ -242,8 +257,19 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
         await message.answer(Messages.RENEWAL_INVALID_VALUE)
         return
 
+    # Look up the sub's plan so we can prefer its per-plan overrides
+    # (renewal_price_per_gb / renewal_price_per_day) over the global
+    # defaults. Falls back gracefully if the plan was deleted.
+    plan = await session.scalar(
+        select(Plan).join(Subscription, Subscription.plan_id == Plan.id).where(Subscription.id == sub_id)
+    )
+
     # Minimum amount validation
-    if renew_type == "volume":
+    if renew_type == "plan":
+        if plan is None:
+            await message.answer("❌ این کانفیگ پلن مشخصی ندارد و تمدید یکجای پلن برای آن ممکن نیست.")
+            return
+    elif renew_type == "volume":
         if amount < _MIN_VOLUME_GB:
             await message.answer(f"❌ حداقل حجم قابل افزودن {_MIN_VOLUME_GB} گیگابایت است.")
             return
@@ -255,7 +281,7 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
         if volume_renewal_blocked(SimpleNamespace(ends_at=sub_ends_at), "volume"):
             await message.answer(TIME_EXPIRED_VOLUME_RENEWAL_MSG)
             return
-    if renew_type == "time":
+    elif renew_type == "time":
         if amount < _MIN_TIME_DAYS:
             await message.answer("❌ حداقل مدت قابل افزودن ۱ روز است.")
             return
@@ -276,13 +302,6 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
     settings_repo = AppSettingsRepository(session)
     renewal_settings = await settings_repo.get_renewal_settings()
 
-    # Look up the sub's plan so we can prefer its per-plan overrides
-    # (renewal_price_per_gb / renewal_price_per_day) over the global
-    # defaults. Falls back gracefully if the plan was deleted.
-    plan = await session.scalar(
-        select(Plan).join(Subscription, Subscription.plan_id == Plan.id).where(Subscription.id == sub_id)
-    )
-
     volume_added = 0.0
     time_added_days = 0.0
 
@@ -291,7 +310,11 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
     if plan is None:
         _avg_gb, _avg_day = await _migrated_config_renewal_rates(session, renewal_settings)
 
-    if renew_type == "volume":
+    if renew_type == "plan":
+        price = plan.price
+        volume_added = round(float(plan.volume_bytes) / (1024**3), 2) if plan.volume_bytes else 0.0
+        time_added_days = float(plan.duration_days) if plan.duration_days else 0.0
+    elif renew_type == "volume":
         per_gb = plan.effective_renewal_price_per_gb(renewal_settings.price_per_gb) if plan else _avg_gb
         price = amount * per_gb
         volume_added = amount
@@ -351,11 +374,15 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
         )
     builder.button(text=Buttons.BACK, callback_data=MyConfigCallback(action="view", subscription_id=sub_id).pack())
     builder.adjust(1)
+    display_currency = await settings_repo.get_display_currency()
+    toman_rate = int(await settings_repo.get_toman_rate())
+    from core.formatting import format_money
+    formatted_price = format_money(price, mode=display_currency, toman_rate=toman_rate)
     
     text = Messages.RENEWAL_INVOICE.format(
         volume=volume_added,
         time=time_added_days,
-        price=price
+        formatted_price=formatted_price
     )
     text += "\n\n💳 روش پرداخت را انتخاب کنید:"
     
@@ -373,7 +400,7 @@ async def _get_renewal_data(callback_data: RenewPayCallback, session: AsyncSessi
     the same gate renew_config_start and renew_pay_wallet already enforce.
     """
     sub_id = UUID(callback_data.s)
-    renew_type = "volume" if callback_data.t == "v" else "time"
+    renew_type = "volume" if callback_data.t == "v" else "time" if callback_data.t == "t" else "plan"
     try:
         amount = float(callback_data.a)
         # Callback payloads outlive the chat and can be forged — apply the
@@ -418,7 +445,11 @@ async def _get_renewal_data(callback_data: RenewPayCallback, session: AsyncSessi
     if plan is None:
         _avg_gb, _avg_day = await _migrated_config_renewal_rates(session, renewal_settings)
 
-    if renew_type == "volume":
+    if renew_type == "plan":
+        if plan is None:
+            return None
+        price = plan.price
+    elif renew_type == "volume":
         per_gb = plan.effective_renewal_price_per_gb(renewal_settings.price_per_gb) if plan else _avg_gb
         price = amount * per_gb
     else:
@@ -1379,7 +1410,7 @@ async def _notify_renewal_admins(callback, user, renew_type, amount, price, sess
             # fall through to legacy format
     from services.notifications import notify_sales_event
     user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
-    renew_type_label = "حجم" if renew_type == "volume" else "زمان"
+    renew_type_label = "حجم" if renew_type == "volume" else "زمان" if renew_type == "time" else "کل پلن"
     admin_text = (
         "🔄 تمدید سرویس!\n\n"
         f"👤 کاربر: {user.first_name or '-'} | {user_link} (ID: <code>{user.telegram_id}</code>)\n"

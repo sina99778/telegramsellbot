@@ -205,6 +205,17 @@ async def apply_renewal(
                     subscription.ends_at = now_utc + timedelta(days=days_to_add)
                 else:
                     subscription.ends_at += timedelta(days=days_to_add)
+            elif renew_type == "plan":
+                if plan is not None:
+                    subscription.volume_bytes += plan.volume_bytes
+                    days_to_add = plan.duration_days
+                    if subscription.ends_at is None:
+                        base = subscription.activated_at or now_utc
+                        subscription.ends_at = base + timedelta(days=days_to_add)
+                    elif subscription.ends_at < now_utc:
+                        subscription.ends_at = now_utc + timedelta(days=days_to_add)
+                    else:
+                        subscription.ends_at += timedelta(days=days_to_add)
             else:
                 raise ValueError("Invalid renewal type.")
 
