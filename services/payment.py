@@ -552,47 +552,47 @@ async def _apply_direct_renewal_locked(
     # gateway-paid portion. See apps/bot/handlers/user/renewal.py
     # `renew_pay_partial`.
     debit_amount = Decimal(str(payload.get("total_renew_cost") or payment.price_amount))
-    
+    wallet_debited = False
     try:
-        async with session.begin_nested():
-            if not payload.get("wallet_debited"):
-                await wallet_manager.process_transaction(
-                    user_id=payment.user_id,
-                    amount=debit_amount,
-                    transaction_type="renewal",
-                    direction="debit",
-                    currency=payment.price_currency,
-                    reference_type="payment",
-                    reference_id=payment.id,
-                    description=f"Gateway renewal of subscription {subscription.id}",
-                    metadata={
-                        "sub_id": str(subscription.id),
-                        "type": renew_type,
-                        "amount": renew_amount,
-                        "provider": payment.provider,
-                        "partial": bool(payload.get("partial")),
-                        "gateway_portion": float(payment.price_amount),
-                        "full_renewal_cost": float(debit_amount),
-                    },
-                )
-                payload["wallet_debited"] = True
-                payment.callback_payload = payload
-                await session.flush()
-
-            plan: Plan | None = None
-            if renew_type == "plan" and subscription.plan_id:
-                from models.plan import Plan
-                from sqlalchemy import select
-                plan = await session.scalar(select(Plan).where(Plan.id == subscription.plan_id))
-
-            await apply_renewal(
-                session=session,
-                subscription=subscription,
-                renew_type=renew_type,
-                amount=float(renew_amount),
-                plan=plan,
+        if not payload.get("wallet_debited"):
+            await wallet_manager.process_transaction(
+                user_id=payment.user_id,
+                amount=debit_amount,
+                transaction_type="renewal",
+                direction="debit",
+                currency=payment.price_currency,
+                reference_type="payment",
+                reference_id=payment.id,
+                description=f"Gateway renewal of subscription {subscription.id}",
+                metadata={
+                    "sub_id": str(subscription.id),
+                    "type": renew_type,
+                    "amount": renew_amount,
+                    "provider": payment.provider,
+                    "partial": bool(payload.get("partial")),
+                    "gateway_portion": float(payment.price_amount),
+                    "full_renewal_cost": float(debit_amount),
+                },
             )
-            logger.info("[RENEWAL] Renewal applied successfully for subscription %s", sub_id_str)
+            wallet_debited = True
+            payload["wallet_debited"] = True
+            payment.callback_payload = payload
+            await session.flush()
+
+        plan: Plan | None = None
+        if renew_type == "plan" and subscription.plan_id:
+            from models.plan import Plan
+            from sqlalchemy import select
+            plan = await session.scalar(select(Plan).where(Plan.id == subscription.plan_id))
+
+        await apply_renewal(
+            session=session,
+            subscription=subscription,
+            renew_type=renew_type,
+            amount=float(renew_amount),
+            plan=plan,
+        )
+        logger.info("[RENEWAL] Renewal applied successfully for subscription %s", sub_id_str)
             
     except Exception as exc:
         # apply_renewal may fail because X-UI is down, server credentials
@@ -601,6 +601,29 @@ async def _apply_direct_renewal_locked(
             "[RENEWAL] apply_renewal FAILED for sub %s (%s): %s",
             sub_id_str, type(exc).__name__, exc, exc_info=True,
         )
+        # Refund via a new wallet transaction if we debited
+        if wallet_debited or payload.get("wallet_debited"):
+            try:
+                await wallet_manager.process_transaction(
+                    user_id=payment.user_id,
+                    amount=debit_amount,
+                    transaction_type="refund",
+                    direction="credit",
+                    currency=payment.price_currency,
+                    reference_type="payment",
+                    reference_id=payment.id,
+                    description=f"Auto-refund: renewal of {sub_id_str} failed",
+                    metadata={
+                        "sub_id": str(subscription.id),
+                        "failure_reason": type(exc).__name__,
+                    },
+                )
+            except Exception as refund_exc:
+                logger.critical(
+                    "[RENEWAL] REFUND ALSO FAILED for payment %s: %s",
+                    payment.id, refund_exc, exc_info=True,
+                )
+        
         payload = dict(payment.callback_payload or {})
         payload["wallet_debited"] = False
         payload["renewal_failed"] = True
