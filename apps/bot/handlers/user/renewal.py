@@ -1377,11 +1377,19 @@ async def _apply_renewal(sub, renew_type: str, amount: float, session: AsyncSess
     that if X-UI sync fails, ALL DB changes are rolled back.
     """
     from services.renewal import apply_renewal
+    
+    plan = None
+    if renew_type == "plan" and sub.plan_id:
+        from models.plan import Plan
+        from sqlalchemy import select
+        plan = await session.scalar(select(Plan).where(Plan.id == sub.plan_id))
+        
     await apply_renewal(
         session=session,
         subscription=sub,
         renew_type=renew_type,
         amount=amount,
+        plan=plan,
     )
 
 

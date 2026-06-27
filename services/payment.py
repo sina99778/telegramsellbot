@@ -621,11 +621,18 @@ async def _apply_direct_renewal_locked(
         await session.flush()
 
     try:
+        plan: Plan | None = None
+        if renew_type == "plan" and subscription.plan_id:
+            from models.plan import Plan
+            from sqlalchemy import select
+            plan = await session.scalar(select(Plan).where(Plan.id == subscription.plan_id))
+
         await apply_renewal(
             session=session,
             subscription=subscription,
             renew_type=renew_type,
             amount=float(renew_amount),
+            plan=plan,
         )
         logger.info("[RENEWAL] Renewal applied successfully for subscription %s", sub_id_str)
     except Exception as exc:
