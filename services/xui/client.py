@@ -62,7 +62,7 @@ class SanaeiXUIClient:
             follow_redirects=True,
             verify=config.verify_ssl,
         )
-        self._authenticated = False
+        self._authenticated = bool(self._client.cookies)
 
     async def __aenter__(self) -> "SanaeiXUIClient":
         return self

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from uuid import UUID
 from collections.abc import AsyncIterator
 from urllib.parse import urlparse
 
@@ -280,10 +282,31 @@ def build_xui_client_config(server: XUIServerRecord) -> XUIClientConfig:
     )
 
 
+@dataclass
+class PooledXUIClient:
+    config: XUIClientConfig
+    client: SanaeiXUIClient
+
+_xui_clients_pool: dict[UUID, PooledXUIClient] = {}
+
+
 @asynccontextmanager
 async def create_xui_client_for_server(server: XUIServerRecord) -> AsyncIterator[SanaeiXUIClient]:
-    async with SanaeiXUIClient(build_xui_client_config(server)) as client:
-        yield client
+    config = build_xui_client_config(server)
+    pooled = _xui_clients_pool.get(server.id)
+    
+    if pooled is None or pooled.config != config:
+        if pooled is not None:
+            await pooled.client.aclose()
+        
+        # We don't pass an http_client, so SanaeiXUIClient creates and owns it.
+        # But because we cache the SanaeiXUIClient instance, the underlying
+        # httpx.AsyncClient is preserved across all panel requests.
+        new_client = SanaeiXUIClient(config)
+        _xui_clients_pool[server.id] = PooledXUIClient(config=config, client=new_client)
+        pooled = _xui_clients_pool[server.id]
+
+    yield pooled.client
 
 
 def ensure_inbound_server_loaded(inbound: XUIInboundRecord) -> XUIServerRecord:

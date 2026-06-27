@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from uuid import UUID
 
 from pydantic import SecretStr
 
@@ -24,10 +26,28 @@ def build_rebecca_client_config(server: XUIServerRecord) -> RebeccaClientConfig:
     )
 
 
+@dataclass
+class PooledRebeccaClient:
+    config: RebeccaClientConfig
+    client: RebeccaClient
+
+_rebecca_clients_pool: dict[UUID, PooledRebeccaClient] = {}
+
+
 @asynccontextmanager
 async def create_rebecca_client_for_server(server: XUIServerRecord) -> AsyncIterator[RebeccaClient]:
-    async with RebeccaClient(build_rebecca_client_config(server)) as client:
-        yield client
+    config = build_rebecca_client_config(server)
+    pooled = _rebecca_clients_pool.get(server.id)
+    
+    if pooled is None or pooled.config != config:
+        if pooled is not None:
+            await pooled.client.aclose()
+            
+        new_client = RebeccaClient(config)
+        _rebecca_clients_pool[server.id] = PooledRebeccaClient(config=config, client=new_client)
+        pooled = _rebecca_clients_pool[server.id]
+
+    yield pooled.client
 
 
 def absolute_sub_url(server: XUIServerRecord, subscription_url: str | None) -> str:
