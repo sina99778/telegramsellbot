@@ -16,6 +16,13 @@ class DatabaseSessionMiddleware(BaseMiddleware):
 
     The middleware commits on success, rolls back on failure, and closes the
     session automatically so handlers can just declare `session: AsyncSession`.
+
+    IMPORTANT: GlobalErrorMiddleware (registered on message/callback_query)
+    catches handler exceptions, rolls back the session, and returns None.
+    When that happens, this middleware sees a "successful" return (no exception)
+    but the session is already rolled back. We detect this via a flag
+    ``_error_handled`` set by the error middleware, OR by checking the
+    sync_session state, and skip the commit.
     """
 
     def __init__(
@@ -35,8 +42,23 @@ class DatabaseSessionMiddleware(BaseMiddleware):
 
             try:
                 result = await handler(event, data)
+
+                # If the error handler already rolled back, don't commit.
+                if getattr(session, "_error_handled", False):
+                    return result
+
+                # Extra safety: check if session is in a usable state.
+                # After a rollback the sync_session may be in a state where
+                # commit() would raise PendingRollbackError.
+                try:
+                    if not session.is_active:
+                        return result
+                except Exception:
+                    pass
+
                 await session.commit()
                 return result
             except Exception:
                 await session.rollback()
                 raise
+

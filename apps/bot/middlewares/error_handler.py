@@ -26,12 +26,18 @@ async def _rollback_session(data: dict[str, Any]) -> None:
     the outer commit then becomes a no-op on the clean session. Work a handler
     deliberately committed earlier (e.g. a renewal committed inside its lock)
     is in a prior transaction and is NOT affected.
+
+    We also set ``_error_handled`` on the session so that
+    DatabaseSessionMiddleware knows NOT to call commit() after we return.
     """
     session = data.get("session")
     if session is None:
         return
     try:
         await session.rollback()
+        # Signal to the outer DatabaseSessionMiddleware that this session
+        # was already rolled back — it must NOT call commit().
+        session._error_handled = True  # type: ignore[attr-defined]
     except Exception as exc:  # noqa: BLE001
         logger.warning("error-handler: session rollback failed: %s", exc)
 
