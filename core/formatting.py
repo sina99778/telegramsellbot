@@ -63,8 +63,12 @@ def format_money(
     if mode == "IRT":
         toman = int(d * toman_rate)
         return f"{toman:,} تومان"
-    # Default USD
-    return f"{d.quantize(Decimal('0.01')):,.2f} $"
+    # Default USD with Toman equivalent
+    usd_str = f"{d.quantize(Decimal('0.01')):,.2f} $"
+    if toman_rate > 0:
+        toman = int(d * toman_rate)
+        return f"{usd_str} (≈ {toman:,} تومان)"
+    return usd_str
 
 
 def usd_to_toman(usd_amount: Decimal | float | str, toman_rate: int) -> int:

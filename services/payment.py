@@ -294,37 +294,39 @@ async def _handle_direct_purchase(
 
     # Debit from wallet once (it was credited above)
     wallet_manager = WalletManager(session)
-    if not debited:
-        await wallet_manager.process_transaction(
-            user_id=user.id,
-            amount=Decimal(str(final_price)),
-            transaction_type="purchase",
-            direction="debit",
-            currency=plan.currency,
-            reference_type="order",
-            reference_id=order.id,
-            description=f"Purchase of plan {plan.code}",
-            metadata={"plan_id": str(plan.id), "config_name": config_name},
-        )
-        payload = dict(payment.callback_payload or {})
-        payload["wallet_debited"] = True
-        payload["order_id"] = str(order.id)
-        payment.callback_payload = payload
-        # Defence in depth: flush so concurrent IPN retries see the marker
-        # immediately even before this transaction commits. The outer
-        # process_successful_payment already holds `FOR UPDATE` on the
-        # payment row, but flushing here also helps for any non-IPN
-        # callers that might invoke _handle_direct_purchase directly.
-        await session.flush()
-        logger.info("[PROVISION] Wallet debited OK")
-    else:
-        logger.info("[PROVISION] Wallet debit already recorded for order %s", order.id)
-
     # Use a single shared Bot for all messaging
     bot = _get_shared_bot()
+    
     try:
-        # Provision
-        provisioning_manager = ProvisioningManager(session)
+        async with session.begin_nested():
+            if not debited:
+                await wallet_manager.process_transaction(
+                    user_id=user.id,
+                    amount=Decimal(str(final_price)),
+                    transaction_type="purchase",
+                    direction="debit",
+                    currency=plan.currency,
+                    reference_type="order",
+                    reference_id=order.id,
+                    description=f"Purchase of plan {plan.code}",
+                    metadata={"plan_id": str(plan.id), "config_name": config_name},
+                )
+                payload = dict(payment.callback_payload or {})
+                payload["wallet_debited"] = True
+                payload["order_id"] = str(order.id)
+                payment.callback_payload = payload
+                # Defence in depth: flush so concurrent IPN retries see the marker
+                # immediately even before this transaction commits. The outer
+                # process_successful_payment already holds `FOR UPDATE` on the
+                # payment row, but flushing here also helps for any non-IPN
+                # callers that might invoke _handle_direct_purchase directly.
+                await session.flush()
+                logger.info("[PROVISION] Wallet debited OK")
+            else:
+                logger.info("[PROVISION] Wallet debit already recorded for order %s", order.id)
+
+            # Provision
+            provisioning_manager = ProvisioningManager(session)
         logger.info("[PROVISION] Calling provision_subscription...")
         provisioned = await provisioning_manager.provision_subscription(
             user_id=user.id,
@@ -424,63 +426,19 @@ async def _handle_direct_purchase(
             "[PROVISION] Provisioning FAILED (%s): %s",
             type(exc).__name__, exc, exc_info=not is_provisioning_err,
         )
+        order.status = "refunded"
+        payload = dict(payment.callback_payload or {})
+        payload["wallet_debited"] = False
+        payload["order_id"] = str(order.id)
+        payment.callback_payload = payload
         try:
-            await wallet_manager.process_transaction(
-                user_id=user.id,
-                amount=Decimal(str(final_price)),
-                transaction_type="refund",
-                direction="credit",
-                currency=plan.currency,
-                reference_type="order",
-                reference_id=order.id,
-                description="Automatic refund after provisioning failure",
-                metadata={
-                    "plan_id": str(plan.id),
-                    "failure_reason": type(exc).__name__,
-                },
+            await bot.send_message(
+                user.telegram_id,
+                "❌ خطا در ساخت کانفیگ. مبلغ پرداختی به کیف پول شما بازگردانده شد.\n"
+                "می‌توانید با همان موجودی دوباره خرید کنید یا با پشتیبانی تماس بگیرید."
             )
-            order.status = "refunded"
-            payload = dict(payment.callback_payload or {})
-            payload["wallet_debited"] = False
-            payload["order_id"] = str(order.id)
-            payment.callback_payload = payload
-            try:
-                await bot.send_message(
-                    user.telegram_id,
-                    "❌ خطا در ساخت کانفیگ. مبلغ به کیف پول شما بازگردانده شد.\n"
-                    "می‌توانید با همان موجودی دوباره خرید کنید یا با پشتیبانی تماس بگیرید."
-                )
-            except Exception as bot_exc:
-                logger.error("[PROVISION] Failed to send refund message: %s", bot_exc)
-        except Exception as refund_exc:
-            logger.critical(
-                "[PROVISION] Refund ALSO failed for order %s: %s",
-                order.id, refund_exc, exc_info=True,
-            )
-            order.status = "failed_needs_manual_refund"
-            payload = dict(payment.callback_payload or {})
-            payload["needs_manual_refund"] = True
-            payload["failure_reason"] = type(exc).__name__
-            payment.callback_payload = payload
-            try:
-                from services.notifications import notify_admins
-                await notify_admins(
-                    session, bot,
-                    "🚨 خرید ناموفق + refund هم شکست!\n"
-                    f"order={order.id}\nuser={user.telegram_id}\n"
-                    f"amount={final_price} {plan.currency}\n"
-                    f"reason: {type(exc).__name__}",
-                )
-            except Exception:
-                pass
-            try:
-                await bot.send_message(
-                    user.telegram_id,
-                    "❌ ساخت کانفیگ ناموفق بود و بازگشت خودکار مبلغ هم انجام نشد.\n"
-                    "موضوع برای پیگیری به ادمین ارجاع شد — لطفاً به پشتیبانی پیام بدهید."
-                )
-            except Exception:
-                pass
+        except Exception as bot_exc:
+            logger.error("[PROVISION] Failed to send refund message: %s", bot_exc)
         return False
     finally:
         await bot.session.close()
@@ -594,47 +552,48 @@ async def _apply_direct_renewal_locked(
     # gateway-paid portion. See apps/bot/handlers/user/renewal.py
     # `renew_pay_partial`.
     debit_amount = Decimal(str(payload.get("total_renew_cost") or payment.price_amount))
-    if not payload.get("wallet_debited"):
-        await wallet_manager.process_transaction(
-            user_id=payment.user_id,
-            amount=debit_amount,
-            transaction_type="renewal",
-            direction="debit",
-            currency=payment.price_currency,
-            reference_type="payment",
-            reference_id=payment.id,
-            description=f"Gateway renewal of subscription {subscription.id}",
-            metadata={
-                "sub_id": str(subscription.id),
-                "type": renew_type,
-                "amount": renew_amount,
-                "provider": payment.provider,
-                "partial": bool(payload.get("partial")),
-                "gateway_portion": float(payment.price_amount),
-                "full_renewal_cost": float(debit_amount),
-            },
-        )
-        payload["wallet_debited"] = True
-        payment.callback_payload = payload
-        # See _handle_direct_purchase: flush so a concurrent IPN retry
-        # immediately sees the marker even before this transaction commits.
-        await session.flush()
-
+    
     try:
-        plan: Plan | None = None
-        if renew_type == "plan" and subscription.plan_id:
-            from models.plan import Plan
-            from sqlalchemy import select
-            plan = await session.scalar(select(Plan).where(Plan.id == subscription.plan_id))
+        async with session.begin_nested():
+            if not payload.get("wallet_debited"):
+                await wallet_manager.process_transaction(
+                    user_id=payment.user_id,
+                    amount=debit_amount,
+                    transaction_type="renewal",
+                    direction="debit",
+                    currency=payment.price_currency,
+                    reference_type="payment",
+                    reference_id=payment.id,
+                    description=f"Gateway renewal of subscription {subscription.id}",
+                    metadata={
+                        "sub_id": str(subscription.id),
+                        "type": renew_type,
+                        "amount": renew_amount,
+                        "provider": payment.provider,
+                        "partial": bool(payload.get("partial")),
+                        "gateway_portion": float(payment.price_amount),
+                        "full_renewal_cost": float(debit_amount),
+                    },
+                )
+                payload["wallet_debited"] = True
+                payment.callback_payload = payload
+                await session.flush()
 
-        await apply_renewal(
-            session=session,
-            subscription=subscription,
-            renew_type=renew_type,
-            amount=float(renew_amount),
-            plan=plan,
-        )
-        logger.info("[RENEWAL] Renewal applied successfully for subscription %s", sub_id_str)
+            plan: Plan | None = None
+            if renew_type == "plan" and subscription.plan_id:
+                from models.plan import Plan
+                from sqlalchemy import select
+                plan = await session.scalar(select(Plan).where(Plan.id == subscription.plan_id))
+
+            await apply_renewal(
+                session=session,
+                subscription=subscription,
+                renew_type=renew_type,
+                amount=float(renew_amount),
+                plan=plan,
+            )
+            logger.info("[RENEWAL] Renewal applied successfully for subscription %s", sub_id_str)
+            
     except Exception as exc:
         # apply_renewal may fail because X-UI is down, server credentials
         # are bad, etc. Whatever the cause: user's money must come back.
@@ -642,63 +601,35 @@ async def _apply_direct_renewal_locked(
             "[RENEWAL] apply_renewal FAILED for sub %s (%s): %s",
             sub_id_str, type(exc).__name__, exc, exc_info=True,
         )
+        payload = dict(payment.callback_payload or {})
+        payload["wallet_debited"] = False
+        payload["renewal_failed"] = True
+        payload["failure_reason"] = type(exc).__name__
+        payment.callback_payload = payload
+        
         try:
-            await wallet_manager.process_transaction(
-                user_id=payment.user_id,
-                amount=debit_amount,  # refund the full amount we just debited
-                transaction_type="refund",
-                direction="credit",
-                currency=payment.price_currency,
-                reference_type="payment",
-                reference_id=payment.id,
-                description=f"Auto-refund: renewal of {sub_id_str} failed",
-                metadata={
-                    "sub_id": str(subscription.id),
-                    "failure_reason": type(exc).__name__,
-                    "partial": bool(payload.get("partial")),
-                },
-            )
-            payload = dict(payment.callback_payload or {})
-            payload["wallet_debited"] = False
-            payload["renewal_failed"] = True
-            payment.callback_payload = payload
+            bot = _get_shared_bot()
             try:
-                bot = _get_shared_bot()
-                try:
-                    user = await session.scalar(select(User).where(User.id == payment.user_id))
-                    if user:
-                        await bot.send_message(
-                            user.telegram_id,
-                            "❌ تمدید سرویس ناموفق بود. مبلغ به کیف پول شما بازگردانده شد.",
-                        )
-                finally:
-                    await bot.session.close()
-            except Exception:
-                pass
-        except Exception as refund_exc:
-            logger.critical(
-                "[RENEWAL] Refund ALSO failed for payment %s: %s",
-                payment.id, refund_exc, exc_info=True,
-            )
-            payload = dict(payment.callback_payload or {})
-            payload["needs_manual_refund"] = True
-            payload["failure_reason"] = type(exc).__name__
-            payment.callback_payload = payload
-            try:
-                bot = _get_shared_bot()
-                try:
-                    from services.notifications import notify_admins
-                    await notify_admins(
-                        session, bot,
-                        "🚨 تمدید ناموفق + refund هم شکست!\n"
-                        f"payment={payment.id}\nsub={sub_id_str}\n"
-                        f"amount={payment.price_amount} {payment.price_currency}\n"
-                        f"reason: {type(exc).__name__}",
+                user = await session.scalar(select(User).where(User.id == payment.user_id))
+                if user:
+                    await bot.send_message(
+                        user.telegram_id,
+                        "❌ تمدید سرویس ناموفق بود. مبلغ پرداختی به کیف پول شما بازگردانده شد.",
                     )
-                finally:
-                    await bot.session.close()
-            except Exception:
-                pass
+                
+                from services.notifications import notify_admins
+                await notify_admins(
+                    session, bot,
+                    "🚨 تمدید ناموفق (مبلغ به کیف پول برگشت)\n"
+                    f"payment={payment.id}\nsub={sub_id_str}\n"
+                    f"amount={payment.price_amount} {payment.price_currency}\n"
+                    f"reason: {type(exc).__name__}",
+                )
+            finally:
+                await bot.session.close()
+        except Exception:
+            pass
+            
         return False
 
     # Notify user

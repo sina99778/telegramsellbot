@@ -1509,30 +1509,31 @@ async def _finalize_purchase(
     await session.flush()
 
     try:
-        await wallet_manager.process_transaction(
-            user_id=user.id,
-            amount=Decimal(str(final_price)),
-            transaction_type="purchase",
-            direction="debit",
-            currency=plan.currency,
-            reference_type="order",
-            reference_id=order.id,
-            description=f"Purchase of plan {plan.code}",
-            metadata={"plan_id": str(plan.id), "config_name": config_name},
-        )
-    except InsufficientBalanceError:
-        order.status = "failed"
-        await bot.send_message(chat_id=chat_id, text=Messages.BALANCE_NOT_SUFFICIENT_ANYMORE)
-        return
+        async with session.begin_nested():
+            try:
+                await wallet_manager.process_transaction(
+                    user_id=user.id,
+                    amount=Decimal(str(final_price)),
+                    transaction_type="purchase",
+                    direction="debit",
+                    currency=plan.currency,
+                    reference_type="order",
+                    reference_id=order.id,
+                    description=f"Purchase of plan {plan.code}",
+                    metadata={"plan_id": str(plan.id), "config_name": config_name},
+                )
+            except InsufficientBalanceError:
+                order.status = "failed"
+                await bot.send_message(chat_id=chat_id, text=Messages.BALANCE_NOT_SUFFICIENT_ANYMORE)
+                return
 
-    try:
-        provisioning_manager = ProvisioningManager(session)
-        provisioned = await provisioning_manager.provision_subscription(
-            user_id=user.id,
-            plan_id=plan.id,
-            order_id=order.id,
-            config_name=config_name,
-        )
+            provisioning_manager = ProvisioningManager(session)
+            provisioned = await provisioning_manager.provision_subscription(
+                user_id=user.id,
+                plan_id=plan.id,
+                order_id=order.id,
+                config_name=config_name,
+            )
     except Exception as exc:
         # CRITICAL: catch EVERY exception — not just ProvisioningError. The
         # X-UI panel can also raise ConnectError, TimeoutError,
@@ -1544,49 +1545,8 @@ async def _finalize_purchase(
             "Provisioning failed for order %s (%s): %s",
             order.id, type(exc).__name__, exc, exc_info=not is_provisioning_err,
         )
-        try:
-            await wallet_manager.process_transaction(
-                user_id=user.id,
-                amount=Decimal(str(final_price)),
-                transaction_type="refund",
-                direction="credit",
-                currency=plan.currency,
-                reference_type="order",
-                reference_id=order.id,
-                description="Automatic refund after provisioning failure",
-                metadata={
-                    "plan_id": str(plan.id),
-                    "failure_reason": type(exc).__name__,
-                },
-            )
-            order.status = "refunded"
-            await bot.send_message(chat_id=chat_id, text=Messages.PROVISIONING_FAILED_REFUNDED)
-        except Exception as refund_exc:
-            logger.critical(
-                "CRITICAL: Refund also failed for order %s: %s",
-                order.id, refund_exc, exc_info=True,
-            )
-            order.status = "failed_needs_manual_refund"
-            # Tell the user we couldn't auto-refund + ping support / admins.
-            try:
-                await bot.send_message(
-                    chat_id=chat_id,
-                    text=Messages.PROVISIONING_FAILED_MANUAL_REFUND,
-                )
-            except Exception:
-                pass
-            # Alert admins so they can refund manually before the user complains.
-            try:
-                from services.notifications import notify_admins
-                await notify_admins(
-                    session, bot,
-                    f"🚨 خرید ناموفق + refund هم شکست خورد!\n"
-                    f"order={order.id}\nuser={user.telegram_id}\n"
-                    f"amount={final_price} {plan.currency}\n"
-                    f"reason: {type(exc).__name__}: {str(exc)[:160]}",
-                )
-            except Exception:
-                pass
+        order.status = "refunded"
+        await bot.send_message(chat_id=chat_id, text=Messages.PROVISIONING_FAILED_REFUNDED)
         return
 
     order.status = "provisioned"

@@ -52,12 +52,15 @@ logger = logging.getLogger("add_lifetime_used_bytes")
 
 async def _migrate() -> tuple[bool, int]:
     """Return (added_column, backfilled_rows)."""
+    logger.info("Attempting to connect to the database...")
     async with AsyncSessionFactory() as session:
+        logger.info("Connected successfully! Starting ALTER TABLE...")
         # 1) Add the column. PG 9.6+ supports `IF NOT EXISTS` on ADD COLUMN.
         await session.execute(text("""
             ALTER TABLE subscriptions
             ADD COLUMN IF NOT EXISTS lifetime_used_bytes BIGINT NOT NULL DEFAULT 0
         """))
+        logger.info("ALTER TABLE completed! Starting UPDATE...")
 
         # Detect whether the column was newly added in this run by checking
         # if every row's lifetime_used_bytes is still 0. (If a previous
@@ -70,8 +73,10 @@ async def _migrate() -> tuple[bool, int]:
               AND used_bytes > 0
         """))
         backfilled = result.rowcount or 0
+        logger.info("UPDATE completed! Committing...")
 
         await session.commit()
+        logger.info("Commit successful!")
         return True, backfilled
 
 
