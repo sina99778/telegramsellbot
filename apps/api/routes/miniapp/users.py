@@ -1934,41 +1934,52 @@ async def create_purchase(
     if user.wallet is None:
         raise HTTPException(status_code=404, detail="کیف پول کاربر پیدا نشد.")
 
-    if body.plan_id is None:
+    # Serialize the whole purchase against double-clicks / parallel clients —
+    # two concurrent wallet purchases both pass the balance check and both
+    # debit+provision. Same canonical key as the bot pay handlers.
+    from core.redis import distributed_lock, purchase_lock_key
+    async with distributed_lock(purchase_lock_key(user.telegram_id), ttl_seconds=180) as acquired:
+        if not acquired:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="⏳ خرید قبلی شما در حال پردازش است؛ چند لحظه بعد دوباره تلاش کنید.",
+            )
+
+        if body.plan_id is None:
+            if payment_method == "wallet":
+                plan = await _create_custom_purchase_plan_for_request(session, body)
+                return await _purchase_with_wallet(session, user, plan, config_name)
+            draft = await _build_custom_purchase_gateway_draft(session, body, config_name)
+            if payment_method == "nowpayments":
+                return await _create_nowpayments_custom_purchase(session, user, draft)
+            if payment_method == "tetrapay":
+                return await _create_tetrapay_custom_purchase(session, user, draft)
+            if payment_method == "tronado":
+                return await _create_tronado_custom_purchase(session, user, draft)
+            if payment_method == "card_to_card":
+                return await _create_card_to_card_custom_purchase(session, user, draft)
+            raise HTTPException(status_code=400, detail="روش پرداخت نامعتبر است.")
+
+        plan = await session.get(Plan, body.plan_id)
+        if plan is None or not plan.is_active:
+            raise HTTPException(status_code=404, detail="این پلن در دسترس نیست.")
+        try:
+            await ensure_plan_available(session, plan.id)
+        except PlanStockError as exc:
+            raise HTTPException(status_code=409, detail="موجودی این پلن تمام شده است.") from exc
+
         if payment_method == "wallet":
-            plan = await _create_custom_purchase_plan_for_request(session, body)
             return await _purchase_with_wallet(session, user, plan, config_name)
-        draft = await _build_custom_purchase_gateway_draft(session, body, config_name)
         if payment_method == "nowpayments":
-            return await _create_nowpayments_custom_purchase(session, user, draft)
+            return await _create_nowpayments_purchase(session, user, plan, config_name)
         if payment_method == "tetrapay":
-            return await _create_tetrapay_custom_purchase(session, user, draft)
+            return await _create_tetrapay_purchase(session, user, plan, config_name)
         if payment_method == "tronado":
-            return await _create_tronado_custom_purchase(session, user, draft)
+            return await _create_tronado_purchase(session, user, plan, config_name)
         if payment_method == "card_to_card":
-            return await _create_card_to_card_custom_purchase(session, user, draft)
+            return await _create_card_to_card_purchase(session, user, plan, config_name)
+
         raise HTTPException(status_code=400, detail="روش پرداخت نامعتبر است.")
-
-    plan = await session.get(Plan, body.plan_id)
-    if plan is None or not plan.is_active:
-        raise HTTPException(status_code=404, detail="این پلن در دسترس نیست.")
-    try:
-        await ensure_plan_available(session, plan.id)
-    except PlanStockError as exc:
-        raise HTTPException(status_code=409, detail="موجودی این پلن تمام شده است.") from exc
-
-    if payment_method == "wallet":
-        return await _purchase_with_wallet(session, user, plan, config_name)
-    if payment_method == "nowpayments":
-        return await _create_nowpayments_purchase(session, user, plan, config_name)
-    if payment_method == "tetrapay":
-        return await _create_tetrapay_purchase(session, user, plan, config_name)
-    if payment_method == "tronado":
-        return await _create_tronado_purchase(session, user, plan, config_name)
-    if payment_method == "card_to_card":
-        return await _create_card_to_card_purchase(session, user, plan, config_name)
-
-    raise HTTPException(status_code=400, detail="روش پرداخت نامعتبر است.")
 
 
 async def _create_custom_purchase_plan_for_request(
@@ -2522,9 +2533,11 @@ async def get_renewal_quote(
     _def_gb = _def_day = None
     if plan is None:
         _def_gb, _def_day = await average_active_plan_renewal_rates(session, renewal_settings)
+    # Plan renewals price at the full plan price and ignore `amount`.
+    amount = body.amount if body.renew_type != "plan" else 1.0
     price = calculate_renewal_price(
         renew_type=body.renew_type,
-        amount=body.amount,
+        amount=amount,
         settings=renewal_settings,
         plan=plan,
         default_per_gb=_def_gb,
@@ -2532,7 +2545,7 @@ async def get_renewal_quote(
     )
     return RenewalQuoteResponse(
         renew_type=body.renew_type,
-        amount=body.amount,
+        amount=amount,
         price=price,
     )
 
@@ -2565,9 +2578,13 @@ async def renew_subscription(
     _def_gb = _def_day = None
     if plan is None:
         _def_gb, _def_day = await average_active_plan_renewal_rates(session, renewal_settings)
+    # Plan renewals ignore `amount` (they're a fixed fresh-start reset); give it
+    # a sane value so calculate_renewal_price / apply_renewal / renewal_meta
+    # never see a meaningless 0.
+    amount = body.amount if body.renew_type != "plan" else 1.0
     price = calculate_renewal_price(
         renew_type=body.renew_type,
-        amount=body.amount,
+        amount=amount,
         settings=renewal_settings,
         plan=plan,
         default_per_gb=_def_gb,
@@ -2577,7 +2594,7 @@ async def renew_subscription(
     renewal_meta = {
         "sub_id": str(subscription.id),
         "renew_type": body.renew_type,
-        "renew_amount": body.amount,
+        "renew_amount": amount,
         "purpose": "renewal",
         "source": "miniapp",
     }
@@ -2739,40 +2756,55 @@ async def renew_subscription(
         if not acquired:
             raise HTTPException(status_code=409, detail="تمدید این سرویس در حال پردازش است؛ چند لحظه صبر کنید.")
 
+        # Create the order as PENDING and DON'T link it to the subscription yet.
+        # If apply_renewal fails, the except below marks it "failed" — a
+        # phantom "completed" renewal order must never be left behind, or a
+        # later cancel&refund would compute the refund from THIS renewal's
+        # price instead of the real purchase order (double-refund exploit).
+        # Same rule the bot renewal handler and auto-renew worker follow.
         order = Order(
             user_id=user.id,
             plan_id=subscription.plan_id,
             amount=price,
             currency="USD",
-            status="completed",
+            status="pending",
             source="miniapp",
         )
         session.add(order)
         await session.flush()
-        subscription.order = order
 
-        await WalletManager(session).process_transaction(
-            user_id=user.id,
-            amount=price,
-            transaction_type="renewal",
-            direction="debit",
-            currency="USD",
-            reference_type="order",
-            reference_id=order.id,
-            description=f"Renewal of subscription {subscription.id}",
-            metadata={
-                "sub_id": str(subscription.id),
-                "type": body.renew_type,
-                "amount": body.amount,
-                "source": "miniapp",
-            },
-        )
-        await apply_renewal(
-            session=session,
-            subscription=subscription,
-            renew_type=body.renew_type,
-            amount=body.amount,
-        )
+        try:
+            await WalletManager(session).process_transaction(
+                user_id=user.id,
+                amount=price,
+                transaction_type="renewal",
+                direction="debit",
+                currency="USD",
+                reference_type="order",
+                reference_id=order.id,
+                description=f"Renewal of subscription {subscription.id}",
+                metadata={
+                    "sub_id": str(subscription.id),
+                    "type": body.renew_type,
+                    "amount": amount,
+                    "source": "miniapp",
+                },
+            )
+            await apply_renewal(
+                session=session,
+                subscription=subscription,
+                renew_type=body.renew_type,
+                amount=amount,
+            )
+        except Exception:
+            order.status = "failed"
+            await session.commit()
+            raise
+
+        # Only after the debit AND the renewal both succeed: mark the order
+        # completed and link it as the subscription's latest order.
+        order.status = "completed"
+        subscription.order = order
         await session.commit()
         await session.refresh(user.wallet)
 
@@ -2784,8 +2816,15 @@ async def renew_subscription(
             default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
         )
         try:
-            type_label = "حجم" if body.renew_type == "volume" else "زمان"
-            amount_label = f"{body.amount} گیگابایت" if body.renew_type == "volume" else f"{int(body.amount)} روز"
+            if body.renew_type == "plan":
+                type_label = "تمدید پلن فعلی"
+                amount_label = "بازنشانی کامل"
+            elif body.renew_type == "volume":
+                type_label = "حجم"
+                amount_label = f"{amount} گیگابایت"
+            else:
+                type_label = "زمان"
+                amount_label = f"{int(amount)} روز"
             user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
             admin_text = (
                 "🔄 تمدید جدید (مینی‌اپ)!\n\n"
@@ -2832,8 +2871,18 @@ def _validate_renewal_request(subscription: Subscription, renew_type: str, amoun
         raise HTTPException(status_code=400, detail="این سرویس قابل تمدید نیست.")
     if subscription.plan_id is None:
         raise HTTPException(status_code=400, detail="پلن این سرویس حذف شده و قابل تمدید نیست.")
-    if renew_type not in {"volume", "time"}:
+    if renew_type not in {"volume", "time", "plan"}:
         raise HTTPException(status_code=400, detail="نوع تمدید نامعتبر است.")
+    if renew_type == "plan":
+        # Plan renewal is a fresh start (reset) priced at the full plan price —
+        # `amount` is ignored. Blocked while pending for the same reason as a
+        # time renewal: the plan's duration_days would be discarded by the
+        # first-connect activation, so the user would pay for days they never
+        # get. The bot surfaces use the exact same guard.
+        if subscription.status == "pending_activation":
+            from services.renewal import PENDING_TIME_RENEWAL_MSG
+            raise HTTPException(status_code=400, detail=PENDING_TIME_RENEWAL_MSG)
+        return
     if amount <= 0:
         raise HTTPException(status_code=400, detail="مقدار تمدید باید بیشتر از صفر باشد.")
     if renew_type == "time":

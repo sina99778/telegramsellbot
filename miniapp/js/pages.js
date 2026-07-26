@@ -426,8 +426,12 @@ const Pages = (() => {
         UI.showModal(`
             <div class="modal-title">تمدید ${escapeHtml(name)}</div>
             <div class="renewal-tabs">
-                <button class="renewal-tab active" data-renew-type="time" onclick="Pages.setRenewalType('time')">زمان</button>
-                <button class="renewal-tab" data-renew-type="volume" onclick="Pages.setRenewalType('volume')">حجم</button>
+                <button class="renewal-tab active" data-renew-type="time" onclick="Pages.setRenewalType('time')">⏳ زمان</button>
+                <button class="renewal-tab" data-renew-type="volume" onclick="Pages.setRenewalType('volume')">💾 حجم</button>
+                <button class="renewal-tab" data-renew-type="plan" onclick="Pages.setRenewalType('plan')">🔄 تمدید پلن فعلی</button>
+            </div>
+            <div id="renewal-plan-note" style="display:none;background:rgba(255,180,0,.10);border:1px solid rgba(255,180,0,.35);border-radius:10px;padding:10px 12px;margin:12px 0;font-size:13px;line-height:1.6;">
+                ⚠️ حجم و زمانِ باقی‌مانده حذف می‌شود و دوره‌ی جدید با مقادیر کاملِ پلن از همین لحظه آغاز می‌گردد (مانند خرید مجددِ همان پلن).
             </div>
             <div id="renewal-presets" style="display:grid;grid-template-columns:repeat(3, 1fr);gap:8px;margin:12px 0;">
                 <button class="btn btn-secondary btn-sm preset-btn" onclick="document.getElementById('renewal-amount').value='30'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))">+30 روز</button>
@@ -456,27 +460,45 @@ const Pages = (() => {
         const input = document.getElementById('renewal-amount');
         const label = document.getElementById('renewal-amount-label');
         const hint = document.getElementById('renewal-hint');
-        const presets = document.querySelectorAll('.preset-btn');
+        const presets = document.getElementById('renewal-presets');
+        const planNote = document.getElementById('renewal-plan-note');
+        if (type === 'plan') {
+            // Fresh-start reset: hide the amount input + presets (amount is
+            // fixed at 1), and show the reset warning.
+            if (input) input.value = '1';
+            if (input) input.style.display = 'none';
+            if (label) label.style.display = 'none';
+            if (hint) hint.style.display = 'none';
+            if (presets) presets.style.display = 'none';
+            if (planNote) planNote.style.display = 'block';
+        } else {
+            if (input) input.style.display = '';
+            if (label) label.style.display = '';
+            if (hint) hint.style.display = '';
+            if (presets) presets.style.display = 'grid';
+            if (planNote) planNote.style.display = 'none';
+        }
+        const presetBtns = document.querySelectorAll('.preset-btn');
         if (type === 'volume') {
             if (label) label.textContent = 'حجم اضافه';
             if (hint) hint.textContent = 'حجم موردنظر را به گیگابایت وارد کنید.';
             if (input) input.value = input.value || '10';
-            if (presets[0]) presets[0].textContent = '+10 گیگ';
-            if (presets[0]) presets[0].setAttribute('onclick', "document.getElementById('renewal-amount').value='10'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
-            if (presets[1]) presets[1].textContent = '+20 گیگ';
-            if (presets[1]) presets[1].setAttribute('onclick', "document.getElementById('renewal-amount').value='20'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
-            if (presets[2]) presets[2].textContent = '+50 گیگ';
-            if (presets[2]) presets[2].setAttribute('onclick', "document.getElementById('renewal-amount').value='50'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
-        } else {
+            if (presetBtns[0]) presetBtns[0].textContent = '+10 گیگ';
+            if (presetBtns[0]) presetBtns[0].setAttribute('onclick', "document.getElementById('renewal-amount').value='10'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
+            if (presetBtns[1]) presetBtns[1].textContent = '+20 گیگ';
+            if (presetBtns[1]) presetBtns[1].setAttribute('onclick', "document.getElementById('renewal-amount').value='20'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
+            if (presetBtns[2]) presetBtns[2].textContent = '+50 گیگ';
+            if (presetBtns[2]) presetBtns[2].setAttribute('onclick', "document.getElementById('renewal-amount').value='50'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
+        } else if (type === 'time') {
             if (label) label.textContent = 'تعداد روز';
             if (hint) hint.textContent = 'مدت موردنظر را به روز وارد کنید.';
             if (input) input.value = input.value || '30';
-            if (presets[0]) presets[0].textContent = '+30 روز';
-            if (presets[0]) presets[0].setAttribute('onclick', "document.getElementById('renewal-amount').value='30'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
-            if (presets[1]) presets[1].textContent = '+60 روز';
-            if (presets[1]) presets[1].setAttribute('onclick', "document.getElementById('renewal-amount').value='60'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
-            if (presets[2]) presets[2].textContent = '+90 روز';
-            if (presets[2]) presets[2].setAttribute('onclick', "document.getElementById('renewal-amount').value='90'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
+            if (presetBtns[0]) presetBtns[0].textContent = '+30 روز';
+            if (presetBtns[0]) presetBtns[0].setAttribute('onclick', "document.getElementById('renewal-amount').value='30'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
+            if (presetBtns[1]) presetBtns[1].textContent = '+60 روز';
+            if (presetBtns[1]) presetBtns[1].setAttribute('onclick', "document.getElementById('renewal-amount').value='60'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
+            if (presetBtns[2]) presetBtns[2].textContent = '+90 روز';
+            if (presetBtns[2]) presetBtns[2].setAttribute('onclick', "document.getElementById('renewal-amount').value='90'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
         }
         const subId = document.querySelector('.btn.btn-primary.btn-block[onclick^="Pages.submitRenewal"]')
             ?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
@@ -489,8 +511,11 @@ const Pages = (() => {
 
     async function updateRenewalQuote(subId) {
         const box = document.getElementById('renewal-price-box');
-        const amount = parseFloat(document.getElementById('renewal-amount')?.value || '0');
         const renewType = getSelectedRenewalType();
+        // Plan renewals have a fixed amount (1); volume/time read the input.
+        const amount = renewType === 'plan'
+            ? 1
+            : parseFloat(document.getElementById('renewal-amount')?.value || '0');
         if (!box || !amount || amount <= 0) {
             if (box) box.textContent = 'مقدار تمدید معتبر نیست.';
             return;
@@ -501,7 +526,8 @@ const Pages = (() => {
                 renew_type: renewType,
                 amount,
             });
-            box.innerHTML = `<span>هزینه تمدید</span><strong>$${UI.formatMoney(quote.price)}</strong>`;
+            const costLabel = renewType === 'plan' ? 'هزینه تمدید پلن (بازنشانی کامل)' : 'هزینه تمدید';
+            box.innerHTML = `<span>${costLabel}</span><strong>$${UI.formatMoney(quote.price)}</strong>`;
         } catch (e) {
             box.textContent = e.message;
         }
@@ -510,8 +536,10 @@ const Pages = (() => {
     let _renewalSubmitting = false;
     async function submitRenewal(subId, paymentMethod) {
         if (_renewalSubmitting) return;
-        const amount = parseFloat(document.getElementById('renewal-amount')?.value || '0');
         const renewType = getSelectedRenewalType();
+        const amount = renewType === 'plan'
+            ? 1
+            : parseFloat(document.getElementById('renewal-amount')?.value || '0');
         if (!amount || amount <= 0) {
             UI.toast('مقدار تمدید معتبر نیست', 'error');
             return;

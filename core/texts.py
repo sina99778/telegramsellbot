@@ -18,6 +18,7 @@ class Buttons:
     RENEW_SERVICE = "🔄 تمدید سرویس"
     RENEW_TIME = "⏳ تمدید زمان"
     RENEW_VOLUME = "💾 تمدید حجم"
+    RENEW_PLAN = "🔄 تمدید پلن فعلی"
     PREV = "◀️ قبلی"
     NEXT = "بعدی ▶️"
     BACK = "🔙 بازگشت"
@@ -90,7 +91,14 @@ class Messages:
         "در حال حاضر ساخت کانفیگ ناموفق بود و بازگشت خودکار مبلغ هم کامل نشد. "
         "موضوع برای پیگیری دستی ثبت شده است؛ لطفاً با پشتیبانی تماس بگیرید."
     )
-    RENEWAL_OPTIONS = "نحوه‌ی تمدید سرویس را انتخاب کنید:"
+    # The menu offers three options: extend time (stacks), extend volume
+    # (stacks), or renew the current plan (RESETS to fresh plan values at the
+    # full plan price). The wording must make that distinction plain.
+    RENEWAL_OPTIONS = (
+        "نحوه‌ی تمدید سرویس را انتخاب کنید:\n\n"
+        "• تمدید حجم/زمان: به مقادیر فعلی <b>اضافه</b> می‌شود.\n"
+        "• تمدید پلن فعلی: حجم و زمان به مقادیر پلن <b>بازنشانی</b> می‌شود (مانند خرید مجددِ همان پلن)."
+    )
     RENEWAL_ENTER_VOLUME = (
         "🔋 حجم اضافی را به <b>گیگابایت</b> وارد کنید.\n"
         "<i>مثال: ۱۰ یا 10 برای ۱۰ گیگابایت</i>"
@@ -109,7 +117,25 @@ class Messages:
         "━━━━━━━━━━━━━━\n"
         "آیا تأیید می‌کنید؟"
     )
+    # Plan renewal is a RESET, not a top-up: the invoice must say so plainly —
+    # remaining days/volume are discarded and a fresh period starts from now,
+    # exactly like buying the same plan again.
+    RENEWAL_INVOICE_PLAN = (
+        "🧾 <b>فاکتور تمدید پلن فعلی</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "📦 پلن: <b>{plan_name}</b>\n"
+        "💾 حجم جدید: <b>{volume_label}</b>\n"
+        "📅 اعتبار جدید: <b>{time_label}</b>\n"
+        "💰 مبلغ قابل پرداخت: <b>{formatted_price}</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "⚠️ توجه: حجم و زمانِ باقی‌مانده‌ی فعلی حذف می‌شود و دوره‌ی جدید از همین لحظه آغاز می‌گردد (درست مانند خرید مجددِ همین پلن).\n\n"
+        "آیا تأیید می‌کنید؟"
+    )
     RENEWAL_SUCCESS = "✅ سرویس شما با موفقیت تمدید شد. زمان و حجم جدید در سیستم ثبت گردید."
+    RENEWAL_SUCCESS_PLAN = (
+        "✅ پلن شما با موفقیت تمدید شد.\n"
+        "حجم و اعتبار سرویس به مقادیر جدید پلن بازنشانی شد و دوره‌ی جدید از همین لحظه آغاز گردید."
+    )
 
     CONFIG_CREATED = (
         "✅ <b>کانفیگ شما با موفقیت ساخته شد!</b>\n"

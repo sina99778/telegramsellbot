@@ -85,6 +85,11 @@ async def _reconcile_migrated_usage() -> None:
         manager = ProvisioningManager(session)
         total = {"checked": 0, "fixed": 0, "no_data": 0}
         for server in servers:
+            # Snapshot scalars before any await — session.commit() expires ORM
+            # objects and accessing attributes on them afterwards raises
+            # MissingGreenlet in an async session.
+            server_id = server.id
+            server_name = getattr(server, "name", None) or str(server_id)
             try:
                 res = await manager.reconcile_migrated_usage_for_server(
                     server, limit=BATCH_PER_SERVER
@@ -98,7 +103,7 @@ async def _reconcile_migrated_usage() -> None:
                 await session.rollback()
                 logger.error(
                     "[MIGRATE-USAGE] reconciliation failed for server %s: %s",
-                    getattr(server, "name", server.id), exc, exc_info=True,
+                    server_name, exc, exc_info=True,
                 )
 
         if total["checked"]:

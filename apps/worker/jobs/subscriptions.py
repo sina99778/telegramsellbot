@@ -34,6 +34,12 @@ XUI_USAGE_SYNC_CONCURRENCY = 10
 # "no traffic stats found") must never expire a config that still has valid
 # time + volume. Sync runs ~every minute, so 5 ≈ 5 minutes of sustained gone.
 USAGE_GONE_STRIKES = 5
+# After a sub strike-expires (panel says the client is gone), it stays in the
+# recovery filter because it still has time + volume. Don't re-probe the panel
+# every minute for those — only re-check this often. Kills the every-minute
+# panel call + WARNING spam for genuinely-deleted clients, while a config that
+# was strike-expired by a transient outage still self-heals within one interval.
+REPROBE_GONE_INTERVAL = timedelta(minutes=10)
 
 
 async def sync_xui_usage_and_status(
@@ -60,6 +66,23 @@ async def sync_xui_usage_and_status(
         if xui_record is None:
             return
 
+        # ── Throttle re-probing a client we already gave up on ────────────
+        # A sub that strike-expired (panel said the client is gone >= threshold
+        # times) stays in the recovery filter because it still has time + volume
+        # — the same signature as a "falsely expired" config. So the 1-minute
+        # sweep keeps re-selecting it, and the strike branch would re-hit the
+        # panel + re-log + re-stamp expired_at every minute FOREVER (the
+        # CPU/log-spam loop in the report). We must NOT skip it outright, or a
+        # genuinely-falsely-expired config (transient outage) could never
+        # recover. Instead, only re-probe once per REPROBE_GONE_INTERVAL: rare
+        # enough to kill the spam, often enough to self-heal.
+        if subscription.status == "expired" and (
+            subscription.usage_sync_failures or 0
+        ) >= USAGE_GONE_STRIKES:
+            last_probe = subscription.last_usage_sync_at or subscription.expired_at
+            if last_probe is not None and utcnow() - last_probe < REPROBE_GONE_INTERVAL:
+                return
+
         try:
             async with semaphore:
                 traffic = await xui_client.get_client_traffic(xui_record.email)
@@ -77,6 +100,10 @@ async def sync_xui_usage_and_status(
                 # used to instantly expire a perfectly valid config.
                 strikes = (subscription.usage_sync_failures or 0) + 1
                 subscription.usage_sync_failures = strikes
+                # Stamp the probe time so the strike-expired throttle can tell
+                # when we LAST hit the panel for this client (this field is only
+                # set on success otherwise, so the throttle would never engage).
+                subscription.last_usage_sync_at = utcnow()
                 if strikes >= USAGE_GONE_STRIKES:
                     logger.warning(
                         "[SYNC] Client '%s' reported gone %d cycles in a row — marking expired (sub=%s)",

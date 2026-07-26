@@ -306,28 +306,65 @@ def _recon_payment(kind="direct_purchase", payload=None):
     return payment
 
 
-def _recon_session(purchases, renewals):
-    session = AsyncMock()
-    housekeeping = MagicMock()
-    housekeeping.rowcount = 0
-    session.execute = AsyncMock(side_effect=[
-        housekeeping,
-        _scalars_result(purchases),
-        _scalars_result(renewals),
-    ])
-    return session
+def _recon_factory(purchases, renewals):
+    """Build a fake AsyncSessionFactory matching run_reconciliation's per-row
+    session sequence: housekeeping → read-purchase-ids → one session per
+    purchase → read-renewal-ids → one session per renewal.
+    """
+    sessions = []
+
+    # 1. housekeeping (bulk expire) — needs .execute(...).rowcount
+    hk = AsyncMock()
+    hk_res = MagicMock()
+    hk_res.rowcount = 0
+    hk.execute = AsyncMock(return_value=hk_res)
+    sessions.append(hk)
+
+    # 2. read purchase candidate IDs (no lock)
+    rp = AsyncMock()
+    rp.execute = AsyncMock(return_value=_scalars_result([p.id for p in purchases]))
+    sessions.append(rp)
+
+    # 3. one locked session per purchase row
+    for p in purchases:
+        s = AsyncMock()
+        s.scalar = AsyncMock(return_value=p)
+        sessions.append(s)
+
+    # 4. read renewal candidate IDs (no lock)
+    rr = AsyncMock()
+    rr.execute = AsyncMock(return_value=_scalars_result([p.id for p in renewals]))
+    sessions.append(rr)
+
+    # 5. one locked session per renewal row
+    for p in renewals:
+        s = AsyncMock()
+        s.scalar = AsyncMock(return_value=p)
+        sessions.append(s)
+
+    it = iter(sessions)
+
+    def factory():
+        session = next(it)
+        cm = AsyncMock()
+        cm.__aenter__ = AsyncMock(return_value=session)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        return cm
+
+    return factory
 
 
 async def test_swallowed_purchase_failure_increments_retry_count_not_success():
     payment = _recon_payment()
-    session = _recon_session([payment], [])
+    factory = _recon_factory([payment], [])
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
     # process_successful_payment returns WITHOUT raising and WITHOUT setting
     # the `provisioned` flag — the exact swallowed-failure shape.
-    with patch("apps.worker.jobs.reconciliation.process_successful_payment", AsyncMock()):
-        await run_reconciliation(session, bot)
+    with patch("apps.worker.jobs.reconciliation.process_successful_payment", AsyncMock()), \
+         patch("apps.worker.jobs.reconciliation.AsyncSessionFactory", factory):
+        await run_reconciliation(bot)
 
     assert payment.callback_payload["retry_count"] == 1
     assert "swallowed" in payment.callback_payload["last_error"]
@@ -337,7 +374,7 @@ async def test_swallowed_purchase_failure_increments_retry_count_not_success():
 
 async def test_real_purchase_success_counted_and_no_retry_bookkeeping():
     payment = _recon_payment()
-    session = _recon_session([payment], [])
+    factory = _recon_factory([payment], [])
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
@@ -345,8 +382,9 @@ async def test_real_purchase_success_counted_and_no_retry_bookkeeping():
         payment.callback_payload = {**(payment.callback_payload or {}), "provisioned": True}
 
     with patch("apps.worker.jobs.reconciliation.process_successful_payment", new=_succeed), \
+         patch("apps.worker.jobs.reconciliation.AsyncSessionFactory", factory), \
          patch("apps.worker.jobs.reconciliation.settings", MagicMock(owner_telegram_id=111)):
-        await run_reconciliation(session, bot)
+        await run_reconciliation(bot)
 
     assert "retry_count" not in payment.callback_payload
     bot.send_message.assert_awaited_once()
@@ -355,12 +393,13 @@ async def test_real_purchase_success_counted_and_no_retry_bookkeeping():
 
 async def test_swallowed_renewal_failure_increments_retry_count():
     payment = _recon_payment(kind="direct_renewal")
-    session = _recon_session([], [payment])
+    factory = _recon_factory([], [payment])
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    with patch("apps.worker.jobs.reconciliation.process_successful_payment", AsyncMock()):
-        await run_reconciliation(session, bot)
+    with patch("apps.worker.jobs.reconciliation.process_successful_payment", AsyncMock()), \
+         patch("apps.worker.jobs.reconciliation.AsyncSessionFactory", factory):
+        await run_reconciliation(bot)
 
     assert payment.callback_payload["retry_count"] == 1
     bot.send_message.assert_not_awaited()
@@ -370,14 +409,15 @@ async def test_max_retry_escalation_is_reachable():
     # With retry_count finally growing on swallowed failures, the
     # MAX_RETRY_COUNT arm flips the payment to manual_review.
     payment = _recon_payment(payload={"retry_count": 10})
-    session = _recon_session([payment], [])
+    factory = _recon_factory([payment], [])
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
     process = AsyncMock()
     with patch("apps.worker.jobs.reconciliation.process_successful_payment", process), \
+         patch("apps.worker.jobs.reconciliation.AsyncSessionFactory", factory), \
          patch("apps.worker.jobs.reconciliation.settings", MagicMock(owner_telegram_id=111)):
-        await run_reconciliation(session, bot)
+        await run_reconciliation(bot)
 
     process.assert_not_awaited()
     assert payment.payment_status == "manual_review"
@@ -391,7 +431,7 @@ async def test_max_retry_escalation_is_reachable():
 
 
 def _xui_sub(status="active", ends_at=None, activated_at=None,
-             volume_bytes=10**9, used_bytes=0, strikes=0):
+             volume_bytes=10**9, used_bytes=0, strikes=0, last_usage_sync_at=None):
     sub = MagicMock()
     sub.id = uuid4()
     sub.status = status
@@ -401,6 +441,7 @@ def _xui_sub(status="active", ends_at=None, activated_at=None,
     sub.volume_bytes = volume_bytes
     sub.used_bytes = used_bytes
     sub.usage_sync_failures = strikes
+    sub.last_usage_sync_at = last_usage_sync_at
     sub.plan = MagicMock(duration_days=30)
     record = MagicMock()
     record.email = "cfg-x404"
@@ -465,6 +506,74 @@ async def test_panel_404_status_code_still_strikes_and_expires_at_threshold():
 
     assert sub.usage_sync_failures == 5
     assert sub.status == "expired"
+
+
+# ─── gone-client reprobe throttle (the CPU/log-spam loop fix) ────────────────
+# A sub that strike-expired stays in the recovery filter (it still has time +
+# volume). Without throttling, the 1-minute sweep re-hits the panel + re-logs
+# every minute forever. It must only re-probe once per REPROBE_GONE_INTERVAL,
+# while a falsely-expired config still recovers.
+
+
+async def test_strike_expired_sub_is_not_reprobed_within_interval():
+    from apps.worker.jobs.subscriptions import REPROBE_GONE_INTERVAL
+    from datetime import datetime, timezone
+    # Expired 2 minutes ago via strikes, probed 2 minutes ago → skip the panel.
+    recent = datetime.now(timezone.utc) - timedelta(minutes=2)
+    sub = _xui_sub(status="expired", strikes=8, last_usage_sync_at=recent)
+    assert REPROBE_GONE_INTERVAL > timedelta(minutes=2)  # sanity: within window
+
+    xui_client = AsyncMock()
+    xui_client.get_client_traffic = AsyncMock(side_effect=XUIRequestError(
+        "X-UI API request failed", status_code=404,
+    ))
+
+    session = AsyncMock()
+    await sync_xui_usage_and_status(session, xui_client, [sub], _security_settings())
+
+    xui_client.get_client_traffic.assert_not_awaited()  # panel NOT hit
+    assert sub.usage_sync_failures == 8                  # no extra strike
+    assert sub.status == "expired"
+
+
+async def test_strike_expired_sub_is_reprobed_after_interval_and_recovers():
+    from datetime import datetime, timezone
+    # Last probed long ago → the throttle lets it through, panel says alive.
+    old = datetime.now(timezone.utc) - timedelta(hours=1)
+    sub = _xui_sub(
+        status="expired", strikes=8, last_usage_sync_at=old,
+        ends_at=datetime.now(timezone.utc) + timedelta(days=5),
+        activated_at=datetime.now(timezone.utc) - timedelta(days=2),
+    )
+    traffic = MagicMock(used_bytes=10, up=0, down=10)
+    xui_client = AsyncMock()
+    xui_client.get_client_traffic = AsyncMock(return_value=traffic)
+
+    session = AsyncMock()
+    await sync_xui_usage_and_status(session, xui_client, [sub], _security_settings())
+
+    xui_client.get_client_traffic.assert_awaited_once()  # re-probed
+    assert sub.status == "active"                        # self-healed
+    assert sub.usage_sync_failures == 0                  # strikes cleared
+
+
+async def test_strike_expired_sub_reprobed_after_interval_still_gone_reexpires():
+    from datetime import datetime, timezone
+    # Last probed long ago → throttle lets it through, panel STILL says gone.
+    old = datetime.now(timezone.utc) - timedelta(hours=1)
+    sub = _xui_sub(status="expired", strikes=8, last_usage_sync_at=old)
+    xui_client = AsyncMock()
+    xui_client.get_client_traffic = AsyncMock(side_effect=XUIRequestError(
+        "X-UI API request failed", status_code=404,
+    ))
+
+    session = AsyncMock()
+    await sync_xui_usage_and_status(session, xui_client, [sub], _security_settings())
+
+    xui_client.get_client_traffic.assert_awaited_once()  # re-probed once
+    assert sub.status == "expired"                       # stays expired
+    assert sub.usage_sync_failures == 9                  # strike recorded
+    assert sub.last_usage_sync_at is not None            # throttle re-armed
 
 
 async def test_never_activated_expired_sub_recovers_to_pending_activation():
