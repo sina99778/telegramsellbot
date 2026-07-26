@@ -146,11 +146,11 @@ full_deploy() {
   # payment_unique.py mirrors 011 + 012).
   if [[ -d "scripts/migrations" ]]; then
     echo "Cleaning up containers and dropping database locks for migrations..."
-    docker compose -f "${COMPOSE_FILE}" stop api bot worker || true
+    "${COMPOSE_CMD[@]}" -f docker-compose.prod.yml stop api bot worker || true
     # Forcefully kill any dangling 'run' containers (like previous interrupted migrations) holding locks
     docker ps -q --filter "name=telegramsellbot-api-run" | xargs -r docker rm -f || true
     # Restart postgres to guarantee all active connections and locks are dropped
-    docker compose -f "${COMPOSE_FILE}" restart postgres
+    "${COMPOSE_CMD[@]}" -f docker-compose.prod.yml restart postgres
     echo "Waiting for Postgres to accept connections..."
     
     shopt -s nullglob
