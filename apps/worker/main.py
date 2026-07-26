@@ -268,9 +268,9 @@ async def run_backup_job(bot: PremiumEmojiBot) -> None:
 
 async def run_reconciliation_job(bot: PremiumEmojiBot) -> None:
     try:
-        async with AsyncSessionFactory() as session:
-            await run_reconciliation(session, bot)
-            await session.commit()
+        # run_reconciliation manages its own per-row sessions internally, so it
+        # takes only the bot — no outer session/commit wrapper.
+        await run_reconciliation(bot)
     except Exception as exc:
         logger.error("reconciliation_job failed: %s", exc, exc_info=True)
 

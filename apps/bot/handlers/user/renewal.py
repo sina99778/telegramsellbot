@@ -147,7 +147,24 @@ async def renew_type_selected(
 
     await state.update_data(sub_id=str(callback_data.sub_id), renew_type=callback_data.type)
 
+    # A PLAN renewal on a not-yet-activated config adds plan.duration_days,
+    # which the first-connect activation overwrites — the user would pay for
+    # time they never receive. Block it here (same guard as TIME renewals).
     if callback_data.type == "plan":
+        from repositories.user import UserRepository
+        from services.renewal import PENDING_TIME_RENEWAL_MSG, time_renewal_blocked
+
+        requester = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+        sub = await session.scalar(
+            select(Subscription).where(
+                Subscription.id == callback_data.sub_id,
+                Subscription.user_id == (requester.id if requester else None),
+            )
+        )
+        if sub is not None and time_renewal_blocked(sub, "plan"):
+            await safe_edit_or_send(callback, PENDING_TIME_RENEWAL_MSG)
+            return
+
         class _Pseudo:
             text = "1"
             from_user = callback.from_user
@@ -311,7 +328,10 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
         _avg_gb, _avg_day = await _migrated_config_renewal_rates(session, renewal_settings)
 
     if renew_type == "plan":
-        price = plan.price
+        # plan.price is a Decimal — cast to float NOW. The personal-discount
+        # multiplication below uses a float factor, and Decimal * float raises
+        # TypeError, crashing the flow for any discounted user.
+        price = float(plan.price)
         volume_added = round(float(plan.volume_bytes) / (1024**3), 2) if plan.volume_bytes else 0.0
         time_added_days = float(plan.duration_days) if plan.duration_days else 0.0
     elif renew_type == "volume":
@@ -379,11 +399,24 @@ async def renew_value_entered(message: Message, state: FSMContext, session: Asyn
     from core.formatting import format_money
     formatted_price = format_money(price, mode=display_currency, toman_rate=toman_rate)
     
-    text = Messages.RENEWAL_INVOICE.format(
-        volume=volume_added,
-        time=time_added_days,
-        formatted_price=formatted_price
-    )
+    if renew_type == "plan":
+        # Plan renewal RESETS quota and days — show the dedicated invoice that
+        # warns the user their remaining balance is discarded (fresh period
+        # from now), with unlimited-aware labels.
+        volume_label = f"{volume_added:g} گیگابایت" if volume_added > 0 else "نامحدود"
+        time_label = f"{time_added_days:g} روز" if time_added_days > 0 else "نامحدود"
+        text = Messages.RENEWAL_INVOICE_PLAN.format(
+            plan_name=plan.name,
+            volume_label=volume_label,
+            time_label=time_label,
+            formatted_price=formatted_price,
+        )
+    else:
+        text = Messages.RENEWAL_INVOICE.format(
+            volume=volume_added,
+            time=time_added_days,
+            formatted_price=formatted_price
+        )
     text += "\n\n💳 روش پرداخت را انتخاب کنید:"
     
     await message.answer(text, reply_markup=builder.as_markup())
@@ -448,7 +481,9 @@ async def _get_renewal_data(callback_data: RenewPayCallback, session: AsyncSessi
     if renew_type == "plan":
         if plan is None:
             return None
-        price = plan.price
+        # Same Decimal→float cast as the invoice path: the discount math below
+        # multiplies by a float factor, and Decimal * float raises TypeError.
+        price = float(plan.price)
     elif renew_type == "volume":
         per_gb = plan.effective_renewal_price_per_gb(renewal_settings.price_per_gb) if plan else _avg_gb
         price = amount * per_gb
@@ -610,7 +645,12 @@ async def renew_pay_wallet(
             except Exception:
                 pass
 
-            # Create order if subscription has a plan
+            # Create order if subscription has a plan. It starts as "pending"
+            # and is only marked "completed" AFTER the debit and the renewal
+            # both succeed — otherwise a failed attempt would leave a
+            # paid-looking order behind (and re-pointing sub.order at it would
+            # corrupt the cancel&refund amount, which is computed from
+            # sub.order_id).
             order = None
             if sub.plan_id is not None:
                 order = Order(
@@ -618,12 +658,10 @@ async def renew_pay_wallet(
                     plan_id=sub.plan_id,
                     amount=price,
                     currency="USD",
-                    status="completed",
+                    status="pending",
                     source="bot",
                 )
                 session.add(order)
-                await session.flush()
-                sub.order = order
                 await session.flush()
 
             # Deduct from wallet using WalletManager if price > 0
@@ -646,6 +684,8 @@ async def renew_pay_wallet(
                     )
                     wallet_debited = True
                 except InsufficientBalanceError:
+                    if order is not None:
+                        order.status = "failed"
                     error_text = "❌ موجودی کیف پول کافی نیست یا درخواست تکراری است."
                     if loading_msg:
                         try:
@@ -703,13 +743,22 @@ async def renew_pay_wallet(
 
             # ── Success path ──
 
+            # Only now is the order genuinely paid: mark it completed and link
+            # it as the subscription's latest order.
+            if order is not None:
+                order.status = "completed"
+                sub.order = order
+                await session.flush()
+
             # Clear alert dedup keys so user gets re-notified in next cycle
             await _clear_sub_alert_keys(sub.id)
 
             # Commit the renewal BEFORE releasing the distributed lock
             await session.commit()
 
-            success_text = Messages.RENEWAL_SUCCESS
+            success_text = (
+                Messages.RENEWAL_SUCCESS_PLAN if renew_type == "plan" else Messages.RENEWAL_SUCCESS
+            )
             if loading_msg:
                 try:
                     await loading_msg.edit_text(success_text)
@@ -1420,7 +1469,7 @@ async def _notify_renewal_admins(callback, user, renew_type, amount, price, sess
             # fall through to legacy format
     from services.notifications import notify_sales_event
     user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
-    renew_type_label = "حجم" if renew_type == "volume" else "زمان" if renew_type == "time" else "کل پلن"
+    renew_type_label = "حجم" if renew_type == "volume" else "زمان" if renew_type == "time" else "پلن فعلی"
     admin_text = (
         "🔄 تمدید سرویس!\n\n"
         f"👤 کاربر: {user.first_name or '-'} | {user_link} (ID: <code>{user.telegram_id}</code>)\n"

@@ -76,6 +76,19 @@ def renewal_lock_key(subscription_id: object) -> str:
     return f"renewal_lock:{subscription_id}"
 
 
+def purchase_lock_key(user_telegram_id: object) -> str:
+    """The ONE canonical Redis lock key for a user's purchase checkout.
+
+    Keyed solely on the Telegram user id so EVERY purchase surface — the bot
+    pay handlers and the mini-app purchase endpoint — mutually excludes. The
+    FSM "purchase_processing" check alone is a non-atomic read-modify-write:
+    two near-simultaneous taps (or two open clients) both pass it and both
+    debit/provision. One purchase per user at a time is the correct grain:
+    a user can only be mid-checkout for one plan anyway.
+    """
+    return f"purchase_lock:{user_telegram_id}"
+
+
 @asynccontextmanager
 async def distributed_lock(
     key: str,

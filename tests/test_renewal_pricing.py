@@ -52,3 +52,36 @@ def test_non_positive_amount_raises():
 def test_invalid_renew_type_raises():
     with pytest.raises(ValueError):
         calculate_renewal_price(renew_type="bogus", amount=5, settings=S)
+
+
+# ─── plan renewal pricing (miniapp + bot fresh-start reset) ──────────────────
+# A plan renewal costs the FULL plan price — exactly like buying the plan again
+# — and ignores the `amount` field entirely.
+
+
+class _Plan:
+    def __init__(self, price):
+        self.price = price
+
+
+def test_plan_renewal_prices_at_full_plan_price():
+    plan = _Plan(price=Decimal("7.50"))
+    assert calculate_renewal_price(renew_type="plan", amount=1, settings=S, plan=plan) == Decimal("7.50")
+
+
+def test_plan_renewal_ignores_amount():
+    plan = _Plan(price=Decimal("4.00"))
+    # Any amount value must not change the price — it's a fixed fresh-start reset.
+    for amount in (1, 0, 30, 999):
+        assert calculate_renewal_price(renew_type="plan", amount=amount, settings=S, plan=plan) == Decimal("4.00")
+
+
+def test_plan_renewal_without_plan_raises():
+    # A plan-less (migrated) config can't be plan-renewed — there's no price to charge.
+    with pytest.raises(ValueError):
+        calculate_renewal_price(renew_type="plan", amount=1, settings=S, plan=None)
+
+
+def test_plan_renewal_result_is_rounded_to_cents():
+    plan = _Plan(price=Decimal("7.5"))
+    assert calculate_renewal_price(renew_type="plan", amount=1, settings=S, plan=plan) == Decimal("7.50")

@@ -23,7 +23,12 @@ from pydantic import SecretStr
 
 import services.panels.xui_strategy as xs
 from services.panels.xui_strategy import XUIStrategy, _client_is_gone
-from services.xui.client import SanaeiXUIClient, XUIClientConfig, XUIRequestError
+from services.xui.client import (
+    SanaeiXUIClient,
+    XUIAuthenticationError,
+    XUIClientConfig,
+    XUIRequestError,
+)
 from services.xui.runtime import build_vless_uri
 
 
@@ -269,6 +274,84 @@ async def test_http_404_sets_structured_status_code(no_sleep):
     with pytest.raises(XUIRequestError) as excinfo:
         await client._send("POST", "panel/api/inbounds/7/delClient/cid")
     assert excinfo.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# expired-session 401/403 must trigger re-login + retry (was dead code:
+# _send raised them via raise_for_status() before _request could see them,
+# so every panel op broke until the process was restarted)
+# ---------------------------------------------------------------------------
+
+def _json_response(status, payload):
+    r = MagicMock()
+    r.status_code = status
+    r.content = b"1"
+    r.text = "x"
+    r.headers = {"content-type": "application/json"}
+    r.json = MagicMock(return_value=payload)
+    r.raise_for_status = MagicMock()
+    return r
+
+
+async def test_send_returns_401_for_relogin_instead_of_raising(no_sleep):
+    resp = _json_response(401, {"success": False})
+
+    async def fake_request(method, path, **kwargs):
+        return resp
+
+    client = _make_http_client(fake_request)
+    out = await client._send("GET", "panel/api/inbounds/list")
+    assert out is resp  # surfaced to _request, not raised
+
+
+async def test_request_relogs_in_and_retries_on_401(no_sleep):
+    calls: list = []
+    seq = [
+        _json_response(401, {"success": False}),
+        _json_response(200, {"success": True, "obj": {"ok": 1}}),
+    ]
+
+    async def fake_request(method, path, **kwargs):
+        calls.append(path)
+        return seq.pop(0)
+
+    client = _make_http_client(fake_request)
+    client._authenticated = True  # skip the initial login
+
+    logins = 0
+
+    async def fake_login():
+        nonlocal logins
+        logins += 1
+        client._authenticated = True
+
+    client.login = fake_login
+
+    result = await client._request("GET", "panel/api/inbounds/list")
+    assert result == {"success": True, "obj": {"ok": 1}}
+    assert logins == 1            # exactly one re-login
+    assert len(calls) == 2        # original attempt + retry
+
+
+async def test_request_raises_clear_auth_error_when_relogin_still_rejected(no_sleep):
+    seq = [
+        _json_response(401, {"success": False}),
+        _json_response(403, {"success": False}),
+    ]
+
+    async def fake_request(method, path, **kwargs):
+        return seq.pop(0)
+
+    client = _make_http_client(fake_request)
+    client._authenticated = True
+
+    async def fake_login():
+        client._authenticated = True
+
+    client.login = fake_login
+
+    with pytest.raises(XUIAuthenticationError):
+        await client._request("GET", "panel/api/inbounds/list")
 
 
 # ---------------------------------------------------------------------------

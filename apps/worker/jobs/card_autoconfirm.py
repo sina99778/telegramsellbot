@@ -132,6 +132,12 @@ async def run_card_autoconfirm(session: AsyncSession, bot: Bot | None = None) ->
                 payment=payment,
                 amount_to_credit=Decimal(str(payment.price_amount)),
             )
+            # Snapshot primitives BEFORE commit — session.commit() expires every
+            # loaded ORM instance (expire_on_commit=True default); accessing an
+            # expired attribute in an async session raises MissingGreenlet.
+            _telegram_id = u.telegram_id if u else None
+            _price_amount = payment.price_amount
+            _user_id = payment.user_id
             # Commit per payment: releases the row lock before any Telegram
             # I/O below and makes this confirmation durable even if a later
             # payment in the sweep fails.
@@ -148,23 +154,23 @@ async def run_card_autoconfirm(session: AsyncSession, bot: Bot | None = None) ->
         confirmed += 1
         logger.info(
             "[CARD-AUTOCONFIRM] confirmed payment=%s user_telegram_id=%s amount=%s USD",
-            payment.id, (u.telegram_id if u else None), payment.price_amount,
+            payment.id, _telegram_id, _price_amount,
         )
 
         # Best-effort: tell the buyer the receipt was approved.
-        if bot is not None and u is not None:
+        if bot is not None and _telegram_id is not None:
             try:
                 await bot.send_message(
-                    u.telegram_id,
+                    _telegram_id,
                     "✅ <b>رسید پرداختی شما به‌صورت خودکار تأیید شد</b>\n"
-                    f"💰 کیف پول شما <b>{payment.price_amount:.2f} $</b> شارژ شد.",
+                    f"💰 کیف پول شما <b>{_price_amount:.2f} $</b> شارژ شد.",
                     parse_mode="HTML",
                 )
             except Exception as exc:
                 logger.warning("card autoconfirm notify failed: %s", exc)
 
         # Best-effort: sales-report channel.
-        if bot is not None and u is not None:
+        if bot is not None and _telegram_id is not None:
             try:
                 from services.sales_notifications import notify_wallet_topup as _notify
                 # Re-fetch user with wallet eager-loaded so the sales-notification
@@ -172,7 +178,7 @@ async def run_card_autoconfirm(session: AsyncSession, bot: Bot | None = None) ->
                 from models.user import User as _U
                 from sqlalchemy.orm import selectinload as _sel
                 u_full = await session.scalar(
-                    select(_U).options(_sel(_U.wallet)).where(_U.id == payment.user_id)
+                    select(_U).options(_sel(_U.wallet)).where(_U.id == _user_id)
                 )
                 if u_full:
                     await _notify(

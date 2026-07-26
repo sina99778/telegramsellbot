@@ -164,7 +164,7 @@ def build_renewal_keyboard(sub_id: UUID) -> InlineKeyboardMarkup:
         callback_data=RenewTypeCallback(type="time", sub_id=sub_id).pack(),
     )
     builder.button(
-        text="📦 تمدید کل پلن",
+        text=Buttons.RENEW_PLAN,
         callback_data=RenewTypeCallback(type="plan", sub_id=sub_id).pack(),
     )
     builder.button(

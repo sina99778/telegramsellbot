@@ -147,9 +147,14 @@ async def tetrapay_webhook_handler(
 
     # 2. Verify payment with TetraPay before processing
     if not payload_authority:
+        # Do NOT mark the payment failed and return 200 — that permanently
+        # kills a payment that TetraPay may retry with a well-formed callback.
+        # Signal a client error so the gateway re-delivers.
         logger.error("TetraPay IPN: missing authority for payment %s", payment.id)
-        payment.payment_status = "failed"
-        return {"status": "missing_authority"}
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Missing authority in callback payload.",
+        )
 
     try:
         gw = await AppSettingsRepository(session).get_gateway_settings()
@@ -168,8 +173,24 @@ async def tetrapay_webhook_handler(
             detail="Failed to verify payment with provider",
         )
 
-    # Validate verification response
+    # Validate verification response — the server-side /verify cross-check is
+    # the anti-forgery control (esp. while unsigned callbacks are tolerated).
+    # Each identifier is checked when present, and we REJECT when the verify
+    # response carries NO binding identifier at all: previously both checks
+    # were gated on truthiness, so an empty Hash_id AND empty authority skipped
+    # the binding entirely and let any authority that verifies as 100 be bound
+    # to an arbitrary victim payment.
     verified_hash_id = str(verify_res.Hash_id or "").strip()
+    verified_authority = str(verify_res.authority or "").strip()
+
+    if not verified_hash_id and not verified_authority:
+        logger.warning(
+            "TetraPay IPN: verify response has no binding identifier "
+            "(payment=%s) — refusing to credit",
+            payment.id,
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment")
+
     if verified_hash_id and verified_hash_id != payment.order_id:
         logger.warning(
             "TetraPay IPN: verified Hash_id mismatch (db=%s, verified=%s)",
@@ -177,7 +198,6 @@ async def tetrapay_webhook_handler(
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment")
 
-    verified_authority = str(verify_res.authority or "").strip()
     if verified_authority and verified_authority != payload_authority:
         logger.warning(
             "TetraPay IPN: verified authority mismatch (payload=%s, verified=%s)",

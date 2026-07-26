@@ -34,15 +34,21 @@ class RenewalNotAllowedError(Exception):
 # _update_xui_expiry_on_activation, PasarGuard via the on_hold timer + usage
 # sync), so the pre-activation days never survive. Block it instead of taking
 # money for nothing — volume can still be added while pending.
+# A PLAN renewal is blocked for the same reason: it ALSO adds time
+# (plan.duration_days), which the first-connect activation overwrites with
+# now + plan_duration — the user would pay for days they never receive, and
+# the renewal's ends_at could even get a never-used config expired by time.
 PENDING_TIME_RENEWAL_MSG = (
     "⏳ این سرویس هنوز فعال نشده (زمان از اولین اتصال شروع می‌شود). "
-    "تمدیدِ زمان بعد از فعال‌سازی ممکن است؛ فعلاً فقط می‌توانید حجم اضافه کنید."
+    "تمدیدِ زمان/پلن بعد از فعال‌سازی ممکن است؛ فعلاً فقط می‌توانید حجم اضافه کنید."
 )
 
 
 def time_renewal_blocked(subscription, renew_type: str) -> bool:
-    """True for a TIME renewal of a not-yet-activated (pending_activation) config."""
-    return renew_type == "time" and getattr(subscription, "status", None) == "pending_activation"
+    """True for a TIME or PLAN renewal of a not-yet-activated (pending_activation)
+    config. PLAN renewals add time too (plan.duration_days), so they are
+    discarded on first connect exactly like TIME renewals."""
+    return renew_type in ("time", "plan") and getattr(subscription, "status", None) == "pending_activation"
 
 
 # A VOLUME renewal cannot resurrect a TIME-expired config: apply_renewal would
@@ -103,7 +109,15 @@ def calculate_renewal_price(
     it. Otherwise, for plan-less configs, `default_per_gb` / `default_per_day`
     (e.g. the average of active plans for migrated configs) are used when given;
     falling back to the global `settings` defaults (per-10-days / 10).
+
+    "plan" renewals cost the FULL plan price (a fresh start, exactly like buying
+    the plan again) — `amount` is ignored and a plan-less config can't be priced
+    this way, so it raises.
     """
+    if renew_type == "plan":
+        if plan is None:
+            raise ValueError("Plan renewal requires the config's plan to exist.")
+        return Decimal(str(plan.price)).quantize(Decimal("0.01"))
     if amount <= 0:
         raise ValueError("Renewal amount must be positive.")
     if renew_type == "volume":
@@ -133,6 +147,7 @@ async def apply_renewal(
     subscription: Subscription,
     renew_type: str,
     amount: float,
+    plan: "Plan | None" = None,
 ) -> None:
     """Apply renewal to subscription and sync with X-UI panel.
 
@@ -166,8 +181,9 @@ async def apply_renewal(
 
     # Load the Plan up-front so we can resolve per-plan ip_limit without
     # touching subscription.plan inside the savepoint (lazy-load forbidden).
-    plan: Plan | None = None
-    if subscription.plan_id is not None:
+    # A caller may pass `plan` explicitly (e.g. the gateway/bot renewal paths
+    # that already loaded it); only fall back to a lookup when it wasn't given.
+    if plan is None and subscription.plan_id is not None:
         plan = await session.scalar(select(Plan).where(Plan.id == subscription.plan_id))
 
     # ── Load xui_client via explicit query ───────────────────────────────
@@ -207,15 +223,24 @@ async def apply_renewal(
                     subscription.ends_at += timedelta(days=days_to_add)
             elif renew_type == "plan":
                 if plan is not None:
-                    subscription.volume_bytes += plan.volume_bytes
-                    days_to_add = plan.duration_days
-                    if subscription.ends_at is None:
-                        base = subscription.activated_at or now_utc
-                        subscription.ends_at = base + timedelta(days=days_to_add)
-                    elif subscription.ends_at < now_utc:
-                        subscription.ends_at = now_utc + timedelta(days=days_to_add)
-                    else:
-                        subscription.ends_at += timedelta(days=days_to_add)
+                    # Fresh-start semantics ("تمدید پلن فعلی"): the user pays
+                    # the FULL plan price — exactly like buying the plan again
+                    # — so quota AND days are RESET to the plan's values, never
+                    # stacked on the remainder. The panel traffic counter is
+                    # reset to 0 alongside (reset_usage flag in the panel sync
+                    # below), and the pre-renewal consumption rolls into
+                    # lifetime_used_bytes — the same convention as the inbound
+                    # migration path — so Total = lifetime + used stays correct
+                    # and reseller/billing stats never lose a byte.
+                    subscription.lifetime_used_bytes = (
+                        (subscription.lifetime_used_bytes or 0) + (subscription.used_bytes or 0)
+                    )
+                    subscription.used_bytes = 0
+                    subscription.volume_bytes = int(plan.volume_bytes or 0)
+                    subscription.starts_at = now_utc
+                    days = int(plan.duration_days or 0)
+                    # duration_days=0 means an unlimited-time plan: no expiry.
+                    subscription.ends_at = (now_utc + timedelta(days=days)) if days > 0 else None
             else:
                 raise ValueError("Invalid renewal type.")
 
@@ -225,7 +250,10 @@ async def apply_renewal(
             # Sync with X-UI panel — if this fails, the SAVEPOINT rolls back
             # all the DB changes above automatically.
             if xui is not None:
-                await _sync_xui_limits(session, subscription, xui, security_settings, plan=plan)
+                await _sync_xui_limits(
+                    session, subscription, xui, security_settings,
+                    plan=plan, reset_usage=(renew_type == "plan"),
+                )
 
             await session.flush()
 
@@ -250,12 +278,18 @@ async def _sync_xui_limits(
     security_settings: ServiceSecuritySettings,
     *,
     plan: Plan | None = None,
+    reset_usage: bool = False,
 ) -> None:
     """Sync subscription limits to X-UI panel.
 
     Loads xui_full with full eager loading (inbound → server → credentials).
     Only reads COLUMN attributes from subscription (ends_at, volume_bytes,
     sub_link).  Never accesses any relationship on subscription.
+
+    `reset_usage` (plan renewals only) zeroes the panel's cumulative traffic
+    counter BEFORE pushing the new limits — the DB side already rolled the
+    pre-renewal consumption into lifetime_used_bytes, so the panel counter
+    must start from 0 for the absolute usage-sync to stay consistent.
     """
     xui_full = await session.scalar(
         select(XUIClientRecord)
@@ -271,7 +305,7 @@ async def _sync_xui_limits(
 
     # Marzban-family panels (PasarGuard / Rebecca) renew via the user-centric API.
     if record_is_marzban_family(xui_full):
-        await _sync_pasarguard_limits(subscription, xui_full)
+        await _sync_pasarguard_limits(subscription, xui_full, reset_usage=reset_usage)
         return
 
     try:
@@ -321,6 +355,16 @@ async def _sync_xui_limits(
         )
         xui_full.is_active = True
         async with SanaeiXUIClient(config) as client:
+            if reset_usage:
+                # Plan renewal = fresh quota: zero the cumulative traffic
+                # counter FIRST, then push the new totalGB/expiry. Resetting
+                # AFTER the update would be fine too, but reset-then-update
+                # guarantees the client is enabled with fresh limits even if
+                # the update is what re-enables it.
+                await client.reset_client_traffic(
+                    inbound_id=xui_full.inbound.xui_inbound_remote_id,
+                    email=xui_full.email,
+                )
             await client.update_client(
                 inbound_id=xui_full.inbound.xui_inbound_remote_id,
                 client_id=client_id,
@@ -336,6 +380,8 @@ async def _sync_xui_limits(
 async def _sync_pasarguard_limits(
     subscription: Subscription,
     xui_full: XUIClientRecord,
+    *,
+    reset_usage: bool = False,
 ) -> None:
     """Push renewed limits to PasarGuard (PUT data_limit / expire / status).
 
@@ -347,6 +393,8 @@ async def _sync_pasarguard_limits(
         (e.g. an expired sub that apply_renewal just reactivated). A still
         on_hold (pending_activation) sub gets ONLY its data_limit bumped, so its
         first-connect timer stays intact.
+      * `reset_usage` (plan renewals) zeroes the panel's usage counter so the
+        fresh quota starts from 0, matching the DB-side lifetime roll-up.
     """
     server = xui_full.inbound.server
     username = xui_full.panel_username or xui_full.username
@@ -366,6 +414,8 @@ async def _sync_pasarguard_limits(
 
     try:
         async with marzban_client_for_server(server) as client:
+            if reset_usage:
+                await client.reset_user_usage(username)
             await client.modify_user(username, payload)
         xui_full.is_active = True
     except Exception as exc:

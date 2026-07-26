@@ -4,8 +4,7 @@ import hashlib
 import hmac
 import json
 import logging
-from decimal import Decimal, InvalidOperation
-from typing import Any
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
@@ -219,28 +218,4 @@ def _is_valid_nowpayments_signature(
         digestmod=hashlib.sha512,
     ).hexdigest()
     return hmac.compare_digest(expected_signature, signature)
-
-
-def _extract_credit_amount(payload: dict[str, Any]) -> Decimal:
-    """
-    Extract the amount to credit in USD.
-    
-    IMPORTANT: 'actually_paid' is in crypto currency (e.g. 0.003 BTC),
-    NOT in USD! We must use 'price_amount' which is the original USD amount.
-    """
-    # Use price_amount (USD) first — this is what the user actually owes
-    raw_amount = payload.get("price_amount") or payload.get("actually_paid")
-    if raw_amount in {None, ""}:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Missing payment amount in callback payload.",
-        )
-
-    try:
-        return Decimal(str(raw_amount))
-    except (InvalidOperation, TypeError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid payment amount in callback payload.",
-        ) from exc
 

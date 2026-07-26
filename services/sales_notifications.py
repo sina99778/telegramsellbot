@@ -328,6 +328,14 @@ async def notify_renewal(
         volume_for_display = int(amount * 1024**3)
         days_for_display = "—"
         amount_kind = "افزایش"
+    elif renew_type == "plan":
+        # Plan renewal resets quota AND days to the plan's fresh values — by
+        # the time this notification fires the subscription columns already
+        # hold the post-reset numbers, so show those.
+        header = "🔄 | تمدید پلن فعلی با"
+        volume_for_display = int(subscription.volume_bytes or 0)
+        days_for_display = "بازنشانی کامل"
+        amount_kind = "تمدید"
     else:
         header = "⏳ | افزایش زمان با"
         volume_for_display = 0
@@ -346,11 +354,17 @@ async def notify_renewal(
         ),
     ]
     # Renewal: also surface the renewal-specific amount line.
-    addendum = (
-        f"\n\n📈 نوع تمدید: {('حجم' if renew_type == 'volume' else 'زمان')}\n"
-        f"➕ مقدار افزوده: <b>{_esc(amount)}</b> "
-        f"{('گیگ' if renew_type == 'volume' else 'روز')}"
-    )
+    if renew_type == "plan":
+        addendum = (
+            "\n\n📈 نوع تمدید: پلن فعلی\n"
+            "🔄 حجم و زمان سرویس به مقادیر جدید پلن <b>بازنشانی</b> شد"
+        )
+    else:
+        addendum = (
+            f"\n\n📈 نوع تمدید: {('حجم' if renew_type == 'volume' else 'زمان')}\n"
+            f"➕ مقدار افزوده: <b>{_esc(amount)}</b> "
+            f"{('گیگ' if renew_type == 'volume' else 'روز')}"
+        )
     sections[1] = sections[1] + addendum  # tack onto the service section
 
     text = _wrap_event(

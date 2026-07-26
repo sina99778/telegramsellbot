@@ -179,8 +179,6 @@ async def _try_auto_renew(session, bot, sub, renewal_settings) -> None:
         )
         session.add(order)
         await session.flush()
-        sub.order = order
-        await session.flush()
 
         wallet_manager = WalletManager(session)
         if price > 0:
@@ -222,10 +220,15 @@ async def _try_auto_renew(session, bot, sub, renewal_settings) -> None:
                     metadata={"sub_id": str(sub.id), "error": str(exc)[:200]},
                 )
             order.status = "failed"
+            # sub.order deliberately NOT re-pointed — it is only linked on
+            # success below, so the subscription keeps referencing the real
+            # purchase order instead of this failed renewal order.
             await session.commit()
             return
 
         # Persist this renewal before notifying / moving to the next sub.
+        # Only now link the order as the subscription's latest.
+        sub.order = order
         await _clear_sub_alert_keys(session, sub.id)
         await session.commit()
 

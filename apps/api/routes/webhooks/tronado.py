@@ -127,15 +127,25 @@ def _ensure_tronado_status_matches_payment(
 
     expected_tron_amount = Decimal(str(payment.pay_amount or "0"))
     paid_tron_amount = status_response.ActualTronAmount or status_response.TronAmount
-    if expected_tron_amount > 0 and paid_tron_amount is None:
+    # A non-positive expected amount means we never recorded what this payment
+    # should cost — we cannot validate the transfer, so we must NOT credit it.
+    # Previously both guards were gated on `expected_tron_amount > 0`, so a
+    # missing/zero pay_amount skipped the amount check entirely and any
+    # IsPaid=True callback was accepted.
+    if expected_tron_amount <= 0:
+        logger.warning(
+            "Tronado status has no expected amount for payment %s (pay_amount=%s)",
+            payment.id, payment.pay_amount,
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment amount")
+    if paid_tron_amount is None:
         logger.warning("Tronado status amount missing for payment %s (expected=%s)", payment.id, expected_tron_amount)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment amount")
-    if expected_tron_amount > 0 and paid_tron_amount is not None:
-        if paid_tron_amount + _TRON_AMOUNT_TOLERANCE < expected_tron_amount:
-            logger.warning(
-                "Tronado status amount mismatch for payment %s (expected=%s, paid=%s)",
-                payment.id,
-                expected_tron_amount,
-                paid_tron_amount,
-            )
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment amount")
+    if paid_tron_amount + _TRON_AMOUNT_TOLERANCE < expected_tron_amount:
+        logger.warning(
+            "Tronado status amount mismatch for payment %s (expected=%s, paid=%s)",
+            payment.id,
+            expected_tron_amount,
+            paid_tron_amount,
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid verified payment amount")

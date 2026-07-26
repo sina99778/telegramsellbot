@@ -228,6 +228,23 @@ class SanaeiXUIClient:
             raise XUIRequestError(api_response.msg or "Failed to clear client IPs.")
         return api_response
 
+    async def reset_client_traffic(self, *, inbound_id: int, email: str) -> XUIAPIResponse[Any]:
+        """Reset a client's cumulative traffic counter to 0 (3x-ui endpoint:
+        POST /panel/api/inbounds/{id}/resetClientTraffic/{email}).
+
+        Used by the plan renewal ("fresh start") flow so a renewed quota starts
+        from zero. NOT marked idempotent: a blind retry could zero usage that
+        accumulated after the first reset, and mutating calls must not be
+        auto-retried (same rule as update_client)."""
+        response = await self._request(
+            "POST", f"panel/api/inbounds/{inbound_id}/resetClientTraffic/{email}",
+            idempotent=False,
+        )
+        api_response = XUIAPIResponse[Any].model_validate(response or {"success": True, "obj": None})
+        if api_response.success is False:
+            raise XUIRequestError(api_response.msg or "Failed to reset client traffic.")
+        return api_response
+
     async def get_panel_settings(self) -> dict[str, Any]:
         # Read-only despite being a POST — safe to re-send.
         response = await self._request("POST", "panel/setting/all", idempotent=True)
@@ -276,6 +293,14 @@ class SanaeiXUIClient:
             self._authenticated = False
             await self.login()
             response = await self._send(method, path, idempotent=idempotent, **kwargs)
+            if response.status_code in {401, 403}:
+                # Still unauthorized right after a successful login — the
+                # credentials themselves are being rejected. Surface a clear
+                # error instead of a confusing one downstream.
+                raise XUIAuthenticationError(
+                    f"X-UI still returned {response.status_code} after re-login "
+                    f"for endpoint '{path}'. Check the panel credentials."
+                )
         return self._decode_response(response)
 
     async def _send(
@@ -295,6 +320,13 @@ class SanaeiXUIClient:
         for attempt in range(max_retries):
             try:
                 response = await self._client.request(method, path, **kwargs)
+                # Auth errors must be returned (not raised) so _request can
+                # re-login and retry. raise_for_status() would throw them out
+                # of _send as XUIRequestError before _request ever sees the
+                # 401/403 — which made the re-login path dead code and broke
+                # every panel op once the session cookie expired.
+                if response.status_code in {401, 403}:
+                    return response
                 response.raise_for_status()
                 return response
             except httpx.TimeoutException as exc:

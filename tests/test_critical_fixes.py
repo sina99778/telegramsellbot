@@ -249,3 +249,91 @@ async def test_volume_renewal_leaves_used_and_lifetime_untouched(mock_session):
     assert sub.volume_bytes == 70 * 1024**3       # quota grew by the purchase
     assert sub.used_bytes == 30 * 1024**3          # cumulative usage untouched
     assert sub.lifetime_used_bytes == 7            # NO double-count accumulation
+
+
+# ─── 5. renewal settle: refund outcome drives the wallet_debited marker ──────
+
+
+def _renewal_setup(refund_side_effect=None):
+    """Build (session, payment, subscription, wm_instance, bot, wallet_calls) for
+    _apply_direct_renewal_locked where apply_renewal fails and the compensating
+    refund behaves as given."""
+    sub_id = uuid4()
+    payment = NS(
+        id=uuid4(),
+        user_id=uuid4(),
+        provider="nowpayments",
+        price_amount=Decimal("10.00"),
+        price_currency="USD",
+        callback_payload={"sub_id": str(sub_id)},
+    )
+    subscription = NS(id=sub_id, user_id=payment.user_id, status="active", plan_id=uuid4())
+    plan = NS(id=subscription.plan_id, price=Decimal("5.00"), currency="USD", duration_days=30)
+    user = NS(id=payment.user_id, telegram_id=12345)
+
+    session = AsyncMock()
+    session.scalar = AsyncMock(side_effect=[plan, user])  # plan lookup, then user lookup
+
+    wallet_calls: list = []
+
+    async def _wallet_tx(**kwargs):
+        wallet_calls.append(kwargs.get("transaction_type"))
+        if kwargs.get("transaction_type") == "refund" and refund_side_effect is not None:
+            raise refund_side_effect
+
+    wm_instance = MagicMock()
+    wm_instance.process_transaction = AsyncMock(side_effect=_wallet_tx)
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+    bot.session.close = AsyncMock()
+    return session, payment, subscription, wm_instance, bot, wallet_calls
+
+
+@pytest.mark.asyncio
+async def test_failed_renewal_with_failed_refund_keeps_debited_marker():
+    """If apply_renewal fails AND the compensating refund ALSO fails, the
+    wallet_debited marker must stay truthy — clearing it makes the
+    reconciliation retry debit the wallet a second time."""
+    from services.payment import _apply_direct_renewal_locked
+
+    session, payment, subscription, wm_instance, bot, wallet_calls = _renewal_setup(
+        refund_side_effect=RuntimeError("db hiccup"),
+    )
+
+    with patch("services.renewal.apply_renewal", AsyncMock(side_effect=RuntimeError("panel down"))), \
+         patch("services.payment.WalletManager", return_value=wm_instance), \
+         patch("services.payment._get_shared_bot", return_value=bot), \
+         patch("services.notifications.notify_admins", AsyncMock()):
+        result = await _apply_direct_renewal_locked(
+            session, payment, subscription, "plan", 1, str(subscription.id),
+        )
+
+    assert result is False
+    assert wallet_calls == ["renewal", "refund"]                # refund WAS attempted
+    assert payment.callback_payload["wallet_debited"] is True   # ...but NOT cleared
+    assert payment.callback_payload["needs_manual_refund"] is True
+    assert payment.callback_payload["renewal_failed"] is True
+
+
+@pytest.mark.asyncio
+async def test_failed_renewal_with_successful_refund_clears_marker():
+    """The happy compensating path: refund succeeds → marker cleared, and no
+    needs_manual_refund flag is left behind."""
+    from services.payment import _apply_direct_renewal_locked
+
+    session, payment, subscription, wm_instance, bot, wallet_calls = _renewal_setup()
+
+    with patch("services.renewal.apply_renewal", AsyncMock(side_effect=RuntimeError("panel down"))), \
+         patch("services.payment.WalletManager", return_value=wm_instance), \
+         patch("services.payment._get_shared_bot", return_value=bot), \
+         patch("services.notifications.notify_admins", AsyncMock()):
+        result = await _apply_direct_renewal_locked(
+            session, payment, subscription, "plan", 1, str(subscription.id),
+        )
+
+    assert result is False
+    assert wallet_calls == ["renewal", "refund"]
+    assert payment.callback_payload["wallet_debited"] is False
+    assert "needs_manual_refund" not in payment.callback_payload
+    assert payment.callback_payload["renewal_failed"] is True

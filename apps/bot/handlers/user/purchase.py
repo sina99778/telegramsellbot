@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from apps.bot.keyboards.inline import build_plan_selection_keyboard, build_wallet_topup_keyboard
 from apps.bot.states.purchase import PurchaseStates
 from core.formatting import format_volume_bytes, escape_markdown as _escape
+from core.redis import distributed_lock, purchase_lock_key
 from services.banner import create_traffic_banner
 import urllib.parse
 from core.texts import Buttons, Messages
@@ -656,22 +657,36 @@ async def pay_with_wallet(
     """Pay with wallet balance."""
     await callback.answer()
 
-    # Double-click prevention
+    # Double-click prevention (UX fast path — the REAL guard is the Redis
+    # lock below: get_state→set_state is a non-atomic read-modify-write, so
+    # two near-simultaneous taps would both pass this check and double-debit).
     current_state = await state.get_state()
     if current_state == "purchase_processing":
         return
     await state.set_state("purchase_processing")
 
-    # Typing indicator
-    if callback.message:
-        await bot.send_chat_action(callback.from_user.id, "typing")
+    # Serialize the whole debit+provision against concurrent taps/clients.
+    # Held across provisioning (panel HTTP), hence the generous TTL.
+    async with distributed_lock(purchase_lock_key(callback.from_user.id), ttl_seconds=180) as acquired:
+        if not acquired:
+            # Do NOT clear the FSM state here — the lock holder owns it and is
+            # actively reading it; clearing would corrupt the in-flight purchase.
+            try:
+                await callback.message.answer("⏳ خرید قبلی شما در حال پردازش است — لطفاً چند لحظه صبر کنید.")
+            except Exception:
+                pass
+            return
 
-    try:
-        await _process_wallet_purchase(callback, state, session, bot)
-    except Exception as exc:
-        logger.error("Wallet purchase failed: %s", exc, exc_info=True)
-        await state.clear()
-        await safe_edit_or_send(callback, f"خطا در انجام خرید:\n{exc}")
+        # Typing indicator
+        if callback.message:
+            await bot.send_chat_action(callback.from_user.id, "typing")
+
+        try:
+            await _process_wallet_purchase(callback, state, session, bot)
+        except Exception as exc:
+            logger.error("Wallet purchase failed: %s", exc, exc_info=True)
+            await state.clear()
+            await safe_edit_or_send(callback, f"خطا در انجام خرید:\n{exc}")
 
 
 @router.callback_query(F.data == "purchase:pay:gateway")
@@ -683,24 +698,32 @@ async def pay_with_gateway(
     """Pay with NowPayments gateway."""
     await callback.answer()
 
-    # Double-click prevention
+    # Double-click prevention (UX fast path — the Redis lock is the real guard)
     current_state = await state.get_state()
     if current_state == "purchase_processing":
         return
     await state.set_state("purchase_processing")
 
-    from repositories.settings import AppSettingsRepository
-    gw = await AppSettingsRepository(session).get_gateway_settings()
-    if not gw.nowpayments_enabled:
-        await state.clear()
-        await safe_edit_or_send(callback, "❌ درگاه ارزی غیرفعال است.")
-        return
-    try:
-        await _process_gateway_purchase(callback, state, session)
-    except Exception as exc:
-        logger.error("Gateway purchase failed: %s", exc, exc_info=True)
-        await state.clear()
-        await safe_edit_or_send(callback, f"خطا در ساخت فاکتور:\n{exc}")
+    async with distributed_lock(purchase_lock_key(callback.from_user.id), ttl_seconds=120) as acquired:
+        if not acquired:
+            try:
+                await callback.message.answer("⏳ خرید قبلی شما در حال پردازش است — لطفاً چند لحظه صبر کنید.")
+            except Exception:
+                pass
+            return
+
+        from repositories.settings import AppSettingsRepository
+        gw = await AppSettingsRepository(session).get_gateway_settings()
+        if not gw.nowpayments_enabled:
+            await state.clear()
+            await safe_edit_or_send(callback, "❌ درگاه ارزی غیرفعال است.")
+            return
+        try:
+            await _process_gateway_purchase(callback, state, session)
+        except Exception as exc:
+            logger.error("Gateway purchase failed: %s", exc, exc_info=True)
+            await state.clear()
+            await safe_edit_or_send(callback, f"خطا در ساخت فاکتور:\n{exc}")
 
 
 @router.callback_query(F.data == "purchase:pay:tetrapay")
@@ -712,24 +735,32 @@ async def pay_with_tetrapay(
     """Pay with TetraPay gateway (Tomans)."""
     await callback.answer()
 
-    # Double-click prevention
+    # Double-click prevention (UX fast path — the Redis lock is the real guard)
     current_state = await state.get_state()
     if current_state == "purchase_processing":
         return
     await state.set_state("purchase_processing")
 
-    from repositories.settings import AppSettingsRepository
-    gw = await AppSettingsRepository(session).get_gateway_settings()
-    if not gw.tetrapay_enabled:
-        await state.clear()
-        await safe_edit_or_send(callback, "❌ درگاه ریالی غیرفعال است.")
-        return
-    try:
-        await _process_tetrapay_purchase(callback, state, session)
-    except Exception as exc:
-        logger.error("TetraPay purchase failed: %s", exc, exc_info=True)
-        await state.clear()
-        await safe_edit_or_send(callback, f"❌ خطا در ایجاد فاکتور ریالی:\n<code>{exc}</code>", parse_mode="HTML")
+    async with distributed_lock(purchase_lock_key(callback.from_user.id), ttl_seconds=120) as acquired:
+        if not acquired:
+            try:
+                await callback.message.answer("⏳ خرید قبلی شما در حال پردازش است — لطفاً چند لحظه صبر کنید.")
+            except Exception:
+                pass
+            return
+
+        from repositories.settings import AppSettingsRepository
+        gw = await AppSettingsRepository(session).get_gateway_settings()
+        if not gw.tetrapay_enabled:
+            await state.clear()
+            await safe_edit_or_send(callback, "❌ درگاه ریالی غیرفعال است.")
+            return
+        try:
+            await _process_tetrapay_purchase(callback, state, session)
+        except Exception as exc:
+            logger.error("TetraPay purchase failed: %s", exc, exc_info=True)
+            await state.clear()
+            await safe_edit_or_send(callback, f"❌ خطا در ایجاد فاکتور ریالی:\n<code>{exc}</code>", parse_mode="HTML")
 
 
 @router.callback_query(F.data == "purchase:pay:tronado")
@@ -748,18 +779,26 @@ async def pay_with_tronado(
         return
     await state.set_state("purchase_processing")
 
-    gw = await AppSettingsRepository(session).get_gateway_settings()
-    if not gw.tronado_enabled:
-        await state.clear()
-        await safe_edit_or_send(callback, "درگاه ترونادو غیرفعال است.")
-        return
+    async with distributed_lock(purchase_lock_key(callback.from_user.id), ttl_seconds=120) as acquired:
+        if not acquired:
+            try:
+                await callback.message.answer("⏳ خرید قبلی شما در حال پردازش است — لطفاً چند لحظه صبر کنید.")
+            except Exception:
+                pass
+            return
 
-    try:
-        await _process_tronado_purchase(callback, state, session)
-    except Exception as exc:
-        logger.error("Tronado purchase failed: %s", exc, exc_info=True)
-        await state.clear()
-        await safe_edit_or_send(callback, f"خطا در ایجاد فاکتور ترونادو:\n<code>{exc}</code>", parse_mode="HTML")
+        gw = await AppSettingsRepository(session).get_gateway_settings()
+        if not gw.tronado_enabled:
+            await state.clear()
+            await safe_edit_or_send(callback, "درگاه ترونادو غیرفعال است.")
+            return
+
+        try:
+            await _process_tronado_purchase(callback, state, session)
+        except Exception as exc:
+            logger.error("Tronado purchase failed: %s", exc, exc_info=True)
+            await state.clear()
+            await safe_edit_or_send(callback, f"خطا در ایجاد فاکتور ترونادو:\n<code>{exc}</code>", parse_mode="HTML")
 
 
 @router.callback_query(F.data.startswith("purchase:pay:manual"))
@@ -979,9 +1018,15 @@ async def _notify_admins_about_card_purchase(
     user_name = _esc(user.first_name) if user and user.first_name else "-"
     if is_renewal:
         title = "💵 درخواست تمدید (کارت به کارت)"
+        _renew_type = payload.get('renew_type')
+        _type_label = (
+            "حجم" if _renew_type == "volume"
+            else "پلن فعلی (بازنشانی کامل)" if _renew_type == "plan"
+            else "زمان"
+        )
         details = (
             f"سرویس: <code>{_esc(str(payload.get('sub_id', '-')))}</code>\n"
-            f"نوع تمدید: {'حجم' if payload.get('renew_type') == 'volume' else 'زمان'}\n"
+            f"نوع تمدید: {_type_label}\n"
             f"مقدار: {_esc(str(payload.get('renew_amount', '-')))}\n"
         )
     else:
