@@ -175,6 +175,7 @@ class ServerCreateBody(BaseModel):
     @classmethod
     def _panel_type_must_be_registered(cls, v: str) -> str:
         from services.panels.registry import is_known_panel_type, known_panel_types
+        v = v.strip().lower()
         if not is_known_panel_type(v):
             raise ValueError(f"نوعِ پنل نامعتبر است. مجاز: {sorted(known_panel_types())}")
         return v
@@ -198,17 +199,48 @@ async def create_server(body: ServerCreateBody, auth: AuthDep) -> dict[str, Any]
     if exists is not None:
         raise HTTPException(status_code=400, detail="نام سرور تکراری است.")
 
+    remote_bundles = None
+    if body.panel_type in {"pasarguard", "rebecca"}:
+        try:
+            from apps.bot.handlers.admin.servers import _fetch_remote_bundles
+
+            remote_bundles = await _fetch_remote_bundles(
+                base_url=body.base_url,
+                username=body.panel_username,
+                password=body.panel_password,
+                panel_type=body.panel_type,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)[:300]) from exc
+    else:
+        try:
+            from pydantic import SecretStr
+            from core.config import settings as _settings
+            from services.xui.client import SanaeiXUIClient, XUIClientConfig
+
+            config = XUIClientConfig(
+                base_url=body.base_url,
+                username=body.panel_username,
+                password=SecretStr(body.panel_password),
+                verify_ssl=_settings.xui_verify_ssl,
+            )
+            async with SanaeiXUIClient(config) as client:
+                await client.login()
+                await client.get_inbounds()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)[:300]) from exc
+
     server = XUIServerRecord(
         name=body.name,
         base_url=body.base_url,
         panel_type=body.panel_type,
         is_active=True,
         priority=body.priority,
-        subscription_port=body.subscription_port,
+        subscription_port=0 if remote_bundles is not None else body.subscription_port,
         config_domain=body.config_domain,
         sub_domain=body.sub_domain,
         max_clients=body.max_clients,
-        health_status="unknown",
+        health_status="ok" if remote_bundles is not None else "unknown",
     )
     session.add(server)
     await session.flush()
@@ -219,6 +251,17 @@ async def create_server(body: ServerCreateBody, auth: AuthDep) -> dict[str, Any]
         password_encrypted=encrypt_secret(body.panel_password),
     )
     session.add(cred)
+    if remote_bundles is not None:
+        from apps.bot.handlers.admin.servers import _sync_remote_bundles
+
+        created_inbounds, _, _ = _sync_remote_bundles(
+            server_id=server.id,
+            existing_inbounds=[],
+            bundles=remote_bundles,
+            panel_kind=body.panel_type,
+        )
+        session.add_all(created_inbounds)
+        await session.flush()
     try:
         await AuditLogRepository(session).log_action(
             actor_user_id=None,
@@ -361,7 +404,10 @@ async def test_connection(server_id: UUID, auth: AuthDep) -> dict[str, Any]:
     _admin, session = auth
     server = await session.scalar(
         select(XUIServerRecord)
-        .options(selectinload(XUIServerRecord.credentials))
+        .options(
+            selectinload(XUIServerRecord.credentials),
+            selectinload(XUIServerRecord.inbounds),
+        )
         .where(XUIServerRecord.id == server_id)
     )
     if server is None:
@@ -392,6 +438,16 @@ async def test_connection(server_id: UUID, auth: AuthDep) -> dict[str, Any]:
             ) as client:
                 await client.login()
                 remote = await client.list_bundles()
+            from apps.bot.handlers.admin.servers import _sync_remote_bundles
+
+            created_inbounds, _, _ = _sync_remote_bundles(
+                server_id=server.id,
+                existing_inbounds=server.inbounds,
+                bundles=remote,
+                panel_kind=server.panel_type,
+            )
+            session.add_all(created_inbounds)
+            await session.flush()
         else:
             from services.xui.client import SanaeiXUIClient, XUIClientConfig
             config = XUIClientConfig(

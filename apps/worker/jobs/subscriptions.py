@@ -368,7 +368,11 @@ async def sync_pasarguard_usage_and_status(
                     subscription.status = "active"
                     subscription.activated_at = now
                     subscription.starts_at = now
-                    subscription.ends_at = pg_ends_at or (now + timedelta(days=plan_duration_days))
+                    subscription.ends_at = pg_ends_at or (
+                        now + timedelta(days=plan_duration_days)
+                        if plan_duration_days > 0
+                        else None
+                    )
                     xui_record.is_active = True
                     logger.info(
                         "[SYNC][PG] sub %s activated (first connect) ends_at=%s",
@@ -797,7 +801,9 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
                 subscription.status = "active"
                 subscription.activated_at = now
                 subscription.starts_at = now
-                subscription.ends_at = now + timedelta(days=plan_duration)
+                subscription.ends_at = (
+                    now + timedelta(days=plan_duration) if plan_duration > 0 else None
+                )
                 # Update X-UI panel with the real expiry time
                 try:
                     await xui_client.update_client(
@@ -909,7 +915,9 @@ async def _pasarguard_realtime_usage(
         subscription.status = "active"
         subscription.activated_at = now
         subscription.starts_at = now
-        subscription.ends_at = pg_ends_at or (now + timedelta(days=plan_duration))
+        subscription.ends_at = pg_ends_at or (
+            now + timedelta(days=plan_duration) if plan_duration > 0 else None
+        )
         xui_record.is_active = True
     elif status in {"expired", "limited"} and subscription.status != "expired":
         subscription.status = "expired"

@@ -1,6 +1,7 @@
 """Tests for the PasarGuard HTTP client (mock httpx transport — no real panel)."""
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -118,6 +119,97 @@ async def test_reauths_once_on_401():
     assert result == {"username": "admin"}
     assert state["tokens"] == 2  # logged in twice
     assert state["admin_calls"] == 2  # original + retry
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_initial_requests_share_one_login():
+    state = {"tokens": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/admin/token":
+            state["tokens"] += 1
+            await asyncio.sleep(0.01)
+            return httpx.Response(200, json={"access_token": "tok", "token_type": "bearer"})
+        if request.url.path == "/api/admin":
+            return httpx.Response(200, json={"username": "admin"})
+        return httpx.Response(404)
+
+    client = _make_client(handler)
+    await asyncio.gather(*(client.get_current_admin() for _ in range(5)))
+    assert state["tokens"] == 1
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_unauthorized_requests_share_one_reauthentication():
+    state = {"tokens": 0}
+    stale_requests = 0
+    stale_ready = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal stale_requests
+        if request.url.path == "/api/admin/token":
+            state["tokens"] += 1
+            return httpx.Response(
+                200, json={"access_token": f"tok{state['tokens']}", "token_type": "bearer"}
+            )
+        if request.url.path == "/api/admin":
+            if request.headers.get("authorization") == "Bearer tok1":
+                stale_requests += 1
+                if stale_requests == 5:
+                    stale_ready.set()
+                await stale_ready.wait()
+                return httpx.Response(401, json={"detail": "token expired"})
+            return httpx.Response(200, json={"username": "admin"})
+        return httpx.Response(404)
+
+    client = _make_client(handler)
+    await client.login()
+    await asyncio.gather(*(client.get_current_admin() for _ in range(5)))
+    assert state["tokens"] == 2
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_transient_5xx_retries_only_idempotent_methods(monkeypatch):
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    state = {"get": 0, "post": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        state[request.method.lower()] += 1
+        return httpx.Response(503)
+
+    client = _make_client(handler)
+    get_response = await client._send("GET", "api/groups")
+    post_response = await client._send("POST", "api/user")
+    assert get_response.status_code == 503
+    assert post_response.status_code == 503
+    assert state == {"get": 3, "post": 1}
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_transport_errors_retry_post(monkeypatch):
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    state = {"calls": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        state["calls"] += 1
+        if state["calls"] < 3:
+            raise httpx.ConnectError("disconnected", request=request)
+        return httpx.Response(201)
+
+    client = _make_client(handler)
+    response = await client._send("POST", "api/user")
+    assert response.status_code == 201
+    assert state["calls"] == 3
     await client.aclose()
 
 

@@ -133,6 +133,58 @@ async def test_usage_sync_activates_pending_when_panel_active(monkeypatch, mock_
 
 
 @pytest.mark.asyncio
+async def test_usage_sync_keeps_unlimited_duration_without_panel_expire(monkeypatch, mock_session):
+    import apps.worker.jobs.subscriptions as sj
+
+    pg_user = PGUserResponse(
+        id=1,
+        username="u1",
+        status="active",
+        used_traffic=1,
+        subscription_url="/sub/x",
+    )
+    monkeypatch.setattr(sj, "marzban_client_for_server", _fake_cm(FakePGClient(pg_user)))
+
+    sub = _sub(
+        status="pending_activation",
+        plan=NS(duration_days=0),
+        volume_bytes=0,
+    )
+    await sj.sync_pasarguard_usage_and_status(mock_session, NS(base_url="http://h"), [sub])
+
+    assert sub.status == "active"
+    assert sub.ends_at is None
+
+
+@pytest.mark.asyncio
+async def test_realtime_sync_keeps_unlimited_duration_without_panel_expire(
+    monkeypatch, mock_session
+):
+    import apps.worker.jobs.subscriptions as sj
+
+    pg_user = PGUserResponse(
+        id=1,
+        username="u1",
+        status="active",
+        used_traffic=1,
+        subscription_url="/sub/x",
+    )
+    monkeypatch.setattr(sj, "marzban_client_for_server", _fake_cm(FakePGClient(pg_user)))
+    monkeypatch.setattr(sj, "ensure_inbound_server_loaded", lambda inbound: inbound.server)
+
+    sub = _sub(
+        status="pending_activation",
+        plan=NS(duration_days=0),
+        volume_bytes=0,
+    )
+    inbound = NS(server=NS(base_url="http://h"))
+    await sj._pasarguard_realtime_usage(mock_session, sub, sub.xui_client, inbound)
+
+    assert sub.status == "active"
+    assert sub.ends_at is None
+
+
+@pytest.mark.asyncio
 async def test_usage_sync_marks_expired_when_panel_limited(monkeypatch, mock_session):
     import apps.worker.jobs.subscriptions as sj
 

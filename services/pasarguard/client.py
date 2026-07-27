@@ -93,6 +93,7 @@ class PasarGuardClient:
         )
         self._authenticated = False
         self._token: str | None = None
+        self._auth_lock = asyncio.Lock()
 
     async def __aenter__(self) -> "PasarGuardClient":
         return self
@@ -107,7 +108,10 @@ class PasarGuardClient:
     # ── auth ─────────────────────────────────────────────────────────────────
 
     async def login(self) -> PGToken:
-        """POST /api/admin/token (OAuth2 password grant, form-encoded)."""
+        async with self._auth_lock:
+            return await self._login_unlocked()
+
+    async def _login_unlocked(self) -> PGToken:
         response = await self._send(
             "POST",
             "api/admin/token",
@@ -229,13 +233,17 @@ class PasarGuardClient:
         **kwargs: Any,
     ) -> httpx.Response:
         if not self._authenticated:
-            await self.login()
+            async with self._auth_lock:
+                if not self._authenticated:
+                    await self._login_unlocked()
 
+        request_token = self._token
         response = await self._send(method, path, **kwargs)
         if response.status_code in {401, 403}:
-            # Token likely expired — re-auth once and retry.
-            self._authenticated = False
-            await self.login()
+            async with self._auth_lock:
+                if not self._authenticated or self._token == request_token:
+                    self._authenticated = False
+                    await self._login_unlocked()
             response = await self._send(method, path, **kwargs)
 
         if response.status_code not in expected:
@@ -274,7 +282,11 @@ class PasarGuardClient:
 
             # Retry transient 5xx; return everything else (incl. 4xx) for the
             # caller (_request) to interpret.
-            if response.status_code >= 500 and attempt < max_retries - 1:
+            if (
+                response.status_code >= 500
+                and method.upper() in {"GET", "HEAD", "OPTIONS", "DELETE"}
+                and attempt < max_retries - 1
+            ):
                 last_response = response
                 await asyncio.sleep(2 ** attempt)
                 continue
