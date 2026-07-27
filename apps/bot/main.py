@@ -15,7 +15,7 @@ from apps.bot.handlers.admin import router as admin_router
 from apps.bot.handlers.user import router as user_router
 from apps.bot.middlewares.database import DatabaseSessionMiddleware
 from apps.bot.middlewares.error_handler import GlobalErrorMiddleware
-from apps.bot.premium_bot import PremiumEmojiBot
+from apps.bot.premium_bot import IPv4AiohttpSession, PremiumEmojiBot
 from core.config import settings
 from core.database import dispose_database
 
@@ -130,6 +130,7 @@ async def main() -> None:
     bot = PremiumEmojiBot(
         token=settings.bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
+        session=IPv4AiohttpSession(),
     )
     dispatcher = Dispatcher()
     dispatcher.update.middleware(DatabaseSessionMiddleware())

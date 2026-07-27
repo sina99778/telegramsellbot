@@ -22,7 +22,7 @@ async def _heartbeat_loop() -> None:
             logging.getLogger(__name__).warning("worker heartbeat write failed: %s", exc)
         await asyncio.sleep(30)
 
-from apps.bot.premium_bot import PremiumEmojiBot
+from apps.bot.premium_bot import IPv4AiohttpSession, PremiumEmojiBot
 from apps.worker.jobs.broadcast import process_broadcast_queue
 from apps.worker.jobs.payments import sync_pending_payments
 from apps.worker.jobs.retargeting import process_retargeting_campaigns
@@ -58,6 +58,7 @@ async def main() -> None:
     bot = PremiumEmojiBot(
         token=settings.bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
+        session=IPv4AiohttpSession(),
     )
 
     scheduler = AsyncIOScheduler()
