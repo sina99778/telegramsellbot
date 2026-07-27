@@ -497,6 +497,7 @@ async def test_transport_error_with_404_in_email_is_not_a_gone_strike():
 async def test_panel_404_status_code_still_strikes_and_expires_at_threshold():
     sub = _xui_sub(status="active", strikes=4)
     xui_client = AsyncMock()
+    xui_client.get_inbounds = AsyncMock(return_value=[])
     xui_client.get_client_traffic = AsyncMock(side_effect=XUIRequestError(
         "X-UI API request failed", status_code=404,
     ))
@@ -506,6 +507,36 @@ async def test_panel_404_status_code_still_strikes_and_expires_at_threshold():
 
     assert sub.usage_sync_failures == 5
     assert sub.status == "expired"
+
+
+async def test_traffic_not_found_does_not_expire_client_still_in_inbound():
+    sub = _xui_sub(
+        status="expired",
+        ends_at=datetime.now(timezone.utc) + timedelta(days=20),
+        activated_at=datetime.now(timezone.utc) - timedelta(days=5),
+        strikes=5,
+    )
+    inbound = MagicMock(
+        id=7,
+        settings={"clients": [{"id": "client-1", "email": sub.xui_client.email}]},
+    )
+    sub.xui_client.inbound.xui_inbound_remote_id = 7
+    sub.xui_client.xui_client_remote_id = "client-1"
+
+    xui_client = AsyncMock()
+    xui_client.get_inbounds = AsyncMock(return_value=[inbound])
+    xui_client.get_client_traffic = AsyncMock(side_effect=XUIRequestError(
+        "Inbound Not Found For Email", status_code=404,
+    ))
+
+    session = AsyncMock()
+    await sync_xui_usage_and_status(session, xui_client, [sub], _security_settings())
+
+    assert sub.status == "active"
+    assert sub.expired_at is None
+    assert sub.usage_sync_failures == 0
+    assert sub.xui_client.is_active is True
+    xui_client.get_inbounds.assert_awaited_once()
 
 
 # ─── gone-client reprobe throttle (the CPU/log-spam loop fix) ────────────────
@@ -524,6 +555,7 @@ async def test_strike_expired_sub_is_not_reprobed_within_interval():
     assert REPROBE_GONE_INTERVAL > timedelta(minutes=2)  # sanity: within window
 
     xui_client = AsyncMock()
+    xui_client.get_inbounds = AsyncMock(return_value=[])
     xui_client.get_client_traffic = AsyncMock(side_effect=XUIRequestError(
         "X-UI API request failed", status_code=404,
     ))
@@ -563,6 +595,7 @@ async def test_strike_expired_sub_reprobed_after_interval_still_gone_reexpires()
     old = datetime.now(timezone.utc) - timedelta(hours=1)
     sub = _xui_sub(status="expired", strikes=8, last_usage_sync_at=old)
     xui_client = AsyncMock()
+    xui_client.get_inbounds = AsyncMock(return_value=[])
     xui_client.get_client_traffic = AsyncMock(side_effect=XUIRequestError(
         "X-UI API request failed", status_code=404,
     ))

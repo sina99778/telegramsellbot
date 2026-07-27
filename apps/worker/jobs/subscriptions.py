@@ -58,7 +58,52 @@ async def sync_xui_usage_and_status(
         auto_disable_ip_abuse=True,
     )
     semaphore = asyncio.Semaphore(XUI_USAGE_SYNC_CONCURRENCY)
+    inbound_snapshot_lock = asyncio.Lock()
+    inbound_snapshot: list | None = None
     any_expired = False
+
+    async def get_panel_client(xui_record: XUIClientRecord) -> dict | None:
+        nonlocal inbound_snapshot
+        if inbound_snapshot is None:
+            async with inbound_snapshot_lock:
+                if inbound_snapshot is None:
+                    inbound_snapshot = await xui_client.get_inbounds()
+        inbound_id = xui_record.inbound.xui_inbound_remote_id
+        expected_ids = {
+            str(value)
+            for value in (xui_record.xui_client_remote_id, xui_record.client_uuid)
+            if value
+        }
+        expected_email = xui_record.email.casefold()
+        for inbound in inbound_snapshot:
+            if inbound.id != inbound_id:
+                continue
+            settings = inbound.settings if isinstance(inbound.settings, dict) else {}
+            for client in settings.get("clients") or []:
+                client_email = str(client.get("email") or "").casefold()
+                client_ids = {
+                    str(value)
+                    for value in (client.get("id"), client.get("uuid"))
+                    if value
+                }
+                if client_email == expected_email or expected_ids.intersection(client_ids):
+                    return client
+            return None
+        return None
+
+    def restore_valid_lifecycle(subscription: Subscription, xui_record: XUIClientRecord) -> bool:
+        now = utcnow()
+        time_ok = subscription.ends_at is None or subscription.ends_at > now
+        volume_ok = (
+            subscription.volume_bytes <= 0
+            or subscription.used_bytes < subscription.volume_bytes
+        )
+        if subscription.status != "expired" or not time_ok or not volume_ok:
+            return False
+        subscription.status = "active" if subscription.activated_at is not None else "pending_activation"
+        subscription.expired_at = None
+        xui_record.is_active = True
+        return True
 
     async def sync_one(subscription: Subscription) -> None:
         nonlocal any_expired
@@ -79,6 +124,23 @@ async def sync_xui_usage_and_status(
         if subscription.status == "expired" and (
             subscription.usage_sync_failures or 0
         ) >= USAGE_GONE_STRIKES:
+            try:
+                panel_client = await get_panel_client(xui_record)
+            except XUIClientError as snapshot_exc:
+                logger.warning(
+                    "[SYNC] Could not verify expired client '%s' in inbound list: %s",
+                    xui_record.email,
+                    snapshot_exc,
+                )
+                return
+            if panel_client is not None:
+                if restore_valid_lifecycle(subscription, xui_record):
+                    logger.warning(
+                        "[SYNC] Restored valid sub %s from authoritative inbound list",
+                        subscription.id,
+                    )
+                subscription.usage_sync_failures = 0
+                return
             last_probe = subscription.last_usage_sync_at or subscription.expired_at
             if last_probe is not None and utcnow() - last_probe < REPROBE_GONE_INTERVAL:
                 return
@@ -94,10 +156,24 @@ async def sync_xui_usage_and_status(
             # a strike toward expiry.
             client_gone = _client_is_gone(exc)
             if client_gone:
-                # Count consecutive strikes. Only after several in a row do we
-                # trust it and expire — a single flaky response (the panel
-                # sometimes returns "no traffic stats found" for a live client)
-                # used to instantly expire a perfectly valid config.
+                try:
+                    panel_client = await get_panel_client(xui_record)
+                except XUIClientError as snapshot_exc:
+                    logger.warning(
+                        "[SYNC] Could not verify client '%s' in inbound list: %s",
+                        xui_record.email,
+                        snapshot_exc,
+                    )
+                    return
+                if panel_client is not None:
+                    if restore_valid_lifecycle(subscription, xui_record):
+                        logger.warning(
+                            "[SYNC] Restored valid sub %s: traffic endpoint missed a client "
+                            "that is still present in the inbound",
+                            subscription.id,
+                        )
+                    subscription.usage_sync_failures = 0
+                    return
                 strikes = (subscription.usage_sync_failures or 0) + 1
                 subscription.usage_sync_failures = strikes
                 # Stamp the probe time so the strike-expired throttle can tell
