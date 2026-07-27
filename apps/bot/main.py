@@ -9,6 +9,7 @@ from pathlib import Path
 
 from aiogram import Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import TelegramNetworkError
 
 from apps.bot.handlers.admin import router as admin_router
 from apps.bot.handlers.user import router as user_router
@@ -46,9 +47,28 @@ def configure_logging() -> None:
     )
 
 
+async def _get_me_with_retry(bot: PremiumEmojiBot, attempts: int = 12) -> None:
+    logger = logging.getLogger(__name__)
+    delay = 2.0
+    for attempt in range(1, attempts + 1):
+        try:
+            me = await bot.get_me()
+            logger.info("Bot started: id=%s username=@%s", me.id, me.username)
+            return
+        except (TelegramNetworkError, asyncio.TimeoutError, OSError) as exc:
+            if attempt >= attempts:
+                logger.error("get_me failed after %s attempts: %s", attempts, exc)
+                raise
+            logger.warning(
+                "get_me attempt %s/%s failed (%s); retrying in %.1fs",
+                attempt, attempts, exc, delay,
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 1.5, 30.0)
+
+
 async def on_startup(bot: PremiumEmojiBot) -> None:
-    me = await bot.get_me()
-    logging.getLogger(__name__).info("Bot started: id=%s username=@%s", me.id, me.username)
+    await _get_me_with_retry(bot)
     # Prime the button-style cache so the first keyboard render after
     # boot already has the operator's color preferences.
     try:
