@@ -25,6 +25,10 @@ class IPv4AiohttpSession(AiohttpSession):
 
 
 class PremiumEmojiBot(Bot):
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("session", IPv4AiohttpSession())
+        super().__init__(**kwargs)
+
     async def __call__(
         self,
         method: TelegramMethod[Any],

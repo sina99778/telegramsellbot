@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from core.config import settings
-from apps.bot.premium_bot import PremiumEmojiBot
+from apps.bot.premium_bot import IPv4AiohttpSession, PremiumEmojiBot
 from models.order import Order
 from models.payment import Payment
 from models.plan import Plan
@@ -48,6 +48,7 @@ def _get_shared_bot() -> PremiumEmojiBot:
     return PremiumEmojiBot(
         token=settings.bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
+        session=IPv4AiohttpSession(),
     )
 
 
