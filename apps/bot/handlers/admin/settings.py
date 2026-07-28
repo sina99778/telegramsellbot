@@ -362,7 +362,14 @@ async def edit_custom_price_day_submit(message: Message, state: FSMContext, sess
 async def edit_xui_limit_ip_start(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(SettingsStates.waiting_for_xui_limit_ip)
-    await safe_edit_or_send(callback, "عدد limitIp پنل را وارد کنید. 0 یعنی بدون محدودیت، 1 یعنی فقط یک IP همزمان.")
+    await safe_edit_or_send(
+        callback,
+        "عدد limitIp پنل را وارد کنید.\n\n"
+        "پیشنهاد: ۰ (بدون محدودیت).\n"
+        "⚠️ هر عددی بزرگ‌تر از ۰ باعث می‌شود پنل 3x-ui هر ۱۰ ثانیه خطای "
+        "«client ip job err» در لاگ بنویسد و در عمل هم بدون fail2ban و "
+        "access log اعمال نمی‌شود. برای محدودکردن دستگاه از «ضد اشتراک‌گذاری» استفاده کنید.",
+    )
 
 
 @router.message(SettingsStates.waiting_for_xui_limit_ip)
