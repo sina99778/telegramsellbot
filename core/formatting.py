@@ -14,6 +14,17 @@ def format_volume_bytes(volume_bytes: int) -> str:
     return f"{gigabytes:.2f} GB"
 
 
+def format_plan_volume(volume_bytes: int) -> str:
+    """Plan/subscription QUOTA label: 0 means unlimited (no data cap).
+
+    Separate from format_volume_bytes because an actual usage counter of 0
+    must still render "0 GB" — only a quota of 0 means "no limit".
+    """
+    if volume_bytes is None or volume_bytes <= 0:
+        return "نامحدود"
+    return format_volume_bytes(volume_bytes)
+
+
 def format_price(price: Decimal | float | str) -> str:
     """Format price to 2 decimal places, removing trailing zeros noise."""
     d = Decimal(str(price)).quantize(Decimal("0.01"))

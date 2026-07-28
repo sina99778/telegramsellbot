@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.states.admin import ReadyConfigPlanStates, ReadyConfigUploadStates
 from apps.bot.utils.messaging import safe_edit_or_send
-from core.formatting import format_volume_bytes
+from core.formatting import format_plan_volume
 from models.plan import Plan
 from models.ready_config import ReadyConfigItem, ReadyConfigPool
 from models.user import User
@@ -281,7 +281,7 @@ async def list_ready_configs(callback: CallbackQuery, session: AsyncSession) -> 
         rows.append(
             f"{pool.plan.name}\n"
             f"وضعیت: {status}\n"
-            f"حجم: {format_volume_bytes(pool.plan.volume_bytes)} | مدت: {pool.plan.duration_days} روز | قیمت: {pool.plan.price}\n"
+            f"حجم: {format_plan_volume(pool.plan.volume_bytes)} | مدت: {pool.plan.duration_days} روز | قیمت: {pool.plan.price}\n"
             f"آماده: {available} | فروخته: {sold}"
         )
     builder = InlineKeyboardBuilder()

@@ -2176,13 +2176,13 @@ async def _purchase_with_wallet(
     # ── Sales notification — prefers the dedicated channel ──
     try:
         from services.notifications import notify_sales_event
-        from core.formatting import format_volume_bytes
+        from core.formatting import format_plan_volume
         bot = PremiumEmojiBot(
             token=settings.bot_token.get_secret_value(),
             default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
         )
         try:
-            volume_label = format_volume_bytes(plan.volume_bytes)
+            volume_label = format_plan_volume(plan.volume_bytes)
             user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
             admin_text = (
                 "🛒 خرید جدید (مینی‌اپ)!\n\n"

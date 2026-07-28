@@ -35,12 +35,47 @@ from models.subscription import Subscription
 from models.xui import XUIInboundRecord, XUIServerRecord
 from repositories.audit import AuditLogRepository
 from repositories.settings import AppSettingsRepository
+from services.panels.marzban import inbound_is_pasarguard_group
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 AuthDep = Annotated[tuple[DashboardAdmin, AsyncSession], Depends(require_dashboard_admin)]
+
+
+async def _validate_pg_group_ids(
+    session: AsyncSession, inbound: XUIInboundRecord, group_ids: list[int]
+) -> list[int]:
+    """Validate a PasarGuard multi-group selection for a plan.
+
+    Every id must be an ACTIVE synced group row on the SAME server as the
+    plan's inbound (group ids are server-local on the panel). Returns the
+    cleaned, deduped list (order preserved).
+    """
+    if not inbound_is_pasarguard_group(inbound):
+        raise HTTPException(
+            status_code=400,
+            detail="انتخاب چند گروه فقط برای پلن‌های PasarGuard ممکن است.",
+        )
+    rows = (await session.execute(
+        select(XUIInboundRecord.xui_inbound_remote_id).where(
+            XUIInboundRecord.server_id == inbound.server_id,
+            XUIInboundRecord.is_active.is_(True),
+        )
+    )).all()
+    valid = {int(r[0]) for r in rows}
+    cleaned: list[int] = []
+    for gid in group_ids:
+        gid = int(gid)
+        if gid not in valid:
+            raise HTTPException(
+                status_code=400,
+                detail=f"گروه {gid} روی این سرور وجود ندارد یا غیرفعال است — ابتدا سرور را سینک کنید.",
+            )
+        if gid not in cleaned:
+            cleaned.append(gid)
+    return cleaned
 
 
 @router.get("")
@@ -89,6 +124,7 @@ async def list_plans(auth: AuthDep) -> dict[str, Any]:
             "inbound_id": str(p.inbound_id) if p.inbound_id else None,
             "inbound_label": inbound_label,
             "server_name": server_name,
+            "pg_group_ids": [int(g) for g in p.pg_group_ids] if p.pg_group_ids else None,
             "subscription_count": sub_count,
             "created_at": p.created_at.isoformat() if p.created_at else None,
         })
@@ -113,16 +149,29 @@ class PlanCreateBody(BaseModel):
     ip_limit: int | None = Field(None, ge=0, le=1000)
     renewal_price_per_gb: float | None = Field(None, ge=0)
     renewal_price_per_day: float | None = Field(None, ge=0)
+    # PasarGuard-only: remote group ids for the created config (multi-group).
+    # NULL/[] → legacy single group (the picked inbound's group).
+    pg_group_ids: list[int] | None = None
 
 
 @router.post("")
 async def create_plan(body: PlanCreateBody, auth: AuthDep) -> dict[str, Any]:
     admin, session = auth
 
+    inbound_row = None
     if body.inbound_id is not None:
-        ok = await session.scalar(select(XUIInboundRecord.id).where(XUIInboundRecord.id == body.inbound_id))
-        if ok is None:
+        inbound_row = await session.get(XUIInboundRecord, body.inbound_id)
+        if inbound_row is None:
             raise HTTPException(status_code=400, detail="اینباند انتخاب‌شده وجود ندارد.")
+
+    pg_group_ids = None
+    if body.pg_group_ids:
+        if inbound_row is None:
+            raise HTTPException(
+                status_code=400,
+                detail="برای انتخاب گروه‌ها، ابتدا اینباند PasarGuard را انتخاب کنید.",
+            )
+        pg_group_ids = await _validate_pg_group_ids(session, inbound_row, body.pg_group_ids)
 
     # Auto code so the operator doesn't have to think one up.
     code = f"plan_{secrets.token_hex(4)}"
@@ -140,6 +189,7 @@ async def create_plan(body: PlanCreateBody, auth: AuthDep) -> dict[str, Any]:
         ip_limit=body.ip_limit,
         renewal_price_per_gb=Decimal(str(body.renewal_price_per_gb)) if body.renewal_price_per_gb is not None else None,
         renewal_price_per_day=Decimal(str(body.renewal_price_per_day)) if body.renewal_price_per_day is not None else None,
+        pg_group_ids=pg_group_ids,
     )
     session.add(plan)
     await session.flush()
@@ -174,6 +224,9 @@ class PlanUpdateBody(BaseModel):
     ip_limit: int | None = Field(None, ge=-1, le=1000)
     renewal_price_per_gb: float | None = Field(None, ge=-1)
     renewal_price_per_day: float | None = Field(None, ge=-1)
+    # PasarGuard multi-group selection. null = don't touch; [] = clear back
+    # to legacy single-group; [ids] = set the group list.
+    pg_group_ids: list[int] | None = None
 
 
 @router.patch("/{plan_id}")
@@ -211,10 +264,12 @@ async def update_plan(plan_id: UUID, body: PlanUpdateBody, auth: AuthDep) -> dic
     # client mappings on the bot side. Don't bother changing it for
     # plans that already have customers — operator should use the
     # "pivot all plans to inbound" feature instead.
-    if body.inbound_id is not None:
+    sub_count = 0
+    if body.inbound_id is not None or body.pg_group_ids is not None:
         sub_count = int(await session.scalar(
             select(func.count(Subscription.id)).where(Subscription.plan_id == plan.id)
         ) or 0)
+    if body.inbound_id is not None:
         if sub_count > 0 and body.inbound_id != plan.inbound_id:
             raise HTTPException(
                 status_code=400,
@@ -224,6 +279,31 @@ async def update_plan(plan_id: UUID, body: PlanUpdateBody, auth: AuthDep) -> dic
         if ok is None:
             raise HTTPException(status_code=400, detail="اینباند انتخاب‌شده وجود ندارد.")
         plan.inbound_id = body.inbound_id; changes["inbound_id"] = str(body.inbound_id)
+
+    # PasarGuard multi-group selection. Same "has customers" guard as the
+    # inbound change — existing configs were created with the old groups.
+    if body.pg_group_ids is not None:
+        new_groups = [int(g) for g in body.pg_group_ids]
+        current_groups = sorted(int(g) for g in (plan.pg_group_ids or []))
+        if sorted(new_groups) != current_groups:
+            if sub_count > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"این پلن {sub_count} سرویس فعال دارد — تغییر گروه‌ها فقط برای پلن بدون سرویس ممکن است.",
+                )
+            if not new_groups:
+                plan.pg_group_ids = None
+            else:
+                if plan.inbound_id is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="پلن بدون اینباند نمی‌تواند گروه PasarGuard داشته باشد.",
+                    )
+                inbound_row = await session.get(XUIInboundRecord, plan.inbound_id)
+                if inbound_row is None:
+                    raise HTTPException(status_code=400, detail="اینباند پلن وجود ندارد.")
+                plan.pg_group_ids = await _validate_pg_group_ids(session, inbound_row, new_groups)
+            changes["pg_group_ids"] = plan.pg_group_ids
 
     try:
         await AuditLogRepository(session).log_action(
@@ -319,5 +399,12 @@ async def list_inbounds_for_picker(auth: AuthDep) -> dict[str, Any]:
         items.append({
             "id": str(ib.id),
             "label": f"{ib.server.name} → {ib.remark or '#' + str(ib.xui_inbound_remote_id)} ({ib.protocol or '?'}:{ib.port or '?'})",
+            # Extra fields let the plan form filter sibling PasarGuard groups
+            # of the chosen inbound's server for the multi-group picker.
+            "server_id": str(ib.server_id),
+            "remote_id": int(ib.xui_inbound_remote_id),
+            "protocol": ib.protocol or "",
+            "remark": ib.remark or "",
+            "is_pasarguard_group": inbound_is_pasarguard_group(ib),
         })
     return {"items": items}

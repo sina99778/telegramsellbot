@@ -654,7 +654,7 @@ const Pages = (() => {
                 <div class="plan-card ${recommended ? 'popular' : ''}">
                     <div class="plan-name">${escapeHtml(plan.name)}</div>
                     <div class="plan-specs">
-                        <span class="plan-spec">${UI.icon('database')} ${(plan.volume_gb)} گیگ</span>
+                        <span class="plan-spec">${UI.icon('database')} ${plan.volume_gb > 0 ? `${plan.volume_gb} گیگ` : 'نامحدود ♾'}</span>
                         <span class="plan-spec">${UI.icon('clock')} ${(plan.duration_days)} روز</span>
                         ${plan.protocol ? `<span class="plan-spec">${UI.icon('lock')} ${escapeHtml(plan.protocol)}</span>` : ''}
                         ${plan.is_unlimited ? '' : `<span class="plan-spec">${UI.icon('package')} ${(plan.stock_remaining)} موجودی</span>`}

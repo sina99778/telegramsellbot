@@ -18,6 +18,7 @@ export interface PlanItem {
   inbound_id: string | null;
   inbound_label: string | null;
   server_name: string | null;
+  pg_group_ids: number[] | null;
   subscription_count: number;
   created_at: string | null;
 }
@@ -25,6 +26,11 @@ export interface PlanItem {
 export interface InboundOption {
   id: string;
   label: string;
+  server_id: string;
+  remote_id: number;
+  protocol: string;
+  remark: string;
+  is_pasarguard_group: boolean;
 }
 
 export interface PlanCreateBody {
@@ -39,6 +45,8 @@ export interface PlanCreateBody {
   ip_limit?: number | null;
   renewal_price_per_gb?: number | null;
   renewal_price_per_day?: number | null;
+  // PasarGuard multi-group selection (remote group ids). null/[] = single group.
+  pg_group_ids?: number[] | null;
 }
 
 export interface PlanUpdateBody {
@@ -56,6 +64,8 @@ export interface PlanUpdateBody {
   ip_limit?: number | null;
   renewal_price_per_gb?: number | null;
   renewal_price_per_day?: number | null;
+  // null = don't touch; [] = clear to single-group; [ids] = set group list.
+  pg_group_ids?: number[] | null;
 }
 
 export interface PlanListResponse {

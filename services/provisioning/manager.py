@@ -578,6 +578,12 @@ class ProvisioningManager:
         duration_days = int(plan.duration_days or 0)
         data_limit = int(plan.volume_bytes) or None  # 0 => unlimited on the panel
         bundle_id = int(inbound.xui_inbound_remote_id)  # group (PasarGuard) or service (Rebecca)
+        # Multi-group plans (PasarGuard): the plan's chosen group list, with
+        # the plan's inbound group always kept. NULL → single-group legacy.
+        raw_group_ids = getattr(plan, "pg_group_ids", None)
+        bundle_ids = [int(g) for g in raw_group_ids] if isinstance(raw_group_ids, (list, tuple)) else []
+        if bundle_id not in bundle_ids:
+            bundle_ids.insert(0, bundle_id)
 
         # first_use → on_hold (timer starts on first connect); an unlimited-
         # duration plan activates immediately.
@@ -638,6 +644,7 @@ class ProvisioningManager:
                         expire=None,
                         data_limit=data_limit,
                         bundle_id=bundle_id,
+                        bundle_ids=bundle_ids,
                         on_hold_expire_duration=on_hold_seconds,
                         note=f"user:{user_id};order:{order.id}",
                     )

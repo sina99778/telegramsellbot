@@ -206,17 +206,25 @@ class PasarGuardClient:
         expire: int | None,
         data_limit: int | None,
         bundle_id: int,
+        bundle_ids: list[int] | None = None,
         on_hold_expire_duration: int | None = None,
         note: str | None = None,
     ) -> PGUserResponse:
-        """Create a config assigned to ONE bundle (PasarGuard: group_ids=[bundle])."""
+        """Create a config assigned to one or MORE bundles (PasarGuard groups).
+
+        `bundle_ids` (when non-empty) is the full group list; `bundle_id` is
+        the legacy single-group fallback and is always kept in the list.
+        """
+        group_ids = [int(g) for g in (bundle_ids or [bundle_id])]
+        if int(bundle_id) not in group_ids:
+            group_ids.insert(0, int(bundle_id))
         return await self.create_user(
             PGUserCreate(
                 username=username,
                 status=status,
                 expire=expire,
                 data_limit=data_limit,
-                group_ids=[int(bundle_id)],
+                group_ids=group_ids,
                 on_hold_expire_duration=on_hold_expire_duration,
                 note=note,
             )

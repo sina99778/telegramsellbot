@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 import {
   listPlans,
   listInboundOptions,
@@ -81,6 +81,56 @@ const editForm = ref({
   renewal_price_per_day: "" as string | number,
 });
 
+// ── PasarGuard multi-group pickers ─────────────────────────────────────
+// When the chosen inbound is a synced PasarGuard GROUP, the plan's config
+// can live in several of that server's groups at once. createGroups /
+// editGroups hold the selected REMOTE group ids; the primary inbound's
+// group is always pre-selected.
+const createGroups = ref<number[]>([]);
+const editGroups = ref<number[]>([]);
+
+function inboundOpt(id: string): InboundOption | undefined {
+  return inbounds.value.find((o) => o.id === id);
+}
+function pgSiblingGroups(inboundId: string): InboundOption[] {
+  const opt = inboundOpt(inboundId);
+  if (!opt || !opt.is_pasarguard_group) return [];
+  return inbounds.value.filter((o) => o.server_id === opt.server_id && o.is_pasarguard_group);
+}
+const createPgGroups = computed(() => pgSiblingGroups(createForm.value.inbound_id));
+const editPgGroups = computed(() => pgSiblingGroups(editForm.value.inbound_id));
+
+watch(() => createForm.value.inbound_id, (nv) => {
+  const opt = inboundOpt(nv);
+  createGroups.value = opt?.is_pasarguard_group ? [opt.remote_id] : [];
+});
+watch(() => editForm.value.inbound_id, (nv) => {
+  if (!editing.value) return;
+  const opt = inboundOpt(nv);
+  if (opt?.is_pasarguard_group) {
+    // Only reset when the admin actually switched inbounds — opening the
+    // dialog keeps the plan's stored selection.
+    if (nv !== (editing.value.inbound_id || "")) editGroups.value = [opt.remote_id];
+  } else {
+    editGroups.value = [];
+  }
+});
+
+function _toggleAllGroups(target: typeof createGroups, options: InboundOption[], primaryId: string) {
+  if (target.value.length === options.length) {
+    const primary = options.find((o) => o.id === primaryId)?.remote_id ?? options[0]?.remote_id;
+    target.value = primary !== undefined ? [primary] : [];
+  } else {
+    target.value = options.map((o) => o.remote_id);
+  }
+}
+function toggleAllCreateGroups() {
+  _toggleAllGroups(createGroups, createPgGroups.value, createForm.value.inbound_id);
+}
+function toggleAllEditGroups() {
+  _toggleAllGroups(editGroups, editPgGroups.value, editForm.value.inbound_id);
+}
+
 async function refresh() {
   loading.value = true;
   errorMsg.value = null;
@@ -131,6 +181,10 @@ async function doCreate() {
     flash("قیمت تمدید هر روز را وارد کنید.", "warn");
     return;
   }
+  if (createPgGroups.value.length > 0 && createGroups.value.length === 0) {
+    flash("حداقل یک گروه PasarGuard را انتخاب کنید.", "warn");
+    return;
+  }
   createBusy.value = true;
   try {
     // Convert any money input from the admin's display currency to USD before
@@ -151,6 +205,7 @@ async function doCreate() {
       ip_limit: _numOrNull(createForm.value.ip_limit),
       renewal_price_per_gb: renewGbUsd,
       renewal_price_per_day: renewDayUsd,
+      pg_group_ids: createPgGroups.value.length > 0 ? [...createGroups.value] : null,
     });
     flash("پلن جدید اضافه شد.");
     showCreate.value = false;
@@ -163,6 +218,7 @@ async function doCreate() {
       renewal_price_per_gb: usdToDisplay(0.1),
       renewal_price_per_day: usdToDisplay(0.1),
     };
+    createGroups.value = [];
     refresh();
   } catch (exc) {
     flash(exc instanceof ApiError ? exc.detail : "خطا", "warn");
@@ -189,6 +245,15 @@ function openEdit(p: PlanItem) {
     renewal_price_per_gb: p.renewal_price_per_gb !== null ? usdToDisplay(p.renewal_price_per_gb) : "",
     renewal_price_per_day: p.renewal_price_per_day !== null ? usdToDisplay(p.renewal_price_per_day) : "",
   };
+  // Prefill the group picker: stored selection, else the inbound's own group.
+  const opt = inboundOpt(p.inbound_id || "");
+  if (opt?.is_pasarguard_group) {
+    editGroups.value = p.pg_group_ids && p.pg_group_ids.length > 0
+      ? [...p.pg_group_ids]
+      : [opt.remote_id];
+  } else {
+    editGroups.value = [];
+  }
 }
 
 // Map a form field back to the PATCH payload. Empty string in the form
@@ -222,6 +287,8 @@ async function doEdit() {
       ip_limit: _formToPatchOverride(editForm.value.ip_limit),
       renewal_price_per_gb: renewGbOverride < 0 ? renewGbOverride : displayToUsd(renewGbOverride),
       renewal_price_per_day: renewDayOverride < 0 ? renewDayOverride : displayToUsd(renewDayOverride),
+      // PG plan → the picked list; non-PG → [] clears any stale selection.
+      pg_group_ids: editPgGroups.value.length > 0 ? [...editGroups.value] : [],
     });
     flash("پلن به‌روزرسانی شد.");
     editing.value = null;
@@ -323,7 +390,10 @@ async function doDelete(p: PlanItem) {
             </td>
             <td class="font-mono text-xs uppercase">{{ p.protocol }}</td>
             <td>{{ p.duration_days }} روز</td>
-            <td class="font-mono">{{ p.volume_gb.toFixed(0) }} GB</td>
+            <td class="font-mono">
+              <span v-if="p.volume_bytes > 0">{{ p.volume_gb.toFixed(0) }} GB</span>
+              <span v-else class="text-sky-300">نامحدود ∞</span>
+            </td>
             <td>
               <div class="font-mono">{{ fmtMoney(p.price) }}</div>
               <div class="text-[11px] text-slate-500 space-y-0.5">
@@ -345,6 +415,9 @@ async function doDelete(p: PlanItem) {
               <div v-if="p.inbound_label" class="text-slate-300">{{ p.inbound_label }}</div>
               <div v-else class="text-slate-500">—</div>
               <div v-if="p.server_name" class="text-[11px] text-slate-500">{{ p.server_name }}</div>
+              <div v-if="p.pg_group_ids && p.pg_group_ids.length > 1" class="text-[11px] text-sky-300 mt-0.5">
+                {{ p.pg_group_ids.length }} گروه
+              </div>
             </td>
             <td class="font-mono">{{ fmtNumber(p.subscription_count) }}</td>
             <td>
@@ -403,6 +476,31 @@ async function doDelete(p: PlanItem) {
           <div>
             <label class="label">حجم (GB)</label>
             <input v-model.number="createForm.volume_gb" class="input" type="number" min="0" step="1" />
+            <div class="text-[10px] text-slate-500 mt-1">۰ = نامحدود (بدون سقف حجم)</div>
+          </div>
+
+          <!-- PasarGuard multi-group picker (only for PG group inbounds) -->
+          <div v-if="createPgGroups.length" class="md:col-span-2 border border-bg-border rounded-lg p-3">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-[12px] text-slate-200 font-medium">
+                گروه‌های PasarGuard — کانفیگ عضو همه‌ی گروه‌های انتخابی می‌شود
+              </span>
+              <button type="button" class="btn btn-ghost btn-sm" @click="toggleAllCreateGroups">
+                {{ createGroups.length === createPgGroups.length ? "لغو انتخاب همه" : "انتخاب همه" }}
+              </button>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <label
+                v-for="g in createPgGroups" :key="g.remote_id"
+                class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-xs cursor-pointer"
+                :class="createGroups.includes(g.remote_id)
+                  ? 'border-sky-500/50 bg-sky-500/10 text-sky-200'
+                  : 'border-bg-border text-slate-400'"
+              >
+                <input v-model="createGroups" type="checkbox" :value="g.remote_id" class="w-3.5 h-3.5" />
+                {{ g.remark || "#" + g.remote_id }}
+              </label>
+            </div>
           </div>
           <div>
             <label class="label">قیمت فروش ({{ moneyUnitLabel }})</label>
@@ -493,6 +591,44 @@ async function doDelete(p: PlanItem) {
           <div>
             <label class="label">حجم (GB)</label>
             <input v-model.number="editForm.volume_gb" class="input" type="number" min="0" step="1" />
+            <div class="text-[10px] text-slate-500 mt-1">۰ = نامحدود (بدون سقف حجم)</div>
+          </div>
+
+          <!-- PasarGuard multi-group picker (only for PG group inbounds) -->
+          <div v-if="editPgGroups.length" class="md:col-span-2 border border-bg-border rounded-lg p-3">
+            <div class="flex items-center justify-between mb-2">
+              <span class="text-[12px] text-slate-200 font-medium">
+                گروه‌های PasarGuard
+                <span v-if="editing.subscription_count > 0" class="text-[10px] text-amber-300">
+                  (به‌خاطر {{ editing.subscription_count }} سرویس فعال، تغییر غیرفعال است)
+                </span>
+              </span>
+              <button
+                type="button" class="btn btn-ghost btn-sm"
+                :disabled="editing.subscription_count > 0"
+                @click="toggleAllEditGroups"
+              >
+                {{ editGroups.length === editPgGroups.length ? "لغو انتخاب همه" : "انتخاب همه" }}
+              </button>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <label
+                v-for="g in editPgGroups" :key="g.remote_id"
+                class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border text-xs"
+                :class="[
+                  editGroups.includes(g.remote_id)
+                    ? 'border-sky-500/50 bg-sky-500/10 text-sky-200'
+                    : 'border-bg-border text-slate-400',
+                  editing.subscription_count > 0 ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer',
+                ]"
+              >
+                <input
+                  v-model="editGroups" type="checkbox" :value="g.remote_id"
+                  class="w-3.5 h-3.5" :disabled="editing.subscription_count > 0"
+                />
+                {{ g.remark || "#" + g.remote_id }}
+              </label>
+            </div>
           </div>
           <div>
             <label class="label">قیمت فروش ({{ moneyUnitLabel }})</label>

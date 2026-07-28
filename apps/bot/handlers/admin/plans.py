@@ -22,7 +22,7 @@ from sqlalchemy.orm import selectinload
 from apps.bot.keyboards.inline import add_pagination_controls
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.states.admin import CreatePlanStates, PlanEditStates
-from core.formatting import format_volume_bytes
+from core.formatting import format_plan_volume, format_volume_bytes
 from core.texts import AdminButtons, AdminMessages, Buttons
 from models.plan import Plan
 from models.user import User
@@ -32,6 +32,7 @@ from repositories.settings import AppSettingsRepository
 from apps.bot.utils.button_style import strip_leading_emoji
 from apps.bot.utils.messaging import safe_edit_or_send
 from apps.bot.utils.panels import admin_panel, status_label
+from services.panels.marzban import inbound_is_pasarguard_group
 from services.plan_inventory import get_plan_stock_map, set_plan_sales_limit
 
 
@@ -61,6 +62,12 @@ class PlanListPageCallback(CallbackData, prefix="plan_list"):
 
 class InboundSelectCallback(CallbackData, prefix="inbound_sel"):
     inbound_id: UUID
+
+
+class PlanGroupSelectCallback(CallbackData, prefix="plan_grp"):
+    # Multi-group picker for PasarGuard plans (create flow).
+    action: str  # "toggle" | "all" | "done"
+    remote_id: int = 0
 
 
 _MENU_INTERRUPT_LABELS = (
@@ -102,6 +109,7 @@ def _to_usd(amount: Decimal, display_currency: str, toman_rate: int) -> Decimal:
 
 
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_inbound_selection)
+@router.message(Command("cancel"), CreatePlanStates.waiting_for_group_selection)
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_name)
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_duration_days)
 @router.message(Command("cancel"), CreatePlanStates.waiting_for_volume_gb)
@@ -249,24 +257,40 @@ async def view_plan(
         f"{plan.renewal_price_per_day} {plan.currency} / روز"
         if plan.renewal_price_per_day is not None else "پیش‌فرض عمومی"
     )
+    # PasarGuard multi-group plans: resolve the group names for display.
+    groups_label: str | None = None
+    if plan.pg_group_ids and plan.inbound is not None:
+        group_rows = await session.execute(
+            select(XUIInboundRecord).where(
+                XUIInboundRecord.server_id == plan.inbound.server_id,
+                XUIInboundRecord.xui_inbound_remote_id.in_([int(g) for g in plan.pg_group_ids]),
+            )
+        )
+        names = [r.remark or f"#{r.xui_inbound_remote_id}" for r in group_rows.scalars().all()]
+        known = len(names)
+        wanted = len(plan.pg_group_ids)
+        groups_label = "، ".join(names) if names else f"{wanted} گروه"
+        if known < wanted:
+            groups_label += f" (+{wanted - known} حذف‌شده)"
+
+    spec_rows = [
+        ("نام", plan.name),
+        ("پروتکل", plan.protocol),
+        ("اینباند", inbound_label),
+        ("وضعیت", status_label(plan.is_active)),
+    ]
+    if groups_label is not None:
+        spec_rows.append(("گروه‌ها", groups_label))
 
     text = admin_panel(
         "جزئیات پلن",
         [
-            (
-                "مشخصات",
-                [
-                    ("نام", plan.name),
-                    ("پروتکل", plan.protocol),
-                    ("اینباند", inbound_label),
-                    ("وضعیت", status_label(plan.is_active)),
-                ],
-            ),
+            ("مشخصات", spec_rows),
             (
                 "فروش",
                 [
                     ("مدت", f"{plan.duration_days} روز"),
-                    ("حجم", format_volume_bytes(plan.volume_bytes)),
+                    ("حجم", format_plan_volume(plan.volume_bytes)),
                     ("موجودی", stock_label),
                     ("قیمت", f"{plan.price} {plan.currency}"),
                 ],
@@ -419,8 +443,133 @@ async def create_plan_inbound_selected(
         protocol=inbound.protocol or "unknown",
         inbound_remote_id=inbound.xui_inbound_remote_id,
     )
+
+    # PasarGuard servers: a config may live in MULTIPLE groups (it then gets
+    # every group's inbounds in its subscription link). Offer a multi-select
+    # of this server's synced groups when there is more than one; the picked
+    # inbound's group starts selected. Rebecca services stay single-pick.
+    if inbound_is_pasarguard_group(inbound):
+        groups = await _list_server_pasarguard_groups(session, inbound)
+        if len(groups) > 1:
+            await state.update_data(
+                pg_groups=[{"id": g.xui_inbound_remote_id, "name": g.remark or "بدون نام"} for g in groups],
+                pg_group_ids=[int(inbound.xui_inbound_remote_id)],
+            )
+            await state.set_state(CreatePlanStates.waiting_for_group_selection)
+            await safe_edit_or_send(
+                callback,
+                _group_picker_text(),
+                reply_markup=_group_picker_markup(
+                    [int(g.xui_inbound_remote_id) for g in groups],
+                    [g.remark or "بدون نام" for g in groups],
+                    [int(inbound.xui_inbound_remote_id)],
+                ),
+            )
+            return
+
     await state.set_state(CreatePlanStates.waiting_for_name)
     await safe_edit_or_send(callback, AdminMessages.ENTER_PLAN_NAME)
+
+
+async def _list_server_pasarguard_groups(
+    session: AsyncSession, inbound: XUIInboundRecord
+) -> list[XUIInboundRecord]:
+    """Active PasarGuard group rows synced from the same server."""
+    rows = await session.execute(
+        select(XUIInboundRecord)
+        .where(
+            XUIInboundRecord.server_id == inbound.server_id,
+            XUIInboundRecord.is_active.is_(True),
+        )
+        .order_by(XUIInboundRecord.created_at.asc())
+    )
+    return [row for row in rows.scalars().all() if inbound_is_pasarguard_group(row)]
+
+
+def _group_picker_text() -> str:
+    return (
+        "گروه‌های PasarGuard این پلن را انتخاب کنید:\n"
+        "کانفیگ ساخته‌شده عضو همه‌ی گروه‌های انتخابی می‌شود و لینک اشتراکش "
+        "اینباند همه‌ی آن‌ها را دارد.\n\n"
+        "روی هر گروه بزنید تا انتخاب/لغو شود؛ سپس «ادامه» را بزنید."
+    )
+
+
+def _group_picker_markup(
+    group_ids: list[int], group_names: list[str], selected: list[int]
+) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    for remote_id, name in zip(group_ids, group_names):
+        mark = "✅" if remote_id in selected else "☐"
+        builder.button(
+            text=f"{mark} {name}",
+            callback_data=PlanGroupSelectCallback(action="toggle", remote_id=remote_id).pack(),
+        )
+    all_on = len(selected) == len(group_ids)
+    builder.button(
+        text="🚫 لغو انتخاب همه" if all_on else "✅ انتخاب همه‌ی گروه‌ها",
+        callback_data=PlanGroupSelectCallback(action="all").pack(),
+    )
+    builder.button(
+        text=f"➡️ ادامه ({len(selected)} گروه)",
+        callback_data=PlanGroupSelectCallback(action="done").pack(),
+    )
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+@router.callback_query(
+    CreatePlanStates.waiting_for_group_selection,
+    PlanGroupSelectCallback.filter(),
+)
+async def create_plan_group_selected(
+    callback: CallbackQuery,
+    callback_data: PlanGroupSelectCallback,
+    state: FSMContext,
+) -> None:
+    data = await state.get_data()
+    groups = data.get("pg_groups") or []
+    group_ids = [int(g["id"]) for g in groups]
+    group_names = [str(g["name"]) for g in groups]
+    if not group_ids:
+        await state.set_state(CreatePlanStates.waiting_for_name)
+        await safe_edit_or_send(callback, AdminMessages.ENTER_PLAN_NAME)
+        return
+
+    selected = [int(g) for g in (data.get("pg_group_ids") or [])]
+
+    if callback_data.action == "toggle":
+        remote_id = int(callback_data.remote_id)
+        if remote_id in selected:
+            if len(selected) == 1:
+                await callback.answer("حداقل یک گروه باید انتخاب شود.", show_alert=True)
+                return
+            selected.remove(remote_id)
+        elif remote_id in group_ids:
+            selected.append(remote_id)
+        await state.update_data(pg_group_ids=selected)
+    elif callback_data.action == "all":
+        if len(selected) == len(group_ids):
+            # Deselect-all → keep only the primary group (the picked inbound).
+            selected = [int(data.get("inbound_remote_id") or group_ids[0])]
+        else:
+            selected = list(group_ids)
+        await state.update_data(pg_group_ids=selected)
+    elif callback_data.action == "done":
+        if not selected:
+            await callback.answer("حداقل یک گروه باید انتخاب شود.", show_alert=True)
+            return
+        await callback.answer()
+        await state.set_state(CreatePlanStates.waiting_for_name)
+        await safe_edit_or_send(callback, AdminMessages.ENTER_PLAN_NAME)
+        return
+
+    await callback.answer()
+    await safe_edit_or_send(
+        callback,
+        _group_picker_text(),
+        reply_markup=_group_picker_markup(group_ids, group_names, selected),
+    )
 
 
 @router.message(CreatePlanStates.waiting_for_name)
@@ -458,9 +607,14 @@ async def create_plan_volume(message: Message, state: FSMContext, session: Async
     except ValueError:
         await message.answer(AdminMessages.INVALID_INTEGER)
         return
-    if volume_gb <= 0:
+    if volume_gb < 0:
         await message.answer(AdminMessages.VOLUME_GT_ZERO)
         return
+    if volume_gb == 0:
+        await message.answer(
+            "♾ حجم <b>نامحدود</b> ثبت شد — کانفیگ‌های این پلن هیچ سقف حجمی نخواهند داشت.",
+            parse_mode="HTML",
+        )
     await state.update_data(volume_gb=volume_gb)
     await state.set_state(CreatePlanStates.waiting_for_price)
 
@@ -611,6 +765,10 @@ async def create_plan_ip_limit(
     volume_bytes = int(form_data["volume_gb"]) * 1024 * 1024 * 1024
     protocol = str(form_data["protocol"])
     inbound_id = UUID(str(form_data["inbound_id"]))
+    # PasarGuard multi-group selection (None → legacy single-group plans).
+    pg_group_ids = form_data.get("pg_group_ids") or None
+    if pg_group_ids is not None:
+        pg_group_ids = [int(g) for g in pg_group_ids]
     price = Decimal(str(form_data["price"]))
     renewal_price_per_gb = (
         Decimal(str(form_data["renewal_price_per_gb"]))
@@ -643,6 +801,7 @@ async def create_plan_ip_limit(
         ip_limit=ip_limit,
         renewal_price_per_gb=renewal_price_per_gb,
         renewal_price_per_day=renewal_price_per_day,
+        pg_group_ids=pg_group_ids,
     )
 
     # Always clear state first so admin is NEVER stuck regardless of what happens next

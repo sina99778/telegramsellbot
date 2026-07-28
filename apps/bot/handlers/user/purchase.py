@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.bot.keyboards.inline import build_plan_selection_keyboard, build_wallet_topup_keyboard
 from apps.bot.states.purchase import PurchaseStates
-from core.formatting import format_volume_bytes, escape_markdown as _escape
+from core.formatting import format_plan_volume, format_volume_bytes, escape_markdown as _escape
 from core.redis import distributed_lock, purchase_lock_key
 from services.banner import create_traffic_banner
 import urllib.parse
@@ -1598,7 +1598,7 @@ async def _finalize_purchase(
 
     sub_link = provisioned.sub_link
     vless_uri = provisioned.vless_uri
-    volume_label = format_volume_bytes(plan.volume_bytes)
+    volume_label = format_plan_volume(plan.volume_bytes)
 
     # Build message with HTML
     import html

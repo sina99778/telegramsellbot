@@ -249,6 +249,7 @@ def _make_pg_fixture(mock_session, fake_client):
     plan.id = uuid4()
     plan.volume_bytes = 5 * 1024**3
     plan.duration_days = 30
+    plan.pg_group_ids = None
 
     order = MagicMock()
     order.id = uuid4()
@@ -347,3 +348,54 @@ async def test_pg_no_delete_when_create_was_never_attempted(mock_session):
 
     assert fake_client.create_calls == []
     assert fake_client.deleted == []
+
+
+def _success_pg_user():
+    pg_user = MagicMock()
+    pg_user.absolute_subscription_url = MagicMock(return_value="https://pg/sub/x")
+    pg_user.id = 42
+    return pg_user
+
+
+@pytest.mark.asyncio
+async def test_pg_multi_group_plan_passes_full_group_list(mock_session):
+    # Plan.pg_group_ids = the admin's multi-group selection → provisioning
+    # forwards the whole list (the inbound's own group always kept).
+    fake_client = FakeMarzbanClient(pg_user=_success_pg_user())
+    events: list = []
+    factory, _stock_session = _fake_stock_factory(events)
+    manager, plan, order, inbound, server = _make_pg_fixture(mock_session, fake_client)
+    plan.pg_group_ids = [7, 9]  # 7 == inbound.xui_inbound_remote_id
+
+    await _run_pg_provision(manager, plan, order, inbound, server, fake_client, events, factory)
+
+    assert fake_client.create_calls[0]["bundle_id"] == 7
+    assert fake_client.create_calls[0]["bundle_ids"] == [7, 9]
+
+
+@pytest.mark.asyncio
+async def test_pg_plan_without_groups_falls_back_to_inbound_group(mock_session):
+    # Legacy single-group plan (pg_group_ids=None) → only the inbound group.
+    fake_client = FakeMarzbanClient(pg_user=_success_pg_user())
+    events: list = []
+    factory, _stock_session = _fake_stock_factory(events)
+    manager, plan, order, inbound, server = _make_pg_fixture(mock_session, fake_client)
+    assert plan.pg_group_ids is None
+
+    await _run_pg_provision(manager, plan, order, inbound, server, fake_client, events, factory)
+
+    assert fake_client.create_calls[0]["bundle_ids"] == [7]
+
+
+@pytest.mark.asyncio
+async def test_pg_unlimited_volume_plan_sends_no_data_limit(mock_session):
+    # volume_bytes=0 → data_limit=None → the panel creates an UNLIMITED config.
+    fake_client = FakeMarzbanClient(pg_user=_success_pg_user())
+    events: list = []
+    factory, _stock_session = _fake_stock_factory(events)
+    manager, plan, order, inbound, server = _make_pg_fixture(mock_session, fake_client)
+    plan.volume_bytes = 0
+
+    await _run_pg_provision(manager, plan, order, inbound, server, fake_client, events, factory)
+
+    assert fake_client.create_calls[0]["data_limit"] is None

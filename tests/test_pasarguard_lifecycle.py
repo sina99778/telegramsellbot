@@ -94,6 +94,29 @@ async def test_renewal_pending_only_bumps_data_limit(monkeypatch):
     assert payload == {"data_limit": 5 * 1024**3}
 
 
+@pytest.mark.asyncio
+async def test_renewal_unlimited_volume_keeps_data_limit_unset(monkeypatch):
+    # volume_bytes=0 (unlimited plan) → the modify payload must OMIT
+    # data_limit so the panel keeps the config unlimited after renewal.
+    import services.renewal as rmod
+
+    fake = FakePGClient()
+    monkeypatch.setattr(rmod, "marzban_client_for_server", _fake_cm(fake))
+
+    sub = NS(status="pending_activation", ends_at=None, volume_bytes=0, id=uuid4())
+    xui_full = NS(
+        inbound=NS(server=NS(base_url="http://h")),
+        panel_username="u_unl",
+        username="u_unl",
+        is_active=True,
+    )
+
+    await rmod._sync_pasarguard_limits(sub, xui_full)
+
+    _uname, payload = fake.modify_calls[0]
+    assert "data_limit" not in payload
+
+
 # ─── usage sync transitions ───────────────────────────────────────────────────
 
 

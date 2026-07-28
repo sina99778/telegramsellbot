@@ -30,7 +30,7 @@ from sqlalchemy.orm import selectinload
 from apps.bot.keyboards.inline import add_pagination_controls
 from apps.bot.middlewares.admin import AdminOnlyMiddleware
 from apps.bot.utils.messaging import safe_edit_or_send
-from core.formatting import format_volume_bytes, format_usage_bar
+from core.formatting import format_plan_volume, format_volume_bytes, format_usage_bar
 from core.texts import AdminButtons, AdminMessages
 from models.order import Order
 from models.subscription import Subscription
@@ -124,7 +124,7 @@ async def _render_user_configs(
     for sub in page_items:
         status_icon = {"active": "🟢", "pending_activation": "⏳", "expired": "🔴", "cancelled": "⛔"}.get(sub.status, "❓")
         plan_name = sub.plan.name if sub.plan else "-"
-        usage = f"{format_volume_bytes(sub.used_bytes)}/{format_volume_bytes(sub.volume_bytes)}"
+        usage = f"{format_volume_bytes(sub.used_bytes)}/{format_plan_volume(sub.volume_bytes)}"
         ends = sub.ends_at.strftime("%Y-%m-%d") if sub.ends_at else "-"
         lines.append(
             f"{status_icon} {plan_name}\n"
@@ -199,7 +199,7 @@ async def _render_sub_detail(
         f"🆔 ID: <code>{sub.id}</code>\n"
         f"{status_icon} وضعیت: {sub.status}\n"
         f"📦 پلن: {plan_name}\n"
-        f"📊 مصرف: {format_volume_bytes(sub.used_bytes)} / {format_volume_bytes(sub.volume_bytes)}\n"
+        f"📊 مصرف: {format_volume_bytes(sub.used_bytes)} / {format_plan_volume(sub.volume_bytes)}\n"
         f"{usage_bar}\n"
         f"📅 شروع: {sub.starts_at.strftime('%Y-%m-%d %H:%M') if sub.starts_at else '-'}\n"
         f"📅 انقضا: {sub.ends_at.strftime('%Y-%m-%d %H:%M') if sub.ends_at else '-'}\n"

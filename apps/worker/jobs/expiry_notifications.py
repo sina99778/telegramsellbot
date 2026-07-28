@@ -20,7 +20,7 @@ from sqlalchemy.orm import selectinload
 
 from apps.bot.handlers.user.my_configs import MyConfigCallback
 from core.database import utcnow
-from core.formatting import format_volume_bytes
+from core.formatting import format_plan_volume, format_volume_bytes
 from models.app_setting import AppSetting
 from models.subscription import Subscription
 from models.user import User
@@ -83,7 +83,10 @@ async def send_expiry_notifications(session: AsyncSession, bot: Bot) -> None:
         plan_name = sub.plan.name if sub.plan else "نامشخص"
         sub_name = sub.xui_client.username if (sub.xui_client and sub.xui_client.username) else str(sub.id)[:8]
         remaining_hours = max(int(hours_left), 0)
-        volume_remaining = format_volume_bytes(max(sub.volume_bytes - sub.used_bytes, 0))
+        volume_remaining = (
+            "نامحدود" if sub.volume_bytes <= 0
+            else format_volume_bytes(max(sub.volume_bytes - sub.used_bytes, 0))
+        )
 
         builder = InlineKeyboardBuilder()
         builder.button(
@@ -188,7 +191,7 @@ async def _send_volume_warnings(session: AsyncSession, bot: Bot) -> None:
         plan_name = sub.plan.name if sub.plan else "نامشخص"
         sub_name = sub.xui_client.username if (sub.xui_client and sub.xui_client.username) else str(sub.id)[:8]
         volume_remaining = format_volume_bytes(max(sub.volume_bytes - sub.used_bytes, 0))
-        volume_total = format_volume_bytes(sub.volume_bytes)
+        volume_total = format_plan_volume(sub.volume_bytes)
         pct_used = round(usage_ratio * 100)
 
         builder = InlineKeyboardBuilder()

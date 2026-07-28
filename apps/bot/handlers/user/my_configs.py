@@ -23,7 +23,7 @@ from sqlalchemy.orm import selectinload
 
 from apps.bot.utils.messaging import safe_edit_or_send
 from apps.bot.states.my_configs import InboundChangeStates, UserConfigSearchStates
-from core.formatting import escape_markdown, format_usage_bar, format_volume_bytes
+from core.formatting import escape_markdown, format_plan_volume, format_usage_bar, format_volume_bytes
 from core.texts import Buttons
 from apps.bot.utils.menu_match import MenuText
 from models.subscription import Subscription
@@ -492,9 +492,12 @@ async def my_config_detail_handler(
         logger.error("Failed to fetch realtime usage for sub %s: %s", sub.id, exc, exc_info=True)
         realtime_error = str(exc)[:100]
 
-    volume_total = format_volume_bytes(sub.volume_bytes)
+    volume_total = format_plan_volume(sub.volume_bytes)
     volume_used = format_volume_bytes(sub.used_bytes)
-    volume_remaining = format_volume_bytes(max(sub.volume_bytes - sub.used_bytes, 0))
+    volume_remaining = (
+        "نامحدود" if sub.volume_bytes <= 0
+        else format_volume_bytes(max(sub.volume_bytes - sub.used_bytes, 0))
+    )
 
     # Time remaining
     if sub.ends_at is not None:
@@ -779,8 +782,11 @@ async def refresh_usage_handler(
         return
 
     used = format_volume_bytes(usage["used_bytes"])
-    total = format_volume_bytes(usage["total_bytes"])
-    remaining = format_volume_bytes(usage["remaining_bytes"])
+    total = format_plan_volume(usage["total_bytes"])
+    remaining = (
+        "نامحدود" if usage["total_bytes"] <= 0
+        else format_volume_bytes(usage["remaining_bytes"])
+    )
     usage_bar = format_usage_bar(usage["used_bytes"], usage["total_bytes"])
 
     config_name = sub.xui_client.username if sub.xui_client else "نامشخص"
@@ -1745,7 +1751,7 @@ async def _render_imported_sub_detail(callback: CallbackQuery, sub: Subscription
 
     remark = sub.legacy_remark or "نامشخص"
     legacy_link = sub.legacy_link or sub.sub_link or ""
-    volume_label = format_volume_bytes(sub.volume_bytes) if sub.volume_bytes else "نامشخص"
+    volume_label = format_plan_volume(sub.volume_bytes) if sub.volume_bytes is not None else "نامشخص"
 
     if sub.ends_at is not None:
         now = datetime.now(timezone.utc)

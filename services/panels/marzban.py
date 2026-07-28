@@ -37,6 +37,21 @@ def record_is_marzban_family(record: Any) -> bool:
     return _norm(getattr(record, "panel_kind", None)) in MARZBAN_FAMILY
 
 
+def inbound_is_pasarguard_group(inbound: Any) -> bool:
+    """True when an XUIInboundRecord row is a synced PasarGuard GROUP.
+
+    PasarGuard groups are folded into the inbounds table at server sync
+    (protocol="pasarguard", metadata.marzban_bundle=True; the legacy key
+    pasarguard_group predates the rename). Rebecca services are excluded —
+    a Rebecca user attaches to ONE service, so multi-pick is PasarGuard-only.
+    """
+    proto = _norm(getattr(inbound, "protocol", None))
+    meta = getattr(inbound, "metadata_", None) or {}
+    return proto == PANEL_PASARGUARD or (
+        proto != PANEL_REBECCA and bool(meta.get("marzban_bundle") or meta.get("pasarguard_group"))
+    )
+
+
 @asynccontextmanager
 async def marzban_client_for_server(server: Any):
     """Yield the Marzban-family client (PasarGuard or Rebecca) for this server,

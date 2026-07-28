@@ -20,6 +20,7 @@ class ServerManageStates(StatesGroup):
 
 class CreatePlanStates(StatesGroup):
     waiting_for_inbound_selection = State()
+    waiting_for_group_selection = State()
     waiting_for_name = State()
     waiting_for_duration_days = State()
     waiting_for_volume_gb = State()

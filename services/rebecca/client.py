@@ -182,10 +182,16 @@ class RebeccaClient:
         expire: int | None,
         data_limit: int | None,
         bundle_id: int,
+        bundle_ids: list[int] | None = None,
         on_hold_expire_duration: int | None = None,
         note: str | None = None,
     ) -> RebeccaUser:
-        """Create a config assigned to ONE bundle (Rebecca: service_id=bundle)."""
+        """Create a config assigned to ONE bundle (Rebecca: service_id=bundle).
+
+        Rebecca users attach to a single service, so `bundle_ids` (the
+        PasarGuard multi-group option kept on the uniform signature) is
+        ignored beyond the primary `bundle_id`.
+        """
         return await self.create_user(
             RebeccaUserCreate(
                 username=username,

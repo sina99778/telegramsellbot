@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, Numeric, String
+from sqlalchemy import JSON, BigInteger, Boolean, ForeignKey, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from core.database import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -42,6 +42,13 @@ class Plan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # plan's own currency.
     renewal_price_per_gb: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     renewal_price_per_day: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+
+    # PasarGuard-only: remote group ids the created config belongs to.
+    # NULL/empty → legacy single-group behaviour (the group row pointed to
+    # by `inbound_id`). A config in N groups gets every group's inbounds
+    # in its subscription link. Nullable → auto-added on deploy by
+    # scripts/migrations/999_auto_sync_columns.py.
+    pg_group_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
     inbound: Mapped[XUIInboundRecord | None] = relationship("XUIInboundRecord", foreign_keys=[inbound_id])
     orders: Mapped[list[Order]] = relationship("Order", back_populates="plan")
