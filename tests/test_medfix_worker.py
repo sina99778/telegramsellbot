@@ -448,8 +448,31 @@ def _xui_sub(status="active", ends_at=None, activated_at=None,
     record.panel_username = "cfg-x404"
     record.username = "cfg-x404"
     record.is_active = True
+    record.inbound.xui_inbound_remote_id = 7
+    record.xui_client_remote_id = "client-1"
+    record.client_uuid = "uuid-1"
     sub.xui_client = record
     return sub
+
+
+def _xui_inbound(*clients, inbound_id=7):
+    """Fake /inbounds/list entry.
+
+    Each client is an (email, client_id, up, down) tuple: existence lives in
+    settings.clients, usage lives in clientStats — mirroring the real panel
+    payload the sync now reads.
+    """
+    return MagicMock(
+        id=inbound_id,
+        settings={"clients": [
+            {"id": client_id, "uuid": client_id, "email": email}
+            for email, client_id, _up, _down in clients
+        ]},
+        client_stats=[
+            {"email": email, "up": up, "down": down}
+            for email, _client_id, up, down in clients
+        ],
+    )
 
 
 def _security_settings():
@@ -476,15 +499,47 @@ async def test_sync_query_recovery_arm_includes_never_activated_expired_subs():
     assert "subscriptions.ends_at IS NOT NULL" in sql
 
 
+async def test_sync_reads_usage_from_single_inbound_snapshot_without_per_email_calls():
+    # Regression for the 3x-ui panel log spam: the per-email
+    # getClientTraffics endpoint logs "Inbound Not Found For Email"
+    # SERVER-SIDE for every unknown email, so calling it once per config per
+    # minute flooded the panel's error log. The sync must read existence +
+    # usage from ONE cached /inbounds/list call for the whole batch and
+    # never hit the per-email endpoint.
+    subs = []
+    for i in range(3):
+        sub = _xui_sub(status="active")
+        sub.xui_client.email = f"cfg-{i}"
+        sub.xui_client.xui_client_remote_id = f"client-{i}"
+        sub.xui_client.client_uuid = f"uuid-{i}"
+        subs.append(sub)
+    inbound = _xui_inbound(
+        ("cfg-0", "client-0", 10, 20),
+        ("cfg-1", "client-1", 0, 0),
+        ("cfg-2", "client-2", 5, 5),
+    )
+    xui_client = AsyncMock()
+    xui_client.get_inbounds = AsyncMock(return_value=[inbound])
+    xui_client.get_client_traffic = AsyncMock()
+
+    session = AsyncMock()
+    await sync_xui_usage_and_status(session, xui_client, subs, _security_settings())
+
+    xui_client.get_inbounds.assert_awaited_once()       # ONE panel call for the batch
+    xui_client.get_client_traffic.assert_not_awaited()  # per-email endpoint NEVER hit
+    assert [s.used_bytes for s in subs] == [30, 0, 10]  # up+down from clientStats
+    assert all(s.usage_sync_failures == 0 for s in subs)
+
+
 async def test_transport_error_with_404_in_email_is_not_a_gone_strike():
-    # Old substring classifier matched "404" anywhere in the message — a
-    # config named like "x404" embedded in the request URL of a TIMEOUT
-    # message counted as a "client gone" strike.
+    # A transient transport failure while loading the inbound list must never
+    # count as a "client gone" strike — even when the error text embeds the
+    # config name ("x404") from a request URL.
     sub = _xui_sub(status="active", strikes=4)
     xui_client = AsyncMock()
-    xui_client.get_client_traffic = AsyncMock(side_effect=XUIRequestError(
+    xui_client.get_inbounds = AsyncMock(side_effect=XUIRequestError(
         "Network error while calling X-UI endpoint "
-        "https://panel/api/getClientTraffics/cfg-x404: timeout"
+        "https://panel/api/inbounds/list (cfg-x404): timeout"
     ))
 
     session = AsyncMock()
@@ -494,13 +549,10 @@ async def test_transport_error_with_404_in_email_is_not_a_gone_strike():
     assert sub.status == "active"
 
 
-async def test_panel_404_status_code_still_strikes_and_expires_at_threshold():
+async def test_client_absent_from_inbound_strikes_and_expires_at_threshold():
     sub = _xui_sub(status="active", strikes=4)
     xui_client = AsyncMock()
     xui_client.get_inbounds = AsyncMock(return_value=[])
-    xui_client.get_client_traffic = AsyncMock(side_effect=XUIRequestError(
-        "X-UI API request failed", status_code=404,
-    ))
 
     session = AsyncMock()
     await sync_xui_usage_and_status(session, xui_client, [sub], _security_settings())
@@ -509,25 +561,17 @@ async def test_panel_404_status_code_still_strikes_and_expires_at_threshold():
     assert sub.status == "expired"
 
 
-async def test_traffic_not_found_does_not_expire_client_still_in_inbound():
+async def test_expired_sub_recovers_when_client_present_in_inbound():
     sub = _xui_sub(
         status="expired",
         ends_at=datetime.now(timezone.utc) + timedelta(days=20),
         activated_at=datetime.now(timezone.utc) - timedelta(days=5),
         strikes=5,
     )
-    inbound = MagicMock(
-        id=7,
-        settings={"clients": [{"id": "client-1", "email": sub.xui_client.email}]},
-    )
-    sub.xui_client.inbound.xui_inbound_remote_id = 7
-    sub.xui_client.xui_client_remote_id = "client-1"
-
     xui_client = AsyncMock()
-    xui_client.get_inbounds = AsyncMock(return_value=[inbound])
-    xui_client.get_client_traffic = AsyncMock(side_effect=XUIRequestError(
-        "Inbound Not Found For Email", status_code=404,
-    ))
+    xui_client.get_inbounds = AsyncMock(return_value=[
+        _xui_inbound(("cfg-x404", "client-1", 0, 0)),
+    ])
 
     session = AsyncMock()
     await sync_xui_usage_and_status(session, xui_client, [sub], _security_settings())
@@ -541,79 +585,73 @@ async def test_traffic_not_found_does_not_expire_client_still_in_inbound():
 
 # ─── gone-client reprobe throttle (the CPU/log-spam loop fix) ────────────────
 # A sub that strike-expired stays in the recovery filter (it still has time +
-# volume). Without throttling, the 1-minute sweep re-hits the panel + re-logs
-# every minute forever. It must only re-probe once per REPROBE_GONE_INTERVAL,
-# while a falsely-expired config still recovers.
+# volume). Without throttling, the 1-minute sweep re-logs + re-stamps it every
+# minute forever. It must only re-record the strike once per
+# REPROBE_GONE_INTERVAL, while a falsely-expired config still recovers.
 
 
 async def test_strike_expired_sub_is_not_reprobed_within_interval():
     from apps.worker.jobs.subscriptions import REPROBE_GONE_INTERVAL
-    from datetime import datetime, timezone
-    # Expired 2 minutes ago via strikes, probed 2 minutes ago → skip the panel.
+    # Expired 2 minutes ago via strikes, probed 2 minutes ago → no re-strike.
     recent = datetime.now(timezone.utc) - timedelta(minutes=2)
     sub = _xui_sub(status="expired", strikes=8, last_usage_sync_at=recent)
     assert REPROBE_GONE_INTERVAL > timedelta(minutes=2)  # sanity: within window
 
     xui_client = AsyncMock()
     xui_client.get_inbounds = AsyncMock(return_value=[])
-    xui_client.get_client_traffic = AsyncMock(side_effect=XUIRequestError(
-        "X-UI API request failed", status_code=404,
-    ))
 
     session = AsyncMock()
     await sync_xui_usage_and_status(session, xui_client, [sub], _security_settings())
 
-    xui_client.get_client_traffic.assert_not_awaited()  # panel NOT hit
-    assert sub.usage_sync_failures == 8                  # no extra strike
+    assert sub.usage_sync_failures == 8      # no extra strike
+    assert sub.last_usage_sync_at is recent  # not re-stamped
     assert sub.status == "expired"
 
 
-async def test_strike_expired_sub_is_reprobed_after_interval_and_recovers():
-    from datetime import datetime, timezone
-    # Last probed long ago → the throttle lets it through, panel says alive.
+async def test_strike_expired_sub_is_rechecked_after_interval_and_recovers():
+    # Last probed long ago → the throttle lets it through; the client is back
+    # in the inbound → recover.
     old = datetime.now(timezone.utc) - timedelta(hours=1)
     sub = _xui_sub(
         status="expired", strikes=8, last_usage_sync_at=old,
         ends_at=datetime.now(timezone.utc) + timedelta(days=5),
         activated_at=datetime.now(timezone.utc) - timedelta(days=2),
     )
-    traffic = MagicMock(used_bytes=10, up=0, down=10)
     xui_client = AsyncMock()
-    xui_client.get_client_traffic = AsyncMock(return_value=traffic)
+    xui_client.get_inbounds = AsyncMock(return_value=[
+        _xui_inbound(("cfg-x404", "client-1", 0, 10)),
+    ])
 
     session = AsyncMock()
     await sync_xui_usage_and_status(session, xui_client, [sub], _security_settings())
 
-    xui_client.get_client_traffic.assert_awaited_once()  # re-probed
-    assert sub.status == "active"                        # self-healed
-    assert sub.usage_sync_failures == 0                  # strikes cleared
+    assert sub.status == "active"       # self-healed
+    assert sub.usage_sync_failures == 0  # strikes cleared
+    assert sub.used_bytes == 10         # usage read from clientStats
 
 
-async def test_strike_expired_sub_reprobed_after_interval_still_gone_reexpires():
-    from datetime import datetime, timezone
-    # Last probed long ago → throttle lets it through, panel STILL says gone.
+async def test_strike_expired_sub_rechecked_after_interval_still_gone_reexpires():
+    # Last probed long ago → throttle lets it through; the client is STILL
+    # absent from the inbound.
     old = datetime.now(timezone.utc) - timedelta(hours=1)
     sub = _xui_sub(status="expired", strikes=8, last_usage_sync_at=old)
     xui_client = AsyncMock()
     xui_client.get_inbounds = AsyncMock(return_value=[])
-    xui_client.get_client_traffic = AsyncMock(side_effect=XUIRequestError(
-        "X-UI API request failed", status_code=404,
-    ))
 
     session = AsyncMock()
     await sync_xui_usage_and_status(session, xui_client, [sub], _security_settings())
 
-    xui_client.get_client_traffic.assert_awaited_once()  # re-probed once
-    assert sub.status == "expired"                       # stays expired
-    assert sub.usage_sync_failures == 9                  # strike recorded
-    assert sub.last_usage_sync_at is not None            # throttle re-armed
+    assert sub.status == "expired"            # stays expired
+    assert sub.usage_sync_failures == 9       # strike recorded
+    assert sub.last_usage_sync_at > old       # throttle re-armed
 
 
 async def test_never_activated_expired_sub_recovers_to_pending_activation():
     sub = _xui_sub(status="expired", ends_at=None, activated_at=None)
-    traffic = MagicMock(used_bytes=0, up=0, down=0)
     xui_client = AsyncMock()
-    xui_client.get_client_traffic = AsyncMock(return_value=traffic)
+    xui_client.get_inbounds = AsyncMock(return_value=[
+        _xui_inbound(("cfg-x404", "client-1", 0, 0)),
+    ])
 
     session = AsyncMock()
     await sync_xui_usage_and_status(session, xui_client, [sub], _security_settings())
@@ -632,15 +670,17 @@ async def test_previously_activated_expired_sub_recovers_to_active():
         ends_at=now + timedelta(days=10),
         activated_at=now - timedelta(days=5),
     )
-    traffic = MagicMock(used_bytes=100, up=0, down=100)
     xui_client = AsyncMock()
-    xui_client.get_client_traffic = AsyncMock(return_value=traffic)
+    xui_client.get_inbounds = AsyncMock(return_value=[
+        _xui_inbound(("cfg-x404", "client-1", 0, 100)),
+    ])
 
     session = AsyncMock()
     await sync_xui_usage_and_status(session, xui_client, [sub], _security_settings())
 
     assert sub.status == "active"
     assert sub.expired_at is None
+    assert sub.used_bytes == 100
 
 
 async def test_pg_on_hold_recovery_restores_pending_activation():
