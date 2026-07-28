@@ -23,15 +23,30 @@ clients that still hold a non-zero value.
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from contextlib import asynccontextmanager
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from apps.worker.jobs.subscriptions import sync_xui_usage_and_status
+from apps.worker.jobs.subscriptions import (
+    normalize_server_limit_ip,
+    sync_xui_usage_and_status,
+)
 from repositories.settings import DEFAULT_XUI_LIMIT_IP, AppSettingsRepository
 from services.xui.client import XUIRequestError
 
 pytestmark = pytest.mark.asyncio
+
+
+def _factory(session):
+    """Stand in for AsyncSessionFactory() used as an async context manager."""
+
+    @asynccontextmanager
+    async def _cm():
+        yield session
+
+    return lambda: _cm()
 
 
 def _sub(email="cfg-1", client_id="client-1"):
@@ -63,7 +78,7 @@ def _inbound(*clients, inbound_id=7):
         id=inbound_id,
         settings={"clients": list(clients)},
         client_stats=[
-            {"email": c["email"], "up": 1, "down": 1} for c in clients
+            {"email": c["email"], "up": 1, "down": 1} for c in clients if c.get("email")
         ],
     )
 
@@ -220,3 +235,181 @@ async def test_absent_client_is_not_backfilled():
 
     xui_client.update_client.assert_not_awaited()
     assert sub.usage_sync_failures == 1
+
+
+# ── Gap 1: a saved settings row overrode the new default ──────────────────
+# The first fix only changed the FALLBACK. Any admin who had opened the
+# security settings and saved had `xui_limit_ip: 1` persisted, and the stored
+# value wins over the default forever — so the bot kept re-asserting limitIp=1
+# and the panel kept spamming after the upgrade. Migration 006 clears it.
+
+def _migration_006():
+    import importlib.util
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "scripts" / "migrations" / "006_reset_xui_limit_ip.py"
+    )
+    spec = importlib.util.spec_from_file_location("migration_006", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def test_migration_clears_a_stored_legacy_limit_ip():
+    module = _migration_006()
+    record = MagicMock(value_json={"xui_limit_ip": 1, "max_distinct_ips": 3})
+    session = AsyncMock()
+    session.add = MagicMock()  # Session.add is sync
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=record))
+    )
+
+    with patch.object(module, "AsyncSessionFactory", _factory(session)):
+        assert await module._run() == 0
+
+    assert record.value_json["xui_limit_ip"] == 0
+    assert record.value_json["max_distinct_ips"] == 3  # untouched
+    session.commit.assert_awaited()
+
+
+async def test_migration_keeps_a_deliberate_admin_value():
+    # Only the historical default (1) is cleared. An admin who chose 3 meant it.
+    module = _migration_006()
+    record = MagicMock(value_json={"xui_limit_ip": 3})
+    session = AsyncMock()
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=record))
+    )
+
+    with patch.object(module, "AsyncSessionFactory", _factory(session)):
+        assert await module._run() == 0
+
+    assert record.value_json["xui_limit_ip"] == 3
+    session.commit.assert_not_awaited()
+
+
+async def test_migration_is_idempotent_and_safe_without_a_row():
+    module = _migration_006()
+    for stored in ({"xui_limit_ip": 0}, {}, None):
+        record = None if stored is None else MagicMock(value_json=stored)
+        session = AsyncMock()
+        session.execute = AsyncMock(
+            return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=record))
+        )
+        with patch.object(module, "AsyncSessionFactory", _factory(session)):
+            assert await module._run() == 0
+        session.commit.assert_not_awaited()
+
+
+# ── Gap 2: the per-sub backfill never reached most panel clients ──────────
+# 3x-ui's hasLimitIp() scans EVERY client of EVERY inbound, so one leftover
+# expired/disabled/hand-made client keeps the broken 10s job armed. The
+# per-subscription healing only sees active/pending subs, so a panel-wide
+# sweep is what actually stops the spam.
+
+async def test_sweep_covers_clients_with_no_subscription_at_all():
+    xui_client = AsyncMock()
+    xui_client.get_inbounds = AsyncMock(return_value=[
+        _inbound(
+            {"id": "a", "email": "expired-old", "limitIp": 1, "totalGB": 5},
+            {"id": "b", "email": "made-by-hand", "limitIp": 2, "totalGB": 0},
+            {"id": "c", "email": "already-fine", "limitIp": 0, "totalGB": 1},
+        ),
+    ])
+
+    fixed = await normalize_server_limit_ip(xui_client, desired_limit_ip=0)
+
+    assert fixed == 2  # only the two leftovers, not the converged one
+    emails = {c.kwargs["client"].email for c in xui_client.update_client.await_args_list}
+    assert emails == {"expired-old", "made-by-hand"}
+    assert all(c.kwargs["client"].limit_ip == 0 for c in xui_client.update_client.await_args_list)
+
+
+async def test_sweep_walks_every_inbound():
+    xui_client = AsyncMock()
+    xui_client.get_inbounds = AsyncMock(return_value=[
+        _inbound({"id": "a", "email": "in-one", "limitIp": 1}, inbound_id=1),
+        _inbound({"id": "b", "email": "in-two", "limitIp": 1}, inbound_id=2),
+    ])
+
+    assert await normalize_server_limit_ip(xui_client, desired_limit_ip=0) == 2
+    assert {c.kwargs["inbound_id"] for c in xui_client.update_client.await_args_list} == {1, 2}
+
+
+async def test_sweep_preserves_panel_owned_fields():
+    # Healing limitIp must never clobber quota/expiry/subId.
+    xui_client = AsyncMock()
+    xui_client.get_inbounds = AsyncMock(return_value=[
+        _inbound({
+            "id": "a", "email": "keep-me", "limitIp": 1, "totalGB": 999,
+            "expiryTime": 4242, "enable": False, "subId": "s-1", "comment": "c-1",
+        }),
+    ])
+
+    await normalize_server_limit_ip(xui_client, desired_limit_ip=0)
+
+    sent = xui_client.update_client.await_args.kwargs["client"]
+    assert (sent.total_gb, sent.expiry_time, sent.sub_id, sent.comment) == (999, 4242, "s-1", "c-1")
+    assert sent.enable is False
+
+
+async def test_sweep_is_a_noop_once_the_panel_has_converged():
+    xui_client = AsyncMock()
+    xui_client.get_inbounds = AsyncMock(return_value=[
+        _inbound({"id": "a", "email": "fine", "limitIp": 0}),
+    ])
+
+    assert await normalize_server_limit_ip(xui_client, desired_limit_ip=0) == 0
+    xui_client.update_client.assert_not_awaited()
+
+
+async def test_sweep_continues_past_a_failing_client():
+    # One stubborn client must not abort the rest of the sweep — otherwise a
+    # single bad row leaves the job armed and the spam alive.
+    xui_client = AsyncMock()
+    xui_client.get_inbounds = AsyncMock(return_value=[
+        _inbound(
+            {"id": "a", "email": "bad", "limitIp": 1},
+            {"id": "b", "email": "good", "limitIp": 1},
+        ),
+    ])
+    xui_client.update_client = AsyncMock(side_effect=[XUIRequestError("nope"), None])
+
+    assert await normalize_server_limit_ip(xui_client, desired_limit_ip=0) == 1
+    assert xui_client.update_client.await_count == 2
+
+
+async def test_sweep_survives_an_unreachable_panel():
+    xui_client = AsyncMock()
+    xui_client.get_inbounds = AsyncMock(side_effect=XUIRequestError("down"))
+
+    assert await normalize_server_limit_ip(xui_client, desired_limit_ip=0) == 0
+
+
+async def test_sweep_honours_a_nonzero_admin_choice():
+    xui_client = AsyncMock()
+    xui_client.get_inbounds = AsyncMock(return_value=[
+        _inbound(
+            {"id": "a", "email": "x", "limitIp": 1},
+            {"id": "b", "email": "y", "limitIp": 3},
+        ),
+    ])
+
+    assert await normalize_server_limit_ip(xui_client, desired_limit_ip=3) == 1
+    assert xui_client.update_client.await_args.kwargs["client"].email == "x"
+
+
+async def test_sweep_skips_malformed_client_rows():
+    xui_client = AsyncMock()
+    xui_client.get_inbounds = AsyncMock(return_value=[
+        _inbound(
+            {"email": "no-id", "limitIp": 1},
+            {"id": "b", "limitIp": 1},              # no email
+            {"id": "c", "email": "ok", "limitIp": 1},
+        ),
+    ])
+
+    assert await normalize_server_limit_ip(xui_client, desired_limit_ip=0) == 1
+    assert xui_client.update_client.await_args.kwargs["client"].email == "ok"
+
