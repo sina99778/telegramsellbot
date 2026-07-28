@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 from core.database import AsyncSessionFactory, utcnow
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
-from repositories.settings import DEFAULT_XUI_LIMIT_IP, AppSettingsRepository, ServiceSecuritySettings
+from repositories.settings import AppSettingsRepository, ServiceSecuritySettings
 from schemas.internal.xui import XUIClient
 from services.panels.marzban import (
     is_marzban_family,
@@ -38,14 +38,6 @@ USAGE_GONE_STRIKES = 5
 # panel call + WARNING spam for genuinely-deleted clients, while a config that
 # was strike-expired by a transient outage still self-heals within one interval.
 REPROBE_GONE_INTERVAL = timedelta(minutes=10)
-# Servers whose limitIp has already been swept clean, keyed by
-# (server_id, desired_limit_ip). The sweep is a one-shot repair, not
-# steady-state work: once the panel agrees there is nothing to rewrite, so
-# re-walking every client every minute would be pure waste. Keying on the
-# desired value means an admin changing xui_limit_ip automatically re-sweeps
-# existing clients — the bot and worker are separate processes, so the worker
-# cannot be signalled directly.
-_LIMIT_IP_SWEPT_SERVERS: set[tuple[str, int]] = set()
 
 
 def _locate_client_in_snapshot(
@@ -95,150 +87,6 @@ def _stats_used_bytes(stats: dict | None) -> int:
     return int((stats or {}).get("up") or 0) + int((stats or {}).get("down") or 0)
 
 
-async def _normalize_panel_limit_ip(
-    xui_client: SanaeiXUIClient,
-    subscription: Subscription,
-    panel_client: dict,
-    *,
-    desired_limit_ip: int,
-) -> None:
-    """Push ``limitIp=desired_limit_ip`` when the panel still holds another value.
-
-    Self-healing backfill for clients provisioned before the default became 0.
-    A single client left with ``limitIp > 0`` makes 3x-ui's CheckClientIpJob
-    consider IP limiting "active", and that job then calls its broken
-    clearAccessLog() on EVERY 10-second tick — which is what floods the panel
-    log with "client ip job err:invalid argument". Clearing the leftovers is
-    therefore what actually stops the spam; changing the default alone would
-    only help configs created from now on.
-
-    Best-effort: a failure here must never block the usage/status sync, so the
-    error is logged and the caller continues.
-    """
-    xui_record = subscription.xui_client
-    if xui_record is None or xui_record.inbound is None:
-        return
-
-    try:
-        current = int(panel_client.get("limitIp") or 0)
-    except (TypeError, ValueError):
-        return
-    if current == desired_limit_ip:
-        return
-
-    client_id = xui_record.xui_client_remote_id or xui_record.client_uuid
-    # Echo the panel's own values for every other field so this normalization
-    # cannot clobber quota/expiry that the panel considers authoritative.
-    try:
-        await xui_client.update_client(
-            inbound_id=xui_record.inbound.xui_inbound_remote_id,
-            client_id=client_id,
-            client=XUIClient(
-                id=client_id,
-                uuid=xui_record.client_uuid,
-                email=xui_record.email,
-                limitIp=desired_limit_ip,
-                totalGB=int(panel_client.get("totalGB") or 0),
-                expiryTime=int(panel_client.get("expiryTime") or 0),
-                enable=bool(panel_client.get("enable", True)),
-                subId=str(panel_client.get("subId") or ""),
-                comment=str(panel_client.get("comment") or ""),
-            ),
-        )
-    except XUIClientError as exc:
-        logger.warning(
-            "[SYNC] Could not normalize limitIp for '%s' (%s -> %s): %s",
-            xui_record.email, current, desired_limit_ip, exc,
-        )
-        return
-
-    logger.info(
-        "[SYNC] Normalized limitIp for '%s': %s -> %s (stops 3x-ui client-ip-job log spam)",
-        xui_record.email, current, desired_limit_ip,
-    )
-
-
-async def normalize_server_limit_ip(
-    xui_client: SanaeiXUIClient,
-    *,
-    desired_limit_ip: int,
-    server_name: str = "?",
-) -> int:
-    """Clear leftover ``limitIp`` from EVERY client on one panel.
-
-    The per-subscription backfill in ``sync_one`` only reaches configs that
-    the sweep actually loads (active / pending_activation, plus a couple of
-    recovery cases). 3x-ui's ``hasLimitIp()`` instead scans *every client of
-    every inbound*, so ONE leftover — an old expired config, a disabled one,
-    or a client an admin made by hand — is enough to keep CheckClientIpJob
-    "active" and re-arm the broken 10-second ``clearAccessLog()`` path.
-
-    This walks the whole panel so the spam actually stops. Returns the number
-    of clients rewritten (0 once the panel has converged, which is the normal
-    steady state).
-    """
-    try:
-        inbounds = await xui_client.get_inbounds()
-    except XUIClientError as exc:
-        logger.warning("[LIMITIP] Could not list inbounds on '%s': %s", server_name, exc)
-        return 0
-
-    fixed = 0
-    for inbound in inbounds:
-        inbound_id = getattr(inbound, "id", None)
-        settings = getattr(inbound, "settings", None) or {}
-        if inbound_id is None or not isinstance(settings, dict):
-            continue
-
-        for client in settings.get("clients") or []:
-            if not isinstance(client, dict):
-                continue
-            try:
-                current = int(client.get("limitIp") or 0)
-            except (TypeError, ValueError):
-                continue
-            if current == desired_limit_ip:
-                continue
-
-            client_id = client.get("id") or client.get("uuid")
-            email = client.get("email")
-            if not client_id or not email:
-                continue
-
-            try:
-                await xui_client.update_client(
-                    inbound_id=int(inbound_id),
-                    client_id=str(client_id),
-                    # Echo the panel's own values so this cannot clobber
-                    # quota/expiry/subId the panel considers authoritative.
-                    client=XUIClient(
-                        id=str(client_id),
-                        email=str(email),
-                        limitIp=desired_limit_ip,
-                        totalGB=int(client.get("totalGB") or 0),
-                        expiryTime=int(client.get("expiryTime") or 0),
-                        enable=bool(client.get("enable", True)),
-                        subId=str(client.get("subId") or ""),
-                        comment=str(client.get("comment") or ""),
-                        flow=str(client.get("flow") or ""),
-                    ),
-                )
-            except (XUIClientError, ValueError) as exc:
-                logger.warning(
-                    "[LIMITIP] Could not normalize '%s' on '%s': %s", email, server_name, exc
-                )
-                continue
-            fixed += 1
-
-    if fixed:
-        logger.info(
-            "[LIMITIP] Normalized limitIp -> %s for %d client(s) on '%s' "
-            "(stops 3x-ui 'client ip job err' log spam)",
-            desired_limit_ip, fixed, server_name,
-        )
-    return fixed
-
-
 async def sync_xui_usage_and_status(
     session: AsyncSession,
     xui_client: SanaeiXUIClient,
@@ -250,7 +98,7 @@ async def sync_xui_usage_and_status(
     Returns True if any subscription expired (caller should restart Xray).
     """
     security_settings = security_settings or ServiceSecuritySettings(
-        xui_limit_ip=DEFAULT_XUI_LIMIT_IP,
+        xui_limit_ip=1,
         max_distinct_ips=3,
         auto_disable_ip_abuse=True,
     )
@@ -339,16 +187,6 @@ async def sync_xui_usage_and_status(
         subscription.last_usage_sync_at = now
         xui_record.usage_bytes = used_bytes
         subscription.usage_sync_failures = 0  # present on the panel clears the strikes
-
-        # Heal leftover limitIp values from before the default became 0. Runs
-        # once per client (it no-ops as soon as the panel agrees), and is what
-        # actually silences the panel's 10-second "client ip job err" spam.
-        await _normalize_panel_limit_ip(
-            xui_client,
-            subscription,
-            panel_client,
-            desired_limit_ip=security_settings.xui_limit_ip,
-        )
 
         # Recover a config that was previously (falsely) marked expired but is
         # clearly ALIVE on the panel and still has valid time + volume. This
@@ -644,20 +482,6 @@ async def sync_all_subscription_states() -> None:
             else:
                 try:
                     async with create_xui_client_for_server(server) as xui_client:
-                        # Clear leftover limitIp across the WHOLE panel first.
-                        # Per-subscription healing can't reach expired/disabled/
-                        # hand-made clients, and 3x-ui only needs ONE of those to
-                        # keep its broken 10s client-ip job armed. No-ops (and
-                        # costs one cached inbound list) once converged.
-                        sweep_key = (str(server.id), int(security_settings.xui_limit_ip))
-                        if sweep_key not in _LIMIT_IP_SWEPT_SERVERS:
-                            await normalize_server_limit_ip(
-                                xui_client,
-                                desired_limit_ip=security_settings.xui_limit_ip,
-                                server_name=server.name,
-                            )
-                            _LIMIT_IP_SWEPT_SERVERS.add(sweep_key)
-
                         any_expired = await sync_xui_usage_and_status(session, xui_client, group, security_settings)
                         # Restart Xray core after expiry to enforce limits immediately if enabled
                         if any_expired and security_settings.restart_xray_on_expiry:
@@ -704,7 +528,7 @@ async def _reset_client_uuid(
         id=xui_record.xui_client_remote_id or xui_record.client_uuid,
         uuid=new_uuid,
         email=xui_record.email,
-        limitIp=DEFAULT_XUI_LIMIT_IP,
+        limitIp=1,
         totalGB=subscription.volume_bytes,
         expiryTime=expiry_ms,
         enable=True,  # keep enabled so sub link works
@@ -769,7 +593,7 @@ async def _expire_subscription_in_xui(
     now,
     reason: str,
     new_status: str = "expired",
-    limit_ip: int = DEFAULT_XUI_LIMIT_IP,
+    limit_ip: int = 1,
 ) -> bool:
     """Mark subscription as expired but keep the client ENABLED in X-UI
     so the subscription link still works and the user can see their
@@ -837,7 +661,7 @@ async def _disable_client_in_xui(
         id=xui_record.xui_client_remote_id or xui_record.client_uuid,
         uuid=xui_record.client_uuid,
         email=xui_record.email,
-        limitIp=DEFAULT_XUI_LIMIT_IP,
+        limitIp=1,
         totalGB=subscription.volume_bytes,
         expiryTime=expiry_ms,
         enable=True,  # keep enabled so sub link works
@@ -858,7 +682,7 @@ async def _update_xui_expiry_on_activation(
     xui_client: SanaeiXUIClient,
     subscription: Subscription,
     *,
-    limit_ip: int = DEFAULT_XUI_LIMIT_IP,
+    limit_ip: int = 1,
 ) -> None:
     """Update X-UI client expiryTime when a first_use subscription is activated."""
     xui_record = subscription.xui_client

@@ -40,17 +40,6 @@ def _normalize_emoji_map(raw_map: Any) -> dict[str, str]:
 
 RETARGETING_SETTINGS_KEY = "marketing.retargeting"
 
-# X-UI's own per-client device cap. 0 == unlimited, and 0 is the ONLY safe
-# default: any client with limitIp > 0 arms 3x-ui's CheckClientIpJob, which
-# runs @every 10s and unconditionally calls its broken clearAccessLog()
-# (os.Open failure is only logged, then io.Copy gets a nil file), spamming
-# "client ip job err:invalid argument" into the panel log every 10 seconds.
-# The cap is also inert on a normal deploy: enforcement needs both the Xray
-# access log configured AND fail2ban installed in the panel container, and
-# upstream now resets these limits to 0 on upgrade. Device limiting is done
-# by our own auto_disable_ip_abuse guard instead.
-DEFAULT_XUI_LIMIT_IP = 0
-
 # Sentinel value to distinguish "not provided" from None (which clears a key)
 _SENTINEL = object()
 
@@ -270,14 +259,14 @@ class AppSettingsRepository:
         record = await self.session.get(AppSetting, SERVICE_SECURITY_SETTINGS_KEY)
         if record is None or not record.value_json:
             return ServiceSecuritySettings(
-                xui_limit_ip=DEFAULT_XUI_LIMIT_IP,
+                xui_limit_ip=1,
                 max_distinct_ips=3,
                 auto_disable_ip_abuse=True,
                 restart_xray_on_expiry=False,
             )
         payload = dict(record.value_json or {})
         return ServiceSecuritySettings(
-            xui_limit_ip=max(int(payload.get("xui_limit_ip", DEFAULT_XUI_LIMIT_IP)), 0),
+            xui_limit_ip=max(int(payload.get("xui_limit_ip", 1)), 0),
             max_distinct_ips=max(int(payload.get("max_distinct_ips", 3)), 0),
             auto_disable_ip_abuse=bool(payload.get("auto_disable_ip_abuse", True)),
             restart_xray_on_expiry=bool(payload.get("restart_xray_on_expiry", False)),
