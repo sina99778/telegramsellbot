@@ -29,18 +29,28 @@ def build_plan_selection_keyboard(
             callback_data="purchase:custom",
         )
 
+    # Unlimited plans are a different product, not "an expensive GB plan", so
+    # they are kept out of the price ladder entirely and pinned to the bottom.
+    # Otherwise a 245k unlimited plan lands between the 240k/300k GB plans and
+    # reads as just another rung on the same ladder.
+    all_plans = list(plans)
+    metered = [p for p in all_plans if not _is_unlimited_plan(p)]
+    unlimited = [p for p in all_plans if _is_unlimited_plan(p)]
+    plan_list = metered + unlimited
+
     # Pick a "Recommended" plan: lowest price-per-day. Helps first-time buyers
     # who have nothing to anchor to and would otherwise default to the cheapest
-    # (often least valuable) option.
-    plan_list = list(plans)
+    # (often least valuable) option. Unlimited plans are excluded because their
+    # price-per-day would always win and the badge would stop meaning anything.
     best_plan_id = None
-    if plan_list:
+    ranked = metered or plan_list
+    if ranked:
         def _ppd(p: Plan) -> float:
             try:
                 return float(p.price) / max(1, int(getattr(p, "duration_days", 1) or 1))
             except Exception:
                 return float("inf")
-        best_plan_id = min(plan_list, key=_ppd).id
+        best_plan_id = min(ranked, key=_ppd).id
 
     for plan in plan_list:
         stock = stock_by_plan_id.get(plan.id) if stock_by_plan_id else None
@@ -175,6 +185,15 @@ def build_renewal_keyboard(sub_id: UUID) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
+def _is_unlimited_plan(plan: Plan) -> bool:
+    """A plan with no traffic cap. Matches the storage convention used across
+    the codebase (``volume_bytes = 0`` means unlimited, same as ``format_plan_volume``)."""
+    try:
+        return int(getattr(plan, "volume_bytes", 0) or 0) <= 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _format_plan_button_text(
     name: str,
     price: Decimal,
@@ -193,6 +212,10 @@ def _format_plan_button_text(
     if volume_bytes:
         gb = volume_bytes / (1024 ** 3)
         bits.append(f"{gb:.0f}GB" if gb >= 1 else f"{volume_bytes // (1024 ** 2)}MB")
+    else:
+        # Without this the unlimited plan just silently loses its volume bit and
+        # looks like a metered plan whose size failed to render.
+        bits.append("نامحدود ♾")
     if duration_days:
         # Show months when it makes sense, otherwise days.
         if duration_days >= 30 and duration_days % 30 == 0:
@@ -204,7 +227,12 @@ def _format_plan_button_text(
     # so the plan list matches every other price the customer sees.
     bits.append(format_money(price, mode=display_mode, toman_rate=toman_rate))
     summary = " • ".join(bits)
-    prefix = "⭐ " if recommended else ""
+    if not volume_bytes:
+        prefix = "💎 "
+    elif recommended:
+        prefix = "⭐ "
+    else:
+        prefix = ""
     suffix = f" • {stock_label}" if stock_label else ""
     return f"{prefix}{name} — {summary}{suffix}"
 
