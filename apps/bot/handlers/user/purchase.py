@@ -1654,7 +1654,7 @@ async def _finalize_purchase(
         status="pending_activation",
         used_gb=0.0,
         total_gb=plan.volume_bytes / (1024**3),
-        days_left=plan.duration_days,
+        days_left=plan.duration_days if plan.duration_days else None,
         is_active=True,
         bot_username=(bot._me.username if bot._me else (await bot.get_me()).username) if bot else None,
         vless_uri=vless_uri,

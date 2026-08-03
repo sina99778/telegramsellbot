@@ -687,7 +687,9 @@ async def my_config_detail_handler(
 
     # If vless_uri is available, send photo with text as caption
     if vless_uri:
-        days_left = 0
+        # ends_at is None for a plan with no expiry — pass None through so the
+        # banner shows "unlimited" rather than a misleading "0 Days".
+        days_left = None
         if sub.ends_at:
             days_left = max((sub.ends_at - datetime.now(timezone.utc)).days, 0)
         
