@@ -256,31 +256,47 @@ class SanaeiXUIClient:
         return {}
 
     async def get_db_backup(self) -> bytes:
-        """Download X-UI panel database backup, trying known endpoints."""
+        """Download X-UI panel database backup, trying known endpoints.
+
+        3x-ui mounts ServerController under /panel/api/server, so getDb lives
+        at panel/api/server/getDb. The other paths cover forks/older versions.
+
+        Note on 404: the /panel/api group's checkAPIAuth middleware aborts with
+        **404** (not 401) when the session is missing, deliberately hiding the
+        endpoint from unauthenticated callers. Clients are pooled and long-lived,
+        so by the time the 6-hourly backup runs the cookie has usually expired —
+        the panel then answers 404 and, unless we re-login on 404 too, every
+        endpoint "fails" and the DB is silently dropped from the bundle.
+        """
         if not self._authenticated:
             await self.login()
 
         endpoints = [
-            "panel/api/server/getDb", 
-            "panel/setting/getDb", 
-            "server/getDb", 
-            "xui/API/inbounds/getDb"
+            "panel/api/server/getDb",   # 3x-ui (current)
+            "server/getDb",             # some forks
+            "panel/setting/getDb",      # legacy
+            "xui/API/inbounds/getDb",   # very old
         ]
-        last_error = ""
+        attempts: list[str] = []
 
         for endpoint in endpoints:
             response = await self._client.request("GET", endpoint)
-            if response.status_code in {401, 403}:
+            # 404 is included on purpose — see the docstring.
+            if response.status_code in {401, 403, 404}:
                 self._authenticated = False
                 await self.login()
                 response = await self._client.request("GET", endpoint)
 
             if response.status_code == 200 and len(response.content) >= 100:
                 return response.content
-            else:
-                last_error = f"HTTP {response.status_code}, len={len(response.content)}"
+            attempts.append(
+                f"{endpoint} → HTTP {response.status_code}, len={len(response.content)}"
+            )
 
-        raise XUIRequestError(f"Failed to download X-UI DB from any endpoint. Last response: {last_error}")
+        raise XUIRequestError(
+            "Failed to download X-UI DB from any endpoint. Attempts: "
+            + "; ".join(attempts)
+        )
 
     async def _request(
         self, method: str, path: str, *, idempotent: bool | None = None, **kwargs: Any

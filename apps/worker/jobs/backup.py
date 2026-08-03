@@ -131,8 +131,16 @@ async def _dump_postgres() -> bytes | None:
         return None
 
 
-async def _dump_xui_databases(session: AsyncSession) -> list[tuple[str, bytes]]:
-    """Best-effort: pull each active X-UI panel's DB. Failures don't abort."""
+async def _dump_xui_databases(
+    session: AsyncSession,
+    failures: list[str] | None = None,
+) -> list[tuple[str, bytes]]:
+    """Best-effort: pull each active X-UI panel's DB. Failures don't abort.
+
+    `failures` collects "name: reason" strings for panels that were expected to
+    yield a DB but didn't, so the backup caption can report the gap instead of
+    silently shipping a bundle with no xui_databases/ entries.
+    """
     result = await session.execute(
         select(XUIServerRecord)
         .options(selectinload(XUIServerRecord.credentials))
@@ -160,6 +168,8 @@ async def _dump_xui_databases(session: AsyncSession) -> list[tuple[str, bytes]]:
                 logger.info("X-UI dump '%s': %d bytes", server.name, len(blob))
         except (XUIClientError, Exception) as exc:
             logger.error("X-UI dump '%s' failed: %s", server.name, exc)
+            if failures is not None:
+                failures.append(f"{server.name}: {exc}")
     return dumps
 
 
@@ -247,6 +257,7 @@ def _build_bundle(
     env_reconstructed: bool = False,
     ready_configs: list[tuple[str, bytes]] | None,
     xui_dumps: list[tuple[str, bytes]],
+    xui_failures: list[str] | None = None,
     git_sha: str,
     git_branch: str,
     hostname: str,
@@ -295,6 +306,9 @@ def _build_bundle(
                 "env_reconstructed": env_reconstructed,
                 "ready_configs": bool(ready_configs),
                 "xui_databases_count": len(xui_dumps),
+                # Recorded so a restore can tell "no panels configured" apart
+                # from "panel DBs were expected but could not be downloaded".
+                "xui_databases_failed": list(xui_failures or []),
             },
         }
         m_bytes = json.dumps(manifest, indent=2).encode("utf-8")
@@ -404,7 +418,8 @@ async def run_backup(
             logger.warning("[BACKUP] .env reconstruction failed: %s", exc)
             env_data = None
     ready_data = _read_ready_configs_dir()
-    xui_data = await _dump_xui_databases(session)
+    xui_failures: list[str] = []
+    xui_data = await _dump_xui_databases(session, xui_failures)
 
     bundle = _build_bundle(
         pg_dump_bytes=pg_data,
@@ -412,6 +427,7 @@ async def run_backup(
         env_reconstructed=env_reconstructed,
         ready_configs=ready_data,
         xui_dumps=xui_data,
+        xui_failures=xui_failures,
         git_sha=_run_git_sha(),
         git_branch=_run_git_branch(),
         hostname=os.uname().nodename if hasattr(os, "uname") else "host",
@@ -484,6 +500,17 @@ async def run_backup(
         f"🔑 اثرِ کلیدِ رمزنگاری: {key_fp}",
         "",
     ]
+    if xui_failures:
+        # Previously this failed silently: the caption simply omitted the X-UI
+        # line, so a bundle with zero panel DBs looked identical to a healthy one.
+        caption_lines.append(
+            f"⚠️ دیتابیسِ {len(xui_failures)} پنل X-UI در بکاپ نیست:"
+        )
+        for item in xui_failures[:5]:
+            caption_lines.append(f"   • {item[:160]}")
+        if len(xui_failures) > 5:
+            caption_lines.append(f"   • … و {len(xui_failures) - 5} مورد دیگر")
+        caption_lines.append("")
     if env_data and env_reconstructed:
         caption_lines.append(
             "✅ فایلِ .env داخلِ بکاپ هست (بازسازی‌شده از تنظیماتِ در حالِ اجرا — "
