@@ -13,6 +13,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
 from core.database import AsyncSessionFactory
+from core.redis import distributed_lock, renewal_lock_key
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord
 from repositories.audit import AuditLogRepository
@@ -55,34 +56,55 @@ async def _gift_single_subscription(
     """Process gift for a single subscription in its own isolated session.
 
     Returns (success, user_telegram_id, config_name).
+
+    Takes the same renewal lock as the single-subscription admin handlers in
+    apps/bot/handlers/admin/subs.py. Without it a bulk gift running while a user
+    pays for a renewal interleaves two read-modify-write cycles on ends_at /
+    volume_bytes and one of the two updates is lost.
     """
     async with AsyncSessionFactory() as session:
         try:
-            subscription = await session.scalar(
-                select(Subscription)
-                .options(
-                    selectinload(Subscription.xui_client)
-                    .selectinload(XUIClientRecord.inbound)
-                    .selectinload(XUIInboundRecord.server),
-                    selectinload(Subscription.plan),
-                    selectinload(Subscription.user),
+            async with distributed_lock(
+                renewal_lock_key(sub_id), ttl_seconds=60
+            ) as acquired:
+                if not acquired:
+                    # A paid renewal is mid-flight on this same subscription.
+                    # Skip rather than risk a lost update; reported as failed so
+                    # the admin sees the count and can re-run for the stragglers.
+                    logger.warning(
+                        "Skipped gift for sub %s: renewal lock held", sub_id
+                    )
+                    return False, None, None
+
+                subscription = await session.scalar(
+                    select(Subscription)
+                    .options(
+                        selectinload(Subscription.xui_client)
+                        .selectinload(XUIClientRecord.inbound)
+                        .selectinload(XUIInboundRecord.server),
+                        selectinload(Subscription.plan),
+                        selectinload(Subscription.user),
+                    )
+                    .where(Subscription.id == sub_id)
                 )
-                .where(Subscription.id == sub_id)
-            )
-            if subscription is None:
-                return False, None, None
+                if subscription is None:
+                    return False, None, None
 
-            await apply_renewal(
-                session=session,
-                subscription=subscription,
-                renew_type=gift_type,
-                amount=amount,
-            )
-            await session.commit()
+                await apply_renewal(
+                    session=session,
+                    subscription=subscription,
+                    renew_type=gift_type,
+                    amount=amount,
+                )
+                # Commit INSIDE the lock, otherwise the window between the
+                # in-memory change and the COMMIT is still racy.
+                await session.commit()
 
-            tg_id = subscription.user.telegram_id if subscription.user else None
-            conf_name = subscription.xui_client.username if subscription.xui_client else None
-            return True, tg_id, conf_name
+                tg_id = subscription.user.telegram_id if subscription.user else None
+                conf_name = (
+                    subscription.xui_client.username if subscription.xui_client else None
+                )
+                return True, tg_id, conf_name
         except Exception as e:
             logger.warning(
                 "Failed to gift sub %s: %s\n%s",

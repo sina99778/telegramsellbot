@@ -199,7 +199,12 @@ async def apply_renewal(
         with session.no_autoflush:
             # Only modify COLUMN attributes — never touch relationships!
             if renew_type == "volume":
-                subscription.volume_bytes += int(amount * 1024**3)
+                # volume_bytes == 0 means UNLIMITED traffic (same convention as
+                # format_plan_volume / the banner). Adding GB to it would turn
+                # 0 into a finite cap, silently DOWNGRADING an unlimited config
+                # to a metered one — the opposite of a gift. Leave it alone.
+                if int(subscription.volume_bytes or 0) > 0:
+                    subscription.volume_bytes += int(amount * 1024**3)
                 # Deliberately NO lifetime accumulation / used_bytes reset here.
                 # The panel traffic counter is CUMULATIVE and is never reset on
                 # renewal, and the usage-sync job writes it back absolutely
@@ -215,8 +220,14 @@ async def apply_renewal(
             elif renew_type == "time":
                 days_to_add = int(amount)
                 if subscription.ends_at is None:
-                    base = subscription.activated_at or now_utc
-                    subscription.ends_at = base + timedelta(days=days_to_add)
+                    # ends_at is None means either "not activated yet" or
+                    # "never expires". The pending_activation case was already
+                    # rejected by time_renewal_blocked() at the top of this
+                    # function, so reaching here means UNLIMITED duration:
+                    # writing a concrete date would CAP a config that never
+                    # expired, turning an admin's gift into a downgrade.
+                    # Deliberately a no-op — unlimited + more days = unlimited.
+                    pass
                 elif subscription.ends_at < now_utc:
                     subscription.ends_at = now_utc + timedelta(days=days_to_add)
                 else:

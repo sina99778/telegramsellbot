@@ -99,6 +99,15 @@ async def broadcast_confirm(
 
     state_data = await state.get_data()
     payload = dict(state_data.get("broadcast_payload", {}))
+
+    # Post the live-progress message BEFORE creating the job, so the worker
+    # (which polls every 20s) always finds the chat/message ids already set and
+    # can start editing it in place instead of the admin having to open the
+    # dashboard to find out what happened.
+    progress_message = await message.answer("⏳ در حال آماده‌سازی ارسال همگانی...")
+    payload["progress_chat_id"] = message.chat.id
+    payload["progress_message_id"] = progress_message.message_id
+
     broadcast_job = BroadcastJob(
         created_by_user_id=admin_user.id,
         status="queued",
@@ -112,4 +121,3 @@ async def broadcast_confirm(
     await session.flush()
 
     await state.clear()
-    await message.answer(AdminMessages.BROADCAST_QUEUED.format(job_id=broadcast_job.id))

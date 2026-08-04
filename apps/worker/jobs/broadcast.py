@@ -6,7 +6,12 @@ import time
 from datetime import datetime, timezone
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+)
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,6 +52,48 @@ async def _send_broadcast_to_user(bot: Bot, job: BroadcastJob, user: User) -> No
         await bot.send_message(chat_id=user.telegram_id, text=job.text or "")
 
 
+def _progress_text(job: BroadcastJob, done: int, total: int, started_at: float) -> str:
+    """Render the live progress card the admin sees while the broadcast runs."""
+    pct = (done / total) if total else 1.0
+    filled = int(pct * 14)
+    bar = "▰" * filled + "▱" * (14 - filled)
+
+    eta = ""
+    elapsed = time.monotonic() - started_at
+    if done and elapsed > 0 and done < total:
+        remaining = (total - done) / (done / elapsed)
+        if remaining < 60:
+            eta = f" • ~{int(remaining)} ثانیه باقی‌مانده"
+        else:
+            eta = f" • ~{int(remaining // 60)} دقیقه باقی‌مانده"
+
+    return (
+        "📢 <b>ارسال پیام همگانی</b>\n"
+        f"<code>{bar}</code> {int(pct * 100)}%\n"
+        f"📊 پیشرفت: <b>{done:,}/{total:,}</b>{eta}\n"
+        f"✅ ارسال‌شده: <b>{job.processed_recipients:,}</b> | "
+        f"❌ ناموفق: <b>{job.failed_recipients:,}</b>"
+    )
+
+
+async def _edit_progress(bot: Bot, job: BroadcastJob, text: str) -> None:
+    """Best-effort progress edit. Never let the UI break the broadcast."""
+    payload = job.payload or {}
+    chat_id = payload.get("progress_chat_id")
+    message_id = payload.get("progress_message_id")
+    if not chat_id or not message_id:
+        return
+    try:
+        await bot.edit_message_text(
+            chat_id=int(chat_id), message_id=int(message_id), text=text
+        )
+    except TelegramBadRequest:
+        # "message is not modified" / message deleted by the admin — harmless.
+        pass
+    except TelegramAPIError as exc:
+        logger.debug("Broadcast progress edit failed: %s", exc)
+
+
 async def process_broadcast_queue(session: AsyncSession, bot: Bot) -> None:
     """Process queued broadcasts.
 
@@ -84,6 +131,15 @@ async def process_broadcast_queue(session: AsyncSession, bot: Bot) -> None:
         _COMMIT_EVERY = 25
         sent_since_commit = 0
 
+        # Telegram rate-limits edits, so refresh the progress card on a timer
+        # rather than once per recipient.
+        _PROGRESS_EVERY_SECONDS = 3.0
+        started_at = time.monotonic()
+        last_progress_at = 0.0
+        done = len(delivered)
+
+        await _edit_progress(bot, job, _progress_text(job, done, len(users), started_at))
+
         for user in users:
             if str(user.id) in delivered:
                 continue
@@ -120,12 +176,31 @@ async def process_broadcast_queue(session: AsyncSession, bot: Bot) -> None:
             # delivered_user_ids would then never advance past the first send.
             job.payload = {**payload, "delivered_user_ids": sorted(delivered)}
             sent_since_commit += 1
+            done += 1
             if sent_since_commit >= _COMMIT_EVERY:
                 await session.commit()
                 sent_since_commit = 0
             else:
                 await session.flush()
 
+            now = time.monotonic()
+            if now - last_progress_at >= _PROGRESS_EVERY_SECONDS:
+                last_progress_at = now
+                await _edit_progress(
+                    bot, job, _progress_text(job, done, len(users), started_at)
+                )
+
         job.status = "finished"
         job.finished_at = datetime.now(timezone.utc)
         await session.commit()
+
+        elapsed = int(time.monotonic() - started_at)
+        await _edit_progress(
+            bot,
+            job,
+            "📢 <b>ارسال پیام همگانی پایان یافت</b>\n"
+            f"✅ ارسال‌شده: <b>{job.processed_recipients:,}</b>\n"
+            f"❌ ناموفق: <b>{job.failed_recipients:,}</b>\n"
+            f"👥 کل مخاطبان: <b>{job.total_recipients:,}</b>\n"
+            f"⏱ مدت: <b>{elapsed // 60}:{elapsed % 60:02d}</b>",
+        )
