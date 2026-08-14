@@ -32,8 +32,11 @@ import logging
 import os
 import re
 import tarfile
+import tempfile
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 from urllib.parse import unquote, urlsplit
 
 from aiogram import Bot
@@ -43,6 +46,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from core.config import settings
+from core.redis import distributed_lock
 from models.user import User
 from models.xui import XUIServerRecord
 from repositories.settings import AppSettingsRepository
@@ -68,6 +72,50 @@ _MAX_BUNDLE_BYTES = 48 * 1024 * 1024
 # per this interval per worker process; manual/forced runs always alert.
 _FAILURE_NOTIFY_MIN_INTERVAL_SECONDS = 6 * 3600
 _last_failure_notified_monotonic: float | None = None
+_BACKUP_LOCK_KEY = "lock:backup"
+_BACKUP_LOCK_TTL_SECONDS = 6 * 3600
+
+
+@dataclass(frozen=True)
+class BackupResult:
+    status: Literal[
+        "delivered",
+        "local_only",
+        "skipped",
+        "in_progress",
+        "dump_failed",
+        "local_write_failed",
+        "no_targets",
+        "upload_failed",
+    ]
+    success: bool
+    delivered: int = 0
+    target_count: int = 0
+    local_path: str | None = None
+    detail: str | None = None
+
+
+def _write_backup_atomic(backup_dir: str, fname: str, bundle: bytes) -> str:
+    os.makedirs(backup_dir, exist_ok=True)
+    local_path = os.path.join(backup_dir, fname)
+    fd, temp_path = tempfile.mkstemp(prefix=f".{fname}.", suffix=".tmp", dir=backup_dir)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(bundle)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp_path, local_path)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.remove(temp_path)
+        except FileNotFoundError:
+            pass
+        raise
+    return local_path
 
 
 async def _get_admin_telegram_ids(session: AsyncSession) -> set[int]:
@@ -122,6 +170,14 @@ async def _dump_postgres() -> bytes | None:
         return stdout
     except asyncio.TimeoutError:
         logger.error("pg_dump timed out")
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await proc.communicate()
+        except Exception as exc:
+            logger.warning("pg_dump cleanup failed: %s", exc)
         return None
     except FileNotFoundError:
         logger.error("pg_dump not found — install postgresql-client in the container")
@@ -318,12 +374,12 @@ def _build_bundle(
     return buf.getvalue()
 
 
-async def run_backup(
+async def _run_backup_unlocked(
     session: AsyncSession,
     bot: Bot,
     manual_requester_id: int | None = None,
     force: bool = False,
-) -> None:
+) -> BackupResult:
     """Build + send a single comprehensive backup bundle.
 
     Schedule gating:
@@ -369,7 +425,7 @@ async def run_backup(
                         "[BACKUP] Skip — only %.1f h since last backup (interval=%dh)",
                         elapsed_hours, interval_hours,
                     )
-                    return
+                    return BackupResult(status="skipped", success=False)
             except Exception as exc:
                 logger.warning("[BACKUP] Could not parse last_run_at=%r: %s", last_iso, exc)
 
@@ -399,7 +455,7 @@ async def run_backup(
                 await bot.send_message(tg_id, "⚠️ بکاپ خودکار ناموفق بود — pg_dump خطا داد.")
             except Exception:
                 pass
-        return
+        return BackupResult(status="dump_failed", success=False)
 
     # pg_dump succeeded — a future failure is a new episode, alert again.
     _last_failure_notified_monotonic = None
@@ -436,17 +492,18 @@ async def run_backup(
     size = len(bundle)
     logger.info("[BACKUP] Bundle built: %d bytes (~%d MB)", size, size // (1024 * 1024))
 
-    # Save backup locally on the server
     backup_dir = "backups"
-    os.makedirs(backup_dir, exist_ok=True)
     fname = f"tsb_backup_{ts}.tar.gz"
-    local_path = os.path.join(backup_dir, fname)
     try:
-        with open(local_path, "wb") as fh:
-            fh.write(bundle)
+        local_path = _write_backup_atomic(backup_dir, fname, bundle)
         logger.info("[BACKUP] Saved locally to %s", local_path)
     except Exception as exc:
-        logger.error("[BACKUP] Failed to save locally to %s: %s", local_path, exc)
+        logger.error("[BACKUP] Failed to save locally to %s: %s", backup_dir, exc)
+        return BackupResult(
+            status="local_write_failed",
+            success=False,
+            detail=str(exc),
+        )
 
     # Prune old local backups
     try:
@@ -476,14 +533,18 @@ async def run_backup(
             except Exception:
                 pass
         
-        # Stamp last_run anyway because the backup was successfully created and saved locally!
         if manual_requester_id is None:
             try:
                 await repo.set_backup_last_run_now()
                 await session.commit()
             except Exception as exc:
                 logger.warning("[BACKUP] Could not stamp last_run_at: %s", exc)
-        return
+        return BackupResult(
+            status="local_only",
+            success=True,
+            local_path=local_path,
+            detail="bundle exceeds Telegram upload limit",
+        )
 
     fname = f"tsb_backup_{ts}.tar.gz"
     doc = BufferedInputFile(bundle, filename=fname)
@@ -551,7 +612,12 @@ async def run_backup(
 
     if not targets:
         logger.warning("[BACKUP] No backup targets configured — bundle not delivered.")
-        return
+        return BackupResult(
+            status="no_targets",
+            success=False,
+            local_path=local_path,
+            detail="no backup targets configured",
+        )
 
     delivered = 0
     for tg_id in targets:
@@ -576,6 +642,42 @@ async def run_backup(
             logger.warning("[BACKUP] Could not stamp last_run_at: %s", exc)
 
     logger.info("[BACKUP] Done — delivered to %d/%d target(s)", delivered, len(targets))
+    if delivered == 0:
+        return BackupResult(
+            status="upload_failed",
+            success=False,
+            target_count=len(targets),
+            local_path=local_path,
+            detail="all Telegram uploads failed",
+        )
+    return BackupResult(
+        status="delivered",
+        success=True,
+        delivered=delivered,
+        target_count=len(targets),
+        local_path=local_path,
+    )
+
+
+async def run_backup(
+    session: AsyncSession,
+    bot: Bot,
+    manual_requester_id: int | None = None,
+    force: bool = False,
+) -> BackupResult:
+    async with distributed_lock(
+        _BACKUP_LOCK_KEY,
+        ttl_seconds=_BACKUP_LOCK_TTL_SECONDS,
+    ) as acquired:
+        if not acquired:
+            logger.info("[BACKUP] Skip — another process holds the backup lock")
+            return BackupResult(status="in_progress", success=False)
+        return await _run_backup_unlocked(
+            session,
+            bot,
+            manual_requester_id=manual_requester_id,
+            force=force,
+        )
 
 
 # ─── tiny helpers ────────────────────────────────────────────────────────

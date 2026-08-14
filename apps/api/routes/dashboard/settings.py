@@ -277,19 +277,32 @@ async def trigger_backup_now(auth: AuthDep) -> dict[str, Any]:
         default=DefaultBotProperties(parse_mode=_settings.bot_parse_mode),
     )
     try:
-        # manual_requester_id=None → goes to the configured channel(s),
-        # NOT the dashboard admin's DM (which they don't necessarily own
-        # in Telegram). force=True bypasses the interval gate so this
-        # button ALWAYS produces a backup; a successful delivery still
-        # stamps last_run_at so the next scheduled tick doesn't
-        # immediately re-fire.
-        await _run(session, bot, manual_requester_id=None, force=True)
+        result = await _run(session, bot, manual_requester_id=None, force=True)
     finally:
         await bot.session.close()
 
-    await _audit(session, admin, "backup_run_now", {})
+    if not result.success:
+        status_code = 409 if result.status == "in_progress" else 502
+        details = {
+            "in_progress": "A backup is already running.",
+            "dump_failed": "Database dump failed.",
+            "local_write_failed": "Backup could not be saved locally.",
+            "no_targets": "Backup was saved locally, but no delivery target is configured.",
+            "upload_failed": "Backup was saved locally, but every upload failed.",
+        }
+        raise HTTPException(
+            status_code=status_code,
+            detail=details.get(result.status, result.detail or "Backup failed."),
+        )
+
+    await _audit(session, admin, "backup_run_now", {"status": result.status})
     await session.commit()
-    return {"ok": True}
+    return {
+        "ok": True,
+        "status": result.status,
+        "delivered": result.delivered,
+        "local_path": result.local_path,
+    }
 
 
 # ─── PATCH: premium_emoji ──────────────────────────────────────────────

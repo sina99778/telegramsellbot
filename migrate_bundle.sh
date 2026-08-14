@@ -310,6 +310,21 @@ cmd_restore() {
     exit 1
   fi
 
+  info "Validating database dump…"
+  if ! gzip -t "${stage}/db.sql.gz" 2>/dev/null; then
+    err "bundle database dump is corrupt or truncated"
+    err "Nothing was changed."
+    exit 1
+  fi
+  local dump_head
+  dump_head="$( (gunzip -c "${stage}/db.sql.gz" 2>/dev/null || true) | head -c 4096 | tr -d '\0' )"
+  if ! printf '%s' "${dump_head}" | grep -qiE 'PostgreSQL database dump|CREATE TABLE|CREATE DATABASE|INSERT INTO|COPY .* FROM stdin|SET statement_timeout'; then
+    err "bundle database dump does not look like PostgreSQL SQL"
+    err "Nothing was changed."
+    exit 1
+  fi
+  ok "Database dump validated"
+
   echo
   info "Bundle manifest:"
   cat "${stage}/manifest.json" | sed 's/^/    /'
@@ -343,7 +358,7 @@ cmd_restore() {
   # authenticate, and fixing that needs an operator decision.
   if [[ "${bundle_db_user}" != "${volume_db_user}" ]]; then
     local role_exists
-    role_exists="$(docker exec "${POSTGRES_CONTAINER}" psql -U "${volume_db_user}" -d postgres -tAc \
+    role_exists="$(docker exec "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${volume_db_user}" -d postgres -tAc \
         "SELECT 1 FROM pg_roles WHERE rolname='${bundle_db_user}'" 2>/dev/null || true)"
     if [[ "${role_exists}" != "1" ]]; then
       err "Bundle POSTGRES_USER '${bundle_db_user}' does not exist in this postgres volume (volume role: '${volume_db_user}')."
@@ -355,7 +370,7 @@ cmd_restore() {
 
   # If the target DB is populated, refuse without explicit OVERWRITE.
   local row_count
-  row_count="$(docker exec "${POSTGRES_CONTAINER}" psql -U "${volume_db_user}" -d "${bundle_db_name}" -tAc \
+  row_count="$(docker exec "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${volume_db_user}" -d "${bundle_db_name}" -tAc \
       "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'" 2>/dev/null || echo 0)"
   if [[ "${row_count:-0}" -gt 0 ]]; then
     warn "Target DB already has ${row_count} table(s). Restore will WIPE them."
@@ -376,14 +391,14 @@ cmd_restore() {
   docker stop telegramsellbot-api telegramsellbot-bot telegramsellbot-worker >/dev/null 2>&1 || true
 
   info "Terminating remaining connections to ${bundle_db_name}…"
-  docker exec "${POSTGRES_CONTAINER}" psql -U "${volume_db_user}" -d postgres \
+  docker exec "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${volume_db_user}" -d postgres \
       -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${bundle_db_name}';" \
-      >/dev/null 2>&1 || true
+      >/dev/null
 
   info "Restoring PostgreSQL…"
-  docker exec "${POSTGRES_CONTAINER}" psql -U "${volume_db_user}" -d postgres -c "DROP DATABASE IF EXISTS \"${bundle_db_name}\";" >/dev/null
-  docker exec "${POSTGRES_CONTAINER}" psql -U "${volume_db_user}" -d postgres -c "CREATE DATABASE \"${bundle_db_name}\" OWNER \"${bundle_db_user}\";" >/dev/null
-  gunzip -c "${stage}/db.sql.gz" | docker exec -i "${POSTGRES_CONTAINER}" psql -U "${volume_db_user}" -d "${bundle_db_name}" >/dev/null
+  docker exec "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${volume_db_user}" -d postgres -c "DROP DATABASE IF EXISTS \"${bundle_db_name}\";" >/dev/null
+  docker exec "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${volume_db_user}" -d postgres -c "CREATE DATABASE \"${bundle_db_name}\" OWNER \"${bundle_db_user}\";" >/dev/null
+  gunzip -c "${stage}/db.sql.gz" | docker exec -i "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${volume_db_user}" -d "${bundle_db_name}" >/dev/null
   ok "PostgreSQL restored"
 
   # ── .env handling — deliberately AFTER the DB restore, so any failure
@@ -408,8 +423,8 @@ cmd_restore() {
     info "Syncing postgres role password to the restored .env…"
     local pw_sql
     pw_sql=${bundle_db_password//\'/\'\'}   # double single quotes for the SQL literal
-    if ! docker exec -i "${POSTGRES_CONTAINER}" psql -U "${volume_db_user}" -d postgres \
-          -q -v ON_ERROR_STOP=1 >/dev/null <<SQL
+    if ! docker exec -i "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${volume_db_user}" -d postgres \
+          -q >/dev/null <<SQL
 ALTER ROLE "${bundle_db_user}" WITH PASSWORD '${pw_sql}';
 SQL
     then

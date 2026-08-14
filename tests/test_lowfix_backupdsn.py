@@ -21,7 +21,7 @@ Mock-based only — no DB, no network, no subprocess.
 from __future__ import annotations
 
 import time
-from contextlib import ExitStack
+from contextlib import ExitStack, asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -31,6 +31,11 @@ from apps.worker.jobs import backup as backup_mod
 
 
 ADMIN_IDS = {111, 222}
+
+
+@asynccontextmanager
+async def _acquired_lock(*args, **kwargs):
+    yield True
 
 
 # ─── helpers ─────────────────────────────────────────────────────────────
@@ -72,6 +77,10 @@ def _make_repo():
 def _patch_run_backup_internals(repo, pg_dump_result):
     """Patch the heavy helpers used by run_backup; return the stack."""
     stack = ExitStack()
+    stack.enter_context(patch.object(
+        backup_mod, "distributed_lock", _acquired_lock))
+    stack.enter_context(patch.object(
+        backup_mod, "_write_backup_atomic", MagicMock(return_value="backups/test.tar.gz")))
     stack.enter_context(patch.object(
         backup_mod, "AppSettingsRepository", MagicMock(return_value=repo)))
     stack.enter_context(patch.object(

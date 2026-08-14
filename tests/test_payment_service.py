@@ -31,6 +31,97 @@ class TestProcessSuccessfulPayment:
         )
 
     @pytest.mark.asyncio
+    async def test_wallet_topup_returns_true(self, mock_session, wallet_topup_payment):
+        with patch("services.payment.WalletManager") as MockWM:
+            mock_wm = AsyncMock()
+            MockWM.return_value = mock_wm
+
+            from services.payment import process_successful_payment
+            result = await process_successful_payment(
+                session=mock_session,
+                payment=wallet_topup_payment,
+                amount_to_credit=Decimal("5.00"),
+            )
+
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_direct_purchase_returns_false_when_provisioning_returns_non_bool(self, mock_session, make_payment, plan_id):
+        payment = make_payment(
+            kind="direct_purchase",
+            actually_paid=Decimal("5.00"),
+            callback_payload={"plan_id": str(plan_id)},
+        )
+
+        with patch("services.payment._handle_direct_purchase", new_callable=AsyncMock, return_value=None):
+            from services.payment import process_successful_payment
+            result = await process_successful_payment(
+                session=mock_session,
+                payment=payment,
+                amount_to_credit=Decimal("5.00"),
+            )
+
+        assert result is False
+        assert payment.callback_payload.get("provisioned") is not True
+
+    @pytest.mark.asyncio
+    async def test_direct_purchase_uses_frozen_payment_price(self, mock_session, make_payment, plan_id):
+        from services.payment import _handle_direct_purchase
+
+        payment = make_payment(
+            kind="direct_purchase",
+            actually_paid=Decimal("12.00"),
+            price_amount=Decimal("12.00"),
+            callback_payload={"plan_id": str(plan_id), "config_name": "TestVPN"},
+        )
+        user = MagicMock(id=payment.user_id, telegram_id=12345, wallet=MagicMock())
+        plan = MagicMock(
+            id=plan_id,
+            price=Decimal("99.00"),
+            currency="USD",
+            volume_bytes=10 * 1024**3,
+            duration_days=30,
+            name="Test30",
+            code="t30",
+        )
+        provisioned = MagicMock(
+            subscription=MagicMock(id=uuid4()),
+            sub_link="https://sub/test",
+            vless_uri="vless://test",
+        )
+        wallet_manager = MagicMock()
+        wallet_manager.process_transaction = AsyncMock()
+        provisioning_manager = MagicMock()
+        provisioning_manager.provision_subscription = AsyncMock(return_value=provisioned)
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.send_photo = AsyncMock()
+        bot.session.close = AsyncMock()
+        mock_session.scalar.return_value = user
+        mock_session.get.return_value = plan
+
+        with patch("services.payment.WalletManager", return_value=wallet_manager), \
+             patch("services.payment._get_shared_bot", return_value=bot), \
+             patch("services.provisioning.manager.ProvisioningManager", return_value=provisioning_manager), \
+             patch("services.payment._process_gateway_referral_bonus", AsyncMock()), \
+             patch("core.qr.make_qr_bytes", return_value=None), \
+             patch("services.sales_notifications.notify_purchase", AsyncMock()):
+            result = await _handle_direct_purchase(mock_session, payment)
+
+        assert result is True
+        order = mock_session.add.call_args.args[0]
+        assert order.amount == Decimal("12.00")
+        wallet_manager.process_transaction.assert_awaited_once()
+        assert wallet_manager.process_transaction.call_args.kwargs["amount"] == Decimal("12.00")
+        provisioning_manager.provision_subscription.assert_awaited_once_with(
+            user_id=user.id,
+            plan_id=plan.id,
+            order_id=order.id,
+            config_name="TestVPN",
+        )
+
+
+    @pytest.mark.asyncio
     async def test_wallet_topup_credits_wallet(self, mock_session, wallet_topup_payment):
         """Wallet topup should credit wallet and set actually_paid."""
         with patch("services.payment.WalletManager") as MockWM:
@@ -89,7 +180,7 @@ class TestProcessSuccessfulPayment:
              patch("services.payment._handle_direct_purchase") as mock_provision:
             mock_wm = AsyncMock()
             MockWM.return_value = mock_wm
-            mock_provision.return_value = None
+            mock_provision.return_value = True
 
             from services.payment import process_successful_payment
             await process_successful_payment(

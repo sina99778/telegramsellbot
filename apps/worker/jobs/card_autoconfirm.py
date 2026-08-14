@@ -127,7 +127,7 @@ async def run_card_autoconfirm(session: AsyncSession, bot: Bot | None = None) ->
             payment.callback_payload = payload
             await session.flush()
 
-            await process_successful_payment(
+            fulfilled = await process_successful_payment(
                 session=session,
                 payment=payment,
                 amount_to_credit=Decimal(str(payment.price_amount)),
@@ -151,10 +151,18 @@ async def run_card_autoconfirm(session: AsyncSession, bot: Bot | None = None) ->
             await session.rollback()
             continue
 
+        if fulfilled is not True:
+            failed += 1
+            logger.warning(
+                "[CARD-AUTOCONFIRM] payment=%s was approved but fulfillment failed",
+                pid,
+            )
+            continue
+
         confirmed += 1
         logger.info(
             "[CARD-AUTOCONFIRM] confirmed payment=%s user_telegram_id=%s amount=%s USD",
-            payment.id, _telegram_id, _price_amount,
+            pid, _telegram_id, _price_amount,
         )
 
         # Best-effort: tell the buyer the receipt was approved.

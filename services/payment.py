@@ -56,7 +56,7 @@ async def process_successful_payment(
     session: AsyncSession,
     payment: Payment,
     amount_to_credit: Decimal,
-) -> None:
+) -> bool:
     """Process a successful payment: credit the wallet and trigger any
     follow-up action (provision config, apply renewal).
 
@@ -113,49 +113,50 @@ async def process_successful_payment(
         # Check if already provisioned via callback_payload flag
         if payment.callback_payload and payment.callback_payload.get("provisioned"):
             logger.info("[PAYMENT] Already provisioned — skipping")
-            return
+            return True
 
         logger.info("[PAYMENT] Step 2: Direct purchase — provisioning config")
         try:
             provisioned = await _handle_direct_purchase(session, payment)
-            if provisioned is False:
+            if provisioned is not True:
                 logger.info("[PAYMENT] Direct purchase was not provisioned; leaving retry flag open")
-                return
+                return False
             # Mark as provisioned so retries don't duplicate
             payload = dict(payment.callback_payload or {})
             payload["provisioned"] = True
             payment.callback_payload = payload
             logger.info("[PAYMENT] Direct purchase provisioning COMPLETED")
+            return True
         except Exception as exc:
             logger.error("[PAYMENT] Direct purchase provisioning FAILED: %s", exc, exc_info=True)
-            # Don't re-raise — wallet was already credited, user can buy manually
-            # But do NOT mark as provisioned so next retry can attempt again
+            return False
 
     # 3. If it is direct renewal, apply renewal automatically
     elif payment.kind == "direct_renewal":
         if payment.callback_payload and payment.callback_payload.get("renewal_applied"):
             logger.info("[PAYMENT] Renewal already applied — skipping")
-            return
+            return True
         if payment.callback_payload and payment.callback_payload.get("renewal_refused"):
-            # Terminal: the sub was disabled/banned when the IPN landed; the
-            # money stayed in the wallet. Retrying would refuse again forever.
             logger.info("[PAYMENT] Renewal was refused (sub status) — not retrying")
-            return
+            return True
 
         logger.info("[PAYMENT] Step 3: Direct renewal — applying renewal")
         try:
             renewed = await _handle_direct_renewal(session, payment)
-            if renewed is False:
+            if renewed is not True:
                 logger.info("[PAYMENT] Direct renewal was not applied; leaving retry flag open")
-                return
+                return False
             payload = dict(payment.callback_payload or {})
             payload["renewal_applied"] = True
             payment.callback_payload = payload
             logger.info("[PAYMENT] Direct renewal COMPLETED")
+            return True
         except Exception as exc:
             logger.error("[PAYMENT] Direct renewal FAILED: %s", exc, exc_info=True)
+            return False
     else:
         logger.info("[PAYMENT] Payment kind=%s — not a direct purchase/renewal, done", payment.kind)
+        return True
 
 
 async def _handle_direct_purchase(
@@ -229,11 +230,7 @@ async def _handle_direct_purchase(
 
     logger.info("[PROVISION] User: %s (tg=%s), Plan: %s", user.id, user.telegram_id, plan.name)
 
-    original_price = plan.price
-    if discount_percent > 0:
-        final_price = (original_price * (Decimal(100 - discount_percent) / Decimal(100))).quantize(Decimal("0.01"))
-    else:
-        final_price = original_price
+    final_price = Decimal(str(payment.price_amount))
 
     from services.provisioning.manager import ProvisioningManager, ProvisioningError
     from core.formatting import format_volume_bytes

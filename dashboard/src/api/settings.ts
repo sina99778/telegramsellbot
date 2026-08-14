@@ -75,8 +75,15 @@ export function patchBackup(body: BackupPatchBody): Promise<{ ok: boolean }> {
   return api.patch<{ ok: boolean }>("/settings/backup", body);
 }
 
-export function runBackupNow(): Promise<{ ok: boolean }> {
-  return api.post<{ ok: boolean }>("/settings/backup/run-now");
+export interface BackupRunResult {
+  ok: boolean;
+  status: "delivered" | "local_only";
+  delivered: number;
+  local_path: string | null;
+}
+
+export function runBackupNow(): Promise<BackupRunResult> {
+  return api.post<BackupRunResult>("/settings/backup/run-now");
 }
 
 export interface PremiumEmojiPatchBody {

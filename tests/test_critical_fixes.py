@@ -142,7 +142,7 @@ async def test_telegram_failure_after_provisioning_does_not_refund(make_payment)
     )
     user = NS(id=payment.user_id, telegram_id=12345, wallet=NS(id=uuid4()))
     plan = NS(
-        id=plan_id, price=Decimal("5.00"), currency="USD",
+        id=plan_id, price=Decimal("99.00"), currency="USD",
         volume_bytes=10 * 1024**3, duration_days=30, name="Test30", code="t30",
     )
 
@@ -150,6 +150,10 @@ async def test_telegram_failure_after_provisioning_does_not_refund(make_payment)
     session.add = MagicMock()
     session.scalar = AsyncMock(return_value=user)
     session.get = AsyncMock(return_value=plan)
+    nested = MagicMock()
+    nested.__aenter__ = AsyncMock(return_value=None)
+    nested.__aexit__ = AsyncMock(return_value=False)
+    session.begin_nested = MagicMock(return_value=nested)
 
     bot = MagicMock()
     bot.send_message = AsyncMock(side_effect=RuntimeError("user blocked the bot"))
@@ -174,6 +178,7 @@ async def test_telegram_failure_after_provisioning_does_not_refund(make_payment)
     # exactly ONE wallet movement: the purchase debit — never a refund credit
     assert wm_instance.process_transaction.await_count == 1
     assert wm_instance.process_transaction.call_args.kwargs["transaction_type"] == "purchase"
+    assert wm_instance.process_transaction.call_args.kwargs["amount"] == Decimal("5.00")
     # order marked provisioned, payment payload carries the marker
     order = session.add.call_args[0][0]
     assert order.status == "provisioned"
@@ -199,6 +204,10 @@ async def test_provisioning_failure_still_refunds(make_payment):
     session.add = MagicMock()
     session.scalar = AsyncMock(return_value=user)
     session.get = AsyncMock(return_value=plan)
+    nested = MagicMock()
+    nested.__aenter__ = AsyncMock(return_value=None)
+    nested.__aexit__ = AsyncMock(return_value=False)
+    session.begin_nested = MagicMock(return_value=nested)
 
     bot = MagicMock()
     bot.send_message = AsyncMock()

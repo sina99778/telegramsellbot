@@ -222,7 +222,7 @@ async def approve_manual_payment(
 
     # Process the payment (credit wallet)
     try:
-        await process_successful_payment(
+        fulfilled = await process_successful_payment(
             session=session,
             payment=payment,
             amount_to_credit=payment.price_amount,
@@ -246,7 +246,13 @@ async def approve_manual_payment(
     crypto_line = f"🪙 معادل: {crypto_amt} {payment.pay_currency}\n" if crypto_amt else ""
     result_line = (
         "کانفیگ برای کاربر ارسال شد."
+        if payment.kind == "direct_purchase" and fulfilled is True
+        else "پرداخت ثبت شد، اما ساخت کانفیگ ناموفق بود و نیاز به پیگیری دارد."
         if payment.kind == "direct_purchase"
+        else "تمدید سرویس انجام شد."
+        if payment.kind == "direct_renewal" and fulfilled is True
+        else "پرداخت ثبت شد، اما تمدید سرویس ناموفق بود و نیاز به پیگیری دارد."
+        if payment.kind == "direct_renewal"
         else "مبلغ به کیف پول کاربر واریز شد."
     )
 
@@ -269,10 +275,16 @@ async def approve_manual_payment(
         try:
             from aiogram.utils.keyboard import InlineKeyboardBuilder
             if payment.kind == "direct_purchase":
-                await callback.bot.send_message(
-                    target_user.telegram_id,
-                    "✅ پرداخت شما تایید شد. اگر کانفیگ در پیام جداگانه ارسال نشده باشد، لطفا با پشتیبانی تماس بگیرید.",
-                )
+                if fulfilled is True:
+                    await callback.bot.send_message(
+                        target_user.telegram_id,
+                        "✅ پرداخت شما تایید شد و کانفیگ ارسال شد.",
+                    )
+                else:
+                    await callback.bot.send_message(
+                        target_user.telegram_id,
+                        "✅ پرداخت شما ثبت شد، اما ساخت کانفیگ ناموفق بود و نیاز به پیگیری دارد.",
+                    )
                 return
             user_builder = InlineKeyboardBuilder()
             user_builder.button(text="🛒 خرید کانفیگ", callback_data="wallet:topup")

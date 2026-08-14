@@ -146,8 +146,12 @@ async function fireBackupNow() {
   if (!confirm("بکاپ همین الان ساخته و ارسال شود؟")) return;
   busy.value = true;
   try {
-    await runBackupNow();
-    flash("بکاپ ساخته شد و در حال ارسال است (لاگ‌های worker را چک کنید).");
+    const result = await runBackupNow();
+    if (result.status === "delivered") {
+      flash(`بکاپ ساخته و به ${result.delivered} مقصد ارسال شد.`);
+    } else {
+      flash(`بکاپ فقط روی سرور ذخیره شد: ${result.local_path ?? "backups"}`, "warn");
+    }
     refresh();
   } catch (exc) {
     flash(exc instanceof ApiError ? exc.detail : "خطا", "warn");

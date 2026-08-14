@@ -230,7 +230,7 @@ async def approve_receipt(payment_id: UUID, auth: AuthDep) -> dict[str, Any]:
             detail=f"payment already processed (status={payment.payment_status})",
         )
     try:
-        await process_successful_payment(
+        fulfilled = await process_successful_payment(
             session=session,
             payment=payment,
             amount_to_credit=payment.price_amount,
@@ -259,7 +259,7 @@ async def approve_receipt(payment_id: UUID, auth: AuthDep) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("audit log failed: %s", exc)
     await session.commit()
-    return {"ok": True}
+    return {"ok": fulfilled is True, "fulfilled": fulfilled is True}
 
 
 @router.post("/{payment_id}/reject")

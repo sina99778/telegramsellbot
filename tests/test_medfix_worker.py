@@ -101,7 +101,7 @@ async def test_card_autoconfirm_lists_without_lock_then_locks_and_commits_before
     bot = MagicMock()
     bot.send_message = AsyncMock(side_effect=lambda *a, **k: events.append("send"))
 
-    process = AsyncMock(side_effect=lambda **k: events.append("process"))
+    process = AsyncMock(side_effect=lambda **k: events.append("process") or True)
     with patch("apps.worker.jobs.card_autoconfirm.AppSettingsRepository", return_value=_card_repo(_card_cfg())), \
          patch("apps.worker.jobs.card_autoconfirm.process_successful_payment", process):
         result = await run_card_autoconfirm(session, bot)
@@ -166,7 +166,7 @@ async def test_card_autoconfirm_failure_rolls_back_and_continues():
     session.execute = AsyncMock(return_value=_result_with_rows([(pid_a,), (pid_b,)]))
     session.scalar = AsyncMock(side_effect=[payment_a, payment_b, None])
 
-    process = AsyncMock(side_effect=[RuntimeError("boom"), None])
+    process = AsyncMock(side_effect=[RuntimeError("boom"), True])
     with patch("apps.worker.jobs.card_autoconfirm.AppSettingsRepository", return_value=_card_repo(_card_cfg())), \
          patch("apps.worker.jobs.card_autoconfirm.process_successful_payment", process):
         result = await run_card_autoconfirm(session, None)
@@ -174,6 +174,22 @@ async def test_card_autoconfirm_failure_rolls_back_and_continues():
     assert result["failed"] == 1
     assert result["confirmed"] == 1
     session.rollback.assert_awaited_once()
+
+
+async def test_card_autoconfirm_reports_false_fulfillment_as_failed():
+    pid = uuid4()
+    payment = _card_payment(pid)
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=_result_with_rows([(pid,)]))
+    session.scalar = AsyncMock(return_value=payment)
+
+    with patch("apps.worker.jobs.card_autoconfirm.AppSettingsRepository", return_value=_card_repo(_card_cfg())), \
+         patch("apps.worker.jobs.card_autoconfirm.process_successful_payment", AsyncMock(return_value=False)):
+        result = await run_card_autoconfirm(session, None)
+
+    assert result["confirmed"] == 0
+    assert result["failed"] == 1
+    session.commit.assert_awaited_once()
 
 
 # ════════════════════════════════════════════════════════════════════════

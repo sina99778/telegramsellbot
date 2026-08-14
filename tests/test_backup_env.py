@@ -8,12 +8,18 @@ regenerating an .env from the live settings when no file exists.
 """
 from __future__ import annotations
 
+import io
 import json
 import tarfile
-import io
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+@asynccontextmanager
+async def _acquired_lock(*args, **kwargs):
+    yield True
 
 
 def test_reconstructed_env_contains_the_critical_keys():
@@ -82,7 +88,9 @@ async def test_run_backup_falls_back_to_reconstruction(mock_session):
          patch.object(b, "_read_ready_configs_dir", return_value=None), \
          patch.object(b, "_dump_xui_databases", AsyncMock(return_value=[])), \
          patch.object(b, "_build_bundle", side_effect=fake_build), \
-         patch.object(b, "AppSettingsRepository", return_value=MagicMock()):
+         patch.object(b, "AppSettingsRepository", return_value=MagicMock()), \
+         patch.object(b, "distributed_lock", _acquired_lock), \
+         patch.object(b, "_write_backup_atomic", return_value="backups/test.tar.gz"):
         # manual_requester_id set → interval gate skipped, single DM target.
         await b.run_backup(mock_session, bot, manual_requester_id=777)
 

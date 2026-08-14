@@ -60,6 +60,12 @@ read_env_value() {
   grep -E "^${key}=" "${ENV_FILE}" | tail -n 1 | sed -E "s/^${key}=//" || true
 }
 
+read_env_value_from() {
+  local file="$1" key="$2"
+  [[ -f "${file}" ]] || return 0
+  grep -E "^${key}=" "${file}" | tail -n 1 | sed -E "s/^${key}=//" || true
+}
+
 # ── Sanity: Postgres has to be alive ────────────────────────────────────
 if ! docker ps --format '{{.Names}}' | grep -q "^${POSTGRES_CONTAINER}$"; then
   err "Postgres container '${POSTGRES_CONTAINER}' not running. Start the stack first."
@@ -99,28 +105,19 @@ if [[ "${FORMAT}" == "bundle" ]]; then
   fi
 fi
 
-# ── .env handling (bundle path only) ────────────────────────────────────
-BAK=""
+VOLUME_DB_USER="$(read_env_value POSTGRES_USER)"; VOLUME_DB_USER="${VOLUME_DB_USER:-telegramsellbot}"
+DB_USER="${VOLUME_DB_USER}"
+DB_NAME="$(read_env_value POSTGRES_DB)"; DB_NAME="${DB_NAME:-telegramsellbot}"
+DB_PASSWORD=""
 if [[ "${FORMAT}" == "bundle" && -f "${STAGE}/env" ]]; then
-  echo
-  warn "Bundle contains a .env file."
-  if [[ -f "${ENV_FILE}" ]]; then
-    BAK="${ENV_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
-    cp -p "${ENV_FILE}" "${BAK}"
-    ok "Snapshotted current .env → ${BAK}"
-  fi
-  cp -p "${STAGE}/env" "${ENV_FILE}"
-  chmod 600 "${ENV_FILE}"
-  ok "Restored .env from bundle (mode 600)."
-elif [[ "${FORMAT}" == "legacy" ]]; then
+  DB_USER="$(read_env_value_from "${STAGE}/env" POSTGRES_USER)"; DB_USER="${DB_USER:-telegramsellbot}"
+  DB_NAME="$(read_env_value_from "${STAGE}/env" POSTGRES_DB)";   DB_NAME="${DB_NAME:-telegramsellbot}"
+  DB_PASSWORD="$(read_env_value_from "${STAGE}/env" POSTGRES_PASSWORD)"
+else
   warn "Legacy DB-only format — .env on this host is unchanged."
   warn "Make sure your APP_SECRET_KEY matches the one used when the dump was taken,"
   warn "otherwise encrypted X-UI panel passwords in the DB will decrypt to garbage."
 fi
-
-# ── Read DB creds from CURRENT .env ─────────────────────────────────────
-DB_USER="$(read_env_value POSTGRES_USER)"; DB_USER="${DB_USER:-telegramsellbot}"
-DB_NAME="$(read_env_value POSTGRES_DB)";   DB_NAME="${DB_NAME:-telegramsellbot}"
 
 # Refuse unsafe names.
 if [[ ! "${DB_NAME}" =~ ^[A-Za-z0-9_]+$ ]]; then
@@ -131,39 +128,18 @@ if [[ ! "${DB_USER}" =~ ^[A-Za-z0-9_]+$ ]]; then
   err "POSTGRES_USER contains unsafe characters: ${DB_USER}"
   exit 1
 fi
+if [[ ! "${VOLUME_DB_USER}" =~ ^[A-Za-z0-9_]+$ ]]; then
+  err "Current POSTGRES_USER contains unsafe characters: ${VOLUME_DB_USER}"
+  exit 1
+fi
 
-# ── Sync the volume's role password to the restored .env (bundle only) ──
-# An initialised postgres volume keeps the password it was created with —
-# the POSTGRES_PASSWORD env var is ignored on later boots. After the .env
-# swap above (e.g. restoring on a NEW host that install.sh initialised
-# with a random password), the restored password no longer matches the
-# volume and api/bot/worker would all fail TCP auth after './deploy.sh
-# full'. docker-exec psql rides on local trust auth, so the ALTER works
-# regardless of the mismatch. Runs BEFORE the destructive steps below so
-# a failure aborts with the DB untouched (and rolls the .env back).
-if [[ "${FORMAT}" == "bundle" && -f "${STAGE}/env" ]]; then
-  DB_PASSWORD="$(read_env_value POSTGRES_PASSWORD)"
-  if [[ -n "${DB_PASSWORD}" ]]; then
-    info "Syncing postgres role password to the restored .env…"
-    PW_SQL=${DB_PASSWORD//\'/\'\'}   # double single quotes for the SQL literal
-    if ! docker exec -i "${POSTGRES_CONTAINER}" psql -U "${DB_USER}" -d postgres \
-          -q -v ON_ERROR_STOP=1 >/dev/null <<SQL
-ALTER ROLE "${DB_USER}" WITH PASSWORD '${PW_SQL}';
-SQL
-    then
-      err "Could not sync the postgres role password (does role '${DB_USER}' exist in this volume?)."
-      err "Aborting BEFORE touching the database — nothing was wiped."
-      err "همگام‌سازی رمز دیتابیس ناموفق بود؛ پیش از هر تغییری در دیتابیس، عملیات متوقف شد."
-      if [[ -n "${BAK}" ]]; then
-        cp -p "${BAK}" "${ENV_FILE}"
-        warn "Rolled the previous .env back from ${BAK}."
-        warn "فایل .env قبلی از نسخهٔ پشتیبان بازگردانده شد."
-      fi
-      exit 1
-    fi
-    ok "Role password synced — restored .env now matches the postgres volume."
-  else
-    warn "Restored .env has no POSTGRES_PASSWORD — role password left unchanged; deploy may fail to authenticate."
+if [[ "${DB_USER}" != "${VOLUME_DB_USER}" ]]; then
+  ROLE_EXISTS="$(docker exec "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d postgres -tAc \
+      "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'" 2>/dev/null || true)"
+  if [[ "${ROLE_EXISTS}" != "1" ]]; then
+    err "Bundle POSTGRES_USER '${DB_USER}' does not exist in this postgres volume (volume role: '${VOLUME_DB_USER}')."
+    err "Nothing was changed. Re-install with a matching POSTGRES_USER (or create the role manually), then retry."
+    exit 1
   fi
 fi
 
@@ -205,32 +181,57 @@ fi
 ok "Backup input validated (readable, looks like a pg_dump SQL script)."
 
 # ── Confirm before wiping the DB ────────────────────────────────────────
-TABLE_COUNT="$(docker exec "${POSTGRES_CONTAINER}" psql -U "${DB_USER}" -d "${DB_NAME}" -tAc \
+TABLE_COUNT="$(docker exec "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d "${DB_NAME}" -tAc \
     "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'" 2>/dev/null || echo 0)"
 if [[ "${TABLE_COUNT:-0}" -gt 0 ]]; then
   echo
   warn "Target DB already has ${TABLE_COUNT} table(s) — restore will WIPE them."
   read -r -p "Type OVERWRITE to proceed, anything else aborts: " confirm
   if [[ "${confirm}" != "OVERWRITE" ]]; then
-    warn "Aborted by operator. .env was already restored from bundle (if applicable)."
+    warn "Aborted by operator. Nothing was changed."
     exit 1
   fi
 fi
 
 # ── DB restore ──────────────────────────────────────────────────────────
 # (DB_FILE and DB_READER were resolved + validated above, pre-wipe.)
+info "Stopping app containers (api/bot/worker) holding DB connections…"
+docker stop telegramsellbot-api telegramsellbot-bot telegramsellbot-worker >/dev/null 2>&1 || true
+
 info "Terminating active connections to ${DB_NAME}…"
-docker exec "${POSTGRES_CONTAINER}" psql -U "${DB_USER}" -d postgres \
+docker exec "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d postgres \
     -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${DB_NAME}';" \
-    >/dev/null 2>&1 || true
+    >/dev/null
 
 info "Dropping + recreating database…"
-docker exec "${POSTGRES_CONTAINER}" psql -U "${DB_USER}" -d postgres -c "DROP DATABASE IF EXISTS \"${DB_NAME}\";" >/dev/null
-docker exec "${POSTGRES_CONTAINER}" psql -U "${DB_USER}" -d postgres -c "CREATE DATABASE \"${DB_NAME}\";" >/dev/null
+docker exec "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d postgres -c "DROP DATABASE IF EXISTS \"${DB_NAME}\";" >/dev/null
+docker exec "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d postgres -c "CREATE DATABASE \"${DB_NAME}\" OWNER \"${DB_USER}\";" >/dev/null
 
 info "Restoring from ${DB_FILE}…"
-"${DB_READER[@]}" "${DB_FILE}" | docker exec -i "${POSTGRES_CONTAINER}" psql -U "${DB_USER}" -d "${DB_NAME}" >/dev/null
+"${DB_READER[@]}" "${DB_FILE}" | docker exec -i "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d "${DB_NAME}" >/dev/null
 ok "Database restored."
+
+if [[ "${FORMAT}" == "bundle" && -f "${STAGE}/env" ]]; then
+  if [[ -n "${DB_PASSWORD}" ]]; then
+    info "Syncing postgres role password to the restored .env…"
+    PW_SQL=${DB_PASSWORD//\'/\'\'}
+    docker exec -i "${POSTGRES_CONTAINER}" psql -q -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d postgres >/dev/null <<SQL
+ALTER ROLE "${DB_USER}" WITH PASSWORD '${PW_SQL}';
+SQL
+    ok "Role password synced — restored .env now matches the postgres volume."
+  else
+    warn "Restored .env has no POSTGRES_PASSWORD — role password left unchanged; deploy may fail to authenticate."
+  fi
+
+  if [[ -f "${ENV_FILE}" ]]; then
+    BAK="${ENV_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    cp -p "${ENV_FILE}" "${BAK}"
+    ok "Snapshotted current .env → ${BAK}"
+  fi
+  cp -p "${STAGE}/env" "${ENV_FILE}"
+  chmod 600 "${ENV_FILE}"
+  ok "Restored .env from bundle (mode 600)."
+fi
 
 # ── ready_configs (bundle only) ─────────────────────────────────────────
 if [[ "${FORMAT}" == "bundle" && -d "${STAGE}/ready_configs" ]]; then
