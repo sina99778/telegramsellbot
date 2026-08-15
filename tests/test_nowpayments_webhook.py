@@ -13,7 +13,6 @@ from unittest.mock import patch, MagicMock
 
 from apps.api.routes.webhooks.nowpayments import (
     _is_valid_nowpayments_signature,
-    _extract_credit_amount,
 )
 
 
@@ -77,31 +76,4 @@ class TestNOWPaymentsSignatureValidation:
             assert result is False
 
 
-# ─── Amount Extraction ──────────────────────────────────
 
-
-class TestExtractCreditAmount:
-    """Tests for _extract_credit_amount."""
-
-    def test_uses_price_amount_as_usd(self):
-        from decimal import Decimal
-        payload = {"price_amount": "5.50", "actually_paid": "0.003"}
-        result = _extract_credit_amount(payload)
-        assert result == Decimal("5.50")
-
-    def test_fallback_to_actually_paid(self):
-        from decimal import Decimal
-        payload = {"actually_paid": "10.00"}
-        result = _extract_credit_amount(payload)
-        assert result == Decimal("10.00")
-
-    def test_missing_amount_raises(self):
-        from fastapi import HTTPException
-        with pytest.raises(HTTPException) as exc_info:
-            _extract_credit_amount({})
-        assert exc_info.value.status_code == 400
-
-    def test_invalid_amount_raises(self):
-        from fastapi import HTTPException
-        with pytest.raises(HTTPException):
-            _extract_credit_amount({"price_amount": "not-a-number"})

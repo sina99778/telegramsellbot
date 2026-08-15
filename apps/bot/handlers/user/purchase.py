@@ -833,8 +833,17 @@ async def pay_with_manual_crypto(
     else:
         final_price = original_price
 
-    # Store the topup amount in state and redirect to manual crypto handler
-    await state.update_data(topup_amount=str(final_price))
+    # Store the topup amount and purchase metadata in state
+    await state.update_data(
+        topup_amount=str(final_price),
+        purchase_meta={
+            "plan_id": str(plan.id),
+            "config_name": data.get("config_name", "VPN"),
+            "discount_percent": discount_percent,
+            "discount_id": data.get("discount_id"),
+            "purpose": "direct_purchase",
+        },
+    )
 
     # Import and call the manual crypto handler directly
     from apps.bot.handlers.user.topup import topup_pay_manual

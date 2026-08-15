@@ -138,6 +138,7 @@ async def run_card_autoconfirm(session: AsyncSession, bot: Bot | None = None) ->
             _telegram_id = u.telegram_id if u else None
             _price_amount = payment.price_amount
             _user_id = payment.user_id
+            _payment_kind = payment.kind
             # Commit per payment: releases the row lock before any Telegram
             # I/O below and makes this confirmation durable even if a later
             # payment in the sweep fails.
@@ -161,42 +162,44 @@ async def run_card_autoconfirm(session: AsyncSession, bot: Bot | None = None) ->
 
         confirmed += 1
         logger.info(
-            "[CARD-AUTOCONFIRM] confirmed payment=%s user_telegram_id=%s amount=%s USD",
-            pid, _telegram_id, _price_amount,
+            "[CARD-AUTOCONFIRM] confirmed payment=%s user_telegram_id=%s amount=%s USD kind=%s",
+            pid, _telegram_id, _price_amount, _payment_kind,
         )
 
-        # Best-effort: tell the buyer the receipt was approved.
-        if bot is not None and _telegram_id is not None:
-            try:
-                await bot.send_message(
-                    _telegram_id,
-                    "✅ <b>رسید پرداختی شما به‌صورت خودکار تأیید شد</b>\n"
-                    f"💰 کیف پول شما <b>{_price_amount:.2f} $</b> شارژ شد.",
-                    parse_mode="HTML",
-                )
-            except Exception as exc:
-                logger.warning("card autoconfirm notify failed: %s", exc)
-
-        # Best-effort: sales-report channel.
-        if bot is not None and _telegram_id is not None:
-            try:
-                from services.sales_notifications import notify_wallet_topup as _notify
-                # Re-fetch user with wallet eager-loaded so the sales-notification
-                # helper can render the post-credit balance correctly.
-                from models.user import User as _U
-                from sqlalchemy.orm import selectinload as _sel
-                u_full = await session.scalar(
-                    select(_U).options(_sel(_U.wallet)).where(_U.id == _user_id)
-                )
-                if u_full:
-                    await _notify(
-                        session, bot,
-                        user=u_full,
-                        amount_usd=payment.price_amount,
-                        payment_method="card_autoconfirm",
+        # For direct_purchase and direct_renewal, services.payment already delivered
+        # the config/renewal and posted the sales report.
+        # For wallet_topup, notify the user and report topup.
+        if _payment_kind not in ("direct_purchase", "direct_renewal"):
+            if bot is not None and _telegram_id is not None:
+                try:
+                    await bot.send_message(
+                        _telegram_id,
+                        "✅ <b>رسید پرداختی شما به‌صورت خودکار تأیید شد</b>\n"
+                        f"💰 کیف پول شما <b>{_price_amount:.2f} $</b> شارژ شد.\n\n"
+                        "🛒 اکنون می‌توانید از بخش «خرید کانفیگ» یا «تمدید» سرویس خود را فعال کنید.",
+                        parse_mode="HTML",
                     )
-            except Exception as exc:
-                logger.warning("card autoconfirm sales-notify failed: %s", exc)
+                except Exception as exc:
+                    logger.warning("card autoconfirm notify failed: %s", exc)
+
+            # Best-effort: sales-report channel for wallet topup.
+            if bot is not None and _telegram_id is not None:
+                try:
+                    from services.sales_notifications import notify_wallet_topup as _notify
+                    from models.user import User as _U
+                    from sqlalchemy.orm import selectinload as _sel
+                    u_full = await session.scalar(
+                        select(_U).options(_sel(_U.wallet)).where(_U.id == _user_id)
+                    )
+                    if u_full:
+                        await _notify(
+                            session, bot,
+                            user=u_full,
+                            amount_usd=_price_amount,
+                            payment_method="card_autoconfirm",
+                        )
+                except Exception as exc:
+                    logger.warning("card autoconfirm sales-notify failed: %s", exc)
 
     if confirmed or failed or skipped_exempt:
         logger.info(

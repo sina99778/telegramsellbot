@@ -270,35 +270,25 @@ async def approve_manual_payment(
         f"👤 تأیید: {admin_name}",
     )
 
-    # Notify user
-    if target_user:
+    # User notifications for direct_purchase and direct_renewal are already
+    # handled inside services.payment (sending the config/QR or renewal info on success,
+    # or clear refund notifications on failure). Here we notify wallet_topup users.
+    if target_user and payment.kind not in ("direct_purchase", "direct_renewal"):
         try:
             from aiogram.utils.keyboard import InlineKeyboardBuilder
-            if payment.kind == "direct_purchase":
-                if fulfilled is True:
-                    await callback.bot.send_message(
-                        target_user.telegram_id,
-                        "✅ پرداخت شما تایید شد و کانفیگ ارسال شد.",
-                    )
-                else:
-                    await callback.bot.send_message(
-                        target_user.telegram_id,
-                        "✅ پرداخت شما ثبت شد، اما ساخت کانفیگ ناموفق بود و نیاز به پیگیری دارد.",
-                    )
-                return
             user_builder = InlineKeyboardBuilder()
-            user_builder.button(text="🛒 خرید کانفیگ", callback_data="wallet:topup")
+            user_builder.button(text="🛒 خرید کانفیگ", callback_data="buy:menu")
             user_builder.adjust(1)
             await callback.bot.send_message(
                 target_user.telegram_id,
                 "━━━━━━━━━━━━━━━━━━━━━\n"
-                "  ✅ پرداخت تأیید شد!\n"
+                "  ✅ کیف پول شارژ شد!\n"
                 "━━━━━━━━━━━━━━━━━━━━━\n\n"
                 f"💰 مبلغ <b>{payment.price_amount:.2f} USD</b> به کیف پول\n"
                 "شما واریز شد.\n\n"
-                "🛒 اکنون می‌توانید از بخش «خرید کانفیگ»\n"
-                "سرویس مورد نظر را خریداری کنید.\n"
-                "روش پرداخت «👛 کیف پول» را انتخاب کنید.",
+                "🛒 اکنون می‌توانید از بخش «خرید کانفیگ» یا «تمدید»\n"
+                "سرویس مورد نظر را با موجودی کیف پول فعال کنید.\n"
+                "(روش پرداخت «👛 کیف پول» را انتخاب کنید)",
                 reply_markup=user_builder.as_markup(),
             )
         except TelegramForbiddenError:

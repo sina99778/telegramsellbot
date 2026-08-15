@@ -296,35 +296,29 @@ async def _handle_direct_purchase(
     bot = _get_shared_bot()
     
     try:
-        async with session.begin_nested():
-            if not debited:
-                await wallet_manager.process_transaction(
-                    user_id=user.id,
-                    amount=Decimal(str(final_price)),
-                    transaction_type="purchase",
-                    direction="debit",
-                    currency=plan.currency,
-                    reference_type="order",
-                    reference_id=order.id,
-                    description=f"Purchase of plan {plan.code}",
-                    metadata={"plan_id": str(plan.id), "config_name": config_name},
-                )
-                payload = dict(payment.callback_payload or {})
-                payload["wallet_debited"] = True
-                payload["order_id"] = str(order.id)
-                payment.callback_payload = payload
-                # Defence in depth: flush so concurrent IPN retries see the marker
-                # immediately even before this transaction commits. The outer
-                # process_successful_payment already holds `FOR UPDATE` on the
-                # payment row, but flushing here also helps for any non-IPN
-                # callers that might invoke _handle_direct_purchase directly.
-                await session.flush()
-                logger.info("[PROVISION] Wallet debited OK")
-            else:
-                logger.info("[PROVISION] Wallet debit already recorded for order %s", order.id)
+        if not debited:
+            await wallet_manager.process_transaction(
+                user_id=user.id,
+                amount=Decimal(str(final_price)),
+                transaction_type="purchase",
+                direction="debit",
+                currency=plan.currency,
+                reference_type="order",
+                reference_id=order.id,
+                description=f"Purchase of plan {plan.code}",
+                metadata={"plan_id": str(plan.id), "config_name": config_name},
+            )
+            payload = dict(payment.callback_payload or {})
+            payload["wallet_debited"] = True
+            payload["order_id"] = str(order.id)
+            payment.callback_payload = payload
+            await session.flush()
+            logger.info("[PROVISION] Wallet debited OK")
+        else:
+            logger.info("[PROVISION] Wallet debit already recorded for order %s", order.id)
 
-            # Provision
-            provisioning_manager = ProvisioningManager(session)
+        # Provision
+        provisioning_manager = ProvisioningManager(session)
         logger.info("[PROVISION] Calling provision_subscription...")
         provisioned = await provisioning_manager.provision_subscription(
             user_id=user.id,
@@ -367,13 +361,6 @@ async def _handle_direct_purchase(
             f"🔗 ساب لینک:\n{sub_link}\n\n"
             f"📋 کانفیگ مستقیم:\n{vless_uri}"
         )
-        # Delivery errors must NOT reach the outer except below: provisioning
-        # has already succeeded (panel client created, order marked
-        # "provisioned"), so refunding here would leave the user with both the
-        # money AND an active config — and a later retry would provision a
-        # second one. If Telegram delivery fails (user blocked the bot,
-        # flood-wait, network), we keep the sale; the config stays reachable
-        # from «سرویس‌های من» and the mini-app.
         try:
             await bot.send_message(user.telegram_id, text)
             logger.info("[PROVISION] Config sent to user %s", user.telegram_id)
@@ -396,9 +383,7 @@ async def _handle_direct_purchase(
                 user.telegram_id, exc,
             )
 
-        # Sales notification — polished, sectioned format. Builder lives in
-        # services/sales_notifications.py; it pulls server label, wallet
-        # balance, verified phone etc. on its own.
+        # Sales notification
         try:
             from services.sales_notifications import notify_purchase as _notify_sale
             await _notify_sale(
@@ -413,11 +398,6 @@ async def _handle_direct_purchase(
             logger.warning("[PROVISION] Failed to notify about purchase: %s", exc)
 
     except Exception as exc:
-        # CRITICAL: catch every exception type, not just ProvisioningError.
-        # X-UI panel outages surface as ConnectError / TimeoutError /
-        # XUIAuthenticationError etc., and a narrow catch leaves the user
-        # debited with no config. We refund unconditionally and only mark
-        # `failed_needs_manual_refund` if the refund itself fails.
         is_provisioning_err = isinstance(exc, ProvisioningError)
         log_fn = logger.error if is_provisioning_err else logger.critical
         log_fn(
@@ -425,13 +405,6 @@ async def _handle_direct_purchase(
             type(exc).__name__, exc, exc_info=not is_provisioning_err,
         )
         payload = dict(payment.callback_payload or {})
-        # Issue a compensating credit for the wallet debit. Merely flipping the
-        # `wallet_debited` marker back to False (as before) told the user the
-        # money was returned while leaving the balance debited AND cleared the
-        # idempotency marker — so a retry debited a SECOND time. We must move
-        # the money back with a real transaction. Only mark the order refunded
-        # and clear the marker once the credit succeeds; otherwise leave it for
-        # manual handling so we never claim a refund we didn't make.
         was_debited = bool(payload.get("wallet_debited")) or debited
         refund_ok = not was_debited
         if was_debited:
@@ -462,10 +435,11 @@ async def _handle_direct_purchase(
             payload["wallet_debited"] = False
         else:
             order.status = "failed_needs_manual_refund"
-            # Keep wallet_debited truthy so a retry does NOT debit again.
             payload["wallet_debited"] = True
             payload["needs_manual_refund"] = True
         payload["order_id"] = str(order.id)
+        payload["provisioning_failed"] = True
+        payload["failure_reason"] = type(exc).__name__
         payment.callback_payload = payload
         try:
             if refund_ok:
@@ -537,20 +511,17 @@ async def _handle_direct_renewal(
         payload["renewal_refused"] = True
         payload["renewal_refused_status"] = subscription.status
         payment.callback_payload = payload
+        bot = _get_shared_bot()
         try:
-            bot = _get_shared_bot()
-            try:
-                user = await session.scalar(select(User).where(User.id == payment.user_id))
-                if user:
-                    await bot.send_message(
-                        user.telegram_id,
-                        "⚠️ این سرویس غیرفعال شده و قابل تمدید نیست.\n"
-                        "مبلغ پرداختی به کیف پول شما اضافه شد. برای پیگیری با پشتیبانی تماس بگیرید.",
-                    )
-            finally:
-                await bot.session.close()
-        except Exception:
-            pass
+            user = await session.scalar(select(User).where(User.id == payment.user_id))
+            if user:
+                await bot.send_message(
+                    user.telegram_id,
+                    "⚠️ امکان تمدید این سرویس وجود ندارد (وضعیت سرویس مجاز نیست).\n"
+                    "مبلغ پرداختی در کیف پول شما باقی ماند.",
+                )
+        finally:
+            await bot.session.close()
         return False
 
     logger.info("[RENEWAL] Applying renewal: sub=%s, type=%s, amount=%s", sub_id_str, renew_type, renew_amount)
@@ -587,13 +558,6 @@ async def _apply_direct_renewal_locked(
 
     wallet_manager = WalletManager(session)
     payload = dict(payment.callback_payload or {})
-    # Partial-payment renewals: the gateway invoice was created for
-    # ONLY the gap between the user's wallet balance and the renewal
-    # cost. When the IPN credits the wallet by `price_amount`, the
-    # wallet now equals exactly the renewal cost. We need to debit the
-    # FULL renewal cost (stored in `total_renew_cost`), not just the
-    # gateway-paid portion. See apps/bot/handlers/user/renewal.py
-    # `renew_pay_partial`.
     debit_amount = Decimal(str(payload.get("total_renew_cost") or payment.price_amount))
     wallet_debited = False
     try:
@@ -638,16 +602,10 @@ async def _apply_direct_renewal_locked(
         logger.info("[RENEWAL] Renewal applied successfully for subscription %s", sub_id_str)
             
     except Exception as exc:
-        # apply_renewal may fail because X-UI is down, server credentials
-        # are bad, etc. Whatever the cause: user's money must come back.
         logger.critical(
             "[RENEWAL] apply_renewal FAILED for sub %s (%s): %s",
             sub_id_str, type(exc).__name__, exc, exc_info=True,
         )
-        # Refund via a new wallet transaction if we debited. Only clear the
-        # `wallet_debited` idempotency marker once the refund credit actually
-        # succeeds — clearing it after a FAILED refund makes the reconciliation
-        # retry debit the wallet a second time (same fix as the purchase path).
         was_debited = wallet_debited or bool(payload.get("wallet_debited"))
         refund_ok = not was_debited
         if was_debited:
@@ -677,9 +635,6 @@ async def _apply_direct_renewal_locked(
         if refund_ok:
             payload["wallet_debited"] = False
         else:
-            # Keep wallet_debited truthy so a retry does NOT debit again, and
-            # flag the payment for manual handling — never claim a refund we
-            # didn't make.
             payload["wallet_debited"] = True
             payload["needs_manual_refund"] = True
         payload["renewal_failed"] = True
@@ -694,7 +649,8 @@ async def _apply_direct_renewal_locked(
                     if refund_ok:
                         await bot.send_message(
                             user.telegram_id,
-                            "❌ تمدید سرویس ناموفق بود. مبلغ پرداختی به کیف پول شما بازگردانده شد.",
+                            "❌ تمدید سرویس ناموفق بود. مبلغ پرداختی به کیف پول شما بازگردانده شد.\n"
+                            "می‌توانید با موجودی کیف پول مجدداً اقدام به تمدید کنید یا با پشتیبانی تماس بگیرید.",
                         )
                     else:
                         await bot.send_message(
@@ -706,11 +662,10 @@ async def _apply_direct_renewal_locked(
                 from services.notifications import notify_admins
                 await notify_admins(
                     session, bot,
-                    "🚨 تمدید ناموفق (مبلغ به کیف پول برگشت)\n"
+                    "🚨 تمدید ناموفق (مبلغ در کیف پول کاربر محفوظ است)\n"
                     f"payment={payment.id}\nsub={sub_id_str}\n"
                     f"amount={payment.price_amount} {payment.price_currency}\n"
-                    f"reason: {type(exc).__name__}"
-                    + ("" if refund_ok else "\n⚠️ REFUND FAILED — needs manual refund!"),
+                    f"reason: {type(exc).__name__}",
                 )
             finally:
                 await bot.session.close()

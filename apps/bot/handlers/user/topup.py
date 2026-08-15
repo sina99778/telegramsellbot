@@ -747,6 +747,16 @@ async def topup_pay_manual(
     ):
         renewal_meta = None
 
+    purchase_meta = data.get("purchase_meta")
+    if purchase_meta is not None:
+        await state.update_data(purchase_meta=None)
+    if not (
+        isinstance(purchase_meta, dict)
+        and purchase_meta.get("purpose") == "direct_purchase"
+        and purchase_meta.get("plan_id")
+    ):
+        purchase_meta = None
+
     amount = Decimal(amount_str)
     currency = (selected_wallet or {}).get("currency") or gw.manual_crypto_currency or "Crypto"
     address = (selected_wallet or {}).get("address") or gw.manual_crypto_address
@@ -850,11 +860,13 @@ async def topup_pay_manual(
         # renew_type / renew_amount / total_renew_cost ...), so the IPN-side
         # _handle_direct_renewal works identically for manual crypto.
         manual_payload.update(renewal_meta)
+    elif purchase_meta:
+        manual_payload.update(purchase_meta)
 
     payment = Payment(
         user_id=user.id,
         provider="manual_crypto",
-        kind="direct_renewal" if renewal_meta else "wallet_topup",
+        kind="direct_renewal" if renewal_meta else "direct_purchase" if purchase_meta else "wallet_topup",
         order_id=local_order_id,
         payment_status="waiting_hash",
         pay_currency=currency,

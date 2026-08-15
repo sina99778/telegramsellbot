@@ -40,6 +40,10 @@ async def _run_direct_purchase(payment, plan, user, *, use_code_mock):
     session.scalar = AsyncMock(return_value=user)
     dc = NS(id=uuid4())
     session.get = AsyncMock(side_effect=[plan, dc])
+    nested = AsyncMock()
+    nested.__aenter__ = AsyncMock(return_value=None)
+    nested.__aexit__ = AsyncMock(return_value=False)
+    session.begin_nested = MagicMock(return_value=nested)
 
     bot = MagicMock()
     bot.send_message = AsyncMock()

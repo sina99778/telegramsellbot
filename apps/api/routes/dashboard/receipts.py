@@ -258,6 +258,29 @@ async def approve_receipt(payment_id: UUID, auth: AuthDep) -> dict[str, Any]:
         )
     except Exception as exc:
         logger.warning("audit log failed: %s", exc)
+
+    # For wallet top-ups, send a notification to the user
+    if payment.kind not in ("direct_purchase", "direct_renewal"):
+        try:
+            from services.payment import _get_shared_bot
+            from models.user import User
+            user = await session.scalar(select(User).where(User.id == payment.user_id))
+            if user and user.telegram_id:
+                bot = _get_shared_bot()
+                try:
+                    await bot.send_message(
+                        user.telegram_id,
+                        "━━━━━━━━━━━━━━━━━━━━━\n"
+                        "  ✅ کیف پول شارژ شد!\n"
+                        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+                        f"💰 رسید پرداخت شما تأیید شد و مبلغ <b>{payment.price_amount:.2f} USD</b> به کیف پول شما واریز گردید.\n\n"
+                        "🛒 اکنون می‌توانید از بخش «خرید کانفیگ» یا «تمدید» سرویس مورد نظر خود را فعال کنید.",
+                    )
+                finally:
+                    await bot.session.close()
+        except Exception as exc:
+            logger.warning("Failed to notify user on dashboard approval: %s", exc)
+
     await session.commit()
     return {"ok": fulfilled is True, "fulfilled": fulfilled is True}
 
