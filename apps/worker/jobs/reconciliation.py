@@ -196,6 +196,7 @@ async def run_reconciliation(bot: Bot) -> None:
                             ~Payment.callback_payload.has_key("renewal_applied"),
                             Payment.callback_payload["renewal_applied"].as_boolean().is_(False),
                         ),
+                        ~Payment.callback_payload.has_key("renewal_refused"),
                     ).order_by(Payment.created_at.asc()).limit(MAX_AUTO_RETRY)
                 )
             ).scalars().all()

@@ -79,13 +79,85 @@ async def test_ipn_renewal_refuses_disabled_sub(mock_session, make_payment):
     bot = MagicMock()
     bot.send_message = AsyncMock()
     bot.session.close = AsyncMock()
-    with patch("services.payment._get_shared_bot", return_value=bot), \
+    @asynccontextmanager
+    async def fake_lock(key, ttl_seconds=60):
+        yield True
+
+    with patch("core.redis.distributed_lock", fake_lock), \
+         patch("services.payment._get_shared_bot", return_value=bot), \
          patch("services.payment.WalletManager") as wm:
         result = await _handle_direct_renewal(mock_session, payment)
 
     assert result is False
     wm.assert_not_called()                                  # no debit, money stays in wallet
     assert payment.callback_payload.get("renewal_refused") is True
+
+
+@pytest.mark.asyncio
+async def test_renewal_lock_is_held_before_credit_through_apply(mock_session, make_payment):
+    from services.payment import process_successful_payment
+
+    sub_id = uuid4()
+    payment = _renewal_payment(make_payment, sub_id)
+    events = []
+    locked = False
+
+    lock_ttls = []
+
+    @asynccontextmanager
+    async def fake_lock(key, ttl_seconds=60):
+        nonlocal locked
+        lock_ttls.append(ttl_seconds)
+        events.append("lock")
+        locked = True
+        yield True
+        locked = False
+        events.append("unlock")
+
+    async def wallet_transaction(**kwargs):
+        assert locked is True
+        events.append(kwargs["direction"])
+
+    async def handle(session, current_payment, *, lock_held=False):
+        assert locked is True
+        assert lock_held is True
+        events.append("renew")
+        return True
+
+    wallet_manager = MagicMock()
+    wallet_manager.process_transaction = AsyncMock(side_effect=wallet_transaction)
+
+    with patch("core.redis.distributed_lock", fake_lock), \
+         patch("services.payment.WalletManager", return_value=wallet_manager), \
+         patch("services.payment._handle_direct_renewal", new=handle):
+        result = await process_successful_payment(mock_session, payment, Decimal("5.00"))
+
+    assert result is True
+    assert events == ["lock", "credit", "renew", "unlock"]
+    assert lock_ttls == [120]
+    assert payment.actually_paid == Decimal("5.00")
+
+
+@pytest.mark.asyncio
+async def test_renewal_lock_miss_preserves_credit_retry(mock_session, make_payment):
+    from services.payment import process_successful_payment
+
+    payment = _renewal_payment(make_payment, uuid4())
+
+    @asynccontextmanager
+    async def fake_lock(key, ttl_seconds=60):
+        yield False
+
+    wallet_manager = MagicMock()
+    wallet_manager.process_transaction = AsyncMock()
+
+    with patch("core.redis.distributed_lock", fake_lock), \
+         patch("services.payment.WalletManager", return_value=wallet_manager):
+        result = await process_successful_payment(mock_session, payment, Decimal("5.00"))
+
+    assert result is False
+    assert payment.actually_paid is None
+    wallet_manager.process_transaction.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -120,8 +192,9 @@ async def test_renewal_refused_is_terminal_in_processor(mock_session, make_payme
         callback_payload={"renewal_refused": True},
     )
     with patch("services.payment._handle_direct_renewal", AsyncMock()) as hdr:
-        await process_successful_payment(mock_session, payment, Decimal("5.00"))
-    hdr.assert_not_awaited()                                # no endless re-refusal loop
+        result = await process_successful_payment(mock_session, payment, Decimal("5.00"))
+    assert result is False
+    hdr.assert_not_awaited()
 
 
 # ─── gateway renewal buttons all inherit the ownership/status gate ───────────

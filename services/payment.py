@@ -5,6 +5,7 @@ Handles IPN callbacks and direct purchase provisioning.
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from decimal import Decimal
 from uuid import UUID
 
@@ -56,6 +57,47 @@ async def process_successful_payment(
     session: AsyncSession,
     payment: Payment,
     amount_to_credit: Decimal,
+) -> bool:
+    if payment.kind != "direct_renewal":
+        return await _process_successful_payment(session, payment, amount_to_credit)
+
+    payload = dict(payment.callback_payload or {})
+    if payload.get("renewal_applied"):
+        return True
+    if payload.get("renewal_refused"):
+        return False
+
+    sub_id_str = payload.get("sub_id")
+    try:
+        sub_id = UUID(str(sub_id_str))
+    except (TypeError, ValueError):
+        logger.error("[RENEWAL] Missing or invalid sub_id for payment %s", payment.id)
+        return False
+
+    from core.redis import distributed_lock, renewal_lock_key
+
+    async with distributed_lock(renewal_lock_key(sub_id), ttl_seconds=120) as acquired:
+        if not acquired:
+            logger.warning(
+                "[RENEWAL] Could not acquire renewal lock for sub %s (payment %s) — deferring to retry",
+                sub_id_str,
+                payment.id,
+            )
+            return False
+        return await _process_successful_payment(
+            session,
+            payment,
+            amount_to_credit,
+            renewal_lock_held=True,
+        )
+
+
+async def _process_successful_payment(
+    session: AsyncSession,
+    payment: Payment,
+    amount_to_credit: Decimal,
+    *,
+    renewal_lock_held: bool = False,
 ) -> bool:
     """Process a successful payment: credit the wallet and trigger any
     follow-up action (provision config, apply renewal).
@@ -138,11 +180,15 @@ async def process_successful_payment(
             return True
         if payment.callback_payload and payment.callback_payload.get("renewal_refused"):
             logger.info("[PAYMENT] Renewal was refused (sub status) — not retrying")
-            return True
+            return False
 
         logger.info("[PAYMENT] Step 3: Direct renewal — applying renewal")
         try:
-            renewed = await _handle_direct_renewal(session, payment)
+            renewed = await _handle_direct_renewal(
+                session,
+                payment,
+                lock_held=renewal_lock_held,
+            )
             if renewed is not True:
                 logger.info("[PAYMENT] Direct renewal was not applied; leaving retry flag open")
                 return False
@@ -290,24 +336,39 @@ async def _handle_direct_purchase(
     else:
         logger.info("[PROVISION] Reusing order %s for payment %s", order.id, payment.id)
 
-    # Debit from wallet once (it was credited above)
     wallet_manager = WalletManager(session)
-    # Use a single shared Bot for all messaging
     bot = _get_shared_bot()
-    
+    provisioning_manager = ProvisioningManager(session)
+
     try:
-        if not debited:
-            await wallet_manager.process_transaction(
-                user_id=user.id,
-                amount=Decimal(str(final_price)),
-                transaction_type="purchase",
-                direction="debit",
-                currency=plan.currency,
-                reference_type="order",
-                reference_id=order.id,
-                description=f"Purchase of plan {plan.code}",
-                metadata={"plan_id": str(plan.id), "config_name": config_name},
+        preflight_ok, preflight_reason = await provisioning_manager.preflight_check_plan(plan.id)
+        if not preflight_ok:
+            logger.warning(
+                "[PROVISION] Preflight failed for payment %s: %s",
+                payment.id,
+                preflight_reason,
             )
+            return False
+
+        if not debited:
+            async with session.begin_nested():
+                await wallet_manager.process_transaction(
+                    user_id=user.id,
+                    amount=Decimal(str(final_price)),
+                    transaction_type="purchase",
+                    direction="debit",
+                    currency=plan.currency,
+                    reference_type="order",
+                    reference_id=order.id,
+                    description=f"Purchase of plan {plan.code}",
+                    metadata={"plan_id": str(plan.id), "config_name": config_name},
+                )
+                provisioned = await provisioning_manager.provision_subscription(
+                    user_id=user.id,
+                    plan_id=plan.id,
+                    order_id=order.id,
+                    config_name=config_name,
+                )
             payload = dict(payment.callback_payload or {})
             payload["wallet_debited"] = True
             payload["order_id"] = str(order.id)
@@ -316,16 +377,13 @@ async def _handle_direct_purchase(
             logger.info("[PROVISION] Wallet debited OK")
         else:
             logger.info("[PROVISION] Wallet debit already recorded for order %s", order.id)
+            provisioned = await provisioning_manager.provision_subscription(
+                user_id=user.id,
+                plan_id=plan.id,
+                order_id=order.id,
+                config_name=config_name,
+            )
 
-        # Provision
-        provisioning_manager = ProvisioningManager(session)
-        logger.info("[PROVISION] Calling provision_subscription...")
-        provisioned = await provisioning_manager.provision_subscription(
-            user_id=user.id,
-            plan_id=plan.id,
-            order_id=order.id,
-            config_name=config_name,
-        )
         logger.info("[PROVISION] Provisioning SUCCESS — sub_link=%s", provisioned.sub_link[:50] if provisioned.sub_link else "NONE")
 
         order.status = "provisioned"
@@ -471,6 +529,8 @@ async def _handle_direct_purchase(
 async def _handle_direct_renewal(
     session: AsyncSession,
     payment: Payment,
+    *,
+    lock_held: bool = False,
 ) -> bool:
     """Apply renewal automatically after a successful gateway payment for renewal."""
     renewal_meta = payment.callback_payload
@@ -486,60 +546,74 @@ async def _handle_direct_renewal(
         logger.error("[RENEWAL] Missing renewal metadata for payment %s: %s", payment.id, renewal_meta)
         return False
 
-    from services.renewal import apply_renewal
-
-    subscription = await session.scalar(
-        select(Subscription)
-        .options(selectinload(Subscription.xui_client))
-        .where(Subscription.id == UUID(sub_id_str))
-    )
-    if subscription is None:
-        logger.error("[RENEWAL] Subscription %s not found for renewal payment %s", sub_id_str, payment.id)
-        return False
-
-    # Status gate (mirrors renew_config_start / renew_pay_wallet): a sub that
-    # was punitively disabled (IP-abuse enforcer, admin ban) after the invoice
-    # was created must NOT be re-enabled by paying an old renewal button. The
-    # gateway money was already credited to the wallet in step 1 — refusing
-    # here simply leaves it there, so the user loses nothing.
-    if subscription.status not in ("active", "pending_activation", "expired"):
-        logger.warning(
-            "[RENEWAL] Refusing renewal of sub %s with status=%s (payment %s) — funds stay in wallet",
-            sub_id_str, subscription.status, payment.id,
-        )
-        payload = dict(payment.callback_payload or {})
-        payload["renewal_refused"] = True
-        payload["renewal_refused_status"] = subscription.status
-        payment.callback_payload = payload
-        bot = _get_shared_bot()
-        try:
-            user = await session.scalar(select(User).where(User.id == payment.user_id))
-            if user:
-                await bot.send_message(
-                    user.telegram_id,
-                    "⚠️ امکان تمدید این سرویس وجود ندارد (وضعیت سرویس مجاز نیست).\n"
-                    "مبلغ پرداختی در کیف پول شما باقی ماند.",
-                )
-        finally:
-            await bot.session.close()
-        return False
-
-    logger.info("[RENEWAL] Applying renewal: sub=%s, type=%s, amount=%s", sub_id_str, renew_type, renew_amount)
-
-    # Canonical per-subscription renewal lock — the same key the bot handler,
-    # mini-app and auto-renew take. Without it, an IPN racing auto-renew (or a
-    # user clicking renew in the bot at IPN time) interleaves two debit+apply
-    # sequences on the same sub. On lock-miss we return False WITHOUT setting
-    # renewal_applied, so the pending-payment sweep retries shortly.
+    sub_id = UUID(sub_id_str)
     from core.redis import distributed_lock, renewal_lock_key
 
-    async with distributed_lock(renewal_lock_key(subscription.id), ttl_seconds=60) as acquired:
+    @asynccontextmanager
+    async def held_lock():
+        yield True
+
+    lock_context = held_lock() if lock_held else distributed_lock(
+        renewal_lock_key(sub_id),
+        ttl_seconds=120,
+    )
+    async with lock_context as acquired:
         if not acquired:
             logger.warning(
                 "[RENEWAL] Could not acquire renewal lock for sub %s (payment %s) — deferring to retry",
                 sub_id_str, payment.id,
             )
             return False
+
+        subscription = await session.scalar(
+            select(Subscription)
+            .options(selectinload(Subscription.xui_client))
+            .where(Subscription.id == sub_id)
+            .execution_options(populate_existing=True)
+        )
+        if subscription is None:
+            logger.error("[RENEWAL] Subscription %s not found for renewal payment %s", sub_id_str, payment.id)
+            return False
+
+        if subscription.status not in ("active", "pending_activation", "expired"):
+            logger.warning(
+                "[RENEWAL] Refusing renewal of sub %s with status=%s (payment %s) — funds stay in wallet",
+                sub_id_str, subscription.status, payment.id,
+            )
+            payload = dict(payment.callback_payload or {})
+            payload["renewal_refused"] = True
+            payload["renewal_refused_status"] = subscription.status
+            payment.callback_payload = payload
+            bot = _get_shared_bot()
+            try:
+                user = await session.scalar(select(User).where(User.id == payment.user_id))
+                if user:
+                    await bot.send_message(
+                        user.telegram_id,
+                        "⚠️ امکان تمدید این سرویس وجود ندارد (وضعیت سرویس مجاز نیست).\n"
+                        "مبلغ پرداختی در کیف پول شما باقی ماند.",
+                    )
+            finally:
+                await bot.session.close()
+            return False
+
+        from services.provisioning.manager import ProvisioningManager
+
+        try:
+            preflight_ok, preflight_reason = await ProvisioningManager(
+                session
+            ).preflight_check_subscription(subscription.id)
+        except Exception:
+            preflight_ok, preflight_reason = True, None
+        if not preflight_ok:
+            logger.warning(
+                "[RENEWAL] Preflight failed for payment %s: %s",
+                payment.id,
+                preflight_reason,
+            )
+            return False
+
+        logger.info("[RENEWAL] Applying renewal: sub=%s, type=%s, amount=%s", sub_id_str, renew_type, renew_amount)
         return await _apply_direct_renewal_locked(
             session, payment, subscription, renew_type, renew_amount, sub_id_str
         )
@@ -559,54 +633,58 @@ async def _apply_direct_renewal_locked(
     wallet_manager = WalletManager(session)
     payload = dict(payment.callback_payload or {})
     debit_amount = Decimal(str(payload.get("total_renew_cost") or payment.price_amount))
-    wallet_debited = False
+    plan: Plan | None = None
+    if renew_type == "plan" and subscription.plan_id:
+        plan = await session.scalar(select(Plan).where(Plan.id == subscription.plan_id))
+
     try:
         if not payload.get("wallet_debited"):
-            await wallet_manager.process_transaction(
-                user_id=payment.user_id,
-                amount=debit_amount,
-                transaction_type="renewal",
-                direction="debit",
-                currency=payment.price_currency,
-                reference_type="payment",
-                reference_id=payment.id,
-                description=f"Gateway renewal of subscription {subscription.id}",
-                metadata={
-                    "sub_id": str(subscription.id),
-                    "type": renew_type,
-                    "amount": renew_amount,
-                    "provider": payment.provider,
-                    "partial": bool(payload.get("partial")),
-                    "gateway_portion": str(payment.price_amount),
-                    "full_renewal_cost": str(debit_amount),
-                },
-            )
-            wallet_debited = True
+            async with session.begin_nested():
+                await wallet_manager.process_transaction(
+                    user_id=payment.user_id,
+                    amount=debit_amount,
+                    transaction_type="renewal",
+                    direction="debit",
+                    currency=payment.price_currency,
+                    reference_type="payment",
+                    reference_id=payment.id,
+                    description=f"Gateway renewal of subscription {subscription.id}",
+                    metadata={
+                        "sub_id": str(subscription.id),
+                        "type": renew_type,
+                        "amount": renew_amount,
+                        "provider": payment.provider,
+                        "partial": bool(payload.get("partial")),
+                        "gateway_portion": str(payment.price_amount),
+                        "full_renewal_cost": str(debit_amount),
+                    },
+                )
+                await apply_renewal(
+                    session=session,
+                    subscription=subscription,
+                    renew_type=renew_type,
+                    amount=float(renew_amount),
+                    plan=plan,
+                )
             payload["wallet_debited"] = True
             payment.callback_payload = payload
             await session.flush()
-
-        plan: Plan | None = None
-        if renew_type == "plan" and subscription.plan_id:
-            from models.plan import Plan
-            from sqlalchemy import select
-            plan = await session.scalar(select(Plan).where(Plan.id == subscription.plan_id))
-
-        await apply_renewal(
-            session=session,
-            subscription=subscription,
-            renew_type=renew_type,
-            amount=float(renew_amount),
-            plan=plan,
-        )
+        else:
+            await apply_renewal(
+                session=session,
+                subscription=subscription,
+                renew_type=renew_type,
+                amount=float(renew_amount),
+                plan=plan,
+            )
         logger.info("[RENEWAL] Renewal applied successfully for subscription %s", sub_id_str)
-            
+
     except Exception as exc:
         logger.critical(
             "[RENEWAL] apply_renewal FAILED for sub %s (%s): %s",
             sub_id_str, type(exc).__name__, exc, exc_info=True,
         )
-        was_debited = wallet_debited or bool(payload.get("wallet_debited"))
+        was_debited = bool(payload.get("wallet_debited"))
         refund_ok = not was_debited
         if was_debited:
             try:

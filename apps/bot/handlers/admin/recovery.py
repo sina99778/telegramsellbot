@@ -49,6 +49,42 @@ router.callback_query.middleware(AdminOnlyMiddleware())
 PAYMENT_PAGE_SIZE = 8
 
 
+def _stuck_payment_condition():
+    purchase = and_(
+        Payment.kind == "direct_purchase",
+        or_(
+            ~Payment.callback_payload.has_key("provisioned"),
+            Payment.callback_payload["provisioned"].as_boolean().is_(False),
+        ),
+    )
+    renewal = and_(
+        Payment.kind == "direct_renewal",
+        or_(
+            ~Payment.callback_payload.has_key("renewal_applied"),
+            Payment.callback_payload["renewal_applied"].as_boolean().is_(False),
+        ),
+        or_(
+            ~Payment.callback_payload.has_key("renewal_refused"),
+            Payment.callback_payload["renewal_refused"].as_boolean().is_(False),
+        ),
+    )
+    return and_(Payment.actually_paid.isnot(None), or_(purchase, renewal))
+
+
+def _is_payment_fulfilled(payment: Payment) -> bool:
+    payload = payment.callback_payload or {}
+    if payment.kind == "direct_renewal":
+        return payload.get("renewal_applied") is True
+    return payload.get("provisioned") is True
+
+
+def _delivery_status(payment: Payment) -> str:
+    fulfilled = _is_payment_fulfilled(payment)
+    if payment.kind == "direct_renewal":
+        return f"تمدید: {'اعمال شده' if fulfilled else 'اعمال نشده'}"
+    return f"تحویل: {'انجام شده' if fulfilled else 'انجام نشده'}"
+
+
 class RecoveryPaymentCallback(CallbackData, prefix="rec_pay"):
     action: str  # view, retry, resend, refund, mark_failed
     payment_id: UUID
@@ -72,14 +108,7 @@ async def recovery_main_menu(callback: CallbackQuery, session: AsyncSession) -> 
 
     # Quick counts
     stuck_count = await session.scalar(
-        select(func.count()).select_from(Payment).where(
-            Payment.actually_paid.isnot(None),
-            Payment.kind == "direct_purchase",
-            or_(
-                ~Payment.callback_payload.has_key("provisioned"),
-                Payment.callback_payload["provisioned"].as_boolean().is_(False),
-            ),
-        )
+        select(func.count()).select_from(Payment).where(_stuck_payment_condition())
     ) or 0
 
     waiting_count = await session.scalar(
@@ -152,15 +181,8 @@ async def recovery_payment_list(
     filter_label = ""
 
     if callback_data.filter == "stuck":
-        stmt = stmt.where(
-            Payment.actually_paid.isnot(None),
-            Payment.kind == "direct_purchase",
-            or_(
-                ~Payment.callback_payload.has_key("provisioned"),
-                Payment.callback_payload["provisioned"].as_boolean().is_(False),
-            ),
-        )
-        filter_label = "⚠️ پرداخت موفق بدون تحویل"
+        stmt = stmt.where(_stuck_payment_condition())
+        filter_label = "⚠️ پرداخت موفق بدون تحویل یا اعمال تمدید"
     elif callback_data.filter == "waiting_old":
         stmt = stmt.where(
             Payment.payment_status.in_(["waiting", "confirming"]),
@@ -200,12 +222,12 @@ async def recovery_payment_list(
     for pay in payments:
         user_name = pay.user.first_name if pay.user else "-"
         status_icon = {"finished": "✅", "confirmed": "✅", "failed": "❌", "expired": "⏰", "waiting": "⏳"}.get(pay.payment_status, "❓")
-        provisioned = "✅" if (pay.callback_payload or {}).get("provisioned") else "❌"
         amount = f"{pay.price_amount:.2f}" if pay.price_amount else "-"
+        delivery = _delivery_status(pay)
 
         lines.append(
             f"{status_icon} {amount}$ | {pay.kind[:8]} | {user_name}\n"
-            f"   ID: {str(pay.id)[:8]} | تحویل: {provisioned}"
+            f"   ID: {str(pay.id)[:8]} | {delivery}"
         )
         builder.button(
             text=f"🔍 {str(pay.id)[:8]} | {user_name}",
@@ -254,7 +276,8 @@ async def recovery_payment_detail(
         return
 
     user = payment.user
-    provisioned = (payment.callback_payload or {}).get("provisioned", False)
+    fulfilled = _is_payment_fulfilled(payment)
+    delivery = _delivery_status(payment)
     user_link = f"@{user.username}" if user and user.username else (str(user.telegram_id) if user else "-")
 
     text = (
@@ -266,7 +289,7 @@ async def recovery_payment_detail(
         f"🏦 درگاه: {payment.provider}\n"
         f"📊 وضعیت: {payment.payment_status}\n"
         f"💵 پرداخت شده: {payment.actually_paid or '-'}\n"
-        f"✅ تحویل شده: {'بله' if provisioned else 'خیر'}\n"
+        f"✅ {delivery}\n"
         f"🔗 Provider ID: {payment.provider_payment_id or '-'}\n"
         f"📄 Order ID: {payment.order_id or '-'}\n"
         f"📅 تاریخ: {payment.created_at.strftime('%Y-%m-%d %H:%M') if payment.created_at else '-'}\n"
@@ -281,13 +304,19 @@ async def recovery_payment_detail(
             callback_data=RecoveryPaymentCallback(action="review", payment_id=payment.id).pack(),
         )
 
-    if payment.kind == "direct_purchase" and payment.actually_paid is not None and not provisioned:
+    if (
+        payment.kind in {"direct_purchase", "direct_renewal"}
+        and payment.actually_paid is not None
+        and not fulfilled
+        and not (payment.callback_payload or {}).get("renewal_refused")
+    ):
+        retry_label = "🔄 تلاش مجدد تمدید" if payment.kind == "direct_renewal" else "🔄 تلاش مجدد تحویل"
         builder.button(
-            text="🔄 Retry Provisioning",
+            text=retry_label,
             callback_data=RecoveryPaymentCallback(action="retry", payment_id=payment.id).pack(),
         )
 
-    if payment.actually_paid is not None and not provisioned:
+    if payment.actually_paid is not None and not fulfilled:
         builder.button(
             text="💸 Refund به کیف پول",
             callback_data=RecoveryPaymentCallback(action="refund", payment_id=payment.id).pack(),
@@ -300,7 +329,7 @@ async def recovery_payment_detail(
         )
 
     # Resend config if provisioned
-    if provisioned:
+    if payment.kind == "direct_purchase" and fulfilled:
         builder.button(
             text="📨 ارسال مجدد کانفیگ",
             callback_data=RecoveryPaymentCallback(action="resend", payment_id=payment.id).pack(),
@@ -377,30 +406,46 @@ async def recovery_retry_provisioning(
         await safe_edit_or_send(callback, "پرداخت یافت نشد.")
         return
 
-    if payment.kind != "direct_purchase":
-        await safe_edit_or_send(callback, "این پرداخت از نوع خرید مستقیم نیست.")
+    if payment.kind not in {"direct_purchase", "direct_renewal"}:
+        await safe_edit_or_send(callback, "این پرداخت خرید یا تمدید مستقیم نیست.")
         return
 
-    if (payment.callback_payload or {}).get("provisioned"):
-        await safe_edit_or_send(callback, "✅ این پرداخت قبلاً تحویل داده شده.")
+    if payment.callback_payload and (
+        payment.callback_payload.get("provisioned")
+        or payment.callback_payload.get("renewal_applied")
+        or payment.callback_payload.get("renewal_refused")
+    ):
+        await safe_edit_or_send(callback, "✅ این پرداخت قبلاً تکمیل شده.")
         return
 
     from services.payment import process_successful_payment
 
     try:
-        await process_successful_payment(
+        fulfilled = await process_successful_payment(
             session=session,
             payment=payment,
             amount_to_credit=payment.price_amount,
         )
+        if fulfilled is not True:
+            result = "renewal_refused" if (payment.callback_payload or {}).get("renewal_refused") else "failed"
+            await AuditLogRepository(session).log_action(
+                actor_user_id=admin_user.id,
+                action="retry_payment",
+                entity_type="payment",
+                entity_id=payment.id,
+                payload={"result": result},
+            )
+            await safe_edit_or_send(callback, "⚠️ تلاش مجدد انجام شد، اما پرداخت هنوز تکمیل نشده است.")
+            return
+
         await AuditLogRepository(session).log_action(
             actor_user_id=admin_user.id,
-            action="retry_provisioning",
+            action="retry_payment",
             entity_type="payment",
             entity_id=payment.id,
             payload={"result": "success"},
         )
-        await safe_edit_or_send(callback, f"✅ Provisioning مجدد موفق بود.\n\nPayment: {str(payment.id)[:8]}")
+        await safe_edit_or_send(callback, f"✅ پردازش مجدد موفق بود.\n\nPayment: {str(payment.id)[:8]}")
     except Exception as exc:
         logger.error("Admin retry provisioning failed: %s", exc, exc_info=True)
         await AuditLogRepository(session).log_action(

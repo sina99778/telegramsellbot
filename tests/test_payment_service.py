@@ -92,6 +92,7 @@ class TestProcessSuccessfulPayment:
         wallet_manager = MagicMock()
         wallet_manager.process_transaction = AsyncMock()
         provisioning_manager = MagicMock()
+        provisioning_manager.preflight_check_plan = AsyncMock(return_value=(True, None))
         provisioning_manager.provision_subscription = AsyncMock(return_value=provisioned)
         bot = MagicMock()
         bot.send_message = AsyncMock()
@@ -278,10 +279,12 @@ class TestProcessSuccessfulPayment:
 
         with patch("services.payment.WalletManager") as MockWM, \
              patch("core.redis.distributed_lock", fake_lock), \
+             patch("services.provisioning.manager.ProvisioningManager") as MockPM, \
              patch("services.renewal.apply_renewal", new_callable=AsyncMock) as mock_apply:
             mock_wm = AsyncMock()
             mock_wm.process_transaction = AsyncMock(return_value=MagicMock())
             MockWM.return_value = mock_wm
+            MockPM.return_value.preflight_check_subscription = AsyncMock(return_value=(True, None))
 
             from services.payment import process_successful_payment
             await process_successful_payment(
@@ -324,9 +327,11 @@ class TestProcessSuccessfulPayment:
 
         with patch("services.payment.WalletManager") as MockWM, \
              patch("core.redis.distributed_lock", fake_lock), \
+             patch("services.provisioning.manager.ProvisioningManager") as MockPM, \
              patch("services.renewal.apply_renewal", new_callable=AsyncMock):
             mock_wm = AsyncMock()
             MockWM.return_value = mock_wm
+            MockPM.return_value.preflight_check_subscription = AsyncMock(return_value=(True, None))
 
             from services.payment import process_successful_payment
             await process_successful_payment(

@@ -259,6 +259,13 @@ async def approve_receipt(payment_id: UUID, auth: AuthDep) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("audit log failed: %s", exc)
 
+    if fulfilled is not True:
+        await session.commit()
+        raise HTTPException(
+            status_code=409,
+            detail="پرداخت تأیید و ثبت شد، اما عملیات تحویل ناموفق بود و برای تلاش مجدد باز مانده است.",
+        )
+
     # For wallet top-ups, send a notification to the user
     if payment.kind not in ("direct_purchase", "direct_renewal"):
         try:

@@ -220,18 +220,35 @@ async def approve_manual_payment(
         await safe_edit_caption_or_text(callback, f"⚠️ این پرداخت قبلاً پردازش شده.\nوضعیت: {payment.payment_status}")
         return
 
-    # Process the payment (credit wallet)
+    payment_id = payment.id
+    payment_kind = payment.kind
+    payment_amount = payment.price_amount
     try:
         fulfilled = await process_successful_payment(
             session=session,
             payment=payment,
-            amount_to_credit=payment.price_amount,
+            amount_to_credit=payment_amount,
         )
     except Exception as exc:
-        logger.error("Failed to process manual payment %s: %s", payment.id, exc, exc_info=True)
+        logger.error("Failed to process manual payment %s: %s", payment_id, exc, exc_info=True)
         await safe_edit_caption_or_text(
             callback,
             f"❌ خطا در پردازش پرداخت:\n{str(exc)[:300]}",
+        )
+        return
+
+    if payment_kind in {"direct_purchase", "direct_renewal"} and fulfilled is not True:
+        await session.commit()
+        failure = "ساخت و تحویل کانفیگ" if payment_kind == "direct_purchase" else "اعمال تمدید سرویس"
+        await safe_edit_caption_or_text(
+            callback,
+            "⚠️━━━━━━━━━━━━━━━━━━━━━⚠️\n"
+            "  پرداخت ثبت شد، عملیات ناموفق بود\n"
+            "⚠️━━━━━━━━━━━━━━━━━━━━━⚠️\n\n"
+            f"🆔 پرداخت: <code>{payment_id}</code>\n"
+            f"💵 مبلغ: <b>{payment_amount:.2f} USD</b>\n\n"
+            f"✅ پرداخت تأیید و ثبت شد.\n"
+            f"❌ {failure} انجام نشد و برای تلاش مجدد باز مانده است.",
         )
         return
 

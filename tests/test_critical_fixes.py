@@ -165,6 +165,7 @@ async def test_telegram_failure_after_provisioning_does_not_refund(make_payment)
 
     provisioned = NS(subscription=NS(id=uuid4()), sub_link="https://sub/y", vless_uri="vless://abc")
     mgr_instance = MagicMock()
+    mgr_instance.preflight_check_plan = AsyncMock(return_value=(True, None))
     mgr_instance.provision_subscription = AsyncMock(return_value=provisioned)
 
     with patch("services.payment.WalletManager", return_value=wm_instance), \
@@ -186,7 +187,7 @@ async def test_telegram_failure_after_provisioning_does_not_refund(make_payment)
 
 
 @pytest.mark.asyncio
-async def test_provisioning_failure_still_refunds(make_payment):
+async def test_new_purchase_provisioning_failure_rolls_back_without_refund(make_payment):
     from services.payment import _handle_direct_purchase
 
     plan_id = uuid4()
@@ -217,6 +218,7 @@ async def test_provisioning_failure_still_refunds(make_payment):
     wm_instance.process_transaction = AsyncMock()
 
     mgr_instance = MagicMock()
+    mgr_instance.preflight_check_plan = AsyncMock(return_value=(True, None))
     mgr_instance.provision_subscription = AsyncMock(side_effect=RuntimeError("panel down"))
 
     with patch("services.payment.WalletManager", return_value=wm_instance), \
@@ -226,9 +228,10 @@ async def test_provisioning_failure_still_refunds(make_payment):
         result = await _handle_direct_purchase(session, payment)
 
     assert result is False
-    # two wallet movements: debit then automatic refund
     types = [c.kwargs["transaction_type"] for c in wm_instance.process_transaction.call_args_list]
-    assert types == ["purchase", "refund"]
+    assert types == ["purchase"]
+    nested.__aexit__.assert_awaited_once()
+    assert nested.__aexit__.await_args.args[0] is RuntimeError
     order = session.add.call_args[0][0]
     assert order.status == "refunded"
 
@@ -260,13 +263,10 @@ async def test_volume_renewal_leaves_used_and_lifetime_untouched(mock_session):
     assert sub.lifetime_used_bytes == 7            # NO double-count accumulation
 
 
-# ─── 5. renewal settle: refund outcome drives the wallet_debited marker ──────
+# ─── 5. pre-debited renewal failure attempts refund only ─────────────────────
 
 
 def _renewal_setup(refund_side_effect=None):
-    """Build (session, payment, subscription, wm_instance, bot, wallet_calls) for
-    _apply_direct_renewal_locked where apply_renewal fails and the compensating
-    refund behaves as given."""
     sub_id = uuid4()
     payment = NS(
         id=uuid4(),
@@ -289,6 +289,9 @@ def _renewal_setup(refund_side_effect=None):
         wallet_calls.append(kwargs.get("transaction_type"))
         if kwargs.get("transaction_type") == "refund" and refund_side_effect is not None:
             raise refund_side_effect
+
+    payment.callback_payload["wallet_debited"] = True
+    payment.callback_payload["order_id"] = str(payment.id)
 
     wm_instance = MagicMock()
     wm_instance.process_transaction = AsyncMock(side_effect=_wallet_tx)
@@ -319,8 +322,8 @@ async def test_failed_renewal_with_failed_refund_keeps_debited_marker():
         )
 
     assert result is False
-    assert wallet_calls == ["renewal", "refund"]                # refund WAS attempted
-    assert payment.callback_payload["wallet_debited"] is True   # ...but NOT cleared
+    assert wallet_calls == ["refund"]
+    assert payment.callback_payload["wallet_debited"] is True
     assert payment.callback_payload["needs_manual_refund"] is True
     assert payment.callback_payload["renewal_failed"] is True
 
@@ -342,7 +345,7 @@ async def test_failed_renewal_with_successful_refund_clears_marker():
         )
 
     assert result is False
-    assert wallet_calls == ["renewal", "refund"]
+    assert wallet_calls == ["refund"]
     assert payment.callback_payload["wallet_debited"] is False
     assert "needs_manual_refund" not in payment.callback_payload
     assert payment.callback_payload["renewal_failed"] is True
