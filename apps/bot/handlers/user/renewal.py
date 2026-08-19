@@ -22,6 +22,7 @@ from core.texts import Buttons, Messages
 from models.order import Order
 from models.plan import Plan
 from models.subscription import Subscription
+from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.settings import AppSettingsRepository
 from repositories.user import UserRepository
 from services.xui.client import SanaeiXUIClient, XUIClient, XUIRequestError
