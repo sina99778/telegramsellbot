@@ -115,7 +115,13 @@ async def renew_config_start(callback: CallbackQuery, callback_data: MyConfigCal
         await safe_edit_or_send(callback, "حساب شما پیدا نشد.")
         return
     sub = await session.scalar(
-        _sel(Subscription).where(
+        _sel(Subscription)
+        .options(
+            selectinload(Subscription.xui_client)
+            .selectinload(XUIClientRecord.inbound)
+            .selectinload(XUIInboundRecord.server)
+        )
+        .where(
             Subscription.id == callback_data.subscription_id,
             Subscription.user_id == requester.id,
         )
@@ -129,6 +135,36 @@ async def renew_config_start(callback: CallbackQuery, callback_data: MyConfigCal
             "⛔ این سرویس قابل تمدید نیست. لطفاً برای رفع مشکل با پشتیبانی تماس بگیرید.",
         )
         return
+
+    # ── Server Reachability Gate ──
+    # Ensure underlying server is active and reachable before allowing renewal
+    if sub.xui_client and sub.xui_client.inbound and sub.xui_client.inbound.server:
+        server = sub.xui_client.inbound.server
+        if not server.is_active or server.health_status == "deleted":
+            await safe_edit_or_send(
+                callback,
+                "⚠️ <b>سرور این سرویس غیرفعال یا حذف شده است</b>\n\n"
+                "امکان تمدید روی این سرور وجود ندارد. لطفاً ابتدا از گزینه «🛠 تغییر سرور (رفع اتصال)» در صفحه قبل برای انتقال به یک سرور فعال استفاده کنید.",
+                parse_mode="HTML",
+            )
+            return
+
+        from services.panels.registry import strategy_for_server
+        import asyncio
+        try:
+            strategy = strategy_for_server(server)
+            await asyncio.wait_for(strategy.health_probe(server), timeout=3.5)
+        except Exception as probe_exc:
+            logger.warning("Renewal preflight probe failed for server %s: %s", server.id, probe_exc)
+            await safe_edit_or_send(
+                callback,
+                "⚠️ <b>عدم دسترسی به سرور سرویس</b>\n\n"
+                "در حال حاضر ارتباط ربات با سرور میزبان این کانفیگ برقرار نیست.\n"
+                "برای جلوگیری از کسر وجه ناموفق و بروز مشکل، تمدید این سرویس موقتاً مسدود است.\n\n"
+                "💡 لطفاً چند دقیقه دیگر مجدداً تلاش کنید یا از بخش «تغییر سرور» برای انتقال به سرور دیگر استفاده کنید.",
+                parse_mode="HTML",
+            )
+            return
 
     await state.clear()
 

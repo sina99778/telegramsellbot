@@ -136,9 +136,10 @@ async def admin_servers_menu(callback: CallbackQuery) -> None:
     builder = InlineKeyboardBuilder()
     builder.button(text=AdminButtons.ADD_SERVER, callback_data="admin:servers:add")
     builder.button(text=AdminButtons.LIST_SERVERS, callback_data=ServerListPageCallback(page=1).pack())
+    builder.button(text="🔍 تست اتصال همه سرورها", callback_data="admin:servers:test_all")
     builder.button(text="🎯 اینباندهای fallback", callback_data="admin:fallback_inbounds")
     builder.button(text=AdminButtons.BACK, callback_data="admin:main")
-    builder.adjust(2, 1, 1)
+    builder.adjust(2, 1, 1, 1)
     
     if callback.message:
         try:
@@ -863,6 +864,10 @@ async def server_manage_menu(
     
     if server.health_status != "deleted":
         builder.button(
+            text="🔌 تست اتصال سرور",
+            callback_data=ServerActionCallback(action="test", server_id=server.id, page=callback_data.page).pack(),
+        )
+        builder.button(
             text=f"🔄 سینک کردن پنل",
             callback_data=ServerActionCallback(action="sync", server_id=server.id, page=callback_data.page).pack(),
         )
@@ -871,7 +876,7 @@ async def server_manage_menu(
             callback_data=ServerActionCallback(action="toggle", server_id=server.id, page=callback_data.page).pack(),
         )
         builder.button(
-            text="⚡ ריستارت هسته",
+            text="⚡ ریستارت هسته",
             callback_data=ServerActionCallback(action="restart", server_id=server.id, page=callback_data.page).pack(),
         )
         builder.button(
@@ -900,8 +905,74 @@ async def server_manage_menu(
         callback_data=ServerListPageCallback(page=callback_data.page).pack(),
     )
     
-    builder.adjust(2, 2, 2, 1, 1)
+    builder.adjust(2, 2, 2, 2, 1, 1)
     await _edit_or_send(callback, text=text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(F.data == "admin:servers:test_all")
+async def test_all_servers_handler(
+    callback: CallbackQuery,
+    session: AsyncSession,
+) -> None:
+    """Test connectivity and diagnose all active servers."""
+    await callback.answer("🔍 در حال تست اتصال تمامی سرورها...")
+    await _edit_or_send(
+        callback,
+        "⏳ <b>در حال انجام تست چندمرحله‌ای اتصال سرورها...</b>\n\nلطفاً چند لحظه صبر کنید.",
+        parse_mode="HTML",
+    )
+
+    from services.server_diagnostics import diagnose_all_servers, format_all_servers_diagnostic
+
+    results = await diagnose_all_servers(session)
+    report_text = format_all_servers_diagnostic(results)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔄 تست مجدد", callback_data="admin:servers:test_all")
+    builder.button(text="🔙 مدیریت سرورها", callback_data="admin:servers")
+    builder.adjust(1, 1)
+
+    await _edit_or_send(callback, text=report_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
+@router.callback_query(ServerActionCallback.filter(F.action == "test"))
+async def test_single_server_handler(
+    callback: CallbackQuery,
+    callback_data: ServerActionCallback,
+    session: AsyncSession,
+) -> None:
+    """Perform a comprehensive connection diagnostic on a single server."""
+    await callback.answer("🔌 در حال تست اتصال سرور...")
+
+    server = await session.scalar(
+        select(XUIServerRecord)
+        .options(
+            selectinload(XUIServerRecord.credentials),
+            selectinload(XUIServerRecord.inbounds),
+        )
+        .where(XUIServerRecord.id == callback_data.server_id)
+    )
+    if server is None:
+        await safe_edit_or_send(callback, AdminMessages.SERVER_NOT_FOUND)
+        return
+
+    from services.server_diagnostics import diagnose_server, format_single_server_diagnostic
+
+    result = await diagnose_server(server)
+    report_text = format_single_server_diagnostic(result)
+
+    builder = InlineKeyboardBuilder()
+    builder.button(
+        text="🔄 تست مجدد",
+        callback_data=ServerActionCallback(action="test", server_id=server.id, page=callback_data.page).pack(),
+    )
+    builder.button(
+        text="🔙 بازگشت به مدیریت سرور",
+        callback_data=ServerActionCallback(action="manage", server_id=server.id, page=callback_data.page).pack(),
+    )
+    builder.adjust(1, 1)
+
+    await _edit_or_send(callback, text=report_text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
 @router.callback_query(ServerActionCallback.filter(F.action == "edit_domain"))

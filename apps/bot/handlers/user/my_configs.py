@@ -572,11 +572,11 @@ async def my_config_detail_handler(
     esc = html.escape
     usage_bar = format_usage_bar(sub.used_bytes, sub.volume_bytes)
     if realtime_ok:
-        sync_label = "✅ لحظه‌ای"
+        sync_label = "✅ لحظه‌ای (بروز)"
     elif realtime_error:
-        sync_label = f"❌ خطا: {esc(realtime_error)}"
+        sync_label = f"⚠️ آفلاین ({esc(realtime_error)} - دیتای ذخیره‌شده)"
     else:
-        sync_label = "⚠️ آفلاین"
+        sync_label = "⚠️ آفلاین (دیتای ذخیره‌شده)"
     lines = [
         f"📛 <b>نام کانفیگ</b>: <code>{esc(xui.username if xui else '-')}</code>",
         f"📦 <b>پلن</b>: <code>{esc(plan_name)}</code>",
