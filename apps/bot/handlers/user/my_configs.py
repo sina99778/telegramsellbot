@@ -458,7 +458,6 @@ async def my_config_detail_handler(
             Subscription.id == callback_data.subscription_id,
             Subscription.user_id == user.id,
         )
-        .with_for_update()
     )
     if sub is None:
         await safe_edit_or_send(callback, "کانفیگ پیدا نشد یا متعلق به شما نیست.")
@@ -484,10 +483,13 @@ async def my_config_detail_handler(
     realtime_ok = False
     realtime_error = ""
     try:
+        import asyncio
         from apps.worker.jobs.subscriptions import get_realtime_usage
-        usage = await get_realtime_usage(session, sub)
+        usage = await asyncio.wait_for(get_realtime_usage(session, sub), timeout=3.0)
         if usage is not None:
             realtime_ok = True
+    except asyncio.TimeoutError:
+        realtime_error = "تایم‌اوت پنل"
     except Exception as exc:
         logger.error("Failed to fetch realtime usage for sub %s: %s", sub.id, exc, exc_info=True)
         realtime_error = str(exc)[:100]
@@ -693,31 +695,39 @@ async def my_config_detail_handler(
         if sub.ends_at:
             days_left = max((sub.ends_at - datetime.now(timezone.utc)).days, 0)
         
-        banner_bytes = create_traffic_banner(
-            config_name=config_name,
-            user_id=user.id,
-            status=sub.status,
-            used_gb=sub.used_bytes / (1024**3),
-            total_gb=sub.volume_bytes / (1024**3),
-            days_left=days_left,
-            is_active=(sub.status in ["active", "pending_activation"]),
-            bot_username=(bot._me.username if bot._me else (await bot.get_me()).username) if bot else None,
-            vless_uri=vless_uri,
-        )
+        bot_uname = getattr(getattr(bot, "_me", None), "username", None)
+        try:
+            banner_bytes = create_traffic_banner(
+                config_name=config_name,
+                user_id=user.id,
+                status=sub.status,
+                used_gb=sub.used_bytes / (1024**3),
+                total_gb=sub.volume_bytes / (1024**3),
+                days_left=days_left,
+                is_active=(sub.status in ["active", "pending_activation"]),
+                bot_username=bot_uname,
+                vless_uri=vless_uri,
+            )
+        except Exception as banner_exc:
+            logger.warning("Failed to generate traffic banner for sub %s: %s", sub.id, banner_exc)
+            banner_bytes = None
+
         if banner_bytes:
             try:
-                await callback.message.delete()
-            except Exception:
-                pass
-            
-            await bot.send_photo(
-                chat_id=callback.from_user.id,
-                photo=BufferedInputFile(banner_bytes.getvalue(), filename="banner.png"),
-                caption=text,
-                reply_markup=builder.as_markup(),
-                parse_mode="HTML"
-            )
-            return
+                await bot.send_photo(
+                    chat_id=callback.from_user.id,
+                    photo=BufferedInputFile(banner_bytes.getvalue(), filename="banner.png"),
+                    caption=text,
+                    reply_markup=builder.as_markup(),
+                    parse_mode="HTML"
+                )
+                try:
+                    await callback.message.delete()
+                except Exception:
+                    pass
+                return
+            except Exception as photo_exc:
+                logger.warning("Failed to send banner photo: %s, falling back to text", photo_exc)
 
     # Fallback to text message
     if callback.message is not None:

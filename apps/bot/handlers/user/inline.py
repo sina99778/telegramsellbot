@@ -120,9 +120,17 @@ async def inline_query_handler(inline_query: InlineQuery, session: AsyncSession)
     # link pointed at a dead (or squatted) bot. Bot._me is cached by aiogram
     # after startup, so this is normally free.
     bot = inline_query.bot
-    bot_username = (
-        (bot._me.username if bot._me else (await bot.get_me()).username) if bot else None
-    ) or "YourBot"
+    bot_username = None
+    if bot:
+        if getattr(bot, "_me", None) and bot._me.username:
+            bot_username = bot._me.username
+        else:
+            try:
+                me = await bot.get_me()
+                bot_username = me.username if me else None
+            except Exception:
+                bot_username = None
+    bot_username = bot_username or "YourBot"
     ref_link = f"https://t.me/{bot_username}?start=ref_{user.ref_code}"
 
     # Generate results for active configs

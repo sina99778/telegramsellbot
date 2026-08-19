@@ -1665,7 +1665,7 @@ async def _finalize_purchase(
         total_gb=plan.volume_bytes / (1024**3),
         days_left=plan.duration_days if plan.duration_days else None,
         is_active=True,
-        bot_username=(bot._me.username if bot._me else (await bot.get_me()).username) if bot else None,
+        bot_username=getattr(getattr(bot, "_me", None), "username", None),
         vless_uri=vless_uri,
     )
     
