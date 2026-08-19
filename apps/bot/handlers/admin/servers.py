@@ -916,7 +916,7 @@ async def test_all_servers_handler(
 ) -> None:
     """Test connectivity and diagnose all active servers."""
     await callback.answer("🔍 در حال تست اتصال تمامی سرورها...")
-    await _edit_or_send(
+    await safe_edit_or_send(
         callback,
         "⏳ <b>در حال انجام تست چندمرحله‌ای اتصال سرورها...</b>\n\nلطفاً چند لحظه صبر کنید.",
         parse_mode="HTML",
@@ -932,7 +932,7 @@ async def test_all_servers_handler(
     builder.button(text="🔙 مدیریت سرورها", callback_data="admin:servers")
     builder.adjust(1, 1)
 
-    await _edit_or_send(callback, text=report_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    await safe_edit_or_send(callback, report_text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
 @router.callback_query(ServerActionCallback.filter(F.action == "test"))
@@ -972,7 +972,7 @@ async def test_single_server_handler(
     )
     builder.adjust(1, 1)
 
-    await _edit_or_send(callback, text=report_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+    await safe_edit_or_send(callback, report_text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
 @router.callback_query(ServerActionCallback.filter(F.action == "edit_domain"))
@@ -1373,9 +1373,9 @@ def _build_server_list_keyboard(
 
 async def _edit_or_send(
     callback: CallbackQuery,
+    text: str = "",
     *,
-    text: str,
-    reply_markup,
+    reply_markup: Any = None,
     parse_mode: str | None = None,
 ) -> None:
     try:
