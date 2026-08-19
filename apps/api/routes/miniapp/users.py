@@ -2175,28 +2175,25 @@ async def _purchase_with_wallet(
 
     # ── Sales notification — prefers the dedicated channel ──
     try:
-        from services.notifications import notify_sales_event
-        from core.formatting import format_plan_volume
+        from services.sales_notifications import notify_purchase as _notify_purchase
         bot = PremiumEmojiBot(
             token=settings.bot_token.get_secret_value(),
             default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
         )
         try:
-            volume_label = format_plan_volume(plan.volume_bytes)
-            user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
-            admin_text = (
-                "🛒 خرید جدید (مینی‌اپ)!\n\n"
-                f"👤 کاربر: {user.first_name or '-'} | {user_link} (ID: <code>{user.telegram_id}</code>)\n"
-                f"📦 پلن: {plan.name}\n"
-                f"💰 مبلغ: {final_price:.2f} {plan.currency}\n"
-                f"📛 کانفیگ: {config_name}\n"
-                f"💳 روش: کیف پول"
+            await _notify_purchase(
+                session,
+                bot,
+                user=user,
+                subscription=provisioned.subscription,
+                price_usd=final_price,
+                payment_method="wallet",
+                config_name=config_name,
             )
-            await notify_sales_event(session, bot, admin_text)
         finally:
             await bot.session.close()
     except Exception as exc:
-        logger.warning("[PURCHASE] Failed to notify admins: %s", exc)
+        logger.warning("[PURCHASE] Failed to notify sales channel: %s", exc)
 
     return PurchaseResponse(
         status="provisioned",
@@ -2810,34 +2807,26 @@ async def renew_subscription(
 
     # ── Sales notification — prefers the dedicated channel ──
     try:
-        from services.notifications import notify_sales_event
+        from services.sales_notifications import notify_renewal as _notify_renewal
         bot = PremiumEmojiBot(
             token=settings.bot_token.get_secret_value(),
             default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
         )
         try:
-            if body.renew_type == "plan":
-                type_label = "تمدید پلن فعلی"
-                amount_label = "بازنشانی کامل"
-            elif body.renew_type == "volume":
-                type_label = "حجم"
-                amount_label = f"{amount} گیگابایت"
-            else:
-                type_label = "زمان"
-                amount_label = f"{int(amount)} روز"
-            user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
-            admin_text = (
-                "🔄 تمدید جدید (مینی‌اپ)!\n\n"
-                f"👤 کاربر: {user.first_name or '-'} | {user_link}\n"
-                f"📦 نوع: {type_label} ({amount_label})\n"
-                f"💰 مبلغ: {price:.2f} USD\n"
-                f"💳 روش: کیف پول"
+            await _notify_renewal(
+                session,
+                bot,
+                user=user,
+                subscription=subscription,
+                renew_type=body.renew_type,
+                amount=float(amount),
+                price_usd=price,
+                payment_method="wallet",
             )
-            await notify_sales_event(session, bot, admin_text)
         finally:
             await bot.session.close()
     except Exception as exc:
-        logger.warning("[RENEWAL] Failed to notify: %s", exc)
+        logger.warning("[RENEWAL] Failed to notify sales channel: %s", exc)
 
     return RenewalResponse(
         status="renewed",

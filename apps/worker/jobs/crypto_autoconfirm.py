@@ -286,27 +286,6 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
                 except Exception as exc:
                     logger.warning("autoconfirm user notify failed: %s", exc)
 
-            # 2) Post to the sales-report channel (or fall back to
-            #    admin DMs if no channel is configured) — polished
-            #    sectioned format via services.sales_notifications.
-            if bot is not None:
-                try:
-                    from sqlalchemy.orm import selectinload as _sel
-                    from services.sales_notifications import notify_wallet_topup as _notify
-                    from models.user import User as _U
-                    u = await session.scalar(
-                        select(_U).options(_sel(_U.wallet)).where(_U.id == matched_payment.user_id)
-                    )
-                    if u:
-                        await _notify(
-                            session, bot,
-                            user=u,
-                            amount_usd=matched_payment.price_amount,
-                            payment_method="autoconfirm",
-                            tx_hash=str(tx_hash),
-                        )
-                except Exception as exc:
-                    logger.warning("autoconfirm sales-notify failed: %s", exc)
 
         # End of this (currency, address) target: if we polled TXs but none
         # matched, surface that at INFO so the operator sees the precise

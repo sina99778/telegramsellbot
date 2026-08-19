@@ -1686,19 +1686,17 @@ async def _finalize_purchase(
         )
 
     # ── Sales notification — prefers the dedicated channel ──
-    from services.notifications import notify_sales_event
-
-    user_link = f"@{user.username}" if user.username else f"<a href='tg://user?id={user.telegram_id}'>مشاهده پروفایل</a>"
-    admin_text = (
-        "🛒 خرید جدید!\n\n"
-        f"👤 کاربر: {user.first_name or '-'} | {user_link} (ID: <code>{user.telegram_id}</code>)\n"
-        f"📦 پلن: {plan.name}\n"
-        f"💰 مبلغ: {final_price} {plan.currency}\n"
-        f"📛 کانفیگ: {config_name}\n"
-        f"💳 روش: {payment_label}"
-    )
     try:
-        await notify_sales_event(session, bot, admin_text)
+        from services.sales_notifications import notify_purchase as _notify_purchase
+        await _notify_purchase(
+            session,
+            bot,
+            user=user,
+            subscription=provisioned.subscription,
+            price_usd=final_price,
+            payment_method=payment_method,
+            config_name=config_name,
+        )
     except Exception as exc:
         logger.warning("Failed to notify about purchase: %s", exc)
 

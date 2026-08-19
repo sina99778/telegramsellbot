@@ -126,7 +126,65 @@ def _user_link(user: User) -> str:
     return f"<a href='tg://user?id={user.telegram_id}'>{label}</a>"
 
 
-async def _user_wallet_balance_label(session: AsyncSession, user: User) -> str:
+async def _get_user_summary(session: AsyncSession, user: User | UUID | int) -> dict:
+    from sqlalchemy import select
+    from models.user import User as UserModel, UserProfile
+    u_id = getattr(user, "id", user)
+
+    # Try fetching with select to avoid MissingGreenlet on expired attributes
+    try:
+        row = (await session.execute(
+            select(UserModel.id, UserModel.telegram_id, UserModel.first_name, UserModel.username)
+            .where(UserModel.id == u_id)
+        )).first()
+        if row:
+            uid, tg_id, fname, uname = row
+            phone = None
+            try:
+                prof_notes = await session.scalar(
+                    select(UserProfile.notes).where(UserProfile.user_id == uid)
+                )
+                if prof_notes and isinstance(prof_notes, str) and prof_notes.startswith("{"):
+                    import json
+                    pdict = json.loads(prof_notes)
+                    pmeta = pdict.get("verified_phone")
+                    if isinstance(pmeta, dict) and pmeta.get("phone"):
+                        phone = pmeta.get("phone")
+            except Exception:
+                pass
+            return {
+                "id": uid,
+                "telegram_id": tg_id,
+                "first_name": fname,
+                "username": uname,
+                "phone": phone,
+            }
+    except Exception:
+        pass
+
+    # Fallback to direct attribute access if user object was provided
+    if isinstance(user, User):
+        try:
+            return {
+                "id": getattr(user, "id", None),
+                "telegram_id": getattr(user, "telegram_id", 0),
+                "first_name": getattr(user, "first_name", "—"),
+                "username": getattr(user, "username", None),
+                "phone": _phone_label(user),
+            }
+        except Exception:
+            pass
+
+    return {
+        "id": u_id,
+        "telegram_id": 0,
+        "first_name": "—",
+        "username": None,
+        "phone": None,
+    }
+
+
+async def _user_wallet_balance_label(session: AsyncSession, user_id) -> str:
     """Return the user's current wallet balance in the operator-configured
     display currency (USD or Toman). Falls back to '—' on any error."""
     try:
@@ -135,10 +193,16 @@ async def _user_wallet_balance_label(session: AsyncSession, user: User) -> str:
         mode = await repo.get_display_currency()
     except Exception:
         rate, mode = 100000, "USD"
-    try:
-        balance = user.wallet.balance if (user.wallet and user.wallet.balance is not None) else Decimal("0")
-    except Exception:
+    if not user_id:
         return "—"
+    try:
+        from sqlalchemy import select
+        from models.wallet import Wallet
+        balance = await session.scalar(select(Wallet.balance).where(Wallet.user_id == user_id))
+        if balance is None:
+            balance = Decimal("0")
+    except Exception:
+        balance = Decimal("0")
     return format_money(balance, mode=mode, toman_rate=rate)
 
 
@@ -163,12 +227,7 @@ def _phone_label(user: User) -> str | None:
 
 
 async def _server_label_async(session: AsyncSession, sub: Subscription) -> str | None:
-    """Human-friendly server name from the subscription's X-UI client.
-
-    Does its OWN eager-loaded fetch so a caller who passes a Subscription
-    without `xui_client.inbound.server` chain pre-loaded doesn't trip a
-    MissingGreenlet inside this notification path.
-    """
+    """Human-friendly server name from the subscription's X-UI client."""
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
     from models.xui import XUIClientRecord, XUIInboundRecord
@@ -188,35 +247,55 @@ async def _server_label_async(session: AsyncSession, sub: Subscription) -> str |
     return None
 
 
-def _config_name_for_sub(sub: Subscription, fallback: str | None = None) -> str:
-    """Display name to use for a subscription — same logic as the bot
-    My-Configs view: legacy_remark for imports, else xui_client.username,
-    else plan name, else 'سرویس'."""
+async def _config_name_for_sub_async(session: AsyncSession, sub: Subscription, fallback: str | None = None) -> str:
+    """Display name to use for a subscription."""
     try:
-        if getattr(sub, "source", None) == "imported_legacy" and getattr(sub, "legacy_remark", None):
-            return sub.legacy_remark
-        if sub.xui_client and sub.xui_client.username:
-            return sub.xui_client.username
+        from sqlalchemy import select
+        from models.subscription import Subscription as SubModel
+        from models.xui import XUIClientRecord
+        from models.plan import Plan as PlanModel
+
+        row = (await session.execute(
+            select(SubModel.legacy_remark, SubModel.source, SubModel.plan_id)
+            .where(SubModel.id == sub.id)
+        )).first()
+
+        if row:
+            legacy_remark, source, plan_id = row
+            if source == "imported_legacy" and legacy_remark:
+                return legacy_remark
+            
+            client_uname = await session.scalar(
+                select(XUIClientRecord.username).where(XUIClientRecord.subscription_id == sub.id)
+            )
+            if client_uname:
+                return client_uname
+
+            if plan_id:
+                plan_name = await session.scalar(
+                    select(PlanModel.name).where(PlanModel.id == plan_id)
+                )
+                if plan_name:
+                    return plan_name
     except Exception:
         pass
-    if sub.plan and sub.plan.name:
-        return sub.plan.name
     return fallback or "سرویس"
 
 
 # ── Section builders ────────────────────────────────────────────────────
 
 
-def _user_section(user: User, wallet_label: str) -> str:
-    phone = _phone_label(user)
+def _user_section(user_summary: dict, wallet_label: str) -> str:
     parts: list[str] = []
     parts.append("💬 <b>مشخصات کاربر</b>")
-    parts.append(f"🪪 آیدی کاربر: <code>{_esc(user.telegram_id)}</code>")
-    parts.append(f"👤 اسم کاربر: {_esc(user.first_name or '—')}")
-    if user.username:
-        parts.append(f"💬 نام کاربری: @{_esc(user.username)}")
+    parts.append(f"🪪 آیدی کاربر: <code>{_esc(user_summary.get('telegram_id'))}</code>")
+    parts.append(f"👤 اسم کاربر: {_esc(user_summary.get('first_name') or '—')}")
+    uname = user_summary.get("username")
+    if uname:
+        parts.append(f"💬 نام کاربری: @{_esc(uname)}")
     else:
         parts.append("💬 نام کاربری: —")
+    phone = user_summary.get("phone")
     if phone:
         parts.append(f"⚡ شماره تماس: <code>{_esc(phone)}</code>")
     parts.append(f"💰 موجودی کاربر: <b>{wallet_label}</b>")
@@ -280,32 +359,38 @@ async def notify_purchase(
     config_name: str | None = None,
 ) -> None:
     """Polished sales-report on a successful new-config purchase."""
-    method_fa = _method_fa(payment_method)
-    wallet_label = await _user_wallet_balance_label(session, user)
-    amount_label = await _amount_label(session, price_usd)
-
-    sections = [
-        _user_section(user, wallet_label),
-        _service_section(
-            server=await _server_label_async(session, subscription),
-            config_name=config_name or _config_name_for_sub(subscription),
-            volume_bytes=int(subscription.volume_bytes or 0),
-            days_label=_days_label(subscription.starts_at, subscription.ends_at),
-            amount_label=amount_label,
-            amount_kind="پرداختی",
-        ),
-    ]
-    text = _wrap_event(
-        header="🛒 | خرید جدید",
-        method_fa=method_fa,
-        sections=sections,
-        footer="بنازم خرید جدید ❤️",
-        when_dt=getattr(subscription, "created_at", None) or datetime.now(timezone.utc),
-    )
     try:
+        user_summary = await _get_user_summary(session, user)
+        method_fa = _method_fa(payment_method)
+        wallet_label = await _user_wallet_balance_label(session, user_summary.get("id"))
+        amount_label = await _amount_label(session, price_usd)
+
+        cfg_name = config_name or await _config_name_for_sub_async(session, subscription)
+        server_lbl = await _server_label_async(session, subscription)
+        volume_bytes = int(getattr(subscription, "volume_bytes", 0) or 0)
+        days_label = _days_label(getattr(subscription, "starts_at", None), getattr(subscription, "ends_at", None))
+
+        sections = [
+            _user_section(user_summary, wallet_label),
+            _service_section(
+                server=server_lbl,
+                config_name=cfg_name,
+                volume_bytes=volume_bytes,
+                days_label=days_label,
+                amount_label=amount_label,
+                amount_kind="پرداختی",
+            ),
+        ]
+        text = _wrap_event(
+            header="🛒 | خرید جدید",
+            method_fa=method_fa,
+            sections=sections,
+            footer="بنازم خرید جدید ❤️",
+            when_dt=getattr(subscription, "created_at", None) or datetime.now(timezone.utc),
+        )
         await notify_sales_event(session, bot, text)
     except Exception as exc:
-        logger.warning("notify_purchase failed: %s", exc)
+        logger.warning("notify_purchase failed: %s", exc, exc_info=True)
 
 
 async def notify_renewal(
@@ -314,69 +399,73 @@ async def notify_renewal(
     *,
     user: User,
     subscription: Subscription,
-    renew_type: str,         # "volume" | "time"
+    renew_type: str,         # "volume" | "time" | "plan"
     amount: float,            # gigabytes for volume, days for time
     price_usd: Decimal | float,
     payment_method: str,
 ) -> None:
-    method_fa = _method_fa(payment_method)
-    wallet_label = await _user_wallet_balance_label(session, user)
-    amount_label = await _amount_label(session, price_usd)
-
-    if renew_type == "volume":
-        header = "💸 | افزایش حجم با"
-        volume_for_display = int(amount * 1024**3)
-        days_for_display = "—"
-        amount_kind = "افزایش"
-    elif renew_type == "plan":
-        # Plan renewal resets quota AND days to the plan's fresh values — by
-        # the time this notification fires the subscription columns already
-        # hold the post-reset numbers, so show those.
-        header = "🔄 | تمدید پلن فعلی با"
-        volume_for_display = int(subscription.volume_bytes or 0)
-        days_for_display = "بازنشانی کامل"
-        amount_kind = "تمدید"
-    else:
-        header = "⏳ | افزایش زمان با"
-        volume_for_display = 0
-        days_for_display = f"{int(amount)} روز"
-        amount_kind = "افزایش"
-
-    sections = [
-        _user_section(user, wallet_label),
-        _service_section(
-            server=await _server_label_async(session, subscription),
-            config_name=_config_name_for_sub(subscription),
-            volume_bytes=volume_for_display,
-            days_label=days_for_display,
-            amount_label=amount_label,
-            amount_kind="پرداختی",
-        ),
-    ]
-    # Renewal: also surface the renewal-specific amount line.
-    if renew_type == "plan":
-        addendum = (
-            "\n\n📈 نوع تمدید: پلن فعلی\n"
-            "🔄 حجم و زمان سرویس به مقادیر جدید پلن <b>بازنشانی</b> شد"
-        )
-    else:
-        addendum = (
-            f"\n\n📈 نوع تمدید: {('حجم' if renew_type == 'volume' else 'زمان')}\n"
-            f"➕ مقدار افزوده: <b>{_esc(amount)}</b> "
-            f"{('گیگ' if renew_type == 'volume' else 'روز')}"
-        )
-    sections[1] = sections[1] + addendum  # tack onto the service section
-
-    text = _wrap_event(
-        header=header,
-        method_fa=method_fa,
-        sections=sections,
-        footer="بنازم تمدید جدید 🔄",
-    )
     try:
+        user_summary = await _get_user_summary(session, user)
+        method_fa = _method_fa(payment_method)
+        wallet_label = await _user_wallet_balance_label(session, user_summary.get("id"))
+        amount_label = await _amount_label(session, price_usd)
+
+        cfg_name = await _config_name_for_sub_async(session, subscription)
+        server_lbl = await _server_label_async(session, subscription)
+
+        if renew_type == "volume":
+            header = "💸 | افزایش حجم با"
+            volume_for_display = int(amount * 1024**3)
+            days_for_display = "—"
+            amount_kind = "افزایش"
+        elif renew_type == "plan":
+            # Plan renewal resets quota AND days to the plan's fresh values — by
+            # the time this notification fires the subscription columns already
+            # hold the post-reset numbers, so show those.
+            header = "🔄 | تمدید پلن فعلی با"
+            volume_for_display = int(getattr(subscription, "volume_bytes", 0) or 0)
+            days_for_display = "بازنشانی کامل"
+            amount_kind = "تمدید"
+        else:
+            header = "⏳ | افزایش زمان با"
+            volume_for_display = 0
+            days_for_display = f"{int(amount)} روز"
+            amount_kind = "افزایش"
+
+        sections = [
+            _user_section(user_summary, wallet_label),
+            _service_section(
+                server=server_lbl,
+                config_name=cfg_name,
+                volume_bytes=volume_for_display,
+                days_label=days_for_display,
+                amount_label=amount_label,
+                amount_kind="پرداختی",
+            ),
+        ]
+        # Renewal: also surface the renewal-specific amount line.
+        if renew_type == "plan":
+            addendum = (
+                "\n\n📈 نوع تمدید: پلن فعلی\n"
+                "🔄 حجم و زمان سرویس به مقادیر جدید پلن <b>بازنشانی</b> شد"
+            )
+        else:
+            addendum = (
+                f"\n\n📈 نوع تمدید: {('حجم' if renew_type == 'volume' else 'زمان')}\n"
+                f"➕ مقدار افزوده: <b>{_esc(amount)}</b> "
+                f"{('گیگ' if renew_type == 'volume' else 'روز')}"
+            )
+        sections[1] = sections[1] + addendum  # tack onto the service section
+
+        text = _wrap_event(
+            header=header,
+            method_fa=method_fa,
+            sections=sections,
+            footer="بنازم تمدید جدید 🔄",
+        )
         await notify_sales_event(session, bot, text)
     except Exception as exc:
-        logger.warning("notify_renewal failed: %s", exc)
+        logger.warning("notify_renewal failed: %s", exc, exc_info=True)
 
 
 async def notify_wallet_topup(
@@ -389,26 +478,27 @@ async def notify_wallet_topup(
     tx_hash: str | None = None,
 ) -> None:
     """Top-up reports (manual crypto / TetraPay / card-to-card / autoconfirm)."""
-    method_fa = _method_fa(payment_method)
-    wallet_label = await _user_wallet_balance_label(session, user)
-    amount_label = await _amount_label(session, amount_usd)
-
-    user_section = _user_section(user, wallet_label)
-    txn_lines = [
-        "💬 <b>مشخصات تراکنش</b>",
-        f"💵 مبلغ شارژ: <b>{amount_label}</b>",
-        f"💳 روش: {_esc(method_fa)}",
-    ]
-    if tx_hash:
-        txn_lines.append(f"🔗 TX: <code>{_esc(str(tx_hash))}</code>")
-
-    text = _wrap_event(
-        header="💰 | شارژ کیف پول",
-        method_fa=method_fa,
-        sections=[user_section, "\n".join(txn_lines)],
-        footer="بنازم شارژ جدید 💵",
-    )
     try:
+        user_summary = await _get_user_summary(session, user)
+        method_fa = _method_fa(payment_method)
+        wallet_label = await _user_wallet_balance_label(session, user_summary.get("id"))
+        amount_label = await _amount_label(session, amount_usd)
+
+        user_section = _user_section(user_summary, wallet_label)
+        txn_lines = [
+            "💬 <b>مشخصات تراکنش</b>",
+            f"💵 مبلغ شارژ: <b>{amount_label}</b>",
+            f"💳 روش: {_esc(method_fa)}",
+        ]
+        if tx_hash and str(tx_hash) not in ("N/A", "None", ""):
+            txn_lines.append(f"🔗 TX / رسید: <code>{_esc(str(tx_hash))}</code>")
+
+        text = _wrap_event(
+            header="💰 | شارژ کیف پول",
+            method_fa=method_fa,
+            sections=[user_section, "\n".join(txn_lines)],
+            footer="بنازم شارژ جدید 💵",
+        )
         await notify_sales_event(session, bot, text)
     except Exception as exc:
-        logger.warning("notify_wallet_topup failed: %s", exc)
+        logger.warning("notify_wallet_topup failed: %s", exc, exc_info=True)

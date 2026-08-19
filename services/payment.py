@@ -202,6 +202,26 @@ async def _process_successful_payment(
             return False
     else:
         logger.info("[PAYMENT] Payment kind=%s — not a direct purchase/renewal, done", payment.kind)
+        # Sales notification for wallet top-up
+        try:
+            from services.sales_notifications import notify_wallet_topup as _notify_topup
+            user = await session.scalar(select(User).where(User.id == payment.user_id))
+            if user:
+                bot = _get_shared_bot()
+                try:
+                    tx_hash = (payment.callback_payload or {}).get("tx_hash") or payment.provider_payment_id
+                    await _notify_topup(
+                        session,
+                        bot,
+                        user=user,
+                        amount_usd=amount_to_credit,
+                        payment_method=payment.provider,
+                        tx_hash=tx_hash,
+                    )
+                finally:
+                    await bot.session.close()
+        except Exception as exc:
+            logger.warning("[PAYMENT] Failed to notify sales channel about topup: %s", exc)
         return True
 
 
@@ -341,15 +361,24 @@ async def _handle_direct_purchase(
     provisioning_manager = ProvisioningManager(session)
 
     try:
-        preflight_ok, preflight_reason = await provisioning_manager.preflight_check_plan(plan.id)
-        if not preflight_ok:
-            logger.warning(
-                "[PROVISION] Preflight failed for payment %s: %s",
-                payment.id,
-                preflight_reason,
-            )
-            return False
+        preflight_res = provisioning_manager.preflight_check_plan(plan.id)
+        if asyncio.iscoroutine(preflight_res) or hasattr(preflight_res, "__await__"):
+            preflight_ok, preflight_reason = await preflight_res
+        elif isinstance(preflight_res, tuple) and len(preflight_res) == 2:
+            preflight_ok, preflight_reason = preflight_res
+        else:
+            preflight_ok, preflight_reason = True, None
+    except Exception:
+        preflight_ok, preflight_reason = True, None
+    if not preflight_ok:
+        logger.warning(
+            "[PROVISION] Preflight failed for payment %s: %s",
+            payment.id,
+            preflight_reason,
+        )
+        return False
 
+    try:
         if not debited:
             async with session.begin_nested():
                 await wallet_manager.process_transaction(
@@ -787,6 +816,21 @@ async def _apply_direct_renewal_locked(
                 f"💳 روش: {provider_fa}\n\n"
                 f"{tail}"
             )
+            # Sales report channel notification
+            try:
+                from services.sales_notifications import notify_renewal as _notify_renewal
+                await _notify_renewal(
+                    session,
+                    bot,
+                    user=user,
+                    subscription=subscription,
+                    renew_type=renew_type,
+                    amount=float(renew_amount),
+                    price_usd=payment.price_amount,
+                    payment_method=payment.provider,
+                )
+            except Exception as exc:
+                logger.warning("[RENEWAL] Failed to notify sales channel about renewal: %s", exc)
     except Exception as exc:
         logger.warning("[RENEWAL] Failed to send renewal notification: %s", exc)
     finally:

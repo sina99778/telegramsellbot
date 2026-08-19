@@ -182,24 +182,7 @@ async def run_card_autoconfirm(session: AsyncSession, bot: Bot | None = None) ->
                 except Exception as exc:
                     logger.warning("card autoconfirm notify failed: %s", exc)
 
-            # Best-effort: sales-report channel for wallet topup.
-            if bot is not None and _telegram_id is not None:
-                try:
-                    from services.sales_notifications import notify_wallet_topup as _notify
-                    from models.user import User as _U
-                    from sqlalchemy.orm import selectinload as _sel
-                    u_full = await session.scalar(
-                        select(_U).options(_sel(_U.wallet)).where(_U.id == _user_id)
-                    )
-                    if u_full:
-                        await _notify(
-                            session, bot,
-                            user=u_full,
-                            amount_usd=_price_amount,
-                            payment_method="card_autoconfirm",
-                        )
-                except Exception as exc:
-                    logger.warning("card autoconfirm sales-notify failed: %s", exc)
+
 
     if confirmed or failed or skipped_exempt:
         logger.info(
