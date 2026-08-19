@@ -121,6 +121,7 @@ async def renew_config_start(callback: CallbackQuery, callback_data: MyConfigCal
             selectinload(Subscription.xui_client)
             .selectinload(XUIClientRecord.inbound)
             .selectinload(XUIInboundRecord.server)
+            .selectinload(XUIServerRecord.credentials)
         )
         .where(
             Subscription.id == callback_data.subscription_id,
@@ -154,9 +155,9 @@ async def renew_config_start(callback: CallbackQuery, callback_data: MyConfigCal
         import asyncio
         try:
             strategy = strategy_for_server(server)
-            await asyncio.wait_for(strategy.health_probe(server), timeout=3.5)
+            await asyncio.wait_for(strategy.health_probe(server), timeout=5.0)
         except Exception as probe_exc:
-            logger.warning("Renewal preflight probe failed for server %s: %s", server.id, probe_exc)
+            logger.warning("Renewal preflight probe failed for server %s (%s): %s", server.id, server.name, probe_exc)
             await safe_edit_or_send(
                 callback,
                 "⚠️ <b>عدم دسترسی به سرور سرویس</b>\n\n"
