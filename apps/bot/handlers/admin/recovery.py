@@ -481,22 +481,40 @@ async def recovery_resend_config(
         await safe_edit_or_send(callback, "پرداخت یا کاربر یافت نشد.")
         return
 
-    # Find the subscription linked to this payment via its order
-    plan_id_str = (payment.callback_payload or {}).get("plan_id")
-    if not plan_id_str:
-        await safe_edit_or_send(callback, "اطلاعات پلن در payload یافت نشد.")
-        return
+    payload = payment.callback_payload or {}
+    sub = None
+    subscription_id = payload.get("subscription_id")
+    if subscription_id:
+        try:
+            sub = await session.scalar(
+                select(Subscription).where(
+                    Subscription.id == UUID(str(subscription_id)),
+                    Subscription.user_id == payment.user_id,
+                    Subscription.status.in_(["active", "pending_activation"]),
+                )
+            )
+        except (TypeError, ValueError):
+            sub = None
 
-    # Find most recent subscription for this user+plan after payment
-    sub = await session.scalar(
-        select(Subscription)
-        .where(
-            Subscription.user_id == payment.user_id,
-            Subscription.plan_id == UUID(plan_id_str),
-            Subscription.status.in_(["active", "pending_activation"]),
+    if sub is None:
+        plan_id_str = payload.get("plan_id")
+        if not plan_id_str:
+            await safe_edit_or_send(callback, "اطلاعات اشتراک یا پلن در payload یافت نشد.")
+            return
+        try:
+            plan_id = UUID(str(plan_id_str))
+        except (TypeError, ValueError):
+            await safe_edit_or_send(callback, "شناسه پلن در payload معتبر نیست.")
+            return
+        sub = await session.scalar(
+            select(Subscription)
+            .where(
+                Subscription.user_id == payment.user_id,
+                Subscription.plan_id == plan_id,
+                Subscription.status.in_(["active", "pending_activation"]),
+            )
+            .order_by(Subscription.created_at.desc())
         )
-        .order_by(Subscription.created_at.desc())
-    )
 
     if sub is None or not sub.sub_link:
         await safe_edit_or_send(callback, "اشتراک فعالی با لینک برای این پرداخت یافت نشد.")
@@ -613,10 +631,13 @@ async def recovery_mark_failed(
     await callback.answer()
 
     payment = await session.scalar(
-        select(Payment).where(Payment.id == callback_data.payment_id)
+        select(Payment).where(Payment.id == callback_data.payment_id).with_for_update()
     )
     if payment is None:
         await safe_edit_or_send(callback, "پرداخت یافت نشد.")
+        return
+    if payment.payment_status in {"failed", "expired"}:
+        await safe_edit_or_send(callback, "این پرداخت قبلاً ناموفق شده است.")
         return
 
     old_status = payment.payment_status

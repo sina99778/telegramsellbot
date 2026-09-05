@@ -29,6 +29,7 @@ from sqlalchemy.orm import selectinload
 from apps.api.routes.dashboard._deps import require_dashboard_admin
 from core.security import decrypt_secret, encrypt_secret
 from services.panels.adapter import is_marzban_family
+from services.xui.runtime import evict_panel_client, normalize_base_url
 from models.dashboard_admin import DashboardAdmin
 from models.subscription import Subscription
 from models.xui import (
@@ -314,7 +315,16 @@ async def update_server(server_id: UUID, body: ServerUpdateBody, auth: AuthDep) 
         if dupe is not None:
             raise HTTPException(status_code=400, detail="نام سرور تکراری است.")
         server.name = body.name; changes["name"] = body.name
-    if body.base_url is not None: server.base_url = body.base_url; changes["base_url"] = body.base_url
+    if body.base_url is not None:
+        new_base_url = normalize_base_url(body.base_url)
+        if new_base_url != normalize_base_url(server.base_url):
+            await evict_panel_client(server)
+            if server.credentials is not None:
+                server.credentials.session_cookie_encrypted = None
+            server.health_check_failures = 0
+            server.health_status = "unknown"
+        server.base_url = new_base_url
+        changes["base_url"] = new_base_url
     if body.is_active is not None: server.is_active = body.is_active; changes["is_active"] = body.is_active
     if body.config_domain is not None: server.config_domain = body.config_domain
     if body.sub_domain is not None: server.sub_domain = body.sub_domain
@@ -336,6 +346,10 @@ async def update_server(server_id: UUID, body: ServerUpdateBody, auth: AuthDep) 
         else:
             if body.panel_username is not None: cred.username = body.panel_username
             if body.panel_password is not None: cred.password_encrypted = encrypt_secret(body.panel_password)
+            cred.session_cookie_encrypted = None
+        await evict_panel_client(server)
+        server.health_check_failures = 0
+        server.health_status = "unknown"
         changes["credentials"] = "updated"
 
     try:

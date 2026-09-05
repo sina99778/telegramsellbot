@@ -290,6 +290,29 @@ class PooledXUIClient:
 _xui_clients_pool: dict[UUID, PooledXUIClient] = {}
 
 
+def normalize_base_url(value: str) -> str:
+    base_url = value.strip().rstrip("/")
+    if not base_url.lower().startswith(("http://", "https://")):
+        base_url = "http://" + base_url
+    return base_url
+
+
+async def evict_panel_client(server: XUIServerRecord) -> None:
+    pooled = _xui_clients_pool.pop(server.id, None)
+    if pooled is not None:
+        await pooled.client.aclose()
+
+    from services.pasarguard.runtime import _pg_clients_pool
+    pooled_pg = _pg_clients_pool.pop(server.id, None)
+    if pooled_pg is not None:
+        await pooled_pg.client.aclose()
+
+    from services.rebecca.runtime import _rebecca_clients_pool
+    pooled_rebecca = _rebecca_clients_pool.pop(server.id, None)
+    if pooled_rebecca is not None:
+        await pooled_rebecca.client.aclose()
+
+
 @asynccontextmanager
 async def create_xui_client_for_server(server: XUIServerRecord) -> AsyncIterator[SanaeiXUIClient]:
     config = build_xui_client_config(server)

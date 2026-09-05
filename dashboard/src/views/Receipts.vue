@@ -12,6 +12,7 @@ import {
 } from "@/api/receipts";
 import { ApiError } from "@/api/client";
 import { fmtNumber } from "@/utils/format";
+import { latestOnly } from "@/utils/latest";
 
 const items = ref<ReceiptListItem[]>([]);
 const loading = ref(true);
@@ -31,17 +32,26 @@ const filters: { key: ReceiptFilter; label: string }[] = [
 const drawer = ref<ReceiptDetail | null>(null);
 const drawerLoading = ref(false);
 
+// The list and the drawer get separate runners: opening a receipt must not
+// cancel the list refresh behind it, and closing the drawer must not cancel the
+// list either.
+const runList = latestOnly();
+const runDrawer = latestOnly();
+
 async function refresh() {
   loading.value = true;
   errorMsg.value = null;
-  try {
-    const r = await listReceipts(filter.value);
-    items.value = r.items;
-  } catch (exc) {
-    errorMsg.value = exc instanceof ApiError ? exc.detail : "خطا";
-  } finally {
-    loading.value = false;
-  }
+  await runList((signal) => listReceipts(filter.value, signal), {
+    commit: (r) => {
+      items.value = r.items;
+    },
+    fail: (exc) => {
+      errorMsg.value = exc instanceof ApiError ? exc.detail : "خطا";
+    },
+    settle: () => {
+      loading.value = false;
+    },
+  });
 }
 onMounted(refresh);
 
@@ -84,13 +94,26 @@ function fmtDate(s: string | null): string {
 async function openDrawer(r: ReceiptListItem) {
   drawerLoading.value = true;
   drawer.value = null;
-  try {
-    drawer.value = await getReceipt(r.id);
-  } catch (exc) {
-    flash(exc instanceof ApiError ? exc.detail : "خطا", "warn");
-  } finally {
-    drawerLoading.value = false;
-  }
+  await runDrawer((signal) => getReceipt(r.id, signal), {
+    commit: (d) => {
+      drawer.value = d;
+    },
+    fail: (exc) => {
+      flash(exc instanceof ApiError ? exc.detail : "خطا", "warn");
+    },
+    settle: () => {
+      drawerLoading.value = false;
+    },
+  });
+}
+
+// Closing the drawer must also drop the detail request still in flight,
+// otherwise its response would reopen the panel the operator just dismissed —
+// and the approve/reject buttons act on exactly that content.
+function closeDrawer() {
+  runDrawer.cancel();
+  drawer.value = null;
+  drawerLoading.value = false;
 }
 
 async function doApprove(r: ReceiptListItem) {
@@ -114,7 +137,7 @@ async function doReject(r: ReceiptListItem) {
   try {
     await rejectReceipt(r.id);
     flash("رسید رد شد.");
-    drawer.value = null;
+    closeDrawer();
     refresh();
   } catch (exc) {
     flash(exc instanceof ApiError ? exc.detail : "خطا", "warn");
@@ -215,12 +238,12 @@ async function doReject(r: ReceiptListItem) {
     <div
       v-if="drawer || drawerLoading"
       class="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 flex items-center justify-center p-4"
-      @click.self="drawer = null"
+      @click.self="closeDrawer()"
     >
       <div class="card w-full max-w-2xl max-h-[90vh] overflow-y-auto">
         <div class="flex justify-between items-center mb-3">
           <h3 class="text-lg font-bold text-white">جزئیات رسید</h3>
-          <button class="btn btn-ghost" @click="drawer = null">×</button>
+          <button class="btn btn-ghost" @click="closeDrawer()">×</button>
         </div>
         <div v-if="drawerLoading" class="animate-pulse h-40" />
         <div v-else-if="drawer" class="space-y-4">

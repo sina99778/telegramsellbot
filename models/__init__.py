@@ -12,7 +12,13 @@ from models.subscription import Subscription
 from models.ticket import Ticket, TicketMessage
 from models.user import User, UserProfile
 from models.wallet import Wallet, WalletTransaction
-from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerCredential, XUIServerRecord
+from models.xui import (
+    OrphanedPanelClient,
+    XUIClientRecord,
+    XUIInboundRecord,
+    XUIServerCredential,
+    XUIServerRecord,
+)
 
 __all__ = [
     "AuditLog",
@@ -20,6 +26,7 @@ __all__ = [
     "DiscountCode",
     "AppSetting",
     "BroadcastJob",
+    "OrphanedPanelClient",
     "Payment",
     "Plan",
     "PlanInventory",

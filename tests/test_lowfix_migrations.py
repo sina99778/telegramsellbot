@@ -237,13 +237,32 @@ class TestMainExitCodes:
         _patch_db(monkeypatch, mig005, FakeDB())
         assert mig005.main() == 0
 
-    def test_main_exits_zero_on_data_conflicts(self, mig005, monkeypatch):
-        # Duplicates + a violating table must NOT block the deploy.
-        db = FakeDB(
-            duplicates=["tetrapay/dup1"],
-            failing_constraints={"ck_discount_used_not_exceed_max"},
-        )
+    def test_main_exits_zero_when_only_check_constraints_conflict(
+        self, mig005, monkeypatch
+    ):
+        # A violating table is defence-in-depth only — never block the deploy.
+        db = FakeDB(failing_constraints={"ck_discount_used_not_exceed_max"})
         _patch_db(monkeypatch, mig005, db)
+        monkeypatch.delenv(mig005._OVERRIDE_ENV, raising=False)
+        assert mig005.main() == 0
+
+    def test_main_fails_closed_when_replay_index_cannot_be_created(
+        self, mig005, monkeypatch
+    ):
+        # PAY-005: the replay guard is an active security control. Never
+        # report a successful migration while it is absent.
+        db = FakeDB(duplicates=["tetrapay/dup1"])
+        _patch_db(monkeypatch, mig005, db)
+        monkeypatch.delenv(mig005._OVERRIDE_ENV, raising=False)
+        assert mig005.main() == 1
+        assert not any("DELETE" in s.upper() for s in db.executed)
+
+    def test_main_override_allows_deploy_without_replay_index(
+        self, mig005, monkeypatch
+    ):
+        db = FakeDB(duplicates=["tetrapay/dup1"])
+        _patch_db(monkeypatch, mig005, db)
+        monkeypatch.setenv(mig005._OVERRIDE_ENV, "true")
         assert mig005.main() == 0
 
     def test_main_exits_one_on_infrastructure_failure(self, mig005, monkeypatch):

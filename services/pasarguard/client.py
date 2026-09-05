@@ -45,9 +45,28 @@ class PasarGuardAuthError(PasarGuardError):
 
 
 class PasarGuardRequestError(PasarGuardError):
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    """A PasarGuard call failed.
+
+    ``outcome_unknown`` answers the only question a non-idempotent caller cares
+    about: could the panel still have applied this request? It is ``False`` only
+    when we can prove the panel never processed it (the TCP connection was never
+    established) or when the panel gave a definitive client-side rejection (4xx).
+    Read timeouts and 5xx replies leave the outcome genuinely unknown, so those
+    callers must reconcile by reading the resource back instead of retrying.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        outcome_unknown: bool | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        if outcome_unknown is None:
+            outcome_unknown = status_code is None or status_code >= 500
+        self.outcome_unknown = outcome_unknown
 
 
 @dataclass(slots=True, frozen=True)
@@ -151,9 +170,29 @@ class PasarGuardClient:
     # ── users (== configs) ───────────────────────────────────────────────────
 
     async def create_user(self, payload: PGUserCreate) -> PGUserResponse:
-        response = await self._request(
-            "POST", "api/user", json=payload.to_payload(), expected=(200, 201)
-        )
+        # POST /api/user is NOT idempotent: a blind retry after a timeout can
+        # create a second remote user while the first one is already billed.
+        # We therefore disable transport-level retries and instead reconcile by
+        # reading the user back when the outcome is genuinely unknown.
+        # A 401/403 is *not* unknown — the panel rejected the request without
+        # creating anything — so re-authentication + one retry stays enabled.
+        try:
+            response = await self._request(
+                "POST",
+                "api/user",
+                json=payload.to_payload(),
+                expected=(200, 201),
+                retry_non_idempotent=False,
+            )
+        except PasarGuardRequestError as exc:
+            if exc.outcome_unknown:
+                try:
+                    reconciled = await self.get_user(payload.username)
+                except PasarGuardRequestError:
+                    reconciled = None
+                if reconciled is not None:
+                    return reconciled
+            raise
         return PGUserResponse.model_validate(response.json())
 
     async def get_user(self, username: str) -> PGUserResponse | None:
@@ -238,6 +277,7 @@ class PasarGuardClient:
         path: str,
         *,
         expected: tuple[int, ...] = (200, 201, 204),
+        retry_non_idempotent: bool = True,
         **kwargs: Any,
     ) -> httpx.Response:
         if not self._authenticated:
@@ -246,13 +286,23 @@ class PasarGuardClient:
                     await self._login_unlocked()
 
         request_token = self._token
-        response = await self._send(method, path, **kwargs)
+        response = await self._send(
+            method,
+            path,
+            retry_non_idempotent=retry_non_idempotent,
+            **kwargs,
+        )
         if response.status_code in {401, 403}:
             async with self._auth_lock:
                 if not self._authenticated or self._token == request_token:
                     self._authenticated = False
                     await self._login_unlocked()
-            response = await self._send(method, path, **kwargs)
+            response = await self._send(
+                method,
+                path,
+                retry_non_idempotent=retry_non_idempotent,
+                **kwargs,
+            )
 
         if response.status_code not in expected:
             raise PasarGuardRequestError(
@@ -262,21 +312,44 @@ class PasarGuardClient:
             )
         return response
 
-    async def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+    async def _send(
+        self,
+        method: str,
+        path: str,
+        *,
+        retry_non_idempotent: bool = True,
+        **kwargs: Any,
+    ) -> httpx.Response:
         max_retries = 3
+        # Two independent gates, because a transport failure and a 5xx reply are
+        # not the same risk:
+        #   * transport errors are safe to retry for any method unless the caller
+        #     told us the call is non-idempotent (retry_non_idempotent=False);
+        #   * a 5xx reply means the panel *received* the request, so only
+        #     idempotent methods may be replayed.
+        retry_transport_errors = retry_non_idempotent
+        retry_server_errors = retry_non_idempotent and method.upper() in {
+            "GET",
+            "HEAD",
+            "OPTIONS",
+            "DELETE",
+        }
         last_response: httpx.Response | None = None
         for attempt in range(max_retries):
             try:
                 response = await self._client.request(method, path, **kwargs)
             except httpx.TimeoutException as exc:
-                if attempt < max_retries - 1:
+                if retry_transport_errors and attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
+                # ConnectTimeout subclasses ConnectError: the panel was never
+                # reached, so nothing can have been created on its side.
                 raise PasarGuardRequestError(
-                    f"Timed out while calling PasarGuard endpoint '{path}'."
+                    f"Timed out while calling PasarGuard endpoint '{path}'.",
+                    outcome_unknown=not isinstance(exc, httpx.ConnectError),
                 ) from exc
             except httpx.RequestError as exc:
-                if attempt < max_retries - 1:
+                if retry_transport_errors and attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
                 cause = (
@@ -285,14 +358,15 @@ class PasarGuardClient:
                     else ""
                 )
                 raise PasarGuardRequestError(
-                    f"{type(exc).__name__} while calling PasarGuard endpoint '{path}'{cause}"
+                    f"{type(exc).__name__} while calling PasarGuard endpoint '{path}'{cause}",
+                    outcome_unknown=not isinstance(exc, httpx.ConnectError),
                 ) from exc
 
             # Retry transient 5xx; return everything else (incl. 4xx) for the
             # caller (_request) to interpret.
             if (
                 response.status_code >= 500
-                and method.upper() in {"GET", "HEAD", "OPTIONS", "DELETE"}
+                and retry_server_errors
                 and attempt < max_retries - 1
             ):
                 last_response = response

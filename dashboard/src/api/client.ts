@@ -70,8 +70,8 @@ async function request<T>(
 }
 
 export const api = {
-  get:    <T>(p: string) => request<T>(p, { method: "GET" }),
-  post:   <T>(p: string, body?: any) => request<T>(p, { method: "POST",  body: body == null ? null : JSON.stringify(body) }),
-  patch:  <T>(p: string, body?: any) => request<T>(p, { method: "PATCH", body: body == null ? null : JSON.stringify(body) }),
-  delete: <T>(p: string)             => request<T>(p, { method: "DELETE" }),
+  get:    <T>(p: string, signal?: AbortSignal) => request<T>(p, { method: "GET", signal }),
+  post:   <T>(p: string, body?: any, signal?: AbortSignal) => request<T>(p, { method: "POST",  body: body == null ? null : JSON.stringify(body), signal }),
+  patch:  <T>(p: string, body?: any, signal?: AbortSignal) => request<T>(p, { method: "PATCH", body: body == null ? null : JSON.stringify(body), signal }),
+  delete: <T>(p: string, signal?: AbortSignal)             => request<T>(p, { method: "DELETE", signal }),
 };

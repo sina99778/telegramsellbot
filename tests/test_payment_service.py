@@ -301,6 +301,67 @@ class TestProcessSuccessfulPayment:
             mock_apply.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_purchase_refund_marks_payment_and_is_idempotent(self, mock_session, make_payment, plan_id):
+        from services.payment import _handle_direct_purchase
+
+        payment = make_payment(
+            kind="direct_purchase",
+            actually_paid=Decimal("5.00"),
+            price_amount=Decimal("5.00"),
+            callback_payload={
+                "plan_id": str(plan_id),
+                "config_name": "TestVPN",
+                "wallet_debited": True,
+            },
+        )
+        user = MagicMock(id=payment.user_id, telegram_id=12345, wallet=MagicMock())
+        plan = MagicMock(id=plan_id, currency="USD", code="test", name="Test", volume_bytes=1, duration_days=1)
+        wallet_manager = MagicMock()
+        wallet_manager.process_transaction = AsyncMock()
+        provisioning_manager = MagicMock()
+        provisioning_manager.provision_subscription = AsyncMock(side_effect=RuntimeError("failed"))
+        bot = MagicMock()
+        bot.send_message = AsyncMock()
+        bot.session.close = AsyncMock()
+        mock_session.scalar.return_value = user
+        mock_session.get.return_value = plan
+
+        with patch("services.payment.WalletManager", return_value=wallet_manager), \
+             patch("services.payment._get_shared_bot", return_value=bot), \
+             patch("services.provisioning.manager.ProvisioningManager", return_value=provisioning_manager):
+            assert await _handle_direct_purchase(mock_session, payment) is False
+            assert payment.payment_status == "refunded"
+            assert payment.callback_payload["refund_completed"] is True
+            assert await _handle_direct_purchase(mock_session, payment) is False
+
+        refund_calls = [call for call in wallet_manager.process_transaction.await_args_list if call.kwargs["transaction_type"] == "refund"]
+        assert len(refund_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_renewal_refund_marks_payment_and_is_idempotent(self, mock_session, make_payment):
+        from services.payment import _apply_direct_renewal_locked
+
+        sub_id = uuid4()
+        payment = make_payment(
+            kind="direct_renewal",
+            actually_paid=Decimal("7.00"),
+            price_amount=Decimal("7.00"),
+            callback_payload={"wallet_debited": True},
+        )
+        subscription = MagicMock(id=sub_id)
+        wallet_manager = MagicMock()
+        wallet_manager.process_transaction = AsyncMock()
+        with patch("services.payment.WalletManager", return_value=wallet_manager), \
+             patch("services.renewal.apply_renewal", new_callable=AsyncMock, side_effect=RuntimeError("failed")):
+            assert await _apply_direct_renewal_locked(mock_session, payment, subscription, "time", 30, str(sub_id)) is False
+            assert payment.payment_status == "refunded"
+            assert payment.callback_payload["refund_completed"] is True
+            assert await _apply_direct_renewal_locked(mock_session, payment, subscription, "time", 30, str(sub_id)) is False
+
+        refund_calls = [call for call in wallet_manager.process_transaction.await_args_list if call.kwargs["transaction_type"] == "refund"]
+        assert len(refund_calls) == 1
+
+    @pytest.mark.asyncio
     async def test_direct_renewal_retry_skips_duplicate_debit(self, mock_session, make_payment):
         sub_id = uuid4()
         payment = make_payment(

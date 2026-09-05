@@ -121,7 +121,7 @@ class Settings(BaseSettings):
     # created with callback URLs that don't carry a `?t=` signature.
     # Keep True for the first deploy to drain in-flight invoices, then
     # set False to enforce HMAC strictly.
-    tetrapay_legacy_unsigned_callback: bool = True
+    tetrapay_legacy_unsigned_callback: bool = False
 
     # NOTE: the list of inbounds users can migrate TO via the
     # "🛠 تغییر سرور" flow used to live here as an .env list. It now lives

@@ -23,6 +23,7 @@ from apps.bot.handlers.admin.recovery import (
     _delivery_status,
     _is_payment_fulfilled,
     _stuck_payment_condition,
+    recovery_mark_failed,
     recovery_retry_provisioning,
     recovery_review_gateway_payment,
 )
@@ -186,6 +187,41 @@ class TestRetryProvisioningRowLock:
 
 
 # ─── Gateway Review (finding 9/10) ───────────────────────────────────────────
+
+
+class TestMarkFailedRowLock:
+    async def test_mark_failed_locks_and_revalidates_status(
+        self, mock_session, mock_callback, admin_user, make_payment, payment_id, mock_audit, mock_send,
+    ):
+        payment = make_payment(payment_status="finished")
+        mock_session.scalar = AsyncMock(return_value=payment)
+
+        await recovery_mark_failed(
+            mock_callback,
+            RecoveryPaymentCallback(action="mark_failed", payment_id=payment_id),
+            mock_session,
+            admin_user,
+        )
+
+        _assert_locked(mock_session.scalar.call_args.args[0])
+        assert payment.payment_status == "failed"
+
+    async def test_mark_failed_does_not_overwrite_status_changed_before_lock(
+        self, mock_session, mock_callback, admin_user, make_payment, payment_id, mock_audit, mock_send,
+    ):
+        payment = make_payment(payment_status="expired")
+        mock_session.scalar = AsyncMock(return_value=payment)
+
+        await recovery_mark_failed(
+            mock_callback,
+            RecoveryPaymentCallback(action="mark_failed", payment_id=payment_id),
+            mock_session,
+            admin_user,
+        )
+
+        _assert_locked(mock_session.scalar.call_args.args[0])
+        assert payment.payment_status == "expired"
+        mock_audit.return_value.log_action.assert_not_awaited()
 
 
 class TestReviewGatewayPaymentRowLock:

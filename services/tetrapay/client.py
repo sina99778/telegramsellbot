@@ -107,7 +107,7 @@ class TetraPayClient:
                 logger.error("TetraPay non-JSON response (create_order): HTTP %s, body=%s", response.status_code, raw_text)
                 raise TetraPayRequestError(f"API Error: HTTP {response.status_code}, body: {raw_text}")
 
-            logger.info("TetraPay create_order response (HTTP %s): %s", response.status_code, data)
+            logger.info("TetraPay create_order response (HTTP %s) received", response.status_code)
 
             # Check HTTP status and API status
             if response.status_code != 200 or str(data.get("status")) != "100":

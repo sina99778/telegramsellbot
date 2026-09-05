@@ -5,6 +5,10 @@ Rate-limited internally: 5 wrong logins per username in a 5-minute
 window get a 429 with a Retry-After hint. This is in-memory only
 (per-process), good enough for a single-uvicorn dashboard and zero-
 infrastructure to set up. Distributed rate-limiting would need Redis.
+
+/logout revokes server-side (bumps the admin's auth epoch) rather than
+merely clearing the cookie — see the handler for why it stays
+unauthenticated while still doing so.
 """
 from __future__ import annotations
 
@@ -31,6 +35,7 @@ from core.dashboard_auth import (
     issue_session,
     needs_rehash,
     verify_password,
+    verify_session,
 )
 from models.dashboard_admin import DashboardAdmin
 
@@ -139,7 +144,7 @@ async def login(body: LoginIn, response: Response, session: SessionDep) -> dict[
     _clear_login_failures(username_key)
     logger.info("Dashboard login OK admin=%s username=%s", admin.id, admin.username)
 
-    token = issue_session(admin.id)
+    token = issue_session(admin.id, session_version=int(admin.session_version or 0))
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=token,
@@ -159,7 +164,37 @@ async def login(body: LoginIn, response: Response, session: SessionDep) -> dict[
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict[str, bool]:
+async def logout(
+    request: Request,
+    response: Response,
+    session: SessionDep,
+) -> dict[str, bool]:
+    # Deleting the cookie only asks the browser to forget the token — the
+    # token itself stays valid until it expires, so anyone who captured it
+    # keeps access. Bumping the admin's auth epoch is what actually revokes
+    # it, here and on every other device.
+    #
+    # Deliberately NOT behind require_dashboard_admin: the SPA calls this
+    # unconditionally (including after a 401), and a logout that can itself
+    # fail with 401 would strand the user with a cookie they can't clear.
+    # Every failure path below therefore degrades to "just drop the cookie".
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    payload = verify_session(token or "") if token else None
+    if payload is not None:
+        try:
+            admin = await session.get(DashboardAdmin, payload.admin_id)
+            if admin is not None:
+                admin.session_version = int(admin.session_version or 0) + 1
+                await session.commit()
+                logger.info("Dashboard logout admin=%s (sessions revoked)", admin.id)
+        except Exception:
+            # A DB hiccup must not block the sign-out gesture.
+            logger.exception("Dashboard logout could not bump session epoch")
+            try:
+                await session.rollback()
+            except Exception:
+                pass
+
     # Wipe the cookie. SameSite/Path/Secure must match the issuing call
     # or some browsers won't drop it.
     response.delete_cookie(

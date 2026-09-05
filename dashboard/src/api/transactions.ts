@@ -62,14 +62,17 @@ export interface Page<T> {
   total_pages: number;
 }
 
-export function listOrders(params: {
-  status?: string;
-  user_telegram_id?: number;
-  from_date?: string;
-  to_date?: string;
-  page?: number;
-  page_size?: number;
-}): Promise<Page<OrderRow>> {
+export function listOrders(
+  params: {
+    status?: string;
+    user_telegram_id?: number;
+    from_date?: string;
+    to_date?: string;
+    page?: number;
+    page_size?: number;
+  },
+  signal?: AbortSignal,
+): Promise<Page<OrderRow>> {
   const qs = new URLSearchParams();
   if (params.status) qs.set("status", params.status);
   if (params.user_telegram_id) qs.set("user_telegram_id", String(params.user_telegram_id));
@@ -77,41 +80,49 @@ export function listOrders(params: {
   if (params.to_date) qs.set("to_date", params.to_date);
   qs.set("page", String(params.page ?? 1));
   qs.set("page_size", String(params.page_size ?? 25));
-  return api.get<Page<OrderRow>>(`/transactions/orders?${qs}`);
+  return api.get<Page<OrderRow>>(`/transactions/orders?${qs}`, signal);
 }
 
-export function listPayments(params: {
-  status?: string;
-  provider?: string;
-  user_telegram_id?: number;
-  page?: number;
-  page_size?: number;
-}): Promise<Page<PaymentRow>> {
+export function listPayments(
+  params: {
+    status?: string;
+    provider?: string;
+    user_telegram_id?: number;
+    page?: number;
+    page_size?: number;
+  },
+  signal?: AbortSignal,
+): Promise<Page<PaymentRow>> {
   const qs = new URLSearchParams();
   if (params.status) qs.set("status", params.status);
   if (params.provider) qs.set("provider", params.provider);
   if (params.user_telegram_id) qs.set("user_telegram_id", String(params.user_telegram_id));
   qs.set("page", String(params.page ?? 1));
   qs.set("page_size", String(params.page_size ?? 25));
-  return api.get<Page<PaymentRow>>(`/transactions/payments?${qs}`);
+  return api.get<Page<PaymentRow>>(`/transactions/payments?${qs}`, signal);
 }
 
-export function listWalletTxns(params: {
-  user_telegram_id?: number;
-  direction?: "credit" | "debit";
-  page?: number;
-  page_size?: number;
-}): Promise<Page<WalletTxnRow>> {
+export function listWalletTxns(
+  params: {
+    user_telegram_id?: number;
+    direction?: "credit" | "debit";
+    page?: number;
+    page_size?: number;
+  },
+  signal?: AbortSignal,
+): Promise<Page<WalletTxnRow>> {
   const qs = new URLSearchParams();
   if (params.user_telegram_id) qs.set("user_telegram_id", String(params.user_telegram_id));
   if (params.direction) qs.set("direction", params.direction);
   qs.set("page", String(params.page ?? 1));
   qs.set("page_size", String(params.page_size ?? 25));
-  return api.get<Page<WalletTxnRow>>(`/transactions/wallet?${qs}`);
+  return api.get<Page<WalletTxnRow>>(`/transactions/wallet?${qs}`, signal);
 }
 
-export function listPending(): Promise<{ items: PendingRow[]; total: number }> {
-  return api.get<{ items: PendingRow[]; total: number }>("/transactions/pending");
+export function listPending(
+  signal?: AbortSignal,
+): Promise<{ items: PendingRow[]; total: number }> {
+  return api.get<{ items: PendingRow[]; total: number }>("/transactions/pending", signal);
 }
 
 export function ordersExportUrl(params: {

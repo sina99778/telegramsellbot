@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -114,3 +115,47 @@ class XUIServerCredential(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     session_cookie_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     server: Mapped[XUIServerRecord] = relationship("XUIServerRecord", back_populates="credentials")
+
+
+class OrphanedPanelClient(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """A panel-side client/user that MAY exist remotely with no local owner.
+
+    Written whenever a compensating delete after an UNCERTAIN panel write
+    fails. At that moment the enclosing DB transaction is about to roll back,
+    so xui_clients keeps no trace of the identity we just sent to the panel —
+    without this row the only record would be a log line, and a client that
+    the panel *did* accept would keep serving traffic at full quota forever
+    while the user's retry mints a brand-new identity.
+
+    Rows are therefore written by an autonomous transaction (independent of
+    the failing one) and swept by the reconcile-orphans worker job, which
+    retries the delete until the panel confirms the client is gone.
+    ``resolved_at`` is NULL for exactly the rows that still need attention.
+    """
+
+    __tablename__ = "orphaned_panel_clients"
+
+    server_id: Mapped[UUID] = mapped_column(
+        ForeignKey("xui_servers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # "xui" | "pasarguard" | "rebecca" — mirrors XUIClientRecord.panel_kind so
+    # the sweep knows which delete primitive to call.
+    panel_kind: Mapped[str] = mapped_column(String(16), nullable=False, default="xui")
+    # X-UI needs the inbound to address a client; the Marzban family does not.
+    inbound_remote_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # The X-UI client uuid, or the PasarGuard/Rebecca username.
+    remote_client_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    # Purely diagnostic: lets an admin find the client in the panel UI.
+    email: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Which cleanup site produced the row (provisioning, migration, …).
+    origin: Mapped[str] = mapped_column(String(32), nullable=False, default="provisioning")
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True,
+    )
+    # "deleted" (we removed it) | "already_gone" (panel had no such client)
+    resolution: Mapped[str | None] = mapped_column(String(24), nullable=True)

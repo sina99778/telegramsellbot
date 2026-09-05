@@ -39,7 +39,7 @@ async def tetrapay_webhook_handler(
         form = await request.form()
         raw = dict(form)
 
-    logger.info("TetraPay IPN raw payload: %s", raw)
+    logger.info("TetraPay IPN received with fields=%s", sorted(str(key) for key in raw))
 
     # Normalize field names — TetraPay sends inconsistent casing
     normalized: dict[str, str | int] = {}

@@ -266,7 +266,7 @@ async def test_volume_renewal_leaves_used_and_lifetime_untouched(mock_session):
 # ─── 5. pre-debited renewal failure attempts refund only ─────────────────────
 
 
-def _renewal_setup(refund_side_effect=None):
+def _renewal_setup(refund_side_effect=None, payment_status="finished"):
     sub_id = uuid4()
     payment = NS(
         id=uuid4(),
@@ -274,6 +274,11 @@ def _renewal_setup(refund_side_effect=None):
         provider="nowpayments",
         price_amount=Decimal("10.00"),
         price_currency="USD",
+        # A real Payment row always carries payment_status (non-nullable, default
+        # "waiting"), and by the time a renewal is applied the gateway has
+        # confirmed it -> "finished". The refund path reads this column to stay
+        # idempotent, so the fake has to expose it too.
+        payment_status=payment_status,
         callback_payload={"sub_id": str(sub_id)},
     )
     subscription = NS(id=sub_id, user_id=payment.user_id, status="active", plan_id=uuid4())
@@ -349,3 +354,50 @@ async def test_failed_renewal_with_successful_refund_clears_marker():
     assert payment.callback_payload["wallet_debited"] is False
     assert "needs_manual_refund" not in payment.callback_payload
     assert payment.callback_payload["renewal_failed"] is True
+
+
+@pytest.mark.asyncio
+async def test_failed_renewal_does_not_refund_an_already_refunded_payment():
+    """Idempotency guard: a payment already marked "refunded" must not be
+    credited a second time when a later retry fails again."""
+    from services.payment import _apply_direct_renewal_locked
+
+    session, payment, subscription, wm_instance, bot, wallet_calls = _renewal_setup(
+        payment_status="refunded",
+    )
+
+    with patch("services.renewal.apply_renewal", AsyncMock(side_effect=RuntimeError("panel down"))), \
+         patch("services.payment.WalletManager", return_value=wm_instance), \
+         patch("services.payment._get_shared_bot", return_value=bot), \
+         patch("services.notifications.notify_admins", AsyncMock()):
+        result = await _apply_direct_renewal_locked(
+            session, payment, subscription, "plan", 1, str(subscription.id),
+        )
+
+    assert result is False
+    assert wallet_calls == []                                        # no second credit
+    assert payment.callback_payload["wallet_debited"] is False
+    assert "needs_manual_refund" not in payment.callback_payload
+
+
+@pytest.mark.asyncio
+async def test_failed_renewal_trusts_the_refund_completed_marker():
+    """The payload marker is the second idempotency source: if a previous run
+    already refunded, this run must not credit the wallet again."""
+    from services.payment import _apply_direct_renewal_locked
+
+    session, payment, subscription, wm_instance, bot, wallet_calls = _renewal_setup()
+    payment.callback_payload["refund_completed"] = True
+
+    with patch("services.renewal.apply_renewal", AsyncMock(side_effect=RuntimeError("panel down"))), \
+         patch("services.payment.WalletManager", return_value=wm_instance), \
+         patch("services.payment._get_shared_bot", return_value=bot), \
+         patch("services.notifications.notify_admins", AsyncMock()):
+        result = await _apply_direct_renewal_locked(
+            session, payment, subscription, "plan", 1, str(subscription.id),
+        )
+
+    assert result is False
+    assert wallet_calls == []                                        # no second credit
+    assert payment.callback_payload["wallet_debited"] is False
+    assert "needs_manual_refund" not in payment.callback_payload

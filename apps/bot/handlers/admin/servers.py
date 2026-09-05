@@ -28,6 +28,7 @@ from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerCredential, X
 from repositories.audit import AuditLogRepository
 from repositories.settings import AppSettingsRepository
 from services.xui.client import SanaeiXUIClient, XUIAuthenticationError, XUIClientConfig, XUIRequestError
+from services.xui.runtime import evict_panel_client, normalize_base_url
 from services.panels.adapter import capabilities_for, is_marzban_family
 from apps.bot.utils.button_style import styled_button
 from apps.bot.utils.messaging import safe_edit_or_send
@@ -1170,7 +1171,7 @@ async def edit_url_receive(
     if not message.text:
         return
 
-    new_url = message.text.strip().rstrip("/")
+    new_url = normalize_base_url(message.text)
     data = await state.get_data()
     server_id = UUID(data["server_id"])
 
@@ -1207,6 +1208,12 @@ async def edit_url_receive(
         return
 
     old_url = server.base_url
+    if normalize_base_url(old_url) != new_url:
+        await evict_panel_client(server)
+        if server.credentials is not None:
+            server.credentials.session_cookie_encrypted = None
+        server.health_check_failures = 0
+        server.health_status = "unknown"
     server.base_url = new_url
     await session.flush()
 
@@ -1317,6 +1324,7 @@ async def edit_creds_password(
     if server.credentials:
         server.credentials.username = new_username
         server.credentials.password_encrypted = encrypt_secret(new_password)
+        server.credentials.session_cookie_encrypted = None
     else:
         cred = XUIServerCredential(
             server_id=server.id,
@@ -1325,6 +1333,9 @@ async def edit_creds_password(
         )
         session.add(cred)
 
+    await evict_panel_client(server)
+    server.health_check_failures = 0
+    server.health_status = "unknown"
     await session.flush()
 
     await AuditLogRepository(session).log_action(

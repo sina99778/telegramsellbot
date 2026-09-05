@@ -493,8 +493,8 @@ async def _handle_direct_purchase(
         )
         payload = dict(payment.callback_payload or {})
         was_debited = bool(payload.get("wallet_debited")) or debited
-        refund_ok = not was_debited
-        if was_debited:
+        refund_ok = not was_debited or payment.payment_status == "refunded" or bool(payload.get("refund_completed"))
+        if was_debited and payment.payment_status != "refunded" and not payload.get("refund_completed"):
             try:
                 await wallet_manager.process_transaction(
                     user_id=user.id,
@@ -520,6 +520,8 @@ async def _handle_direct_purchase(
         if refund_ok:
             order.status = "refunded"
             payload["wallet_debited"] = False
+            payload["refund_completed"] = True
+            payment.payment_status = "refunded"
         else:
             order.status = "failed_needs_manual_refund"
             payload["wallet_debited"] = True
@@ -714,8 +716,8 @@ async def _apply_direct_renewal_locked(
             sub_id_str, type(exc).__name__, exc, exc_info=True,
         )
         was_debited = bool(payload.get("wallet_debited"))
-        refund_ok = not was_debited
-        if was_debited:
+        refund_ok = not was_debited or payment.payment_status == "refunded" or bool(payload.get("refund_completed"))
+        if was_debited and payment.payment_status != "refunded" and not payload.get("refund_completed"):
             try:
                 await wallet_manager.process_transaction(
                     user_id=payment.user_id,
@@ -741,6 +743,8 @@ async def _apply_direct_renewal_locked(
         payload = dict(payment.callback_payload or {})
         if refund_ok:
             payload["wallet_debited"] = False
+            payload["refund_completed"] = True
+            payment.payment_status = "refunded"
         else:
             payload["wallet_debited"] = True
             payload["needs_manual_refund"] = True

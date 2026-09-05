@@ -29,6 +29,7 @@ from uuid import UUID
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import StreamingResponse
+from PIL import Image
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -45,6 +46,31 @@ from services.payment import process_successful_payment
 logger = logging.getLogger(__name__)
 router = APIRouter()
 AuthDep = Annotated[tuple[DashboardAdmin, AsyncSession], Depends(require_dashboard_admin)]
+_MAX_RECEIPT_BYTES = 10 * 1024 * 1024
+_RECEIPT_FORMAT_TYPES = {
+    "JPEG": "image/jpeg",
+    "PNG": "image/png",
+    "WEBP": "image/webp",
+    "GIF": "image/gif",
+}
+
+
+def _sniff_receipt_content_type(content: bytes) -> str:
+    """Decide the response media type from the bytes, not from Telegram's header.
+
+    Reflecting the upstream `Content-Type` back to the browser let an unexpected
+    upstream value (e.g. `text/html`) be rendered in the dashboard origin.
+    Decoding the header with Pillow instead gives us two guarantees at once: the
+    payload really is one of the four raster formats we are willing to serve, and
+    the type we advertise cannot be influenced by the response headers.
+    """
+    with Image.open(io.BytesIO(content)) as image:
+        image.verify()
+        detected = (image.format or "").upper()
+    media_type = _RECEIPT_FORMAT_TYPES.get(detected)
+    if media_type is None:
+        raise ValueError(f"unsupported receipt image format: {detected or 'unknown'}")
+    return media_type
 
 
 def _serialize(p: Payment, user: User | None) -> dict[str, Any]:
@@ -202,17 +228,33 @@ async def receipt_photo(payment_id: UUID, auth: AuthDep) -> Response:
 
         try:
             file_url = f"https://api.telegram.org/file/bot{token}/{file_path}"
-            file_resp = await client.get(file_url)
-            file_resp.raise_for_status()
+            async with client.stream("GET", file_url) as file_resp:
+                file_resp.raise_for_status()
+                declared_length = int(file_resp.headers.get("content-length", "0") or 0)
+                if declared_length > _MAX_RECEIPT_BYTES:
+                    raise ValueError("receipt exceeds maximum size")
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in file_resp.aiter_bytes():
+                    total += len(chunk)
+                    if total > _MAX_RECEIPT_BYTES:
+                        raise ValueError("receipt exceeds maximum size")
+                    chunks.append(chunk)
+                content = b"".join(chunks)
         except Exception as exc:
-            logger.warning("file fetch failed for payment %s: %s", payment_id, exc)
+            logger.warning("file fetch failed for payment %s: %s", payment_id, type(exc).__name__)
             raise HTTPException(status_code=502, detail="telegram file fetch failed") from exc
 
-    content_type = file_resp.headers.get("content-type", "image/jpeg")
+    try:
+        content_type = _sniff_receipt_content_type(content)
+    except Exception as exc:
+        logger.warning("receipt %s is not a usable image: %s", payment_id, type(exc).__name__)
+        raise HTTPException(status_code=422, detail="invalid receipt image") from exc
+
     return StreamingResponse(
-        io.BytesIO(file_resp.content),
+        io.BytesIO(content),
         media_type=content_type,
-        headers={"Cache-Control": "private, max-age=300"},
+        headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"},
     )
 
 

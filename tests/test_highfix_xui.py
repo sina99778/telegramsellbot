@@ -354,6 +354,87 @@ async def test_request_raises_clear_auth_error_when_relogin_still_rejected(no_sl
         await client._request("GET", "panel/api/inbounds/list")
 
 
+async def test_request_relogs_in_and_retries_on_404(no_sleep):
+    calls: list[str] = []
+    seq = [
+        _json_response(404, {"success": False}),
+        _json_response(200, {"success": True, "obj": {"ok": 1}}),
+    ]
+
+    async def fake_request(method, path, **kwargs):
+        calls.append(path)
+        return seq.pop(0)
+
+    client = _make_http_client(fake_request)
+    client._authenticated = True
+    logins = 0
+
+    async def fake_login():
+        nonlocal logins
+        logins += 1
+        client._authenticated = True
+
+    client.login = fake_login
+
+    result = await client._request("GET", "panel/api/inbounds/list")
+    assert result == {"success": True, "obj": {"ok": 1}}
+    assert logins == 1
+    assert len(calls) == 2
+
+
+async def test_request_preserves_404_after_relogin(no_sleep):
+    calls = 0
+    response = _json_response(404, {"success": False})
+
+    async def fake_request(method, path, **kwargs):
+        nonlocal calls
+        calls += 1
+        return response
+
+    client = _make_http_client(fake_request)
+    client._authenticated = True
+    logins = 0
+
+    async def fake_login():
+        nonlocal logins
+        logins += 1
+        client._authenticated = True
+
+    client.login = fake_login
+
+    with pytest.raises(XUIRequestError) as excinfo:
+        await client._request("GET", "panel/api/inbounds/list")
+    assert excinfo.value.status_code == 404
+    assert logins == 1
+    assert calls == 2
+
+
+async def test_email_path_segments_are_url_encoded():
+    email = "name+tag@example.com/part"
+    paths: list[str] = []
+
+    async def fake_request(method, path, **kwargs):
+        paths.append(path)
+        return None
+
+    client = _make_http_client(fake_request)
+    client._authenticated = True
+    client._request = fake_request
+
+    await client.get_client_traffic(email)
+    await client.get_client_ips(email)
+    await client.clear_client_ips(email)
+    await client.reset_client_traffic(inbound_id=7, email=email)
+
+    encoded = "name%2Btag%40example.com%2Fpart"
+    assert paths == [
+        f"panel/api/inbounds/getClientTraffics/{encoded}",
+        f"panel/api/inbounds/clientIps/{encoded}",
+        f"panel/api/inbounds/clearClientIps/{encoded}",
+        f"panel/api/inbounds/7/resetClientTraffic/{encoded}",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # #28 — build_vless_uri REALITY / TLS key shapes
 # ---------------------------------------------------------------------------

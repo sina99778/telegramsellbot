@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from pydantic import SecretStr
@@ -188,7 +189,7 @@ class SanaeiXUIClient:
         return api_response
 
     async def get_client_traffic(self, email: str) -> XUIClientTraffic:
-        response = await self._request("GET", f"panel/api/inbounds/getClientTraffics/{email}")
+        response = await self._request("GET", f"panel/api/inbounds/getClientTraffics/{quote(email, safe='')}")
         if isinstance(response, dict) and "obj" in response:
             wrapper = XUIAPIResponse[dict[str, Any] | list[dict[str, Any]]].model_validate(response)
             if wrapper.success is False:
@@ -210,7 +211,7 @@ class SanaeiXUIClient:
 
     async def get_client_ips(self, email: str) -> list[str]:
         # Read-only despite being a POST — safe to re-send.
-        response = await self._request("POST", f"panel/api/inbounds/clientIps/{email}", idempotent=True)
+        response = await self._request("POST", f"panel/api/inbounds/clientIps/{quote(email, safe='')}", idempotent=True)
         if isinstance(response, dict) and "obj" in response:
             wrapper = XUIAPIResponse[Any].model_validate(response)
             if wrapper.success is False:
@@ -222,7 +223,7 @@ class SanaeiXUIClient:
 
     async def clear_client_ips(self, email: str) -> XUIAPIResponse[Any]:
         # Clearing twice yields the same state — safe to re-send.
-        response = await self._request("POST", f"panel/api/inbounds/clearClientIps/{email}", idempotent=True)
+        response = await self._request("POST", f"panel/api/inbounds/clearClientIps/{quote(email, safe='')}", idempotent=True)
         api_response = XUIAPIResponse[Any].model_validate(response or {"success": True, "obj": None})
         if api_response.success is False:
             raise XUIRequestError(api_response.msg or "Failed to clear client IPs.")
@@ -237,7 +238,7 @@ class SanaeiXUIClient:
         accumulated after the first reset, and mutating calls must not be
         auto-retried (same rule as update_client)."""
         response = await self._request(
-            "POST", f"panel/api/inbounds/{inbound_id}/resetClientTraffic/{email}",
+            "POST", f"panel/api/inbounds/{inbound_id}/resetClientTraffic/{quote(email, safe='')}",
             idempotent=False,
         )
         api_response = XUIAPIResponse[Any].model_validate(response or {"success": True, "obj": None})
@@ -304,18 +305,35 @@ class SanaeiXUIClient:
         if not self._authenticated:
             await self.login()
 
-        response = await self._send(method, path, idempotent=idempotent, **kwargs)
-        if response.status_code in {401, 403}:
+        retry_404 = idempotent if idempotent is not None else method.upper() in {"GET", "HEAD"}
+        try:
+            response = await self._send(method, path, idempotent=idempotent, **kwargs)
+        except XUIRequestError as exc:
+            if exc.status_code != 404 or not retry_404:
+                raise
+            response = None
+
+        if response is not None and response.status_code == 404 and not retry_404:
+            raise XUIRequestError(
+                f"X-UI request to '{path}' failed with status 404: "
+                f"{self._safe_response_text(response)}",
+                status_code=404,
+            )
+
+        if response is None or response.status_code in {401, 403, 404}:
             self._authenticated = False
             await self.login()
             response = await self._send(method, path, idempotent=idempotent, **kwargs)
             if response.status_code in {401, 403}:
-                # Still unauthorized right after a successful login — the
-                # credentials themselves are being rejected. Surface a clear
-                # error instead of a confusing one downstream.
                 raise XUIAuthenticationError(
                     f"X-UI still returned {response.status_code} after re-login "
                     f"for endpoint '{path}'. Check the panel credentials."
+                )
+            if response.status_code == 404:
+                raise XUIRequestError(
+                    f"X-UI request to '{path}' failed with status 404: "
+                    f"{self._safe_response_text(response)}",
+                    status_code=404,
                 )
         return self._decode_response(response)
 
@@ -341,7 +359,7 @@ class SanaeiXUIClient:
                 # of _send as XUIRequestError before _request ever sees the
                 # 401/403 — which made the re-login path dead code and broke
                 # every panel op once the session cookie expired.
-                if response.status_code in {401, 403}:
+                if response.status_code in {401, 403} or response.status_code == 404:
                     return response
                 response.raise_for_status()
                 return response

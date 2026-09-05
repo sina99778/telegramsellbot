@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import secrets
+import socket
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from urllib.parse import urljoin, urlsplit
 from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
@@ -16,7 +19,7 @@ from models.order import Order
 from models.plan import Plan
 from models.ready_config import ReadyConfigItem, ReadyConfigPool
 from models.subscription import Subscription
-from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
+from models.xui import OrphanedPanelClient, XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.settings import AppSettingsRepository
 from schemas.internal.xui import XUIClient
 from services.plan_inventory import PlanStockError, release_plan_sale, reserve_plan_sale
@@ -242,6 +245,53 @@ class ProvisioningManager:
                 plan_id,
             )
 
+    async def _record_possible_orphan(
+        self,
+        *,
+        server: XUIServerRecord,
+        remote_client_id: str,
+        panel_kind: str = "xui",
+        inbound_remote_id: int | None = None,
+        email: str | None = None,
+        origin: str = "provisioning",
+        error: BaseException | str | None = None,
+    ) -> None:
+        """Durably remember a panel client whose compensating delete failed.
+
+        Every caller is inside an `except` block that is about to re-raise, so
+        self.session's transaction is being rolled back — persisting there
+        would throw the row away with everything else. Like _release_stock this
+        uses its own short transaction that commits immediately, and swallows
+        its own errors: raising here would mask the original failure the caller
+        is reporting, and losing the row only costs us the log line we already
+        wrote.
+
+        The reconcile-orphans worker job picks the row up and retries the
+        delete, so an uncertain panel write can no longer leave a live,
+        full-quota client behind when the user's next attempt provisions a
+        fresh identity.
+        """
+        try:
+            async with AsyncSessionFactory() as orphan_session:
+                async with orphan_session.begin():
+                    orphan_session.add(
+                        OrphanedPanelClient(
+                            server_id=server.id,
+                            panel_kind=(panel_kind or "xui").strip().lower()[:16],
+                            inbound_remote_id=inbound_remote_id,
+                            remote_client_id=str(remote_client_id)[:128],
+                            email=(email[:128] if email else None),
+                            origin=origin[:32],
+                            last_error=(str(error)[:2000] if error is not None else None),
+                        )
+                    )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Could not record possibly-orphaned %s client %s on server %s — "
+                "it may keep serving traffic until an admin removes it manually",
+                panel_kind, remote_client_id, server.name,
+            )
+
     async def provision_subscription(
         self,
         *,
@@ -393,6 +443,7 @@ class ProvisioningManager:
         xui_call_succeeded = False
         savepoint_committed = False
         last_dup_exc: Exception | None = None
+        orphan_email: str | None = None
         try:
             stock_reserved = await self._reserve_stock(plan.id)
 
@@ -457,6 +508,7 @@ class ProvisioningManager:
 
                         async with self._get_xui_client_for_server(server) as xui_client:
                             xui_call_attempted = True
+                            orphan_email = attempt_email
                             await xui_client.add_client_to_inbound(
                                 inbound.xui_inbound_remote_id, xui_payload
                             )
@@ -520,6 +572,19 @@ class ProvisioningManager:
                     logger.error(
                         "Failed to compensate possibly-orphaned X-UI client %s on inbound %s: %s",
                         client_uuid, inbound.xui_inbound_remote_id, cleanup_exc,
+                    )
+                    # The delete failed, so the client may still be live while
+                    # this transaction rolls the DB back to knowing nothing
+                    # about it. Persist the identity so the reconcile-orphans
+                    # job can finish the job the user's retry never will.
+                    await self._record_possible_orphan(
+                        server=server,
+                        remote_client_id=client_uuid,
+                        panel_kind="xui",
+                        inbound_remote_id=inbound.xui_inbound_remote_id,
+                        email=orphan_email,
+                        origin="provisioning",
+                        error=cleanup_exc,
                     )
             raise
         return ProvisioningResult(
@@ -679,6 +744,13 @@ class ProvisioningManager:
                     logger.error(
                         "Failed to compensate possibly-orphaned %s user %s: %s",
                         panel_kind, pg_username, cleanup_exc,
+                    )
+                    await self._record_possible_orphan(
+                        server=server,
+                        remote_client_id=pg_username,
+                        panel_kind=panel_kind,
+                        origin="provisioning",
+                        error=cleanup_exc,
                     )
             raise
 
@@ -1124,6 +1196,14 @@ class ProvisioningManager:
                         "Migration cleanup failed for client %s on inbound %s: %s",
                         client_uuid, target_inbound.xui_inbound_remote_id, cleanup_exc,
                     )
+                    await self._record_possible_orphan(
+                        server=target_server,
+                        remote_client_id=client_uuid,
+                        panel_kind="xui",
+                        inbound_remote_id=target_inbound.xui_inbound_remote_id,
+                        origin="migration",
+                        error=cleanup_exc,
+                    )
             raise MigrationError(f"انتقال ناموفق بود: {exc}") from exc
 
         # Best-effort: remove the old client from the old panel. Failures
@@ -1144,6 +1224,17 @@ class ProvisioningManager:
                 logger.warning(
                     "Could not delete old client %s on inbound %s: %s",
                     old_remote_client_id, old_inbound_remote_id, exc,
+                )
+                # Unlike the sites above this transaction is committing, so the
+                # DB now points at the NEW client and nothing references the old
+                # one — it is a confirmed orphan, not merely a possible one.
+                await self._record_possible_orphan(
+                    server=old_server,
+                    remote_client_id=old_remote_client_id,
+                    panel_kind="xui",
+                    inbound_remote_id=old_inbound_remote_id,
+                    origin="migration_old_panel",
+                    error=exc,
                 )
 
         return MigrationResult(
@@ -1562,6 +1653,14 @@ class ProvisioningManager:
                         "Imported-migration cleanup failed for client %s on inbound %s: %s",
                         client_uuid, target_inbound.xui_inbound_remote_id, cleanup_exc,
                     )
+                    await self._record_possible_orphan(
+                        server=target_server,
+                        remote_client_id=client_uuid,
+                        panel_kind="xui",
+                        inbound_remote_id=target_inbound.xui_inbound_remote_id,
+                        origin="imported_migration",
+                        error=cleanup_exc,
+                    )
             raise MigrationError(f"انتقال ناموفق بود: {exc}") from exc
 
         # ── Best-effort: delete the OLD client from the panel ──────────
@@ -1906,6 +2005,40 @@ class ProvisioningManager:
 
         return out
 
+    @staticmethod
+    async def _validate_subscription_url(url: str) -> None:
+        """Reject subscription URLs that point at internal infrastructure.
+
+        The sub-link is attacker-influenced data (it can come from an imported
+        config or a panel-supplied redirect), so before we let httpx dial it we
+        resolve the host and refuse any private / loopback / link-local target.
+        This closes the SSRF path into the Docker network, the database, and the
+        cloud metadata endpoint at 169.254.169.254.
+        """
+        import asyncio as _asyncio
+
+        parsed = urlsplit(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("unsupported subscription URL")
+        host = parsed.hostname.rstrip(".").lower()
+        try:
+            addresses = await _asyncio.to_thread(
+                socket.getaddrinfo, host, parsed.port, type=socket.SOCK_STREAM
+            )
+        except OSError as exc:
+            raise ValueError("subscription host could not be resolved") from exc
+        for address in {item[4][0] for item in addresses}:
+            ip = ipaddress.ip_address(address)
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_reserved
+                or ip.is_unspecified
+                or ip.is_multicast
+            ):
+                raise ValueError("subscription host resolves to a blocked address")
+
     async def _recover_from_sublink_header(self, sub: "Subscription") -> tuple[int | None, int | None]:
         """Best-effort: read total + expire from the `subscription-userinfo`
         HTTP header on the sub's subscription link.
@@ -1932,13 +2065,31 @@ class ProvisioningManager:
             return None, None
 
         async def _do() -> tuple[int | None, int | None]:
-            logger.info("[SUBINFO] fetching sub-link: %s", link)
+            from core.config import settings as _settings
+
+            current_url = link
             async with _httpx.AsyncClient(
                 timeout=_httpx.Timeout(10.0, connect=5.0),
-                follow_redirects=True,
-                verify=False,  # legacy panels frequently use self-signed certs
+                # Redirects are followed manually so every hop is re-validated
+                # against the SSRF allow-list below.
+                follow_redirects=False,
+                # Honour the operator's panel TLS policy: legacy panels are
+                # frequently self-signed, so forcing verification here would
+                # silently break usage recovery for those deployments.
+                verify=_settings.xui_verify_ssl,
             ) as client:
-                resp = await client.get(link, headers={"User-Agent": "v2rayN/6.0"})
+                for _ in range(3):
+                    await self._validate_subscription_url(current_url)
+                    logger.info("[SUBINFO] fetching sub-link host=%s", urlsplit(current_url).hostname)
+                    resp = await client.get(current_url, headers={"User-Agent": "v2rayN/6.0"})
+                    if resp.status_code not in {301, 302, 303, 307, 308}:
+                        break
+                    location = resp.headers.get("location")
+                    if not location:
+                        break
+                    current_url = urljoin(current_url, location)
+                else:
+                    raise ValueError("too many subscription redirects")
             userinfo = None
             for hk, hv in resp.headers.items():
                 if hk.lower() == "subscription-userinfo":

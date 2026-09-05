@@ -13,6 +13,7 @@ import {
 } from "@/api/transactions";
 import { ApiError } from "@/api/client";
 import { fmtMoney, fmtNumber, fmtRelativeTime } from "@/utils/format";
+import { latestOnly } from "@/utils/latest";
 
 type Tab = "orders" | "payments" | "wallet" | "pending";
 
@@ -44,53 +45,101 @@ const userTgIdNum = computed(() => {
   return Number.isNaN(n) ? undefined : n;
 });
 
+// One runner for all four tabs on purpose: switching tab or filter must cancel
+// the query for the tab the operator just left, and a late response from it
+// must never overwrite the tab now on screen (the rows and the paging counters
+// are shared refs, so a stale answer would show the wrong totals too).
+const runLatest = latestOnly();
+
+const onFail = (exc: unknown) => {
+  errorMsg.value = exc instanceof ApiError ? exc.detail : "خطا";
+};
+const onSettle = () => {
+  loading.value = false;
+};
+
 async function refresh() {
   loading.value = true;
   errorMsg.value = null;
-  try {
-    if (tab.value === "orders") {
-      const r = await listOrders({
-        status: filterStatus.value || undefined,
-        user_telegram_id: userTgIdNum.value,
-        from_date: filterFromDate.value || undefined,
-        to_date: filterToDate.value || undefined,
-        page: page.value,
-        page_size: pageSize.value,
-      });
-      orders.value = r.items;
-      total.value = r.total;
-      totalPages.value = r.total_pages;
-    } else if (tab.value === "payments") {
-      const r = await listPayments({
-        status: filterStatus.value || undefined,
-        provider: filterProvider.value || undefined,
-        user_telegram_id: userTgIdNum.value,
-        page: page.value,
-        page_size: pageSize.value,
-      });
-      payments.value = r.items;
-      total.value = r.total;
-      totalPages.value = r.total_pages;
-    } else if (tab.value === "wallet") {
-      const r = await listWalletTxns({
-        direction: filterDirection.value || undefined,
-        user_telegram_id: userTgIdNum.value,
-        page: page.value,
-        page_size: pageSize.value,
-      });
-      wallet.value = r.items;
-      total.value = r.total;
-      totalPages.value = r.total_pages;
-    } else {
-      const r = await listPending();
-      pending.value = r.items;
-      total.value = r.total;
-      totalPages.value = 1;
-    }
-  } catch (exc) {
-    errorMsg.value = exc instanceof ApiError ? exc.detail : "خطا";
-  } finally {
-    loading.value = false;
+  if (tab.value === "orders") {
+    await runLatest(
+      (signal) =>
+        listOrders(
+          {
+            status: filterStatus.value || undefined,
+            user_telegram_id: userTgIdNum.value,
+            from_date: filterFromDate.value || undefined,
+            to_date: filterToDate.value || undefined,
+            page: page.value,
+            page_size: pageSize.value,
+          },
+          signal,
+        ),
+      {
+        commit: (r) => {
+          orders.value = r.items;
+          total.value = r.total;
+          totalPages.value = r.total_pages;
+        },
+        fail: onFail,
+        settle: onSettle,
+      },
+    );
+  } else if (tab.value === "payments") {
+    await runLatest(
+      (signal) =>
+        listPayments(
+          {
+            status: filterStatus.value || undefined,
+            provider: filterProvider.value || undefined,
+            user_telegram_id: userTgIdNum.value,
+            page: page.value,
+            page_size: pageSize.value,
+          },
+          signal,
+        ),
+      {
+        commit: (r) => {
+          payments.value = r.items;
+          total.value = r.total;
+          totalPages.value = r.total_pages;
+        },
+        fail: onFail,
+        settle: onSettle,
+      },
+    );
+  } else if (tab.value === "wallet") {
+    await runLatest(
+      (signal) =>
+        listWalletTxns(
+          {
+            direction: filterDirection.value || undefined,
+            user_telegram_id: userTgIdNum.value,
+            page: page.value,
+            page_size: pageSize.value,
+          },
+          signal,
+        ),
+      {
+        commit: (r) => {
+          wallet.value = r.items;
+          total.value = r.total;
+          totalPages.value = r.total_pages;
+        },
+        fail: onFail,
+        settle: onSettle,
+      },
+    );
+  } else {
+    await runLatest((signal) => listPending(signal), {
+      commit: (r) => {
+        pending.value = r.items;
+        total.value = r.total;
+        totalPages.value = 1;
+      },
+      fail: onFail,
+      settle: onSettle,
+    });
   }
 }
 

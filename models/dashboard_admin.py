@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String
+from sqlalchemy import Boolean, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.database import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -55,4 +55,16 @@ class DashboardAdmin(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Stamped on every successful login for audit.
     last_login_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
+    )
+    # Auth epoch. Session cookies embed the value they were minted against
+    # and every authenticated request compares the two, so incrementing this
+    # column invalidates every token issued before the bump — that is the
+    # only revocation lever a stateless signed cookie can have. Bumped on
+    # logout, password change and disablement.
+    #
+    # server_default is REQUIRED, not cosmetic: the generic column-sync
+    # migration refuses to add a NOT NULL column without one, and
+    # create_all() only ever creates missing tables, never missing columns.
+    session_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0",
     )

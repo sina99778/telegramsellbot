@@ -15,8 +15,8 @@ Implementation rules
 * Active subs are filtered to ("active", "pending_activation") so the
   number matches what the bot's own user-facing dashboard reports.
 * Revenue is summed from `Order.amount` where status ∈ (paid, processing,
-  provisioned) — same definition the existing `AdminStatsRepository`
-  uses (so dashboard ↔ bot stats never disagree).
+  provisioned, completed) — completed includes renewal revenue and matches the
+  financial analytics endpoint.
 * Traffic = lifetime_used_bytes + used_bytes (same convention as
   reseller-billing; introduced in commit b47ff13).
 * Chart series are computed in Postgres via `date_trunc('day', …)` so
@@ -44,7 +44,7 @@ router = APIRouter()
 
 
 # ── Constants matching the bot's own conventions ────────────────────────
-_REVENUE_STATUSES = ("paid", "processing", "provisioned")
+_REVENUE_STATUSES = ("paid", "processing", "provisioned", "completed")
 _BILLABLE_SUB_STATUSES = ("active", "pending_activation", "expired", "disabled")
 _ACTIVE_SUB_STATUSES = ("active", "pending_activation")
 

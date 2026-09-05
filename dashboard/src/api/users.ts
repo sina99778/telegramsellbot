@@ -70,14 +70,17 @@ export interface UserDetailResponse {
   wallet_transactions: WalletTxn[];
 }
 
-export function listUsers(params: {
-  q?: string;
-  status?: string;
-  page?: number;
-  page_size?: number;
-  sort?: string;
-  order?: "asc" | "desc";
-}): Promise<UserListResponse> {
+export function listUsers(
+  params: {
+    q?: string;
+    status?: string;
+    page?: number;
+    page_size?: number;
+    sort?: string;
+    order?: "asc" | "desc";
+  },
+  signal?: AbortSignal,
+): Promise<UserListResponse> {
   const qs = new URLSearchParams();
   if (params.q) qs.set("q", params.q);
   if (params.status) qs.set("status", params.status);
@@ -85,7 +88,7 @@ export function listUsers(params: {
   qs.set("page_size", String(params.page_size ?? 25));
   if (params.sort) qs.set("sort", params.sort);
   if (params.order) qs.set("order", params.order);
-  return api.get<UserListResponse>(`/users?${qs}`);
+  return api.get<UserListResponse>(`/users?${qs}`, signal);
 }
 
 export function getUser(id: string): Promise<UserDetailResponse> {

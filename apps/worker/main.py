@@ -35,6 +35,7 @@ from apps.worker.jobs.card_autoconfirm import run_card_autoconfirm
 from apps.worker.jobs.crypto_autoconfirm import run_crypto_autoconfirm
 from apps.worker.jobs.reconciliation import run_reconciliation
 from apps.worker.jobs.migration_usage import run_reconcile_migrated_usage
+from apps.worker.jobs.orphan_reconcile import reconcile_orphaned_panel_clients
 from apps.worker.jobs.plan_cleanup import cleanup_orphaned_custom_plans
 from core.config import settings
 from core.database import AsyncSessionFactory
@@ -174,6 +175,17 @@ async def main() -> None:
         max_instances=1,
         coalesce=True,
     )
+    # Every 5 minutes, retry the compensating delete for panel clients an
+    # uncertain provisioning/migration write may have orphaned. Usually a no-op
+    # (one indexed SELECT that returns nothing); when it isn't, a live
+    # full-quota client is removed instead of leaking forever.
+    scheduler.add_job(
+        run_orphan_reconcile,
+        "interval",
+        minutes=5,
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.start()
 
     # Keep this process's settings caches in sync with dashboard/bot changes.
@@ -211,6 +223,13 @@ async def run_cleanup_orphaned_custom_plans() -> None:
         await cleanup_orphaned_custom_plans()
     except Exception as exc:
         logger.error("cleanup_orphaned_custom_plans failed: %s", exc, exc_info=True)
+
+
+async def run_orphan_reconcile() -> None:
+    try:
+        await reconcile_orphaned_panel_clients()
+    except Exception as exc:
+        logger.error("reconcile_orphaned_panel_clients failed: %s", exc, exc_info=True)
 
 
 async def run_broadcast_queue(bot: PremiumEmojiBot) -> None:

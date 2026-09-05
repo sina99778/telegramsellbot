@@ -51,6 +51,16 @@ def _resolve(value: str | None, env_var: str, prompt: str, hidden: bool = False)
     return input(prompt).strip()
 
 
+def _emit_secret(password: str) -> None:
+    """Deliver an auto-generated password to the operator's terminal only.
+
+    Written to stdout instead of the logger so it never lands in log files,
+    log aggregators, or journald where secrets would be retained.
+    """
+    print("    password (نمایش یک‌باره): " + password, flush=True)
+    print("    ← همین حالا جای امن ذخیره‌اش کن؛ دیگر نمایش داده نمی‌شود.", flush=True)
+
+
 async def _cmd_create(args: argparse.Namespace) -> int:
     username = _resolve(args.username, "DASHBOARD_ADMIN_USERNAME", "نام کاربری: ").strip().lower()
     if not username:
@@ -95,9 +105,9 @@ async def _cmd_create(args: argparse.Namespace) -> int:
     logger.info("✅ ادمین داشبورد ساخته شد:")
     logger.info("    username:     %s", username)
     if autogen:
-        logger.info("    password:     %s   ← این رو جای امن نگه دار!", password)
+        _emit_secret(password)
     else:
-        logger.info("    password:     (مخفی)")
+        logger.info("    password:     (همان رمزی که خودت دادی)")
     logger.info("")
     logger.info("حالا برو به https://<your-domain>/dashboard/ و وارد شو.")
     return 0
@@ -125,6 +135,10 @@ async def _cmd_set_password(args: argparse.Namespace) -> int:
                 return 3
             admin.password_hash = hash_password(password)
             admin.is_active = True
+            # Rotating the password must kick out sessions minted with the old
+            # one — otherwise a stolen cookie survives the very action taken to
+            # contain it.
+            admin.session_version = int(admin.session_version or 0) + 1
             await session.commit()
     except ValueError as exc:
         logger.error("رمز عبور قابل قبول نیست: %s", exc)
@@ -165,6 +179,10 @@ async def _cmd_disable(args: argparse.Namespace) -> int:
             logger.error("ادمین «%s» پیدا نشد.", username)
             return 3
         admin.is_active = False
+        # is_active is already enforced on every request, so this is
+        # belt-and-braces: the epoch bump means the tokens are dead even if a
+        # future code path ever stops consulting is_active.
+        admin.session_version = int(admin.session_version or 0) + 1
         await session.commit()
     logger.info("✅ ادمین «%s» غیرفعال شد. (داده‌ها حفظ شده‌اند برای audit.)", username)
     return 0

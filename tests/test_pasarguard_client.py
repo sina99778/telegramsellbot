@@ -214,6 +214,58 @@ async def test_transport_errors_retry_post(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_create_user_does_not_retry_transport_errors(monkeypatch):
+    async def no_sleep(_):
+        raise AssertionError("non-idempotent creation must not sleep")
+
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    state = {"create": 0, "lookup": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/admin/token":
+            return httpx.Response(200, json={"access_token": "t", "token_type": "bearer"})
+        if request.url.path == "/api/user" and request.method == "POST":
+            state["create"] += 1
+            raise httpx.ConnectError("disconnected", request=request)
+        if request.url.path == "/api/user/u1":
+            state["lookup"] += 1
+            return httpx.Response(404, json={"detail": "not found"})
+        return httpx.Response(404)
+
+    client = _make_client(handler)
+    with pytest.raises(PasarGuardRequestError):
+        await client.create_user(PGUserCreate(username="u1", group_ids=[1]))
+    assert state == {"create": 1, "lookup": 0}
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_create_user_reconciles_after_uncertain_server_failure(monkeypatch):
+    async def no_sleep(_):
+        return None
+
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+    state = {"create": 0, "lookup": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/admin/token":
+            return httpx.Response(200, json={"access_token": "t", "token_type": "bearer"})
+        if request.url.path == "/api/user" and request.method == "POST":
+            state["create"] += 1
+            return httpx.Response(503)
+        if request.url.path == "/api/user/u1":
+            state["lookup"] += 1
+            return httpx.Response(200, json={"username": "u1", "status": "active"})
+        return httpx.Response(404)
+
+    client = _make_client(handler)
+    user = await client.create_user(PGUserCreate(username="u1", group_ids=[1]))
+    assert user.username == "u1"
+    assert state == {"create": 1, "lookup": 1}
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_get_user_404_returns_none_and_delete_404_is_ok():
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/api/admin/token":

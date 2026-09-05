@@ -35,8 +35,15 @@ Safety
   rest still apply.
 * The unique index follows scripts/migrations/004's pattern: pre-existing
   duplicates are detected and reported instead of failing the CREATE.
-* Always exits 0 on data conflicts — defence-in-depth must never block a
-  deploy. Only infrastructure errors (DB unreachable) exit non-zero.
+* CHECK-constraint conflicts exit 0 — those are defence-in-depth on data
+  invariants and must never block a deploy.
+* The replay-protection index is different: it is an active security
+  control, not a hint. If it cannot be installed we exit NON-ZERO so the
+  deploy stops instead of reporting a successful security migration while
+  the defense is absent. An operator who has knowingly accepted the risk
+  (e.g. legacy duplicates they intend to reconcile later) can set
+  ALLOW_MISSING_PAYMENT_REPLAY_INDEX=true to downgrade it to a warning.
+* Infrastructure errors (DB unreachable) also exit non-zero.
 
 How to run (handled automatically by deploy.sh, or manually):
     docker compose -f docker-compose.prod.yml run --rm api \
@@ -46,6 +53,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 
 from sqlalchemy import text
@@ -91,6 +99,14 @@ _INDEX_PREDICATE = (
     "provider_payment_id IS NOT NULL "
     "AND provider IN ('nowpayments', 'tetrapay', 'tronado')"
 )
+
+# Escape hatch for an operator who has consciously accepted running without
+# webhook-replay protection while they reconcile legacy duplicates by hand.
+_OVERRIDE_ENV = "ALLOW_MISSING_PAYMENT_REPLAY_INDEX"
+
+
+def _override_enabled() -> bool:
+    return os.getenv(_OVERRIDE_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 async def _apply_check_constraints() -> tuple[int, int, list[str]]:
@@ -204,14 +220,47 @@ def main() -> int:
             "✅ Created partial UNIQUE index %s (webhook-replay guard).", _INDEX_NAME
         )
     elif index_status == "duplicates":
-        logger.warning(
-            "⚠️  NOT creating %s: found %d duplicated automated payment key(s). "
-            "Reconcile these manually, then re-run. Offending provider/payment "
-            "ids: %s",
+        # This index is the ONLY thing stopping a replayed gateway IPN from
+        # inserting a second payment row for the same provider payment id.
+        # Reporting success here would advertise a security control that is
+        # not actually installed, so fail the deploy instead.
+        logger.error(
+            "❌ Cannot create %s: found %d duplicated automated payment key(s), "
+            "so webhook-replay protection is NOT active. Offending "
+            "provider/payment ids: %s",
             _INDEX_NAME, len(duplicates), ", ".join(duplicates),
         )
-    # Always exit 0 on data conflicts — never block a deploy on this
-    # defence-in-depth step. Infrastructure failures returned 1 above.
+        logger.error("")
+        logger.error("Reconcile them, then re-run this migration. To inspect:")
+        logger.error(
+            "  SELECT id, provider, provider_payment_id, payment_status, "
+            "price_amount, created_at FROM payments"
+        )
+        logger.error(
+            "  WHERE %s ORDER BY provider, provider_payment_id, created_at;",
+            _INDEX_PREDICATE,
+        )
+        logger.error("")
+        logger.error(
+            "Keep the row that actually delivered value and clear "
+            "provider_payment_id on the replayed row(s) — do NOT delete "
+            "payment history."
+        )
+        if _override_enabled():
+            logger.warning(
+                "⚠️  %s is set — continuing the deploy WITHOUT replay "
+                "protection. Unset it once the duplicates are reconciled.",
+                _OVERRIDE_ENV,
+            )
+            return 0
+        logger.error(
+            "Set %s=true to deploy anyway (accepting the replay risk).",
+            _OVERRIDE_ENV,
+        )
+        return 1
+
+    # CHECK-constraint conflicts alone never block a deploy: they are
+    # defence-in-depth on data invariants, not an active security control.
     return 0
 
 

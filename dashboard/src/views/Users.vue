@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 import { listUsers, type UserListItem } from "@/api/users";
 import { ApiError } from "@/api/client";
 import { fmtMoney, fmtNumber, fmtRelativeTime } from "@/utils/format";
+import { latestOnly } from "@/utils/latest";
 
 const router = useRouter();
 
@@ -21,26 +22,40 @@ const order = ref<"asc" | "desc">("desc");
 const loading = ref(false);
 const errorMsg = ref<string | null>(null);
 
+// Typing in the search box or paging fast keeps several requests in flight;
+// only the newest one is allowed to paint the table.
+const runLatest = latestOnly();
+
 async function refresh() {
   loading.value = true;
   errorMsg.value = null;
-  try {
-    const r = await listUsers({
-      q: q.value.trim() || undefined,
-      status: status.value || undefined,
-      page: page.value,
-      page_size: pageSize.value,
-      sort: sort.value,
-      order: order.value,
-    });
-    items.value = r.items;
-    total.value = r.total;
-    totalPages.value = r.total_pages;
-  } catch (exc) {
-    errorMsg.value = exc instanceof ApiError ? exc.detail : "خطای شبکه";
-  } finally {
-    loading.value = false;
-  }
+  await runLatest(
+    (signal) =>
+      listUsers(
+        {
+          q: q.value.trim() || undefined,
+          status: status.value || undefined,
+          page: page.value,
+          page_size: pageSize.value,
+          sort: sort.value,
+          order: order.value,
+        },
+        signal,
+      ),
+    {
+      commit: (r) => {
+        items.value = r.items;
+        total.value = r.total;
+        totalPages.value = r.total_pages;
+      },
+      fail: (exc) => {
+        errorMsg.value = exc instanceof ApiError ? exc.detail : "خطای شبکه";
+      },
+      settle: () => {
+        loading.value = false;
+      },
+    },
+  );
 }
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;

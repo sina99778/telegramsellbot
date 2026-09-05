@@ -36,14 +36,16 @@ export type ReceiptFilter = "pending" | "approved" | "rejected" | "history" | "a
 
 export function listReceipts(
   status: ReceiptFilter = "pending",
+  signal?: AbortSignal,
 ): Promise<{ items: ReceiptListItem[]; total: number }> {
   return api.get<{ items: ReceiptListItem[]; total: number }>(
     `/receipts?status=${encodeURIComponent(status)}`,
+    signal,
   );
 }
 
-export function getReceipt(id: string): Promise<ReceiptDetail> {
-  return api.get<ReceiptDetail>(`/receipts/${id}`);
+export function getReceipt(id: string, signal?: AbortSignal): Promise<ReceiptDetail> {
+  return api.get<ReceiptDetail>(`/receipts/${id}`, signal);
 }
 
 // We don't use the api wrapper here — we just need the URL for an <img src=...>.

@@ -14,37 +14,14 @@ RUN apt-get update \
     && "${VENV_PATH}/bin/pip" install --upgrade pip setuptools wheel \
     && rm -rf /var/lib/apt/lists/*
 
-# Install ONLY dependencies (not the project itself) — avoids slow wheel build.
-# Note: every package is pinned to an exact version inside the range declared
-# in pyproject.toml so rebuilds are reproducible across hosts. The Dockerfile
-# does NOT read pyproject (faster build), so adding/bumping a dep there is not
-# enough — you must also update the pin here (and keep it within the range).
-# arabic-reshaper / python-bidi are Persian text shaping for services/banner.py.
-COPY pyproject.toml ./
-RUN "${VENV_PATH}/bin/pip" install \
-    "aiogram==3.27.0" \
-    "fastapi==0.115.6" \
-    "uvicorn[standard]==0.34.0" \
-    "python-multipart==0.0.20" \
-    "sqlalchemy==2.0.36" \
-    "asyncpg==0.30.0" \
-    "alembic==1.14.0" \
-    "redis[hiredis]==5.2.1" \
-    "pydantic==2.10.6" \
-    "pydantic-settings==2.7.1" \
-    "httpx==0.28.1" \
-    "orjson==3.10.12" \
-    "python-dotenv==1.0.1" \
-    "structlog==24.4.0" \
-    "apscheduler==3.11.0" \
-    "tenacity==9.0.0" \
-    "cryptography==43.0.3" \
-    "segno==1.6.1" \
-    "pillow==10.4.0" \
-    "pytesseract==0.3.13" \
-    "sentry-sdk[fastapi]==2.19.2" \
-    "arabic-reshaper==3.0.0" \
-    "python-bidi==0.6.6"
+COPY pyproject.toml README.md ./
+COPY apps ./apps
+COPY core ./core
+COPY models ./models
+COPY repositories ./repositories
+COPY schemas ./schemas
+COPY services ./services
+RUN "${VENV_PATH}/bin/pip" install .
 
 
 # ─── Stage 2: Vue 3 dashboard build ─────────────────────────────────────
@@ -54,8 +31,8 @@ FROM node:20-alpine AS dashboard-builder
 WORKDIR /dashboard
 
 # Copy manifests first for cache-friendly layer.
-COPY dashboard/package.json dashboard/package-lock.json* ./
-RUN npm install --no-audit --no-fund
+COPY dashboard/package.json dashboard/package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 # Now copy the rest of the source and build.
 COPY dashboard/ ./

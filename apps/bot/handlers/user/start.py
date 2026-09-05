@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from html import escape as _html_escape
+from html import unescape as _html_unescape
 from uuid import UUID
 
 from aiogram import Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
@@ -26,6 +29,26 @@ from repositories.user import UserRepository
 logger = logging.getLogger(__name__)
 
 router = Router(name="user-start")
+
+
+async def _send_welcome_response(
+    message: Message,
+    text: str,
+    reply_markup: object,
+) -> None:
+    try:
+        await message.answer(text, reply_markup=reply_markup, parse_mode="HTML")
+        return
+    except TelegramBadRequest:
+        logger.warning("welcome response with keyboard failed")
+
+    try:
+        await message.answer(text, parse_mode="HTML")
+        return
+    except TelegramBadRequest:
+        logger.warning("welcome response with HTML failed")
+
+    await message.answer(_html_unescape(re.sub(r"<[^>]*>", "", text)))
 
 
 async def _build_welcome_status_line(
@@ -176,10 +199,10 @@ async def start_deep_link_handler(
             status_line=status_line,
         )
 
-    await message.answer(
+    await _send_welcome_response(
+        message,
         welcome_text,
-        reply_markup=get_main_menu_keyboard(is_admin=is_admin, telegram_id=telegram_user.id),
-        parse_mode="HTML",
+        get_main_menu_keyboard(is_admin=is_admin, telegram_id=telegram_user.id),
     )
 
 
@@ -249,10 +272,10 @@ async def start_command_handler(message: Message, session: AsyncSession) -> None
     from core.config import settings
     is_admin = user.role in {"admin", "owner"} or telegram_user.id == settings.owner_telegram_id
 
-    await message.answer(
+    await _send_welcome_response(
+        message,
         welcome_text,
-        reply_markup=get_main_menu_keyboard(is_admin=is_admin, telegram_id=telegram_user.id),
-        parse_mode="HTML",
+        get_main_menu_keyboard(is_admin=is_admin, telegram_id=telegram_user.id),
     )
 
 

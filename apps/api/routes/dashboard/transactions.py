@@ -18,7 +18,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any
 from uuid import UUID
@@ -51,13 +51,19 @@ AuthDep = Annotated[
 _ORDER_STATUSES = ("pending", "paid", "processing", "provisioned", "refunded", "cancelled")
 
 
-def _parse_iso(s: str | None) -> datetime | None:
+def _parse_iso(s: str | None, *, end_of_day: bool = False) -> datetime | None:
     if not s:
         return None
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+        value = s.strip()
+        if len(value) == 10:
+            parsed = datetime.fromisoformat(value)
+            if end_of_day:
+                return parsed + timedelta(days=1)
+            return parsed
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid date filter") from exc
 
 
 # ─── Orders ─────────────────────────────────────────────────────────────
@@ -96,9 +102,9 @@ async def list_orders(
         if dt is not None:
             stmt = stmt.where(Order.created_at >= dt)
     if to_date:
-        dt = _parse_iso(to_date)
+        dt = _parse_iso(to_date, end_of_day=True)
         if dt is not None:
-            stmt = stmt.where(Order.created_at <= dt)
+            stmt = stmt.where(Order.created_at < dt)
 
     total = int(await session.scalar(
         select(func.count()).select_from(stmt.subquery())
@@ -153,9 +159,9 @@ async def export_orders_csv(
         if dt is not None:
             stmt = stmt.where(Order.created_at >= dt)
     if to_date:
-        dt = _parse_iso(to_date)
+        dt = _parse_iso(to_date, end_of_day=True)
         if dt is not None:
-            stmt = stmt.where(Order.created_at <= dt)
+            stmt = stmt.where(Order.created_at < dt)
 
     rows = (await session.execute(stmt)).scalars().all()
 
