@@ -30,16 +30,22 @@ interface Props {
   unit?: string;
   /** When true, format big numbers in tooltip with `,` thousands. */
   thousands?: boolean;
+  periodLabel?: string;
 }
 const props = withDefaults(defineProps<Props>(), {
-  color: "#36D1E0",
+  color: "#5dd6a0",
+  periodLabel: "۳۰ روز اخیر",
   thousands: true,
 });
 
 const canvas = ref<HTMLCanvasElement | null>(null);
 let chart: Chart | null = null;
+let themeObserver: MutationObserver | null = null;
 
 function buildConfig() {
+  const css = getComputedStyle(document.documentElement);
+  const labels = css.getPropertyValue("--chart-label").trim() || "#96a3b2";
+  const grid = css.getPropertyValue("--chart-grid").trim() || "rgba(130,145,160,.12)";
   return {
     type: "line" as const,
     data: {
@@ -80,7 +86,7 @@ function buildConfig() {
             label: (item: any) => {
               const v = Number(item.raw);
               const num = props.thousands
-                ? Math.round(v).toLocaleString("en-US")
+                ? v.toLocaleString("en-US", { minimumFractionDigits: props.unit ? 2 : 0, maximumFractionDigits: props.unit ? 2 : 0 })
                 : v.toFixed(2);
               return props.unit ? `${props.unit}${num}` : num;
             },
@@ -90,12 +96,12 @@ function buildConfig() {
       scales: {
         x: {
           grid: { display: false },
-          ticks: { color: "#64748b", maxTicksLimit: 6, font: { size: 10 } },
+          ticks: { color: labels, maxTicksLimit: 6, font: { size: 10 } },
         },
         y: {
-          grid: { color: "rgba(36,49,73,0.5)" },
+          grid: { color: grid },
           ticks: {
-            color: "#64748b",
+            color: labels,
             font: { size: 10 },
             callback: (v: any) =>
               typeof v === "number" && v >= 1000
@@ -118,9 +124,10 @@ function buildOrUpdate() {
   chart = new Chart(canvas.value, buildConfig());
 }
 
-onMounted(buildOrUpdate);
+onMounted(() => { buildOrUpdate(); themeObserver = new MutationObserver(buildOrUpdate); themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] }); });
 watch(() => props.points, buildOrUpdate, { deep: true });
 onBeforeUnmount(() => {
+  themeObserver?.disconnect();
   if (chart) {
     chart.destroy();
     chart = null;
@@ -132,10 +139,10 @@ onBeforeUnmount(() => {
   <div class="card">
     <div class="flex items-baseline justify-between mb-3">
       <h3 class="text-sm font-bold text-white">{{ title }}</h3>
-      <span class="text-[11px] text-slate-500">۳۰ روز اخیر</span>
+      <span class="text-[11px] text-slate-500">{{ periodLabel }}</span>
     </div>
-    <div class="relative h-56">
-      <canvas ref="canvas" />
+    <div class="relative chart-canvas-wrap">
+      <canvas ref="canvas" role="img" :aria-label="title + '؛ ' + periodLabel" />
     </div>
   </div>
 </template>

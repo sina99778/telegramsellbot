@@ -345,7 +345,7 @@ function subStatusBadge(s: string): string {
         <div v-if="!data.wallet_transactions.length" class="text-xs text-slate-500 py-6 text-center">
           تراکنشی ثبت نشده.
         </div>
-        <table v-else class="data-table">
+        <div v-else class="table-scroll" tabindex="0" aria-label="جدول تراکنش‌های کیف پول"><table class="data-table">
           <thead>
             <tr>
               <th>نوع</th>
@@ -368,7 +368,7 @@ function subStatusBadge(s: string): string {
               <td class="text-slate-500 text-xs">{{ fmtRelativeTime(t.created_at) }}</td>
             </tr>
           </tbody>
-        </table>
+        </table></div>
       </section>
     </div>
   </div>

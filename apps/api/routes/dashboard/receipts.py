@@ -27,10 +27,10 @@ from typing import Annotated, Any
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Response, Query
 from fastapi.responses import StreamingResponse
 from PIL import Image
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, or_, cast, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -98,7 +98,12 @@ def _serialize(p: Payment, user: User | None) -> dict[str, Any]:
 
 
 @router.get("")
-async def list_pending_receipts(auth: AuthDep, status: str = "pending") -> dict[str, Any]:
+async def list_pending_receipts(
+    auth: AuthDep, status: str = "pending",
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200)] = 200,
+    q: Annotated[str | None, Query(max_length=128)] = None,
+) -> dict[str, Any]:
     """List card-to-card receipts.
 
     ?status= controls the view:
@@ -128,11 +133,21 @@ async def list_pending_receipts(auth: AuthDep, status: str = "pending") -> dict[
         stmt = stmt.where(Payment.payment_status.in_(("finished", "rejected")))
     # status == "all" → no extra status filter
 
+    if q and q.strip():
+        needle = "%" + q.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        stmt = stmt.join(User, User.id == Payment.user_id).where(or_(
+            User.first_name.ilike(needle, escape="\\"),
+            User.username.ilike(needle, escape="\\"),
+            cast(User.telegram_id, String).ilike(needle, escape="\\"),
+            cast(Payment.id, String).ilike(needle, escape="\\"),
+        ))
+    total = int(await session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
     rows = (await session.execute(
-        stmt.order_by(desc(Payment.created_at)).limit(200)
+        stmt.order_by(desc(Payment.created_at), Payment.id).offset((page - 1) * page_size).limit(page_size)
     )).scalars().all()
     items = [_serialize(p, p.user) for p in rows]
-    return {"items": items, "total": len(items)}
+    return {"items": items, "total": total, "page": page, "page_size": page_size,
+            "total_pages": max(1, (total + page_size - 1) // page_size)}
 
 
 @router.get("/{payment_id}")

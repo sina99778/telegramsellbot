@@ -32,19 +32,35 @@ export interface ReceiptDetail extends ReceiptListItem {
   ocr?: { ok: boolean | null; summary: string } | null;
 }
 
-export type ReceiptFilter = "pending" | "approved" | "rejected" | "history" | "all";
+export type ReceiptFilter =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "history"
+  | "all";
 
 export function listReceipts(
   status: ReceiptFilter = "pending",
   signal?: AbortSignal,
-): Promise<{ items: ReceiptListItem[]; total: number }> {
-  return api.get<{ items: ReceiptListItem[]; total: number }>(
-    `/receipts?status=${encodeURIComponent(status)}`,
-    signal,
-  );
+  params: { page?: number; page_size?: number; q?: string } = {},
+): Promise<{ items: ReceiptListItem[]; total: number; total_pages: number }> {
+  const qs = new URLSearchParams({
+    status,
+    page: String(params.page || 1),
+    page_size: String(params.page_size || 50),
+  });
+  if (params.q) qs.set("q", params.q);
+  return api.get<{
+    items: ReceiptListItem[];
+    total: number;
+    total_pages: number;
+  }>(`/receipts?${qs}`, signal);
 }
 
-export function getReceipt(id: string, signal?: AbortSignal): Promise<ReceiptDetail> {
+export function getReceipt(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ReceiptDetail> {
   return api.get<ReceiptDetail>(`/receipts/${id}`, signal);
 }
 

@@ -1,213 +1,479 @@
 <script setup lang="ts">
-// Overview / "home" of the dashboard. Six KPI tiles + two charts +
-// a recent-activity feed. Refreshes on mount and on demand.
-
-import { ref, onMounted, computed } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { RouterLink } from "vue-router";
 import { fetchOverview, type OverviewPayload } from "@/api/overview";
 import { ApiError } from "@/api/client";
+import { useOperations, serverHealth } from "@/stores/operations";
+import { useAuthStore } from "@/stores/auth";
 import { fmtBytes, fmtMoney, fmtNumber, fmtRelativeTime } from "@/utils/format";
-import StatCard from "@/components/StatCard.vue";
+import { latestOnly } from "@/utils/latest";
+import { downloadCsv } from "@/utils/csv";
+import Icon from "@/components/Icon.vue";
 import LineChart from "@/components/LineChart.vue";
-
+const ops = useOperations();
+const auth = useAuthStore();
 const data = ref<OverviewPayload | null>(null);
 const loading = ref(false);
-const errorMsg = ref<string | null>(null);
-
+const error = ref("");
+const clock = ref(Date.now());
+const range = ref<7 | 30>(30);
+const autoRefresh = ref(false);
+const activityFilter = ref("all");
+const run = latestOnly();
+let interval: ReturnType<typeof setInterval>;
 async function refresh() {
   loading.value = true;
-  errorMsg.value = null;
-  try {
-    data.value = await fetchOverview();
-  } catch (exc) {
-    if (exc instanceof ApiError) {
-      errorMsg.value = exc.detail || `خطا (${exc.status})`;
-    } else {
-      errorMsg.value = "خطای شبکه — اتصال خود را بررسی کنید.";
-    }
-  } finally {
-    loading.value = false;
-  }
+  error.value = "";
+  await Promise.all([
+    ops.refresh(),
+    run((signal) => fetchOverview(signal), {
+      commit: (r) => {
+        data.value = r;
+      },
+      fail: (e) => {
+        error.value =
+          e instanceof ApiError
+            ? e.detail
+            : "دریافت اطلاعات انجام نشد؛ دوباره تلاش کنید.";
+      },
+      settle: () => {
+        loading.value = false;
+      },
+    }),
+  ]);
 }
-
-onMounted(refresh);
-
+onMounted(() => {
+  refresh();
+  interval = setInterval(() => {
+    clock.value = Date.now();
+    if (
+      autoRefresh.value &&
+      !loading.value &&
+      document.visibilityState === "visible"
+    )
+      refresh();
+  }, 60000);
+});
+onBeforeUnmount(() => {
+  clearInterval(interval);
+  run.cancel();
+});
 const kpis = computed(() => data.value?.kpis);
-const charts = computed(() => data.value?.charts);
-const activity = computed(() => data.value?.recent_activity || []);
-const generatedRel = computed(() =>
-  data.value ? fmtRelativeTime(data.value.generated_at) : "",
+const metrics = computed(() =>
+  kpis.value
+    ? [
+        {
+          label: "درآمد ماه جاری",
+          value: fmtMoney(kpis.value.revenue_mtd_usd),
+          hint: "درآمد ثبت‌شده به دلار",
+          icon: "money",
+          color: "green",
+        },
+        {
+          label: "درآمد ۲۴ ساعت",
+          value: fmtMoney(kpis.value.last_24h.revenue_usd),
+          hint: fmtNumber(kpis.value.last_24h.purchases) + " سفارش در ۲۴ ساعت",
+          icon: "chart",
+          color: "blue",
+        },
+        {
+          label: "سرویس‌های فعال",
+          value: fmtNumber(kpis.value.active_subs),
+          hint: "شامل انتظار اولین استفاده",
+          icon: "server",
+          color: "green",
+        },
+        {
+          label: "کل کاربران",
+          value: fmtNumber(kpis.value.total_users),
+          hint: fmtNumber(kpis.value.last_24h.signups) + " ثبت‌نام در ۲۴ ساعت",
+          icon: "users",
+          color: "purple",
+        },
+        {
+          label: "سرورهای فعال",
+          value: fmtNumber(kpis.value.active_servers),
+          hint: "فعال در تنظیمات سامانه",
+          icon: "server",
+          color: "blue",
+        },
+        {
+          label: "ترافیک تحویل‌شده",
+          value: fmtBytes(kpis.value.traffic_delivered_bytes),
+          hint: "مجموع مصرف ثبت‌شده",
+          icon: "traffic",
+          color: "amber",
+        },
+      ]
+    : [],
 );
+const revenue = computed(
+  () => data.value?.charts.revenue_30d.slice(-range.value) || [],
+);
+const signups = computed(
+  () => data.value?.charts.signups_30d.slice(-range.value) || [],
+);
+const activity = computed(() =>
+  (data.value?.recent_activity || []).filter(
+    (e) => activityFilter.value === "all" || e.kind === activityFilter.value,
+  ),
+);
+const monitoredServers = computed(() =>
+  [...(ops.servers || [])]
+    .sort((a, b) => {
+      const priority = { unhealthy: 0, unknown: 1, healthy: 2, disabled: 3 };
+      return priority[serverHealth(a)] - priority[serverHealth(b)];
+    })
+    .slice(0, 7),
+);
+const healthLabels = {
+  healthy: "سالم",
+  unhealthy: "اختلال",
+  unknown: "بررسی‌نشده",
+  disabled: "غیرفعال",
+};
+const dateLabel = computed(() =>
+  new Intl.DateTimeFormat("fa-IR-u-nu-latn", { dateStyle: "long" }).format(
+    new Date(),
+  ),
+);
+const generatedRel = computed(() =>
+  fmtRelativeTime(data.value?.generated_at, clock.value),
+);
+const currentPeriod = computed(() =>
+  range.value === 7 ? "۷ روز اخیر" : "۳۰ روز اخیر",
+);
+function exportSummary() {
+  if (!kpis.value) return;
+  const k = kpis.value;
+  downloadCsv(
+    "dashboard-summary-" + new Date().toISOString().slice(0, 10) + ".csv",
+    [
+      ["بخش", "شاخص یا تاریخ", "مقدار"],
+      ["آمار", "درآمد ماه جاری USD", k.revenue_mtd_usd],
+      ["آمار", "کاربران", k.total_users],
+      ["آمار", "سرویس فعال", k.active_subs],
+      ["آمار", "ترافیک بایت", k.traffic_delivered_bytes],
+      ...revenue.value.map((p) => ["درآمد روزانه USD", p.date, p.value]),
+      ...signups.value.map((p) => ["ثبت‌نام روزانه", p.date, p.value]),
+    ],
+  );
+}
 </script>
-
 <template>
-  <div class="p-6 lg:p-8 max-w-7xl mx-auto">
-    <!-- ── Header ─────────────────────────────────────────────────── -->
-    <header class="flex flex-wrap items-center justify-between gap-3 mb-6">
+  <div class="p-6 lg:p-8 max-w-7xl mx-auto operations-view">
+    <header class="operations-header">
       <div>
-        <h1 class="text-2xl font-bold text-white">نمای کلی</h1>
-        <p class="text-sm text-slate-400 mt-1">
-          خلاصه‌ی فعالیت ربات
-          <span v-if="generatedRel" class="text-slate-500">— به‌روزرسانی: {{ generatedRel }}</span>
+        <div class="eyebrow mb-1">
+          {{ dateLabel }} <span class="mx-2">/</span> نمای مدیریتی
+        </div>
+        <h1 class="text-2xl font-bold text-white">مرکز عملیات</h1>
+        <p class="text-xs text-slate-400 mt-1">
+          {{ auth.profile?.display_name || auth.profile?.username }}، وضعیت
+          کسب‌وکار و کارهای نیازمند رسیدگی را اینجا ببینید.
         </p>
       </div>
-      <button class="btn btn-secondary" :disabled="loading" @click="refresh">
-        <svg
-          v-if="!loading"
-          class="w-4 h-4"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
+      <div class="operations-header-actions">
+        <label class="auto-refresh"
+          ><input type="checkbox" v-model="autoRefresh" /> خودکار · ۶۰
+          ثانیه</label
+        ><button
+          class="btn btn-secondary"
+          :disabled="!data"
+          @click="exportSummary"
         >
-          <path stroke-linecap="round" stroke-linejoin="round" d="M3 12a9 9 0 1 0 3-6.7M3 4v6h6" />
-        </svg>
-        <svg v-else class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-          <circle
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            stroke-width="3"
-            stroke-dasharray="40 60"
-            stroke-linecap="round"
+          <Icon name="download" :size="15" /> خروجی آمار</button
+        ><button class="btn btn-secondary" :disabled="loading" @click="refresh">
+          <Icon
+            name="refresh"
+            :size="15"
+            :class="{ 'animate-spin': loading }"
           />
-        </svg>
-        به‌روزرسانی
-      </button>
+          به‌روزرسانی
+        </button>
+      </div>
     </header>
-
-    <!-- ── Error ─────────────────────────────────────────────────── -->
+    <div v-if="error" class="console-alert danger" role="alert">
+      <Icon name="alert" :size="16" /><span>{{ error }}</span>
+    </div>
+    <div v-if="ops.errors.length" class="console-alert warning" role="status">
+      <Icon name="alert" :size="16" /><span
+        >اطلاعات {{ ops.errors.join("، ") }} به‌روز نشد؛ مقادیر قبلی ممکن است
+        نمایش داده شوند.</span
+      ><button class="ms-auto underline" @click="ops.refresh()">
+        تلاش دوباره
+      </button>
+    </div>
     <div
-      v-if="errorMsg"
-      class="card border-rose-500/40 bg-rose-500/10 text-rose-300 mb-6"
+      v-if="loading && !data"
+      class="metric-grid"
+      aria-label="در حال دریافت آمار"
     >
-      {{ errorMsg }}
+      <div v-for="i in 6" :key="i" class="metric-card animate-pulse h-28"></div>
     </div>
-
-    <!-- ── Loading skeleton ──────────────────────────────────────── -->
-    <div v-if="loading && !data" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-      <div v-for="i in 6" :key="i" class="card animate-pulse h-28" />
+    <div v-if="kpis" class="metric-grid">
+      <article
+        v-for="metric in metrics"
+        :key="metric.label"
+        class="metric-card"
+      >
+        <div class="metric-label">
+          <span>{{ metric.label }}</span
+          ><span class="metric-icon" :class="metric.color"
+            ><Icon :name="metric.icon" :size="15"
+          /></span>
+        </div>
+        <strong
+          class="metric-number"
+          :class="{ 'is-long': metric.value.length > 12 }"
+          :title="metric.value"
+          dir="ltr"
+          >{{ metric.value }}</strong
+        ><small>{{ metric.hint }}</small>
+      </article>
     </div>
-
-    <!-- ── KPI grid ──────────────────────────────────────────────── -->
-    <div v-if="kpis" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
-      <StatCard
-        tone="accent"
-        icon="users"
-        label="مجموع کاربران"
-        :value="fmtNumber(kpis.total_users)"
-        :hint="`+${kpis.last_24h.signups} امروز`"
-        :trendLabel="kpis.last_24h.signups > 0 ? `+${kpis.last_24h.signups}` : '0'"
-        :trendTone="kpis.last_24h.signups > 0 ? 'ok' : 'warn'"
-      />
-      <StatCard
-        tone="success"
-        icon="service"
-        label="سرویس‌های فعال"
-        :value="fmtNumber(kpis.active_subs)"
-        hint="active + pending_activation"
-      />
-      <StatCard
-        tone="warn"
-        icon="money"
-        label="درآمد ماه جاری"
-        :value="fmtMoney(kpis.revenue_mtd_usd)"
-        :hint="`${fmtMoney(kpis.last_24h.revenue_usd)} در ۲۴ ساعت اخیر`"
-      />
-      <StatCard
-        tone="accent"
-        icon="traffic"
-        label="حجم تحویل‌شده"
-        :value="fmtBytes(kpis.traffic_delivered_bytes)"
-        hint="lifetime_used + current cycle"
-      />
-      <StatCard
-        tone="success"
-        icon="server"
-        label="سرورهای فعال"
-        :value="fmtNumber(kpis.active_servers)"
-        hint="X-UI panels online"
-      />
-      <StatCard
-        tone="warn"
-        icon="money"
-        label="خریدهای ۲۴ ساعت اخیر"
-        :value="fmtNumber(kpis.last_24h.purchases)"
-        :hint="`مجموع: ${fmtMoney(kpis.last_24h.revenue_usd)}`"
-      />
+    <div class="attention-strip">
+      <RouterLink to="/receipts" class="attention-item"
+        ><span class="attention-icon amber"><Icon name="receipt" /></span
+        ><span
+          ><strong>رسید بانکی</strong><small>در انتظار بررسی دستی</small></span
+        ><b>{{
+          ops.receiptCount === null ? "—" : fmtNumber(ops.receiptCount)
+        }}</b
+        ><Icon name="chevron" :size="14" /></RouterLink
+      ><RouterLink to="/transactions?tab=pending" class="attention-item"
+        ><span class="attention-icon blue"><Icon name="clock" /></span
+        ><span
+          ><strong>پرداخت‌های باز</strong
+          ><small>نیازمند بررسی وضعیت</small></span
+        ><b>{{
+          ops.pendingCount === null ? "—" : fmtNumber(ops.pendingCount)
+        }}</b
+        ><Icon name="chevron" :size="14" /></RouterLink
+      ><RouterLink to="/servers?health=unhealthy" class="attention-item"
+        ><span
+          class="attention-icon"
+          :class="ops.unhealthy.length ? 'red' : ops.unknown.length ? 'amber' : ops.servers ? 'green' : 'blue'"
+          ><Icon name="server" /></span
+        ><span
+          ><strong>اختلال سرور</strong
+          ><small>{{
+            ops.unknown.length
+              ? ops.unknown.length + " سرور بررسی‌نشده"
+              : "آخرین وضعیت ثبت‌شده"
+          }}</small></span
+        ><b>{{
+          ops.servers === null ? "—" : fmtNumber(ops.unhealthy.length)
+        }}</b
+        ><Icon name="chevron" :size="14"
+      /></RouterLink>
     </div>
-
-    <!-- ── Charts ────────────────────────────────────────────────── -->
-    <div v-if="charts" class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-      <LineChart
-        title="درآمد روزانه (USD)"
-        :points="charts.revenue_30d"
-        color="#36D1E0"
-        unit="$"
-      />
-      <LineChart
-        title="کاربران جدید روزانه"
-        :points="charts.signups_30d"
-        color="#10b981"
-      />
-    </div>
-
-    <!-- ── Recent activity ───────────────────────────────────────── -->
-    <div v-if="activity.length" class="card">
-      <h3 class="text-sm font-bold text-white mb-3">فعالیت‌های اخیر</h3>
-      <ul class="space-y-2">
-        <li
-          v-for="(ev, idx) in activity"
-          :key="idx"
-          class="flex items-center gap-3 py-2 border-b border-bg-border/60 last:border-b-0"
-        >
-          <span
-            :class="['inline-flex w-8 h-8 items-center justify-center rounded-full',
-                     ev.kind === 'order' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-accent/15 text-accent']"
+    <section v-if="data" class="overview-chart-section">
+      <div class="section-heading">
+        <div>
+          <h2>روند کسب‌وکار</h2>
+          <span>{{
+            data.generated_at ? "آخرین دریافت آمار: " + generatedRel : ""
+          }}</span>
+        </div>
+        <div class="segmented" role="group" aria-label="بازهٔ نمودار">
+          <button
+            :class="{ 'is-active': range === 7 }"
+            :aria-pressed="range === 7"
+            @click="range = 7"
           >
-            <svg
-              v-if="ev.kind === 'order'"
-              class="w-4 h-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <rect x="2" y="6" width="20" height="12" rx="2" />
-              <circle cx="12" cy="12" r="3" />
-            </svg>
-            <svg
-              v-else
-              class="w-4 h-4"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <path
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2M9 7a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"
-              />
-            </svg>
-          </span>
-          <div class="flex-1 min-w-0">
-            <div class="text-sm text-white">
-              <template v-if="ev.kind === 'order'">
-                خرید جدید: <b>{{ fmtMoney(ev.amount_usd || 0) }}</b>
-                <span class="text-slate-400">
-                  ({{ ev.user_first_name || ev.user_telegram_id }})
-                </span>
-              </template>
-              <template v-else>
-                کاربر جدید:
-                <b>{{ ev.user_first_name || ev.user_telegram_id || "?" }}</b>
-              </template>
-            </div>
-            <div class="text-[11px] text-slate-500">{{ fmtRelativeTime(ev.at) }}</div>
+            ۷ روز</button
+          ><button
+            :class="{ 'is-active': range === 30 }"
+            :aria-pressed="range === 30"
+            @click="range = 30"
+          >
+            ۳۰ روز
+          </button>
+        </div>
+      </div>
+      <div class="overview-charts">
+        <LineChart
+          title="درآمد روزانه"
+          :points="revenue"
+          color="#5dd6a0"
+          unit="$"
+          :period-label="currentPeriod"
+        /><LineChart
+          title="ثبت‌نام کاربران"
+          :points="signups"
+          color="#769de8"
+          :period-label="currentPeriod"
+        />
+      </div>
+    </section>
+    <div class="operations-bottom-grid">
+      <section class="console-panel">
+        <header class="panel-heading">
+          <div>
+            <h2><Icon name="server" :size="16" /> وضعیت سرورها</h2>
+            <p>اختلال‌ها در ابتدای فهرست · سلامت ثبت‌شده در سامانه</p>
           </div>
-        </li>
-      </ul>
+          <RouterLink to="/servers" class="panel-link"
+            >همهٔ سرورها <Icon name="chevron" :size="12"
+          /></RouterLink>
+        </header>
+        <div class="table-scroll" tabindex="0" aria-label="وضعیت سرورها">
+          <table class="data-table server-monitor">
+            <thead>
+              <tr>
+                <th>سرور</th>
+                <th>سلامت</th>
+                <th>کانفیگ فعال / سقف</th>
+                <th>اینباند فعال</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="s in monitoredServers" :key="s.id">
+                <td>
+                  <strong>{{ s.name }}</strong
+                  ><small dir="ltr">{{
+                    s.panel_type === "sanaei_xui"
+                      ? "3x-ui / Sanaei"
+                      : s.panel_type
+                  }}</small>
+                </td>
+                <td>
+                  <span class="health-indicator" :class="serverHealth(s)"
+                    ><i></i>{{ healthLabels[serverHealth(s)] }}</span
+                  >
+                </td>
+                <td>
+                  <div class="font-mono text-xs numeric" dir="ltr">
+                    {{ fmtNumber(s.active_client_count) }}
+                    <span class="text-slate-500"
+                      >/
+                      {{
+                        s.max_clients === null
+                          ? "نامحدود"
+                          : fmtNumber(s.max_clients)
+                      }}</span
+                    >
+                  </div>
+                  <div
+                    v-if="s.max_clients !== null && s.max_clients > 0"
+                    class="capacity-track"
+                    :class="{
+                      'near-full': s.active_client_count / s.max_clients >= 0.9,
+                    }"
+                  >
+                    <i
+                      :style="{
+                        width:
+                          Math.min(
+                            100,
+                            Math.max(
+                              0,
+                              (s.active_client_count / s.max_clients) * 100,
+                            ),
+                          ) + '%',
+                      }"
+                    ></i>
+                  </div>
+                </td>
+                <td class="font-mono numeric" dir="ltr">
+                  {{ s.active_inbound_count }}
+                  <span class="text-slate-500">/ {{ s.inbound_count }}</span>
+                </td>
+                <td>
+                  <RouterLink
+                    :to="'/servers?q=' + encodeURIComponent(s.name)"
+                    class="icon-button"
+                    :aria-label="'مدیریت سرور ' + s.name"
+                    ><Icon name="chevron" :size="14"
+                  /></RouterLink>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-if="!ops.servers" class="empty-state">
+          {{
+            ops.errors.length
+              ? "اطلاعات سرورها در دسترس نیست."
+              : "در حال دریافت وضعیت سرورها…"
+          }}
+        </p>
+        <p v-else-if="!ops.servers.length" class="empty-state">
+          هنوز سروری ثبت نشده است.
+          <RouterLink to="/servers" class="text-accent">افزودن سرور</RouterLink>
+        </p>
+        <footer class="panel-footnote">
+          <Icon name="clock" :size="12" />{{
+            ops.updatedAt
+              ? "آخرین دریافت: " +
+                ops.updatedAt.toLocaleTimeString("fa-IR-u-nu-latn", {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })
+              : "وضعیت از پنل‌های ثبت‌شده دریافت می‌شود"
+          }}
+        </footer>
+      </section>
+      <section class="console-panel">
+        <header class="panel-heading">
+          <div>
+            <h2><Icon name="clock" :size="16" /> فعالیت‌های اخیر</h2>
+            <p>سفارش‌ها و ثبت‌نام‌های اخیر</p>
+          </div>
+        </header>
+        <div class="activity-filters" role="group" aria-label="فیلتر فعالیت">
+          <button
+            v-for="f in [
+              { key: 'all', label: 'همه' },
+              { key: 'order', label: 'سفارش' },
+              { key: 'signup', label: 'ثبت‌نام' },
+            ]"
+            :key="f.key"
+            :class="{ 'is-active': activityFilter === f.key }"
+            :aria-pressed="activityFilter === f.key"
+            @click="activityFilter = f.key"
+          >
+            {{ f.label }}
+          </button>
+        </div>
+        <ul v-if="activity.length" class="activity-list">
+          <li
+            v-for="(ev, index) in activity.slice(0, 6)"
+            :key="ev.at + '-' + index"
+          >
+            <span
+              class="activity-dot"
+              :class="ev.kind === 'order' ? 'green' : 'blue'"
+              ><Icon :name="ev.kind === 'order' ? 'money' : 'users'" :size="14"
+            /></span>
+            <div>
+              <strong
+                >{{ ev.kind === "order" ? "سفارش ثبت‌شده" : "ثبت‌نام جدید" }}
+                <span v-if="ev.kind === 'order'" dir="ltr">{{
+                  fmtMoney(ev.amount_usd || 0)
+                }}</span></strong
+              ><RouterLink
+                v-if="ev.user_telegram_id"
+                :to="'/users?q=' + ev.user_telegram_id"
+                >{{ ev.user_first_name || ev.user_telegram_id }}</RouterLink
+              ><span v-else>{{ ev.user_first_name || "بدون نام" }}</span>
+            </div>
+            <small>{{ fmtRelativeTime(ev.at) }}</small>
+          </li>
+        </ul>
+        <p v-else class="empty-state">
+          {{
+            data
+              ? "فعالیتی با این فیلتر ثبت نشده است."
+              : "در حال دریافت فعالیت‌ها…"
+          }}
+        </p>
+        <RouterLink to="/transactions" class="activity-footer-link"
+          >مشاهدهٔ تراکنش‌ها <Icon name="chevron" :size="13"
+        /></RouterLink>
+      </section>
     </div>
   </div>
 </template>

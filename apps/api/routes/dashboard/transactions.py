@@ -316,7 +316,10 @@ async def list_wallet_txns(
 
 
 @router.get("/pending")
-async def list_pending_approvals(auth: AuthDep) -> dict[str, Any]:
+async def list_pending_approvals(
+    auth: AuthDep, page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=200)] = 100,
+) -> dict[str, Any]:
     """Payments that are sitting in admin's queue waiting for manual approval.
 
     Today the bot itself handles approvals through its inline buttons —
@@ -332,9 +335,9 @@ async def list_pending_approvals(auth: AuthDep) -> dict[str, Any]:
             Payment.provider.in_(("manual_crypto", "card_to_card")),
             Payment.payment_status.in_(("waiting_hash", "waiting_receipt", "pending_approval")),
         )
-        .order_by(Payment.created_at.asc())  # oldest first — fairness
-        .limit(100)
     )
+    total = int(await session.scalar(select(func.count()).select_from(stmt.subquery())) or 0)
+    stmt = stmt.order_by(Payment.created_at.asc(), Payment.id).offset((page - 1) * page_size).limit(page_size)
     rows = (await session.execute(stmt)).scalars().all()
 
     items: list[dict[str, Any]] = []
@@ -352,4 +355,5 @@ async def list_pending_approvals(auth: AuthDep) -> dict[str, Any]:
             "created_at": p.created_at.isoformat() if p.created_at else None,
         })
 
-    return {"items": items, "total": len(items)}
+    return {"items": items, "total": total, "page": page, "page_size": page_size,
+            "total_pages": max(1, (total + page_size - 1) // page_size)}

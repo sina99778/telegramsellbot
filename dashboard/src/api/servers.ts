@@ -72,8 +72,8 @@ export interface ServerUpdateBody {
   priority?: number;
 }
 
-export function listServers(): Promise<{ items: ServerListItem[]; total: number }> {
-  return api.get<{ items: ServerListItem[]; total: number }>("/servers");
+export function listServers(signal?: AbortSignal): Promise<{ items: ServerListItem[]; total: number }> {
+  return api.get<{ items: ServerListItem[]; total: number }>("/servers", signal);
 }
 
 export function getServer(id: string): Promise<ServerDetail> {

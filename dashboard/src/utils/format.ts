@@ -31,10 +31,10 @@ export function fmtBytes(bytes: number): string {
   return `${v.toFixed(v >= 100 || i === 0 ? 0 : v >= 10 ? 1 : 2)} ${units[i]}`;
 }
 
-export function fmtRelativeTime(iso: string | null | undefined): string {
+export function fmtRelativeTime(iso: string | null | undefined, now = Date.now()): string {
   if (!iso) return "-";
   const d = new Date(iso);
-  const diffSec = Math.floor((Date.now() - d.getTime()) / 1000);
+  const diffSec = Math.floor((now - d.getTime()) / 1000);
   if (diffSec < 60) return "لحظاتی پیش";
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)} دقیقه پیش`;
   if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} ساعت پیش`;

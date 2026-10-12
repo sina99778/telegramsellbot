@@ -12,23 +12,23 @@ export default {
         // dark slate, panels lift one notch, accents are cool teal/cyan
         // matching the bot's miniapp identity for visual continuity.
         bg: {
-          base: "#0b0f17",
-          panel: "#111827",
-          elev:  "#1a2233",
-          border:"#243149",
+          base: "rgb(var(--bg-base) / <alpha-value>)",
+          panel: "rgb(var(--bg-panel) / <alpha-value>)",
+          elev:  "rgb(var(--bg-elev) / <alpha-value>)",
+          border:"rgb(var(--bg-border) / <alpha-value>)",
         },
         accent: {
-          DEFAULT: "#36D1E0",
-          soft:    "#6EE7F2",
-          deep:    "#1aa4b3",
+          DEFAULT: "#5DD6A0",
+          soft:    "#91E9BC",
+          deep:    "#25AA74",
         },
         success: "#10b981",
         warn:    "#f59e0b",
         danger:  "#ef4444",
       },
       boxShadow: {
-        glow: "0 0 0 1px rgba(54, 209, 224, 0.18), 0 8px 24px -8px rgba(54, 209, 224, 0.28)",
-        card: "0 4px 12px -2px rgba(0,0,0,0.35)",
+        glow: "0 1px 2px rgba(0,0,0,.12)",
+        card: "0 1px 2px rgba(0,0,0,.08)",
       },
       borderRadius: {
         xl2: "1rem",

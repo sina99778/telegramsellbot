@@ -75,7 +75,8 @@ export function listOrders(
 ): Promise<Page<OrderRow>> {
   const qs = new URLSearchParams();
   if (params.status) qs.set("status", params.status);
-  if (params.user_telegram_id) qs.set("user_telegram_id", String(params.user_telegram_id));
+  if (params.user_telegram_id)
+    qs.set("user_telegram_id", String(params.user_telegram_id));
   if (params.from_date) qs.set("from_date", params.from_date);
   if (params.to_date) qs.set("to_date", params.to_date);
   qs.set("page", String(params.page ?? 1));
@@ -96,7 +97,8 @@ export function listPayments(
   const qs = new URLSearchParams();
   if (params.status) qs.set("status", params.status);
   if (params.provider) qs.set("provider", params.provider);
-  if (params.user_telegram_id) qs.set("user_telegram_id", String(params.user_telegram_id));
+  if (params.user_telegram_id)
+    qs.set("user_telegram_id", String(params.user_telegram_id));
   qs.set("page", String(params.page ?? 1));
   qs.set("page_size", String(params.page_size ?? 25));
   return api.get<Page<PaymentRow>>(`/transactions/payments?${qs}`, signal);
@@ -112,7 +114,8 @@ export function listWalletTxns(
   signal?: AbortSignal,
 ): Promise<Page<WalletTxnRow>> {
   const qs = new URLSearchParams();
-  if (params.user_telegram_id) qs.set("user_telegram_id", String(params.user_telegram_id));
+  if (params.user_telegram_id)
+    qs.set("user_telegram_id", String(params.user_telegram_id));
   if (params.direction) qs.set("direction", params.direction);
   qs.set("page", String(params.page ?? 1));
   qs.set("page_size", String(params.page_size ?? 25));
@@ -121,8 +124,13 @@ export function listWalletTxns(
 
 export function listPending(
   signal?: AbortSignal,
-): Promise<{ items: PendingRow[]; total: number }> {
-  return api.get<{ items: PendingRow[]; total: number }>("/transactions/pending", signal);
+  params: { page?: number; page_size?: number } = {},
+): Promise<Page<PendingRow>> {
+  const qs = new URLSearchParams({
+    page: String(params.page || 1),
+    page_size: String(params.page_size || 25),
+  });
+  return api.get<Page<PendingRow>>(`/transactions/pending?${qs}`, signal);
 }
 
 export function ordersExportUrl(params: {

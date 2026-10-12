@@ -10,10 +10,35 @@ import {
   type ServerListItem,
   type ServerDetail,
 } from "@/api/servers";
+import { useRoute } from "vue-router";
+import { normalizeSearch } from "@/utils/navigation";
+import { serverHealth, useOperations } from "@/stores/operations";
+import Icon from "@/components/Icon.vue";
 import { ApiError } from "@/api/client";
 import { fmtNumber } from "@/utils/format";
 
+const route = useRoute();
+const operations = useOperations();
+const search = ref(typeof route.query.q === "string" ? route.query.q : "");
+const healthFilter = ref(
+  typeof route.query.health === "string" ? route.query.health : "all",
+);
 const items = ref<ServerListItem[]>([]);
+const filteredItems = computed(() =>
+  items.value.filter(
+    (s) =>
+      (healthFilter.value === "all" ||
+        serverHealth(s) === healthFilter.value) &&
+      normalizeSearch(s.name + " " + s.base_url + " " + s.panel_type).includes(
+        normalizeSearch(search.value),
+      ),
+  ),
+);
+const healthSummary = computed(() => ({
+  healthy: items.value.filter((s) => serverHealth(s) === "healthy").length,
+  unhealthy: items.value.filter((s) => serverHealth(s) === "unhealthy").length,
+  unknown: items.value.filter((s) => serverHealth(s) === "unknown").length,
+}));
 const loading = ref(true);
 const errorMsg = ref<string | null>(null);
 const banner = ref<string | null>(null);
@@ -60,6 +85,7 @@ async function refresh() {
   try {
     const r = await listServers();
     items.value = r.items;
+    operations.refresh();
   } catch (exc) {
     errorMsg.value = exc instanceof ApiError ? exc.detail : "خطا";
   } finally {
@@ -120,8 +146,12 @@ async function doDelete(s: ServerListItem) {
 }
 
 async function doCreate() {
-  if (!createForm.value.name || !createForm.value.base_url
-      || !createForm.value.panel_username || !createForm.value.panel_password) {
+  if (
+    !createForm.value.name ||
+    !createForm.value.base_url ||
+    !createForm.value.panel_username ||
+    !createForm.value.panel_password
+  ) {
     flash("نام، URL، یوزرنیم و رمز همگی الزامی‌اند.", "warn");
     return;
   }
@@ -140,8 +170,14 @@ async function doCreate() {
     flash("سرور اضافه شد.");
     showCreate.value = false;
     createForm.value = {
-      name: "", base_url: "", panel_username: "", panel_password: "",
-      config_domain: "", sub_domain: "", subscription_port: 2096, priority: 100,
+      name: "",
+      base_url: "",
+      panel_username: "",
+      panel_password: "",
+      config_domain: "",
+      sub_domain: "",
+      subscription_port: 2096,
+      priority: 100,
     };
     refresh();
   } catch (exc) {
@@ -209,7 +245,8 @@ async function doEdit() {
       config_domain: editForm.value.config_domain.trim() || null,
       sub_domain: editForm.value.sub_domain.trim() || null,
       subscription_port: editForm.value.subscription_port,
-      max_clients: editForm.value.max_clients > 0 ? editForm.value.max_clients : null,
+      max_clients:
+        editForm.value.max_clients > 0 ? editForm.value.max_clients : null,
       priority: editForm.value.priority,
       is_active: editForm.value.is_active,
     };
@@ -228,13 +265,18 @@ async function doEdit() {
 }
 
 function healthBadgeClass(s: string): string {
-  if (s === "ok") return "badge badge-success";
-  if (s === "error") return "badge badge-danger";
+  if (["ok", "healthy", "online"].includes(s)) return "badge badge-success";
+  if (["error", "unhealthy", "offline", "failed"].includes(s))
+    return "badge badge-danger";
   return "badge badge-muted";
 }
 
 function healthLabel(s: string): string {
-  return s === "ok" ? "سالم" : s === "error" ? "خطا" : "نامشخص";
+  return ["ok", "healthy", "online"].includes(s)
+    ? "سالم"
+    : ["error", "unhealthy", "offline", "failed"].includes(s)
+      ? "اختلال"
+      : "بررسی‌نشده";
 }
 </script>
 
@@ -243,78 +285,169 @@ function healthLabel(s: string): string {
     <header class="flex flex-wrap items-end justify-between gap-3 mb-6">
       <div>
         <h1 class="text-2xl font-bold text-white">مدیریت سرورها</h1>
-        <p class="text-sm text-slate-400 mt-1">پنل‌های X-UI، اینباندها، تست اتصال.</p>
+        <p class="text-sm text-slate-400 mt-1">
+          پنل‌ها، اینباندها و آخرین وضعیت اتصال.
+        </p>
       </div>
       <div class="flex gap-2">
-        <button class="btn btn-secondary" @click="refresh" :disabled="loading">به‌روزرسانی</button>
-        <button class="btn btn-primary" @click="showCreate = true">+ افزودن سرور</button>
+        <button class="btn btn-secondary" @click="refresh" :disabled="loading">
+          به‌روزرسانی
+        </button>
+        <button class="btn btn-primary" @click="showCreate = true">
+          + افزودن سرور
+        </button>
       </div>
     </header>
-
+    <div class="table-summary">
+      <span
+        ><b>{{ items.length }}</b> سرور ثبت‌شده</span
+      ><span class="text-success"
+        ><b>{{ healthSummary.healthy }}</b> سالم</span
+      ><span class="text-danger"
+        ><b>{{ healthSummary.unhealthy }}</b> اختلال</span
+      ><span
+        ><b>{{ healthSummary.unknown }}</b> بررسی‌نشده</span
+      >
+    </div>
+    <div class="card mb-4 flex flex-wrap gap-3 items-end">
+      <div class="flex-1 min-w-[180px]">
+        <label class="label" for="server-search">جست‌وجوی سرور</label
+        ><input
+          id="server-search"
+          v-model="search"
+          class="input"
+          placeholder="نام، آدرس یا نوع پنل…"
+        />
+      </div>
+      <div>
+        <label class="label" for="server-health">سلامت سرور</label
+        ><select id="server-health" v-model="healthFilter" class="input">
+          <option value="all">همهٔ سرورها</option>
+          <option value="healthy">سالم</option>
+          <option value="unhealthy">دارای اختلال</option>
+          <option value="unknown">بررسی‌نشده</option>
+          <option value="disabled">غیرفعال</option>
+        </select>
+      </div>
+      <button
+        v-if="search || healthFilter !== 'all'"
+        class="btn btn-ghost"
+        @click="
+          search = '';
+          healthFilter = 'all';
+        "
+      >
+        پاک‌کردن فیلترها
+      </button>
+    </div>
     <div
       v-if="banner"
-      :class="['mb-4 px-4 py-2 rounded-lg text-sm',
-               bannerTone === 'ok'
-                  ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
-                  : 'bg-amber-500/15 text-amber-300 border border-amber-500/30']"
-    >{{ banner }}</div>
+      :class="[
+        'mb-4 px-4 py-2 rounded-lg text-sm',
+        bannerTone === 'ok'
+          ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+          : 'bg-amber-500/15 text-amber-300 border border-amber-500/30',
+      ]"
+    >
+      {{ banner }}
+    </div>
 
-    <div v-if="errorMsg" class="card border-rose-500/40 bg-rose-500/10 text-rose-300 mb-4">
+    <div
+      v-if="errorMsg"
+      class="card border-rose-500/40 bg-rose-500/10 text-rose-300 mb-4"
+    >
       {{ errorMsg }}
     </div>
 
     <div v-if="loading" class="card animate-pulse h-32" />
 
     <div v-else class="card overflow-hidden p-0">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>سرور</th>
-            <th>URL</th>
-            <th>وضعیت</th>
-            <th>سلامت</th>
-            <th>اینباند</th>
-            <th>کلاینت</th>
-            <th class="text-end">عملیات</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="s in items" :key="s.id">
-            <td>
-              <button class="text-white hover:text-accent font-medium" @click="openDrawer(s)">
-                {{ s.name }}
-              </button>
-              <div class="text-[11px] text-slate-500">priority: {{ s.priority }}</div>
-            </td>
-            <td>
-              <code class="text-slate-300 break-all">{{ s.base_url }}</code>
-            </td>
-            <td>
-              <span :class="s.is_active ? 'badge badge-success' : 'badge badge-muted'">
-                {{ s.is_active ? "فعال" : "غیرفعال" }}
-              </span>
-            </td>
-            <td>
-              <span :class="healthBadgeClass(s.health_status)">
-                {{ healthLabel(s.health_status) }}
-              </span>
-            </td>
-            <td class="font-mono">{{ s.active_inbound_count }}/{{ s.inbound_count }}</td>
-            <td class="font-mono">{{ fmtNumber(s.client_count) }}</td>
-            <td class="text-end whitespace-nowrap">
-              <button class="btn btn-ghost btn-sm" :disabled="busyId === s.id" @click="openEdit(s)">ویرایش</button>
-              <button class="btn btn-ghost btn-sm" :disabled="busyId === s.id" @click="doTest(s)">تست</button>
-              <button class="btn btn-ghost btn-sm" :disabled="busyId === s.id" @click="doToggle(s)">
-                {{ s.is_active ? "غیرفعال" : "فعال" }}
-              </button>
-              <button class="btn btn-ghost btn-sm text-rose-300" :disabled="busyId === s.id" @click="doDelete(s)">حذف</button>
-            </td>
-          </tr>
-          <tr v-if="!items.length">
-            <td colspan="7" class="text-center text-slate-500 py-8">سروری ثبت نشده.</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="table-scroll" tabindex="0" aria-label="جدول اطلاعات">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>سرور</th>
+              <th>URL</th>
+              <th>وضعیت</th>
+              <th>سلامت</th>
+              <th>اینباند</th>
+              <th>کانفیگ ثبت‌شده</th>
+              <th class="text-end">عملیات</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="s in filteredItems" :key="s.id">
+              <td>
+                <button
+                  class="text-white hover:text-accent font-medium"
+                  @click="openDrawer(s)"
+                >
+                  {{ s.name }}
+                </button>
+                <div class="text-[11px] text-slate-500">
+                  اولویت: {{ s.priority }}
+                </div>
+              </td>
+              <td>
+                <code class="text-slate-300 break-all">{{ s.base_url }}</code>
+              </td>
+              <td>
+                <span
+                  :class="
+                    s.is_active ? 'badge badge-success' : 'badge badge-muted'
+                  "
+                >
+                  {{ s.is_active ? "فعال" : "غیرفعال" }}
+                </span>
+              </td>
+              <td>
+                <span :class="healthBadgeClass(s.health_status)">
+                  {{ healthLabel(s.health_status) }}
+                </span>
+              </td>
+              <td class="font-mono">
+                {{ s.active_inbound_count }}/{{ s.inbound_count }}
+              </td>
+              <td class="font-mono">{{ fmtNumber(s.client_count) }}</td>
+              <td class="text-end whitespace-nowrap">
+                <button
+                  class="btn btn-ghost btn-sm"
+                  :disabled="busyId === s.id"
+                  @click="openEdit(s)"
+                >
+                  ویرایش
+                </button>
+                <button
+                  class="btn btn-ghost btn-sm"
+                  :disabled="busyId === s.id"
+                  @click="doTest(s)"
+                >
+                  تست
+                </button>
+                <button
+                  class="btn btn-ghost btn-sm"
+                  :disabled="busyId === s.id"
+                  @click="doToggle(s)"
+                >
+                  {{ s.is_active ? "غیرفعال" : "فعال" }}
+                </button>
+                <button
+                  class="btn btn-ghost btn-sm text-rose-300"
+                  :disabled="busyId === s.id"
+                  @click="doDelete(s)"
+                >
+                  حذف
+                </button>
+              </td>
+            </tr>
+            <tr v-if="!filteredItems.length">
+              <td colspan="7" class="text-center text-slate-500 py-8">
+                سروری مطابق این فیلتر پیدا نشد.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- ── Create dialog ─────────────────────────────────────────── -->
@@ -328,11 +461,19 @@ function healthLabel(s: string): string {
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div class="md:col-span-2">
             <label class="label">نام دلخواه</label>
-            <input v-model="createForm.name" class="input" placeholder="مثلاً Frankfurt-1" />
+            <input
+              v-model="createForm.name"
+              class="input"
+              placeholder="مثلاً Frankfurt-1"
+            />
           </div>
           <div class="md:col-span-2">
             <label class="label">آدرس پنل (Base URL)</label>
-            <input v-model="createForm.base_url" class="input" placeholder="https://panel.example.com:2053" />
+            <input
+              v-model="createForm.base_url"
+              class="input"
+              placeholder="https://panel.example.com:2053"
+            />
           </div>
           <div>
             <label class="label">نام کاربری پنل</label>
@@ -340,28 +481,61 @@ function healthLabel(s: string): string {
           </div>
           <div>
             <label class="label">رمز پنل</label>
-            <input v-model="createForm.panel_password" class="input" type="password" />
+            <input
+              v-model="createForm.panel_password"
+              class="input"
+              type="password"
+            />
           </div>
           <div>
             <label class="label">دامنه‌ی کانفیگ (اختیاری)</label>
-            <input v-model="createForm.config_domain" class="input" placeholder="proxy.example.com" />
+            <input
+              v-model="createForm.config_domain"
+              class="input"
+              placeholder="proxy.example.com"
+            />
           </div>
           <div>
             <label class="label">دامنه‌ی sub-link (اختیاری)</label>
-            <input v-model="createForm.sub_domain" class="input" placeholder="sub.example.com" />
+            <input
+              v-model="createForm.sub_domain"
+              class="input"
+              placeholder="sub.example.com"
+            />
           </div>
           <div>
             <label class="label">پورت sub</label>
-            <input v-model.number="createForm.subscription_port" class="input" type="number" min="1" max="65535" />
+            <input
+              v-model.number="createForm.subscription_port"
+              class="input"
+              type="number"
+              min="1"
+              max="65535"
+            />
           </div>
           <div>
             <label class="label">اولویت</label>
-            <input v-model.number="createForm.priority" class="input" type="number" min="0" />
+            <input
+              v-model.number="createForm.priority"
+              class="input"
+              type="number"
+              min="0"
+            />
           </div>
         </div>
         <div class="flex justify-end gap-2 pt-2">
-          <button class="btn btn-secondary" :disabled="createBusy" @click="showCreate = false">انصراف</button>
-          <button class="btn btn-primary" :disabled="createBusy" @click="doCreate">
+          <button
+            class="btn btn-secondary"
+            :disabled="createBusy"
+            @click="showCreate = false"
+          >
+            انصراف
+          </button>
+          <button
+            class="btn btn-primary"
+            :disabled="createBusy"
+            @click="doCreate"
+          >
             {{ createBusy ? "..." : "افزودن" }}
           </button>
         </div>
@@ -375,7 +549,9 @@ function healthLabel(s: string): string {
       @click.self="editing = null"
     >
       <div class="card w-full max-w-lg space-y-3 max-h-[90vh] overflow-y-auto">
-        <h3 class="text-lg font-bold text-white">ویرایش سرور — {{ editing.name }}</h3>
+        <h3 class="text-lg font-bold text-white">
+          ویرایش سرور — {{ editing.name }}
+        </h3>
         <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div class="md:col-span-2">
             <label class="label">نام دلخواه</label>
@@ -383,7 +559,10 @@ function healthLabel(s: string): string {
           </div>
           <div class="md:col-span-2">
             <label class="label">آدرس پنل (Base URL)</label>
-            <input v-model="editForm.base_url" class="input ltr font-mono text-xs" />
+            <input
+              v-model="editForm.base_url"
+              class="input ltr font-mono text-xs"
+            />
           </div>
           <div>
             <label class="label">نام کاربری پنل</label>
@@ -392,37 +571,80 @@ function healthLabel(s: string): string {
           <div>
             <label class="label">
               رمز پنل
-              <span class="text-[10px] text-slate-500">(فقط اگه می‌خوای عوض کنی)</span>
+              <span class="text-[10px] text-slate-500"
+                >(فقط اگه می‌خوای عوض کنی)</span
+              >
             </label>
-            <input v-model="editForm.panel_password" class="input" type="password" placeholder="بدون تغییر" />
+            <input
+              v-model="editForm.panel_password"
+              class="input"
+              type="password"
+              placeholder="بدون تغییر"
+            />
           </div>
           <div>
             <label class="label">دامنه‌ی کانفیگ</label>
-            <input v-model="editForm.config_domain" class="input" placeholder="proxy.example.com" />
+            <input
+              v-model="editForm.config_domain"
+              class="input"
+              placeholder="proxy.example.com"
+            />
           </div>
           <div>
             <label class="label">دامنه‌ی sub-link</label>
-            <input v-model="editForm.sub_domain" class="input" placeholder="sub.example.com" />
+            <input
+              v-model="editForm.sub_domain"
+              class="input"
+              placeholder="sub.example.com"
+            />
           </div>
           <div>
             <label class="label">پورت sub</label>
-            <input v-model.number="editForm.subscription_port" class="input" type="number" min="1" max="65535" />
+            <input
+              v-model.number="editForm.subscription_port"
+              class="input"
+              type="number"
+              min="1"
+              max="65535"
+            />
           </div>
           <div>
             <label class="label">حداکثر کلاینت</label>
-            <input v-model.number="editForm.max_clients" class="input" type="number" min="0" placeholder="0 = نامحدود" />
+            <input
+              v-model.number="editForm.max_clients"
+              class="input"
+              type="number"
+              min="0"
+              placeholder="0 = نامحدود"
+            />
           </div>
           <div>
             <label class="label">اولویت</label>
-            <input v-model.number="editForm.priority" class="input" type="number" min="0" />
+            <input
+              v-model.number="editForm.priority"
+              class="input"
+              type="number"
+              min="0"
+            />
           </div>
           <div class="flex items-center gap-2">
-            <input id="sv_active" v-model="editForm.is_active" type="checkbox" class="w-4 h-4" />
+            <input
+              id="sv_active"
+              v-model="editForm.is_active"
+              type="checkbox"
+              class="w-4 h-4"
+            />
             <label for="sv_active" class="text-sm text-slate-200">فعال</label>
           </div>
         </div>
         <div class="flex justify-end gap-2 pt-2">
-          <button class="btn btn-secondary" :disabled="editBusy" @click="editing = null">انصراف</button>
+          <button
+            class="btn btn-secondary"
+            :disabled="editBusy"
+            @click="editing = null"
+          >
+            انصراف
+          </button>
           <button class="btn btn-primary" :disabled="editBusy" @click="doEdit">
             {{ editBusy ? "..." : "ذخیره" }}
           </button>
@@ -443,20 +665,39 @@ function healthLabel(s: string): string {
         </div>
         <div v-if="drawerLoading" class="animate-pulse h-40" />
         <div v-else-if="drawer">
-          <div class="text-xl font-bold text-white">{{ drawer.server.name }}</div>
-          <code class="text-sm text-slate-300 break-all">{{ drawer.server.base_url }}</code>
+          <div class="text-xl font-bold text-white">
+            {{ drawer.server.name }}
+          </div>
+          <code class="text-sm text-slate-300 break-all">{{
+            drawer.server.base_url
+          }}</code>
           <div class="mt-4 grid grid-cols-2 gap-3 text-sm">
             <div>
               <div class="text-[11px] text-slate-500">سلامت</div>
-              <div><span :class="healthBadgeClass(drawer.server.health_status)">{{ healthLabel(drawer.server.health_status) }}</span></div>
+              <div>
+                <span :class="healthBadgeClass(drawer.server.health_status)">{{
+                  healthLabel(drawer.server.health_status)
+                }}</span>
+              </div>
             </div>
             <div>
               <div class="text-[11px] text-slate-500">وضعیت</div>
-              <div><span :class="drawer.server.is_active ? 'badge badge-success' : 'badge badge-muted'">{{ drawer.server.is_active ? 'فعال' : 'غیرفعال' }}</span></div>
+              <div>
+                <span
+                  :class="
+                    drawer.server.is_active
+                      ? 'badge badge-success'
+                      : 'badge badge-muted'
+                  "
+                  >{{ drawer.server.is_active ? "فعال" : "غیرفعال" }}</span
+                >
+              </div>
             </div>
             <div>
               <div class="text-[11px] text-slate-500">یوزرنیم پنل</div>
-              <div class="text-slate-300 font-mono">{{ drawer.server.credentials_username || "—" }}</div>
+              <div class="text-slate-300 font-mono">
+                {{ drawer.server.credentials_username || "—" }}
+              </div>
             </div>
             <div>
               <div class="text-[11px] text-slate-500">اولویت</div>
@@ -464,42 +705,60 @@ function healthLabel(s: string): string {
             </div>
             <div>
               <div class="text-[11px] text-slate-500">دامنه‌ی کانفیگ</div>
-              <div class="text-slate-300">{{ drawer.server.config_domain || "—" }}</div>
+              <div class="text-slate-300">
+                {{ drawer.server.config_domain || "—" }}
+              </div>
             </div>
             <div>
               <div class="text-[11px] text-slate-500">دامنه‌ی sub</div>
-              <div class="text-slate-300">{{ drawer.server.sub_domain || "—" }}</div>
+              <div class="text-slate-300">
+                {{ drawer.server.sub_domain || "—" }}
+              </div>
             </div>
           </div>
 
-          <h4 class="text-sm font-bold text-white mt-5 mb-2">اینباندها ({{ drawer.inbounds.length }})</h4>
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>نام</th>
-                <th>پروتکل / پورت</th>
-                <th>کلاینت</th>
-                <th>وضعیت</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="ib in drawer.inbounds" :key="ib.id">
-                <td class="font-mono">{{ ib.xui_inbound_remote_id }}</td>
-                <td>{{ ib.remark || "—" }}</td>
-                <td class="font-mono">{{ ib.protocol || "?" }}:{{ ib.port || "?" }}</td>
-                <td>{{ ib.client_count }}</td>
-                <td>
-                  <span :class="ib.is_active ? 'badge badge-success' : 'badge badge-muted'">
-                    {{ ib.is_active ? 'فعال' : 'غیرفعال' }}
-                  </span>
-                </td>
-              </tr>
-              <tr v-if="!drawer.inbounds.length">
-                <td colspan="5" class="text-center text-slate-500 py-4">اینباندی ثبت نشده — تست سرور برای sync.</td>
-              </tr>
-            </tbody>
-          </table>
+          <h4 class="text-sm font-bold text-white mt-5 mb-2">
+            اینباندها ({{ drawer.inbounds.length }})
+          </h4>
+          <div class="table-scroll" tabindex="0" aria-label="جدول اطلاعات">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>نام</th>
+                  <th>پروتکل / پورت</th>
+                  <th>کانفیگ ثبت‌شده</th>
+                  <th>وضعیت</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="ib in drawer.inbounds" :key="ib.id">
+                  <td class="font-mono">{{ ib.xui_inbound_remote_id }}</td>
+                  <td>{{ ib.remark || "—" }}</td>
+                  <td class="font-mono">
+                    {{ ib.protocol || "?" }}:{{ ib.port || "?" }}
+                  </td>
+                  <td>{{ ib.client_count }}</td>
+                  <td>
+                    <span
+                      :class="
+                        ib.is_active
+                          ? 'badge badge-success'
+                          : 'badge badge-muted'
+                      "
+                    >
+                      {{ ib.is_active ? "فعال" : "غیرفعال" }}
+                    </span>
+                  </td>
+                </tr>
+                <tr v-if="!drawer.inbounds.length">
+                  <td colspan="5" class="text-center text-slate-500 py-4">
+                    اینباندی ثبت نشده — تست سرور برای sync.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>

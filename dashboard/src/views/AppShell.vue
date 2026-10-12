@@ -1,156 +1,248 @@
 <script setup lang="ts">
-import { useAuthStore } from "@/stores/auth";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 import { useRoute, RouterLink } from "vue-router";
-import { computed } from "vue";
-
+import { useAuthStore } from "@/stores/auth";
+import { usePreferences } from "@/stores/preferences";
+import { useOperations } from "@/stores/operations";
+import { navigation, navigationItems } from "@/utils/navigation";
+import Icon from "@/components/Icon.vue";
+import CommandPalette from "@/components/CommandPalette.vue";
 const auth = useAuthStore();
 const route = useRoute();
-
-// Sidebar items. The icon is plain SVG (no extra dep) so the dashboard
-// stays under ~200 KB gzipped.
-const navItems = [
-  { name: "overview",     label: "نمای کلی",        to: "/",             icon: "home" },
-  { name: "analytics",    label: "هوش مالی",         to: "/analytics",    icon: "chart" },
-  { name: "users",        label: "مدیریت کاربران",   to: "/users",        icon: "users" },
-  { name: "servers",      label: "مدیریت سرورها",    to: "/servers",      icon: "server" },
-  { name: "plans",        label: "پلن‌ها",            to: "/plans",        icon: "plans" },
-  { name: "discounts",    label: "کدهای تخفیف",      to: "/discounts",    icon: "tag" },
-  { name: "transactions", label: "تراکنش‌ها",         to: "/transactions", icon: "money" },
-  { name: "receipts",     label: "رسیدهای در انتظار", to: "/receipts",     icon: "receipt" },
-  { name: "broadcast",    label: "پیام همگانی",      to: "/broadcast",    icon: "megaphone" },
-  { name: "content",      label: "محتوا و برند",     to: "/content",      icon: "pencil" },
-  { name: "settings",     label: "تنظیمات",          to: "/settings",     icon: "settings" },
-] as const;
-
-const currentRouteName = computed(() => route.name);
-
-const initials = computed(() => {
-  const n = auth.profile?.display_name || auth.profile?.username || "";
-  return (n.trim()[0] || "A").toUpperCase();
+const preferences = usePreferences();
+const ops = useOperations();
+const commandOpen = ref(false);
+const mobileOpen = ref(false);
+const isMobile = ref(window.matchMedia("(max-width:1050px)").matches);
+const mobileMedia = window.matchMedia("(max-width:1050px)");
+function onMediaChange() {
+  isMobile.value = mobileMedia.matches;
+  if (!isMobile.value) mobileOpen.value = false;
+}
+const sidebar = ref<HTMLElement | null>(null);
+const menuButton = ref<HTMLButtonElement | null>(null);
+const current = computed(
+  () =>
+    navigationItems.find(
+      (item) =>
+        item.name === route.name ||
+        (item.name === "users" && route.name === "user-detail"),
+    ) || navigationItems[0],
+);
+const initials = computed(
+  () => (auth.profile?.display_name || auth.profile?.username || "A").trim()[0],
+);
+function closeMenu() {
+  mobileOpen.value = false;
+  nextTick(() => menuButton.value?.focus());
+}
+function keydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    mobileOpen.value = false;
+    commandOpen.value = !commandOpen.value;
+  }
+  if (e.key === "Escape" && mobileOpen.value) closeMenu();
+  if (e.key === "Tab" && mobileOpen.value) {
+    const els = Array.from(
+      sidebar.value?.querySelectorAll<HTMLElement>("a,button") || [],
+    ).filter((e) => e.offsetParent !== null);
+    const first = els[0],
+      last = els[els.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last?.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first?.focus();
+    }
+  }
+}
+watch(
+  () => route.fullPath,
+  () => {
+    mobileOpen.value = false;
+    nextTick(() => document.getElementById("workspace")?.focus());
+  },
+);
+watch(mobileOpen, (open) => {
+  if (open)
+    requestAnimationFrame(() =>
+      sidebar.value?.querySelector<HTMLElement>("button")?.focus(),
+    );
+});
+let interval: ReturnType<typeof setInterval>;
+onMounted(() => {
+  mobileMedia.addEventListener("change", onMediaChange);
+  ops.refresh();
+  window.addEventListener("keydown", keydown);
+  interval = setInterval(() => {
+    if (document.visibilityState === "visible") ops.refresh();
+  }, 60000);
+});
+onBeforeUnmount(() => {
+  mobileMedia.removeEventListener("change", onMediaChange);
+  clearInterval(interval);
+  window.removeEventListener("keydown", keydown);
+  ops.reset();
 });
 </script>
-
 <template>
-  <div class="min-h-screen flex bg-bg-base">
-    <!-- ── Sidebar ─────────────────────────────────────────── -->
-    <aside
-      class="w-60 shrink-0 bg-bg-panel border-l border-bg-border flex flex-col"
-    >
-      <!-- Brand -->
-      <div class="px-5 py-5 border-b border-bg-border flex items-center gap-3">
-        <div
-          class="w-9 h-9 rounded-lg bg-accent flex items-center justify-center text-bg-base font-extrabold"
+  <div class="admin-shell">
+    <a href="#workspace" class="skip-link">رفتن به محتوای صفحه</a>
+    <header class="shell-topbar" :inert="mobileOpen">
+      <div class="topbar-brand">
+        <button
+          ref="menuButton"
+          class="icon-button mobile-menu-button"
+          aria-label="بازکردن منو"
+          :aria-expanded="mobileOpen"
+          @click="mobileOpen = true"
         >
-          TS
-        </div>
-        <div>
-          <div class="text-sm font-bold text-white leading-tight">پنل مدیریت</div>
-          <div class="text-[11px] text-slate-400">TelegramSellBot</div>
-        </div>
+          <Icon name="menu" /></button
+        ><span class="brand-symbol"><Icon name="server" :size="19" /></span
+        ><strong>SELLBOT<span>ADMIN CONSOLE</span></strong>
       </div>
-
-      <!-- Nav -->
-      <nav class="flex-1 p-3 space-y-1">
-        <router-link
-          v-for="item in navItems"
-          :key="item.name"
-          :to="item.to"
-          class="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all"
-          :class="
-            currentRouteName === item.name ||
-            (item.name === 'users' && currentRouteName === 'user-detail')
-              ? 'bg-accent/15 text-accent border border-accent/30'
-              : 'text-slate-300 hover:bg-bg-elev'
+      <button class="global-search" @click="commandOpen = true">
+        <Icon name="search" :size="16" /><span>جست‌وجوی سریع…</span
+        ><kbd dir="ltr">Ctrl K</kbd>
+      </button>
+      <div class="topbar-tools">
+        <button
+          class="icon-button"
+          :aria-label="
+            preferences.theme === 'dark'
+              ? 'فعال‌کردن حالت روشن'
+              : 'فعال‌کردن حالت تاریک'
           "
+          :title="preferences.theme === 'dark' ? 'حالت روشن' : 'حالت تاریک'"
+          @click="preferences.toggleTheme()"
         >
-          <!-- inline SVG icons -->
-          <svg v-if="item.icon === 'home'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3 9.75 12 3l9 6.75V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1V9.75Z" />
-          </svg>
-          <svg v-else-if="item.icon === 'chart'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3 3v18h18M8 17v-5m5 5V8m5 9v-7" />
-          </svg>
-          <svg v-else-if="item.icon === 'users'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2M21 21v-2a4 4 0 0 0-3-3.87M9 7a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm7 0a4 4 0 0 1 0 8" />
-          </svg>
-          <svg v-else-if="item.icon === 'server'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="4" width="18" height="6" rx="2" />
-            <rect x="3" y="14" width="18" height="6" rx="2" />
-            <circle cx="7" cy="7" r="0.5" fill="currentColor" />
-            <circle cx="7" cy="17" r="0.5" fill="currentColor" />
-          </svg>
-          <svg v-else-if="item.icon === 'money'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <rect x="2" y="6" width="20" height="12" rx="2" />
-            <circle cx="12" cy="12" r="3" />
-            <path d="M6 10v.01M18 14v.01" stroke-linecap="round" />
-          </svg>
-          <svg v-else-if="item.icon === 'plans'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="4" width="18" height="16" rx="2" />
-            <path stroke-linecap="round" d="M7 9h10M7 13h10M7 17h6" />
-          </svg>
-          <svg v-else-if="item.icon === 'tag'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M20 12 12 20l-8-8V4h8l8 8Z" />
-            <circle cx="8.5" cy="8.5" r="1.2" fill="currentColor" />
-          </svg>
-          <svg v-else-if="item.icon === 'megaphone'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3 11v2a1 1 0 0 0 1 1h3l8 5V5L7 10H4a1 1 0 0 0-1 1Zm15-4v10M21 9v6" />
-          </svg>
-          <svg v-else-if="item.icon === 'receipt'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Z" />
-            <path stroke-linecap="round" d="M9 8h6M9 12h6M9 16h4" />
-          </svg>
-          <svg v-else-if="item.icon === 'pencil'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M3 21v-3.75L17.81 2.44a1.5 1.5 0 0 1 2.12 0l1.63 1.63a1.5 1.5 0 0 1 0 2.12L6.75 21H3Z" />
-          </svg>
-          <svg v-else-if="item.icon === 'settings'" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="3" />
-            <path stroke-linecap="round" stroke-linejoin="round" d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.9 2.9l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.9l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1A2 2 0 0 1 7 4.7l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.9l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
-          </svg>
-          <span class="font-medium">{{ item.label }}</span>
-        </router-link>
-      </nav>
-
-      <!-- User chip -->
-      <div class="p-3 border-t border-bg-border">
-        <div class="flex items-center gap-3 px-2 py-2">
-          <div
-            class="w-9 h-9 rounded-full bg-accent text-bg-base font-bold flex items-center justify-center"
+          <Icon :name="preferences.theme === 'dark' ? 'sun' : 'moon'" /></button
+        ><button
+          class="icon-button density-button"
+          :aria-label="
+            preferences.density === 'compact' ? 'نمایش راحت' : 'نمایش فشرده'
+          "
+          :aria-pressed="preferences.density === 'compact'"
+          title="تغییر تراکم اطلاعات"
+          @click="preferences.toggleDensity()"
+        >
+          <Icon name="density" /></button
+        ><RouterLink
+          to="/receipts"
+          class="icon-button notification-button"
+          aria-label="رسیدهای در انتظار بررسی"
+          ><Icon name="bell" /><span
+            v-if="ops.receiptCount"
+            class="notification-dot"
+          ></span></RouterLink
+        ><span class="topbar-divider"></span
+        ><span
+          class="topbar-avatar"
+          :title="auth.profile?.display_name || auth.profile?.username"
+          >{{ initials }}</span
+        >
+      </div>
+    </header>
+    <button
+      v-if="mobileOpen"
+      class="sidebar-backdrop"
+      aria-label="بستن منو"
+      tabindex="-1"
+      @click="closeMenu"
+    ></button>
+    <aside
+      ref="sidebar"
+      class="shell-sidebar"
+      :inert="isMobile && !mobileOpen"
+      :class="{ 'is-open': mobileOpen }"
+      aria-label="منوی مدیریت"
+    >
+      <div class="sidebar-heading">
+        <span>فضای مدیریت</span
+        ><button
+          class="icon-button mobile-menu-button"
+          aria-label="بستن منو"
+          @click="closeMenu"
+        >
+          <Icon name="close" /></button
+        ><span class="sidebar-version">TS</span>
+      </div>
+      <nav class="sidebar-navigation">
+        <section
+          v-for="section in navigation"
+          :key="section.group"
+          class="nav-group"
+        >
+          <h2>{{ section.group }}</h2>
+          <RouterLink
+            v-for="item in section.items"
+            :key="item.name"
+            :to="item.to"
+            class="nav-item"
+            :class="{ 'is-active': current.name === item.name }"
+            :aria-current="current.name === item.name ? 'page' : undefined"
+            ><Icon :name="item.icon" :size="17" /><span>{{ item.label }}</span
+            ><span
+              v-if="item.name === 'receipts' && ops.receiptCount"
+              class="nav-count"
+              >{{ ops.receiptCount }}</span
+            ><span
+              v-if="item.name === 'servers' && ops.unhealthy.length"
+              class="nav-count danger"
+              >{{ ops.unhealthy.length }}</span
+            ></RouterLink
           >
-            {{ initials }}
+        </section>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="sidebar-account">
+          <span class="account-dot"></span>
+          <div>
+            <strong>{{
+              auth.profile?.display_name || auth.profile?.username
+            }}</strong
+            ><small>حساب مدیر</small>
           </div>
-          <div class="flex-1 min-w-0">
-            <div class="text-sm text-white truncate">
-              {{ auth.profile?.display_name || auth.profile?.username || "—" }}
-            </div>
-            <button
-              class="text-[11px] text-slate-400 hover:text-danger transition-colors"
-              @click="auth.logout()"
-            >
-              خروج
-            </button>
-          </div>
+          <button
+            class="icon-button"
+            aria-label="خروج از حساب"
+            title="خروج"
+            @click="auth.logout()"
+          >
+            <Icon name="logout" :size="17" />
+          </button>
         </div>
       </div>
     </aside>
-
-    <!-- ── Main outlet ─────────────────────────────────────── -->
-    <main class="flex-1 overflow-x-hidden">
-      <router-view v-slot="{ Component, route: r }">
-        <transition name="fade" mode="out-in">
-          <component :is="Component" :key="r.fullPath" />
-        </transition>
-      </router-view>
+    <main
+      id="workspace"
+      class="shell-workspace"
+      :inert="mobileOpen"
+      tabindex="-1"
+    >
+      <div class="workspace-breadcrumb">
+        <span>فضای مدیریت</span><Icon name="chevron" :size="12" /><strong>{{
+          current.label
+        }}</strong
+        ><span class="breadcrumb-meta">مدیریت فروش و خدمات</span>
+      </div>
+      <router-view v-slot="{ Component, route: r }"
+        ><component :is="Component" :key="r.fullPath"
+      /></router-view>
+      <footer class="workspace-footer">
+        <span>TelegramSellBot · پنل مدیریت</span
+        ><span>اطلاعات سلامت بر اساس آخرین بررسی ثبت‌شده</span>
+      </footer>
     </main>
+    <CommandPalette :open="commandOpen" @close="commandOpen = false" />
   </div>
 </template>
-
-<style>
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 120ms ease-out;
-}
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
-}
-</style>

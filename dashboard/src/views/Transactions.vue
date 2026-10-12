@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import {
   listOrders,
   listPayments,
@@ -13,11 +13,18 @@ import {
 } from "@/api/transactions";
 import { ApiError } from "@/api/client";
 import { fmtMoney, fmtNumber, fmtRelativeTime } from "@/utils/format";
+import Icon from "@/components/Icon.vue";
+import { useRoute } from "vue-router";
 import { latestOnly } from "@/utils/latest";
 
 type Tab = "orders" | "payments" | "wallet" | "pending";
 
-const tab = ref<Tab>("orders");
+const route = useRoute();
+const tab = ref<Tab>(
+  ["orders", "payments", "wallet", "pending"].includes(String(route.query.tab))
+    ? (route.query.tab as Tab)
+    : "orders",
+);
 
 // Shared filter state
 const filterStatus = ref("");
@@ -80,6 +87,7 @@ async function refresh() {
           orders.value = r.items;
           total.value = r.total;
           totalPages.value = r.total_pages;
+          if (page.value > r.total_pages) page.value = r.total_pages;
         },
         fail: onFail,
         settle: onSettle,
@@ -103,6 +111,7 @@ async function refresh() {
           payments.value = r.items;
           total.value = r.total;
           totalPages.value = r.total_pages;
+          if (page.value > r.total_pages) page.value = r.total_pages;
         },
         fail: onFail,
         settle: onSettle,
@@ -125,21 +134,27 @@ async function refresh() {
           wallet.value = r.items;
           total.value = r.total;
           totalPages.value = r.total_pages;
+          if (page.value > r.total_pages) page.value = r.total_pages;
         },
         fail: onFail,
         settle: onSettle,
       },
     );
   } else {
-    await runLatest((signal) => listPending(signal), {
-      commit: (r) => {
-        pending.value = r.items;
-        total.value = r.total;
-        totalPages.value = 1;
+    await runLatest(
+      (signal) =>
+        listPending(signal, { page: page.value, page_size: pageSize.value }),
+      {
+        commit: (r) => {
+          pending.value = r.items;
+          total.value = r.total;
+          totalPages.value = r.total_pages;
+          if (page.value > r.total_pages) page.value = r.total_pages;
+        },
+        fail: onFail,
+        settle: onSettle,
       },
-      fail: onFail,
-      settle: onSettle,
-    });
+    );
   }
 }
 
@@ -150,12 +165,27 @@ watch(tab, () => {
   filterDirection.value = "";
   refresh();
 });
-watch([filterStatus, filterProvider, filterDirection, filterUserTgId, filterFromDate, filterToDate], () => {
-  page.value = 1;
-  refresh();
-});
+watch(
+  [
+    filterStatus,
+    filterProvider,
+    filterDirection,
+    filterUserTgId,
+    filterFromDate,
+    filterToDate,
+  ],
+  () => {
+    page.value = 1;
+    refresh();
+  },
+);
 watch(page, refresh);
+watch(pageSize, () => {
+  if (page.value !== 1) page.value = 1;
+  else refresh();
+});
 onMounted(refresh);
+onBeforeUnmount(() => runLatest.cancel());
 
 const exportHref = computed(() =>
   ordersExportUrl({
@@ -165,11 +195,51 @@ const exportHref = computed(() =>
   }),
 );
 
+const statusLabels: Record<string, string> = {
+  pending: "در انتظار",
+  paid: "پرداخت‌شده",
+  processing: "در حال پردازش",
+  provisioned: "تحویل‌شده",
+  finished: "تأییدشده",
+  completed: "تکمیل‌شده",
+  refunded: "بازپرداخت‌شده",
+  cancelled: "لغوشده",
+  rejected: "ردشده",
+  failed: "ناموفق",
+  waiting_hash: "در انتظار هش",
+  waiting_receipt: "در انتظار رسید",
+  pending_approval: "در انتظار بررسی",
+  confirmed: "تأییدشده",
+  expired: "منقضی",
+};
+const providerLabels: Record<string, string> = {
+  manual_crypto: "کریپتوی دستی",
+  card_to_card: "کارت‌به‌کارت",
+  nowpayments: "NOWPayments",
+  tetrapay: "تتراپی",
+  tronado: "ترونادو",
+};
+function statusLabel(value: string) {
+  return statusLabels[value] || value;
+}
+function providerLabel(value: string) {
+  return providerLabels[value] || value;
+}
 function statusBadge(s: string): string {
-  if (["paid", "provisioned", "finished"].includes(s)) return "badge badge-success";
-  if (["pending", "pending_approval", "waiting_hash", "waiting_receipt", "processing"].includes(s))
+  if (["paid", "provisioned", "finished"].includes(s))
+    return "badge badge-success";
+  if (
+    [
+      "pending",
+      "pending_approval",
+      "waiting_hash",
+      "waiting_receipt",
+      "processing",
+    ].includes(s)
+  )
     return "badge badge-warn";
-  if (["refunded", "cancelled", "failed"].includes(s)) return "badge badge-danger";
+  if (["refunded", "cancelled", "failed"].includes(s))
+    return "badge badge-danger";
   return "badge badge-muted";
 }
 </script>
@@ -179,8 +249,17 @@ function statusBadge(s: string): string {
     <header class="flex flex-wrap items-end justify-between gap-3 mb-6">
       <div>
         <h1 class="text-2xl font-bold text-white">تراکنش‌ها و سفارش‌ها</h1>
-        <p class="text-sm text-slate-400 mt-1">گزارش‌های مالی + صف تأیید دستی.</p>
+        <p class="text-sm text-slate-400 mt-1">
+          گزارش‌های مالی + صف تأیید دستی.
+        </p>
       </div>
+      <button class="btn btn-secondary" :disabled="loading" @click="refresh">
+        <Icon
+          name="refresh"
+          :size="15"
+          :class="{ 'animate-spin': loading }"
+        />به‌روزرسانی
+      </button>
     </header>
 
     <!-- Tabs -->
@@ -188,39 +267,73 @@ function statusBadge(s: string): string {
       <button
         v-for="t in ['orders', 'payments', 'wallet', 'pending'] as const"
         :key="t"
-        :class="['px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors',
-                 tab === t
-                   ? 'text-accent border-b-2 border-accent'
-                   : 'text-slate-400 hover:text-slate-200']"
+        :class="[
+          'px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors',
+          tab === t
+            ? 'text-accent border-b-2 border-accent'
+            : 'text-slate-400 hover:text-slate-200',
+        ]"
         @click="tab = t"
       >
-        {{ t === "orders" ? "سفارش‌ها" : t === "payments" ? "پرداخت‌ها" : t === "wallet" ? "کیف پول" : "در انتظار تأیید" }}
+        {{
+          t === "orders"
+            ? "سفارش‌ها"
+            : t === "payments"
+              ? "پرداخت‌ها"
+              : t === "wallet"
+                ? "کیف پول"
+                : "در انتظار تأیید"
+        }}
       </button>
     </div>
 
     <!-- Filters (per-tab) -->
-    <div class="card mb-4 flex flex-wrap gap-3 items-end" v-if="tab !== 'pending'">
+    <div
+      class="card mb-4 flex flex-wrap gap-3 items-end"
+      v-if="tab !== 'pending'"
+    >
       <div>
         <label class="label">Telegram ID کاربر</label>
-        <input v-model="filterUserTgId" class="input" placeholder="مثلاً 5177632415" />
+        <input
+          v-model="filterUserTgId"
+          class="input"
+          placeholder="مثلاً 5177632415"
+        />
       </div>
       <div v-if="tab === 'orders'">
         <label class="label">وضعیت</label>
         <select v-model="filterStatus" class="input">
           <option value="">همه</option>
-          <option v-for="s in ['pending','paid','processing','provisioned','refunded','cancelled']" :key="s" :value="s">{{ s }}</option>
+          <option
+            v-for="s in [
+              'pending',
+              'paid',
+              'processing',
+              'provisioned',
+              'refunded',
+              'cancelled',
+            ]"
+            :key="s"
+            :value="s"
+          >
+            {{ statusLabel(s) }}
+          </option>
         </select>
       </div>
       <div v-if="tab === 'payments'">
         <label class="label">وضعیت</label>
-        <input v-model="filterStatus" class="input" placeholder="مثلاً waiting_hash" />
+        <input
+          v-model="filterStatus"
+          class="input"
+          placeholder="مثلاً waiting_hash"
+        />
       </div>
       <div v-if="tab === 'payments'">
         <label class="label">درگاه</label>
         <select v-model="filterProvider" class="input">
           <option value="">همه</option>
-          <option value="manual_crypto">manual_crypto</option>
-          <option value="card_to_card">card_to_card</option>
+          <option value="manual_crypto">کریپتوی دستی</option>
+          <option value="card_to_card">کارت‌به‌کارت</option>
           <option value="nowpayments">nowpayments</option>
           <option value="tetrapay">tetrapay</option>
           <option value="tronado">tronado</option>
@@ -242,171 +355,272 @@ function statusBadge(s: string): string {
         <label class="label">تا تاریخ</label>
         <input v-model="filterToDate" class="input" type="date" />
       </div>
-      <a v-if="tab === 'orders'" class="btn btn-secondary" :href="exportHref" download>
+      <a
+        v-if="tab === 'orders'"
+        class="btn btn-secondary"
+        :href="exportHref"
+        download
+      >
         📥 خروجی CSV
       </a>
     </div>
 
-    <div v-if="errorMsg" class="card border-rose-500/40 bg-rose-500/10 text-rose-300 mb-4">
+    <div
+      v-if="errorMsg"
+      class="card border-rose-500/40 bg-rose-500/10 text-rose-300 mb-4"
+    >
       {{ errorMsg }}
     </div>
 
     <!-- ── Orders table ─────────────────────────────────────────── -->
     <div v-if="tab === 'orders'" class="card p-0 overflow-hidden">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>زمان</th>
-            <th>کاربر</th>
-            <th>پلن</th>
-            <th>مبلغ</th>
-            <th>وضعیت</th>
-            <th>منبع</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="o in orders" :key="o.id">
-            <td class="text-xs text-slate-500">{{ fmtRelativeTime(o.created_at) }}</td>
-            <td>
-              <div class="text-white">{{ o.user_first_name || "—" }}</div>
-              <div class="text-[11px] text-slate-500">TG {{ o.user_telegram_id }}</div>
-            </td>
-            <td>{{ o.plan_name }}</td>
-            <td class="font-mono">{{ fmtMoney(o.amount) }} {{ o.currency }}</td>
-            <td><span :class="statusBadge(o.status)">{{ o.status }}</span></td>
-            <td><span class="badge badge-muted">{{ o.source }}</span></td>
-          </tr>
-          <tr v-if="!orders.length && !loading">
-            <td colspan="6" class="text-center text-slate-500 py-8">سفارشی پیدا نشد.</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="table-scroll" tabindex="0" aria-label="جدول اطلاعات">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>زمان</th>
+              <th>کاربر</th>
+              <th>پلن</th>
+              <th>مبلغ</th>
+              <th>وضعیت</th>
+              <th>منبع</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="o in orders" :key="o.id">
+              <td class="text-xs text-slate-500">
+                {{ fmtRelativeTime(o.created_at) }}
+              </td>
+              <td>
+                <div class="text-white">{{ o.user_first_name || "—" }}</div>
+                <div class="text-[11px] text-slate-500">
+                  TG {{ o.user_telegram_id }}
+                </div>
+              </td>
+              <td>{{ o.plan_name }}</td>
+              <td class="font-mono">
+                {{ fmtMoney(o.amount) }} {{ o.currency }}
+              </td>
+              <td>
+                <span :class="statusBadge(o.status)">{{
+                  statusLabel(o.status)
+                }}</span>
+              </td>
+              <td>
+                <span class="badge badge-muted">{{ o.source }}</span>
+              </td>
+            </tr>
+            <tr v-if="!orders.length && !loading">
+              <td colspan="6" class="text-center text-slate-500 py-8">
+                سفارشی پیدا نشد.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- ── Payments table ──────────────────────────────────────── -->
     <div v-if="tab === 'payments'" class="card p-0 overflow-hidden">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>زمان</th>
-            <th>کاربر</th>
-            <th>درگاه</th>
-            <th>مبلغ</th>
-            <th>پرداختی</th>
-            <th>وضعیت</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="p in payments" :key="p.id">
-            <td class="text-xs text-slate-500">{{ fmtRelativeTime(p.created_at) }}</td>
-            <td>
-              <div class="text-white">{{ p.user_first_name || "—" }}</div>
-              <div class="text-[11px] text-slate-500">TG {{ p.user_telegram_id }}</div>
-            </td>
-            <td>
-              <span class="badge badge-muted">{{ p.provider }}</span>
-              <span class="text-[11px] text-slate-500 ms-1">{{ p.kind }}</span>
-            </td>
-            <td class="font-mono">{{ fmtMoney(p.price_amount) }} {{ p.price_currency }}</td>
-            <td class="font-mono text-slate-400">
-              <template v-if="p.pay_amount !== null">{{ p.pay_amount }} {{ p.pay_currency }}</template>
-              <template v-else>—</template>
-            </td>
-            <td><span :class="statusBadge(p.status)">{{ p.status }}</span></td>
-          </tr>
-          <tr v-if="!payments.length && !loading">
-            <td colspan="6" class="text-center text-slate-500 py-8">پرداختی پیدا نشد.</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="table-scroll" tabindex="0" aria-label="جدول اطلاعات">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>زمان</th>
+              <th>کاربر</th>
+              <th>درگاه</th>
+              <th>مبلغ</th>
+              <th>پرداختی</th>
+              <th>وضعیت</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in payments" :key="p.id">
+              <td class="text-xs text-slate-500">
+                {{ fmtRelativeTime(p.created_at) }}
+              </td>
+              <td>
+                <div class="text-white">{{ p.user_first_name || "—" }}</div>
+                <div class="text-[11px] text-slate-500">
+                  TG {{ p.user_telegram_id }}
+                </div>
+              </td>
+              <td>
+                <span class="badge badge-muted">{{
+                  providerLabel(p.provider)
+                }}</span>
+                <span class="text-[11px] text-slate-500 ms-1">{{
+                  p.kind
+                }}</span>
+              </td>
+              <td class="font-mono">
+                {{ fmtMoney(p.price_amount) }} {{ p.price_currency }}
+              </td>
+              <td class="font-mono text-slate-400">
+                <template v-if="p.pay_amount !== null"
+                  >{{ p.pay_amount }} {{ p.pay_currency }}</template
+                >
+                <template v-else>—</template>
+              </td>
+              <td>
+                <span :class="statusBadge(p.status)">{{
+                  statusLabel(p.status)
+                }}</span>
+              </td>
+            </tr>
+            <tr v-if="!payments.length && !loading">
+              <td colspan="6" class="text-center text-slate-500 py-8">
+                پرداختی پیدا نشد.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- ── Wallet ─────────────────────────────────────────────── -->
     <div v-if="tab === 'wallet'" class="card p-0 overflow-hidden">
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>زمان</th>
-            <th>کاربر</th>
-            <th>نوع</th>
-            <th>جهت</th>
-            <th>مقدار</th>
-            <th>موجودی پس از تراکنش</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="t in wallet" :key="t.id">
-            <td class="text-xs text-slate-500">{{ fmtRelativeTime(t.created_at) }}</td>
-            <td>
-              <div class="text-white">{{ t.user_first_name || "—" }}</div>
-              <div class="text-[11px] text-slate-500">TG {{ t.user_telegram_id }}</div>
-            </td>
-            <td>{{ t.type }}</td>
-            <td>
-              <span :class="t.direction === 'credit' ? 'badge badge-success' : 'badge badge-danger'">
-                {{ t.direction === 'credit' ? '➕ واریز' : '➖ برداشت' }}
-              </span>
-            </td>
-            <td class="font-mono">{{ fmtMoney(t.amount) }} {{ t.currency }}</td>
-            <td class="font-mono text-slate-400">
-              <template v-if="t.balance_after !== null">{{ fmtMoney(t.balance_after) }}</template>
-              <template v-else>—</template>
-            </td>
-          </tr>
-          <tr v-if="!wallet.length && !loading">
-            <td colspan="6" class="text-center text-slate-500 py-8">تراکنشی پیدا نشد.</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="table-scroll" tabindex="0" aria-label="جدول اطلاعات">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>زمان</th>
+              <th>کاربر</th>
+              <th>نوع</th>
+              <th>جهت</th>
+              <th>مقدار</th>
+              <th>موجودی پس از تراکنش</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="t in wallet" :key="t.id">
+              <td class="text-xs text-slate-500">
+                {{ fmtRelativeTime(t.created_at) }}
+              </td>
+              <td>
+                <div class="text-white">{{ t.user_first_name || "—" }}</div>
+                <div class="text-[11px] text-slate-500">
+                  TG {{ t.user_telegram_id }}
+                </div>
+              </td>
+              <td>{{ t.type }}</td>
+              <td>
+                <span
+                  :class="
+                    t.direction === 'credit'
+                      ? 'badge badge-success'
+                      : 'badge badge-danger'
+                  "
+                >
+                  {{ t.direction === "credit" ? "➕ واریز" : "➖ برداشت" }}
+                </span>
+              </td>
+              <td class="font-mono">
+                {{ fmtMoney(t.amount) }} {{ t.currency }}
+              </td>
+              <td class="font-mono text-slate-400">
+                <template v-if="t.balance_after !== null">{{
+                  fmtMoney(t.balance_after)
+                }}</template>
+                <template v-else>—</template>
+              </td>
+            </tr>
+            <tr v-if="!wallet.length && !loading">
+              <td colspan="6" class="text-center text-slate-500 py-8">
+                تراکنشی پیدا نشد.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
     <!-- ── Pending approvals ──────────────────────────────────── -->
     <div v-if="tab === 'pending'" class="card p-0 overflow-hidden">
-      <div class="px-4 py-3 border-b border-bg-border bg-amber-500/5 text-xs text-amber-200">
-        تأیید نهایی این پرداخت‌ها از طریق منوی «تأیید پرداخت‌های دستی» در ربات انجام می‌شود.
-        این صفحه فقط برای مرور سریع صف است.
+      <div
+        class="px-4 py-3 border-b border-bg-border bg-amber-500/5 text-xs text-amber-200"
+      >
+        تأیید نهایی این پرداخت‌ها از طریق منوی «تأیید پرداخت‌های دستی» در ربات
+        انجام می‌شود. این صفحه فقط برای مرور سریع صف است.
       </div>
-      <table class="data-table">
-        <thead>
-          <tr>
-            <th>زمان</th>
-            <th>کاربر</th>
-            <th>درگاه</th>
-            <th>مبلغ</th>
-            <th>پرداختی</th>
-            <th>وضعیت</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="p in pending" :key="p.id">
-            <td class="text-xs text-slate-500">{{ fmtRelativeTime(p.created_at) }}</td>
-            <td>
-              <div class="text-white">{{ p.user_first_name || "—" }}</div>
-              <div class="text-[11px] text-slate-500">TG {{ p.user_telegram_id }}</div>
-            </td>
-            <td><span class="badge badge-muted">{{ p.provider }}</span></td>
-            <td class="font-mono">{{ fmtMoney(p.price_amount) }}</td>
-            <td class="font-mono text-slate-400">
-              <template v-if="p.pay_amount !== null">{{ p.pay_amount }} {{ p.pay_currency }}</template>
-              <template v-else>—</template>
-            </td>
-            <td><span :class="statusBadge(p.status)">{{ p.status }}</span></td>
-          </tr>
-          <tr v-if="!pending.length && !loading">
-            <td colspan="6" class="text-center text-slate-500 py-8">صف تأیید خالی است. ✨</td>
-          </tr>
-        </tbody>
-      </table>
+      <div class="table-scroll" tabindex="0" aria-label="جدول اطلاعات">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>زمان</th>
+              <th>کاربر</th>
+              <th>درگاه</th>
+              <th>مبلغ</th>
+              <th>پرداختی</th>
+              <th>وضعیت</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in pending" :key="p.id">
+              <td class="text-xs text-slate-500">
+                {{ fmtRelativeTime(p.created_at) }}
+              </td>
+              <td>
+                <div class="text-white">{{ p.user_first_name || "—" }}</div>
+                <div class="text-[11px] text-slate-500">
+                  TG {{ p.user_telegram_id }}
+                </div>
+              </td>
+              <td>
+                <span class="badge badge-muted">{{
+                  providerLabel(p.provider)
+                }}</span>
+              </td>
+              <td class="font-mono">{{ fmtMoney(p.price_amount) }}</td>
+              <td class="font-mono text-slate-400">
+                <template v-if="p.pay_amount !== null"
+                  >{{ p.pay_amount }} {{ p.pay_currency }}</template
+                >
+                <template v-else>—</template>
+              </td>
+              <td>
+                <span :class="statusBadge(p.status)">{{
+                  statusLabel(p.status)
+                }}</span>
+              </td>
+            </tr>
+            <tr v-if="!pending.length && !loading">
+              <td colspan="6" class="text-center text-slate-500 py-8">
+                صف تأیید خالی است. ✨
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </div>
 
-    <!-- Pagination (skip for pending — single page) -->
-    <div v-if="tab !== 'pending'" class="flex items-center justify-between mt-4">
+    <!-- Paginated across every tab, including the manual queue. -->
+    <div class="flex flex-wrap gap-3 items-center justify-between mt-4">
       <div class="text-xs text-slate-500">
-        صفحه {{ page }} از {{ totalPages }} ({{ fmtNumber(total) }} ردیف)
+        صفحه {{ page }} از {{ totalPages }} ({{ fmtNumber(total) }} ردیف)<label
+          class="inline-flex items-center gap-2 ms-3"
+          >ردیف<select v-model.number="pageSize" class="input !w-auto">
+            <option :value="25">25</option>
+            <option :value="50">50</option>
+            <option :value="100">100</option>
+          </select></label
+        >
       </div>
       <div class="flex gap-2">
-        <button class="btn btn-secondary" :disabled="page <= 1 || loading" @click="page = Math.max(1, page - 1)">قبلی</button>
-        <button class="btn btn-secondary" :disabled="page >= totalPages || loading" @click="page = Math.min(totalPages, page + 1)">بعدی</button>
+        <button
+          class="btn btn-secondary"
+          :disabled="page <= 1 || loading"
+          @click="page = Math.max(1, page - 1)"
+        >
+          قبلی
+        </button>
+        <button
+          class="btn btn-secondary"
+          :disabled="page >= totalPages || loading"
+          @click="page = Math.min(totalPages, page + 1)"
+        >
+          بعدی
+        </button>
       </div>
     </div>
   </div>

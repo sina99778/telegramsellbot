@@ -140,7 +140,7 @@ async function doSend() {
     <div v-if="loading" class="card animate-pulse h-32" />
 
     <div v-else class="card overflow-hidden p-0">
-      <table class="data-table">
+      <div class="table-scroll" tabindex="0" aria-label="جدول اطلاعات"><table class="data-table">
         <thead>
           <tr>
             <th>پیام</th>
@@ -189,7 +189,7 @@ async function doSend() {
             <td colspan="6" class="text-center text-slate-500 py-8">هنوز پیامی فرستاده نشده.</td>
           </tr>
         </tbody>
-      </table>
+      </table></div>
     </div>
 
     <!-- ── Compose dialog ────────────────────────────────────────── -->

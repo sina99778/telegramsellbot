@@ -37,7 +37,8 @@ from models.dashboard_admin import DashboardAdmin
 from models.order import Order
 from models.subscription import Subscription
 from models.user import User
-from models.xui import XUIServerRecord
+from models.xui import XUIServerRecord, XUIInboundRecord, XUIClientRecord
+from models.payment import Payment
 
 
 router = APIRouter()
@@ -243,4 +244,45 @@ async def get_overview(
             "signups_30d": await _series_signups_30d(session),
         },
         "recent_activity": await _recent_activity(session),
+    }
+
+
+@router.get("/operations")
+async def get_operations(
+    auth: Annotated[tuple[DashboardAdmin, AsyncSession], Depends(require_dashboard_admin)],
+) -> dict[str, Any]:
+    """Queue counts without list limits, and grouped server stats in two queries.
+
+    This is stored health, not a live panel probe. No panel credentials or
+    user/payment details are fetched for the global navigation indicators.
+    """
+    _admin, session = auth
+    counts = (await session.execute(select(
+        func.count(Payment.id).filter(
+            Payment.provider == "card_to_card",
+            Payment.payment_status == "pending_approval",
+        ).label("pending_receipts"),
+        func.count(Payment.id).filter(
+            Payment.provider.in_(("manual_crypto", "card_to_card")),
+            Payment.payment_status.in_(("waiting_hash", "waiting_receipt", "pending_approval")),
+        ).label("pending_payments"),
+    ))).mappings().one()
+    rows = (await session.execute(select(
+        XUIServerRecord.id, XUIServerRecord.name, XUIServerRecord.panel_type,
+        XUIServerRecord.is_active, XUIServerRecord.health_status, XUIServerRecord.max_clients,
+        func.count(func.distinct(XUIInboundRecord.id)).label("inbound_count"),
+        func.count(func.distinct(case(
+            (XUIInboundRecord.is_active.is_(True), XUIInboundRecord.id), else_=None,
+        ))).label("active_inbound_count"),
+        func.count(XUIClientRecord.id).label("client_count"),
+        func.count(XUIClientRecord.id).filter(XUIClientRecord.is_active.is_(True)).label("active_client_count"),
+    ).select_from(XUIServerRecord).outerjoin(XUIInboundRecord, XUIInboundRecord.server_id == XUIServerRecord.id)
+     .outerjoin(XUIClientRecord, XUIClientRecord.inbound_id == XUIInboundRecord.id)
+     .group_by(XUIServerRecord.id)
+     .order_by(XUIServerRecord.priority, XUIServerRecord.name))).mappings().all()
+    return {
+        "generated_at": _now_utc().isoformat(),
+        "pending_receipts": int(counts["pending_receipts"]),
+        "pending_payments": int(counts["pending_payments"]),
+        "servers": [{**dict(row), "id": str(row["id"])} for row in rows],
     }

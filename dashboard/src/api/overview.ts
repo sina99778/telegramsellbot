@@ -40,6 +40,30 @@ export interface OverviewPayload {
   recent_activity: ActivityEvent[];
 }
 
-export function fetchOverview(): Promise<OverviewPayload> {
-  return api.get<OverviewPayload>("/overview");
+export function fetchOverview(signal?: AbortSignal): Promise<OverviewPayload> {
+  return api.get<OverviewPayload>("/overview", signal);
+}
+
+export interface OperationsServer {
+  id: string;
+  name: string;
+  panel_type: string;
+  is_active: boolean;
+  health_status: string;
+  max_clients: number | null;
+  inbound_count: number;
+  active_inbound_count: number;
+  client_count: number;
+  active_client_count: number;
+}
+export interface OperationsPayload {
+  generated_at: string;
+  pending_receipts: number;
+  pending_payments: number;
+  servers: OperationsServer[];
+}
+export function fetchOperations(
+  signal?: AbortSignal,
+): Promise<OperationsPayload> {
+  return api.get<OperationsPayload>("/overview/operations", signal);
 }

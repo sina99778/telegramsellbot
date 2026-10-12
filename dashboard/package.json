@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test scripts/test-ui-utils.mjs",
+    "preview:fixtures": "node scripts/preview-fixtures.mjs --fixtures"
   },
   "dependencies": {
     "chart.js": "^4.4.6",

@@ -92,7 +92,7 @@ function barWidth(rev: number): string {
       <!-- ── Top customers (LTV) ────────────────────────────────── -->
       <section class="card overflow-hidden p-0">
         <h3 class="text-sm font-bold text-white p-4 pb-2">مشتری‌های برتر (ارزشِ طول عمر)</h3>
-        <table class="data-table">
+        <div class="table-scroll" tabindex="0" aria-label="جدول اطلاعات"><table class="data-table">
           <thead>
             <tr><th>کاربر</th><th>مجموع خرید</th><th>سفارش‌ها</th></tr>
           </thead>
@@ -110,7 +110,7 @@ function barWidth(rev: number): string {
               <td colspan="3" class="text-center text-slate-500 py-6">داده‌ای ثبت نشده.</td>
             </tr>
           </tbody>
-        </table>
+        </table></div>
       </section>
     </div>
   </div>
