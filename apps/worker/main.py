@@ -77,8 +77,8 @@ async def main() -> None:
         max_instances=1,
         coalesce=True,
     )
-    # Auto-approve card-receipt payments older than the operator-configured
-    # delay. Disabled by default; turned on from the bot admin / dashboard.
+    # Remind admins about receipts awaiting bank verification.
+    # The legacy switch controls reminders; it never authorizes wallet credit.
     scheduler.add_job(
         run_card_autoconfirm_job,
         "interval",
@@ -116,8 +116,7 @@ async def main() -> None:
     scheduler.add_job(
         run_server_health_check,
         "cron",
-        hour="*/4",
-        minute=0,
+        minute="*/10",
         kwargs={"bot": bot},
         max_instances=1,
         coalesce=True,
@@ -309,14 +308,13 @@ async def run_crypto_autoconfirm_job(bot: PremiumEmojiBot) -> None:
 
 
 async def run_card_autoconfirm_job(bot: PremiumEmojiBot) -> None:
-    """Auto-approve manual card-to-card receipts older than the
-    operator-configured delay. No-ops when disabled."""
+    """Remind admins to verify aged card receipts; never auto-credit them."""
     try:
         async with AsyncSessionFactory() as session:
             result = await run_card_autoconfirm(session, bot)
             await session.commit()
-            if result.get("confirmed"):
-                logger.info("[CARD-AUTOCONFIRM] %s", result)
+            if result.get("reminded"):
+                logger.info("[CARD-REVIEW] %s", result)
     except Exception as exc:
         logger.error("card_autoconfirm_job failed: %s", exc, exc_info=True)
 

@@ -13,6 +13,8 @@ unauthenticated while still doing so.
 from __future__ import annotations
 
 import logging
+import asyncio
+import hashlib
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -38,6 +40,8 @@ from core.dashboard_auth import (
     verify_session,
 )
 from models.dashboard_admin import DashboardAdmin
+from core.rate_limit import check_rate_limit
+from starlette.concurrency import run_in_threadpool
 
 
 logger = logging.getLogger(__name__)
@@ -51,6 +55,7 @@ _LOGIN_FAILURES: dict[str, deque[float]] = {}
 _LOGIN_FAIL_WINDOW = 300  # seconds
 _LOGIN_FAIL_THRESHOLD = 5
 _LOGIN_FAILURES_MAX_KEYS = 10_000  # hard cap on tracked usernames
+_PASSWORD_SLOTS = asyncio.Semaphore(2)
 
 
 def _prune_login_failures(now: float) -> None:
@@ -109,10 +114,18 @@ class AdminProfile(BaseModel):
 
 # ── Endpoints ────────────────────────────────────────────────────────────
 @router.post("/login")
-async def login(body: LoginIn, response: Response, session: SessionDep) -> dict[str, Any]:
+async def login(body: LoginIn, response: Response, session: SessionDep, request: Request) -> dict[str, Any]:
     username_key = body.username.strip().lower()
     if not username_key:
         raise HTTPException(status_code=400, detail="نام کاربری معتبر نیست.")
+
+    # request.client is the peer after Uvicorn's trusted-proxy processing;
+    # never accept an arbitrary X-Forwarded-For header here.
+    peer = request.client.host if request.client else "unknown"
+    await check_rate_limit(peer, "dashboard_login_ip", max_requests=20, window_seconds=300)
+    await check_rate_limit("global", "dashboard_login_global", max_requests=100, window_seconds=60)
+    account_key = hashlib.sha256(username_key.encode()).hexdigest()
+    await check_rate_limit(account_key, "dashboard_login_account", max_requests=10, window_seconds=300)
 
     retry_after = _check_login_rate(username_key)
     if retry_after:
@@ -120,6 +133,7 @@ async def login(body: LoginIn, response: Response, session: SessionDep) -> dict[
         raise HTTPException(
             status_code=429,
             detail=f"تلاش‌های ناموفق زیاد. لطفاً {retry_after} ثانیه صبر کنید.",
+            headers={"Retry-After": str(retry_after)},
         )
 
     admin = await session.scalar(
@@ -131,14 +145,16 @@ async def login(body: LoginIn, response: Response, session: SessionDep) -> dict[
     # the response time doesn't leak whether the username exists.
     dummy_hash = "scrypt$16384$8$1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     target_hash = admin.password_hash if admin else dummy_hash
-    ok = verify_password(body.password, target_hash)
+    async with _PASSWORD_SLOTS:
+        ok = await run_in_threadpool(verify_password, body.password, target_hash)
     if admin is None or not admin.is_active or not ok:
         _record_login_failure(username_key)
         raise HTTPException(status_code=401, detail="نام کاربری یا رمز عبور نادرست است.")
 
     # Transparent upgrade if params changed since this hash was minted.
     if needs_rehash(admin.password_hash):
-        admin.password_hash = hash_password(body.password)
+        async with _PASSWORD_SLOTS:
+            admin.password_hash = await run_in_threadpool(hash_password, body.password)
     admin.last_login_at = datetime.now(timezone.utc)
     await session.commit()
     _clear_login_failures(username_key)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from services.panels.pool import PoolEntry
 from uuid import UUID
 from collections.abc import AsyncIterator
 from urllib.parse import urlparse
@@ -283,11 +284,10 @@ def build_xui_client_config(server: XUIServerRecord) -> XUIClientConfig:
 
 
 @dataclass
-class PooledXUIClient:
-    config: XUIClientConfig
-    client: SanaeiXUIClient
+class PooledXUIClient(PoolEntry):
+    pass
 
-_xui_clients_pool: dict[UUID, PooledXUIClient] = {}
+_xui_clients_pool: dict[UUID, PoolEntry] = {}
 
 
 def normalize_base_url(value: str) -> str:
@@ -298,38 +298,20 @@ def normalize_base_url(value: str) -> str:
 
 
 async def evict_panel_client(server: XUIServerRecord) -> None:
-    pooled = _xui_clients_pool.pop(server.id, None)
-    if pooled is not None:
-        await pooled.client.aclose()
-
+    from services.panels.pool import evict
     from services.pasarguard.runtime import _pg_clients_pool
-    pooled_pg = _pg_clients_pool.pop(server.id, None)
-    if pooled_pg is not None:
-        await pooled_pg.client.aclose()
-
     from services.rebecca.runtime import _rebecca_clients_pool
-    pooled_rebecca = _rebecca_clients_pool.pop(server.id, None)
-    if pooled_rebecca is not None:
-        await pooled_rebecca.client.aclose()
+    await evict(_xui_clients_pool, server.id)
+    await evict(_pg_clients_pool, server.id)
+    await evict(_rebecca_clients_pool, server.id)
 
 
 @asynccontextmanager
 async def create_xui_client_for_server(server: XUIServerRecord) -> AsyncIterator[SanaeiXUIClient]:
+    from services.panels.pool import borrow
     config = build_xui_client_config(server)
-    pooled = _xui_clients_pool.get(server.id)
-    
-    if pooled is None or pooled.config != config:
-        if pooled is not None:
-            await pooled.client.aclose()
-        
-        # We don't pass an http_client, so SanaeiXUIClient creates and owns it.
-        # But because we cache the SanaeiXUIClient instance, the underlying
-        # httpx.AsyncClient is preserved across all panel requests.
-        new_client = SanaeiXUIClient(config)
-        _xui_clients_pool[server.id] = PooledXUIClient(config=config, client=new_client)
-        pooled = _xui_clients_pool[server.id]
-
-    yield pooled.client
+    async with borrow(_xui_clients_pool, server.id, config, SanaeiXUIClient) as client:
+        yield client
 
 
 def ensure_inbound_server_loaded(inbound: XUIInboundRecord) -> XUIServerRecord:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -63,7 +64,13 @@ class SanaeiXUIClient:
             follow_redirects=True,
             verify=config.verify_ssl,
         )
-        self._authenticated = bool(self._client.cookies)
+        from services.panels.transport import enforce_https_redirects
+        enforce_https_redirects(self._client, config.base_url, XUIRequestError)
+        self._authenticated = False
+        self._login_lock = asyncio.Lock()
+        self._recovery_lock = asyncio.Lock()
+        self._auth_generation = 0
+        self._client.headers["X-Requested-With"] = "XMLHttpRequest"
 
     async def __aenter__(self) -> "SanaeiXUIClient":
         return self
@@ -76,6 +83,25 @@ class SanaeiXUIClient:
             await self._client.aclose()
 
     async def login(self) -> XUILoginResponse:
+        async with self._login_lock:
+            return await self._login_unlocked()
+
+    async def _ensure_authenticated(self) -> None:
+        if not self._authenticated:
+            async with self._recovery_lock:
+                if not self._authenticated:
+                    await self.login()
+
+    async def _refresh_auth(self, generation: int) -> None:
+        async with self._recovery_lock:
+            if self._auth_generation == generation or not self._authenticated:
+                self._authenticated = False
+                await self.login()
+
+    async def _login_unlocked(self) -> XUILoginResponse:
+        self._authenticated = False
+        self._client.cookies.clear()
+        self._client.headers.pop("X-CSRF-Token", None)
         login_data = {
             "username": self._config.username,
             "password": self._config.password.get_secret_value(),
@@ -94,25 +120,20 @@ class SanaeiXUIClient:
                 idempotent=True,
             )
 
-        # Some X-UI versions return HTML on login — check for cookies first
-        if self._client.cookies:
-            self._authenticated = True
-            return XUILoginResponse(success=True, msg="OK")
-
-        # Try to parse JSON response
+        if response.status_code != 200:
+            raise XUIAuthenticationError(f"X-UI login rejected (HTTP {response.status_code}).")
         try:
             data = self._decode_response(response)
-            login_response = XUILoginResponse.model_validate(data or {"success": True})
-            if login_response.success is False:
-                raise XUIAuthenticationError(login_response.msg or "X-UI authentication failed.")
-        except XUIRequestError:
-            # Response wasn't JSON but we also have no cookies — auth failed
-            raise XUIAuthenticationError(
-                "X-UI login failed. The panel did not return a session cookie. "
-                "Please verify the URL, username, and password."
-            )
-
+        except XUIRequestError as exc:
+            # Legacy HTML login is accepted only when this response sets a cookie.
+            if not response.headers.get("set-cookie") or not self._client.cookies:
+                raise XUIAuthenticationError("X-UI login returned no valid session.") from exc
+            data = {"success": True}
+        if not isinstance(data, dict) or data.get("success") is not True:
+            raise XUIAuthenticationError("X-UI authentication failed; verify credentials and panel policy.")
+        login_response = XUILoginResponse.model_validate(data)
         self._authenticated = True
+        self._auth_generation += 1
         return login_response
 
     async def get_inbounds(self) -> list[XUIInbound]:
@@ -269,8 +290,7 @@ class SanaeiXUIClient:
         the panel then answers 404 and, unless we re-login on 404 too, every
         endpoint "fails" and the DB is silently dropped from the bundle.
         """
-        if not self._authenticated:
-            await self.login()
+        await self._ensure_authenticated()
 
         endpoints = [
             "panel/api/server/getDb",   # 3x-ui (current)
@@ -281,14 +301,14 @@ class SanaeiXUIClient:
         attempts: list[str] = []
 
         for endpoint in endpoints:
+            generation = self._auth_generation
             response = await self._client.request("GET", endpoint)
             # 404 is included on purpose — see the docstring.
-            if response.status_code in {401, 403, 404}:
-                self._authenticated = False
-                await self.login()
+            if response.status_code in {401, 403, 404} or self._is_login_response(response):
+                await self._refresh_auth(generation)
                 response = await self._client.request("GET", endpoint)
 
-            if response.status_code == 200 and len(response.content) >= 100:
+            if response.status_code == 200 and response.content.startswith(b"SQLite format 3\x00") and len(response.content) >= 100:
                 return response.content
             attempts.append(
                 f"{endpoint} → HTTP {response.status_code}, len={len(response.content)}"
@@ -302,40 +322,73 @@ class SanaeiXUIClient:
     async def _request(
         self, method: str, path: str, *, idempotent: bool | None = None, **kwargs: Any
     ) -> dict[str, Any] | list[Any] | None:
-        if not self._authenticated:
-            await self.login()
-
-        retry_404 = idempotent if idempotent is not None else method.upper() in {"GET", "HEAD"}
-        try:
-            response = await self._send(method, path, idempotent=idempotent, **kwargs)
-        except XUIRequestError as exc:
-            if exc.status_code != 404 or not retry_404:
-                raise
-            response = None
-
-        if response is not None and response.status_code == 404 and not retry_404:
-            raise XUIRequestError(
-                f"X-UI request to '{path}' failed with status 404: "
-                f"{self._safe_response_text(response)}",
-                status_code=404,
-            )
-
-        if response is None or response.status_code in {401, 403, 404}:
-            self._authenticated = False
-            await self.login()
-            response = await self._send(method, path, idempotent=idempotent, **kwargs)
-            if response.status_code in {401, 403}:
-                raise XUIAuthenticationError(
-                    f"X-UI still returned {response.status_code} after re-login "
-                    f"for endpoint '{path}'. Check the panel credentials."
-                )
-            if response.status_code == 404:
-                raise XUIRequestError(
-                    f"X-UI request to '{path}' failed with status 404: "
-                    f"{self._safe_response_text(response)}",
-                    status_code=404,
-                )
+        await self._ensure_authenticated()
+        generation = self._auth_generation
+        response = await self._send_with_csrf(method, path, idempotent=idempotent, **kwargs)
+        auth_failed = response.status_code in {401, 403} or self._is_login_response(response)
+        if response.status_code == 404:
+            # A write can be retried only after a read confirms API auth was
+            # rejected; an actual missing endpoint/client must stay a 404.
+            if method.upper() in {"GET", "HEAD"} or idempotent:
+                auth_failed = True
+            else:
+                probe = await self._send("GET", "panel/api/inbounds/list", idempotent=True)
+                auth_failed = probe.status_code in {401, 403, 404} or self._is_login_response(probe)
+        if auth_failed:
+            await self._refresh_auth(generation)
+            response = await self._send_with_csrf(method, path, idempotent=idempotent, **kwargs)
+            if response.status_code in {401, 403} or self._is_login_response(response):
+                self._authenticated = False
+                raise XUIAuthenticationError("X-UI session rejected after renewal; check credentials and panel policy.")
+        if response.status_code == 404:
+            # Establish valid authentication before allowing 'already gone'.
+            probe = await self._send("GET", "panel/api/inbounds/list", idempotent=True)
+            if probe.status_code != 200 or self._is_login_response(probe):
+                self._authenticated = False
+                raise XUIAuthenticationError("Cannot distinguish X-UI auth failure from a missing endpoint.")
+            probe_data = self._decode_response(probe)
+            if not isinstance(probe_data, dict) or probe_data.get("success") is not True:
+                raise XUIRequestError("X-UI authentication probe did not confirm a valid API response.")
+            raise XUIRequestError(f"X-UI endpoint '{path}' not found after verified authentication.", status_code=404)
         return self._decode_response(response)
+
+    @staticmethod
+    def _is_login_response(response: httpx.Response) -> bool:
+        content_type = response.headers.get("content-type", "").lower()
+        if "text/html" in content_type:
+            body = response.text.lower()
+            return any(marker in body for marker in ("login", "sign in", 'type="password"', "type='password'"))
+        if "application/json" in content_type:
+            try:
+                data = response.json()
+            except ValueError:
+                return False
+            if isinstance(data, dict) and data.get("success") is False:
+                msg = str(data.get("msg", "")).lower()
+                return any(marker in msg for marker in ("not logged", "not login", "unauthorized", "unauthenticated", "session expired", "login required", "please login"))
+        return False
+
+    async def _send_with_csrf(self, method, path, *, idempotent=None, **kwargs):
+        response = await self._send(method, path, idempotent=idempotent, **kwargs)
+        if response.status_code == 403 and "csrf" in response.text.lower():
+            await self._refresh_csrf()
+            response = await self._send(method, path, idempotent=idempotent, **kwargs)
+            if response.status_code == 403 and "csrf" in response.text.lower():
+                raise XUIAuthenticationError("X-UI rejected the CSRF token; check panel compatibility.")
+        return response
+
+    async def _refresh_csrf(self) -> None:
+        response = await self._send("GET", "csrf-token", idempotent=True)
+        if response.status_code != 200:
+            raise XUIAuthenticationError("X-UI CSRF token endpoint is unavailable.")
+        data = self._decode_response(response)
+        if not isinstance(data, dict):
+            raise XUIAuthenticationError("X-UI returned an invalid CSRF token.")
+        obj = data.get("obj", data)
+        token = obj if isinstance(obj, str) else (obj.get("token") or obj.get("csrfToken") or obj.get("csrf_token")) if isinstance(obj, dict) else None
+        if not isinstance(token, str) or not token:
+            raise XUIAuthenticationError("X-UI returned no CSRF token.")
+        self._client.headers["X-CSRF-Token"] = token
 
     async def _send(
         self, method: str, path: str, *, idempotent: bool | None = None, **kwargs: Any
@@ -370,7 +423,7 @@ class SanaeiXUIClient:
                     continue
                 raise XUIRequestError(f"Timed out while calling X-UI endpoint '{path}'.") from exc
             except httpx.HTTPStatusError as exc:
-                if exc.response.status_code >= 500 and attempt < max_retries - 1:
+                if idempotent and exc.response.status_code >= 500 and attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
                     continue
                 raise XUIRequestError(
@@ -396,7 +449,10 @@ class SanaeiXUIClient:
             return None
         if "application/json" not in response.headers.get("content-type", ""):
             raise XUIRequestError(f"Unexpected response content type: {response.headers.get('content-type')}")
-        payload = response.json()
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise XUIRequestError("Invalid JSON response from X-UI.") from exc
         if not isinstance(payload, (dict, list)):
             raise XUIRequestError("Unexpected X-UI JSON payload type.")
         return payload

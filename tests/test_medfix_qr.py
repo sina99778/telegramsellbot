@@ -104,7 +104,9 @@ class TestPagesJsRegressions:
 
     def test_qr_img_points_at_local_endpoint(self):
         source = PAGES_JS.read_text(encoding="utf-8")
-        assert "/api/miniapp/qr?data=" in source
+        assert "API.qrUrl(" in source
+        assert "&_auth=" not in source
+        assert "&_session=" not in source
 
     def test_empty_state_navigates_to_existing_store_page(self):
         """Finding 57: UI.navigate('shop') targeted a nonexistent page id

@@ -130,6 +130,7 @@ def _make_migrate_fixture(mock_session, *, status, ends_at):
     target_inbound.remark = "inb1"
     target_inbound.xui_inbound_remote_id = 7
     target_inbound.server.is_active = True
+    target_inbound.server.max_clients = None
 
     # scalar order: sub → target_inbound → existing_xui (None)
     mock_session.scalar = AsyncMock(side_effect=[sub, target_inbound, None])

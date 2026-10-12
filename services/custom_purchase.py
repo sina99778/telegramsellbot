@@ -73,7 +73,7 @@ async def create_custom_purchase_plan(
     if volume_bytes <= 0:
         raise CustomPurchaseError("حجم باید بیشتر از صفر باشد.")
 
-    clean_volume = format(Decimal(str(volume_gb)).normalize(), "f").rstrip("0").rstrip(".")
+    clean_volume = format(Decimal(str(volume_gb)).normalize(), "f")
     code = f"{CUSTOM_PLAN_CODE_PREFIX}{duration_days}d_{clean_volume}gb_{uuid4().hex[:10]}"
     plan = Plan(
         code=code,

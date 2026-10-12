@@ -110,6 +110,8 @@ class PasarGuardClient:
             follow_redirects=True,
             verify=config.verify_ssl,
         )
+        from services.panels.transport import enforce_https_redirects
+        enforce_https_redirects(self._client, config.base_url, PasarGuardRequestError)
         self._authenticated = False
         self._token: str | None = None
         self._auth_lock = asyncio.Lock()

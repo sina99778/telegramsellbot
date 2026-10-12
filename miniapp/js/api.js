@@ -1,5 +1,5 @@
 /**
- * API client — sends initData as query param to avoid header issues.
+ * API client — sends authentication only through request headers.
  */
 const API = (() => {
     function readTelegramDataFromUrl() {
@@ -18,8 +18,15 @@ const API = (() => {
     function getSessionToken() {
         try {
             const params = new URLSearchParams(window.location.search.replace(/^[?]/, ''));
-            const token = params.get('session') || '';
-            if (token) sessionStorage.setItem('miniapp_session', token);
+            const fragment = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+            const token = fragment.get('session') || params.get('session') || '';
+            if (token) {
+                sessionStorage.setItem('miniapp_session', token);
+                params.delete('session');
+                fragment.delete('session');
+                const query = params.toString();
+                history.replaceState(null, '', location.pathname + (query ? '?' + query : '') + (fragment.toString() ? '#' + fragment.toString() : ''));
+            }
             return token || sessionStorage.getItem('miniapp_session') || '';
         } catch {
             return '';
@@ -41,24 +48,19 @@ const API = (() => {
     }
 
     async function request(method, path, body = null) {
-        // Fresh Telegram initData always wins: the bot-signed ?session= token
+        // Fresh Telegram initData always wins: the bot-signed session token
         // is frozen at keyboard render time (24h TTL) and would lock users
         // out once expired, while initData is re-issued on every launch.
         // The session token is only a fallback when no initData exists.
         const sessionToken = getSessionToken();
         const initData = getInitData();
 
-        // Send initData as query parameter (avoids header stripping by proxies)
-        const separator = path.includes('?') ? '&' : '?';
-        let url = `/api/miniapp${path}`;
-        if (initData) {
-            url += `${separator}_auth=${encodeURIComponent(initData)}`;
-        } else if (sessionToken) {
-            url += `${separator}_session=${encodeURIComponent(sessionToken)}`;
-        }
+        // Authentication stays out of URLs and access logs.
+        const url = `/api/miniapp${path}`;
 
         const headers = { 'Content-Type': 'application/json' };
         if (initData) headers['X-Telegram-Init-Data'] = initData;
+        else if (sessionToken) headers['X-Miniapp-Session'] = sessionToken;
         const opts = { method, headers };
         if (body) opts.body = JSON.stringify(body);
 
@@ -87,15 +89,10 @@ const API = (() => {
         // only as a fallback when no initData exists.
         const sessionToken = getSessionToken();
         const initData = getInitData();
-        const separator = path.includes('?') ? '&' : '?';
-        let url = `/api/miniapp${path}`;
-        if (initData) {
-            url += `${separator}_auth=${encodeURIComponent(initData)}`;
-        } else if (sessionToken) {
-            url += `${separator}_session=${encodeURIComponent(sessionToken)}`;
-        }
+        const url = `/api/miniapp${path}`;
         const headers = {};
         if (initData) headers['X-Telegram-Init-Data'] = initData;
+        else if (sessionToken) headers['X-Miniapp-Session'] = sessionToken;
 
         const res = await fetch(url, { method, headers, body: formData });
         if (!res.ok) {
@@ -109,7 +106,18 @@ const API = (() => {
         return res.json();
     }
 
+    async function qrUrl(data) {
+        const headers = {'Content-Type': 'application/json'};
+        const initData = getInitData();
+        if (initData) headers['X-Telegram-Init-Data'] = initData;
+        else headers['X-Miniapp-Session'] = getSessionToken();
+        const response = await fetch('/api/miniapp/qr', {method:'POST', headers, body:JSON.stringify({data})});
+        if (!response.ok) throw new Error('QR unavailable');
+        return URL.createObjectURL(await response.blob());
+    }
+
     return {
+        qrUrl,
         getInitData,
         getConfig:       ()           => request('GET', '/config'),
         getDashboard:    ()           => request('GET', '/me'),

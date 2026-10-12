@@ -37,7 +37,8 @@ from decimal import Decimal
 from typing import Iterable
 
 from aiogram import Bot
-from sqlalchemy import select
+from sqlalchemy import select, func
+from services.crypto_claims import currency_key, transaction_key
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.database import AsyncSessionFactory
@@ -74,7 +75,7 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
             Payment.provider == "manual_crypto",
             Payment.payment_status.in_(("waiting_hash", "waiting_receipt")),
             Payment.created_at >= cutoff,
-            Payment.pay_currency.in_(tuple(AUTOCONFIRM_CURRENCIES)),
+            func.upper(Payment.pay_currency).in_(tuple(AUTOCONFIRM_CURRENCIES)),
             Payment.pay_amount.is_not(None),
         )
     )
@@ -92,7 +93,7 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
     for p in pending:
         payload = p.callback_payload or {}
         addr = payload.get("address")
-        cur = (p.pay_currency or "").strip()
+        cur = currency_key(p.pay_currency or "")
         if not addr or not is_autoconfirmable(cur):
             # Bubble this up — it's the #1 way payments silently
             # never get auto-confirmed (admin stored a currency name
@@ -120,6 +121,7 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
 
     confirmed = 0
     checked = 0
+    seen_transactions: set[tuple[str, str]] = set()
     for (currency, address), invoices in by_target.items():
         # `since` = the OLDEST invoice's created_at — so we catch a TX that
         # may have been sent for either invoice. The amount-equality
@@ -150,6 +152,9 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
             tx_amount = tx.get("amount")
             tx_ts = tx.get("timestamp")
             if not tx_hash or tx_amount is None or tx_ts is None:
+                continue
+            identity = transaction_key(currency, str(tx_hash))
+            if identity in seen_transactions:
                 continue
 
             matched_payment: Payment | None = None
@@ -237,6 +242,7 @@ async def run_crypto_autoconfirm(session: AsyncSession, bot: Bot | None = None) 
                 # Telegram notifications below and makes the credit
                 # durable even if a later match in the same poll fails.
                 await session.commit()
+                seen_transactions.add(identity)
             except Exception as exc:
                 logger.error(
                     "[CRYPTO-AUTOCONFIRM] process_successful_payment failed for %s: %s",

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import datetime, timezone
 
 import logging
 import math
@@ -833,6 +834,10 @@ async def pay_with_manual_crypto(
     else:
         final_price = original_price
 
+    if final_price == 0:
+        await _process_wallet_purchase(callback, state, session, callback.bot)
+        return
+
     # Store the topup amount and purchase metadata in state
     await state.update_data(
         topup_amount=str(final_price),
@@ -893,6 +898,10 @@ async def pay_with_card_to_card(
         original_price * (Decimal(100 - discount_percent) / Decimal(100))
     ).quantize(Decimal("0.01")) if discount_percent > 0 else original_price
     toman_rate = await settings_repo.get_toman_rate()
+    if final_price == 0:
+        await _process_wallet_purchase(callback, state, session, callback.bot)
+        return
+
     base_toman = int((final_price * toman_rate).quantize(Decimal("1")))
     # Per-buyer unique amount so the operator can auto-confirm by amount.
     toman_amount = await compute_unique_toman(session, base_toman, gw.card_amount_jitter_toman)
@@ -981,6 +990,8 @@ async def purchase_card_receipt_submitted(
     receipt_file_id = message.photo[-1].file_id
     payload = dict(payment.callback_payload or {})
     payload["receipt_file_id"] = receipt_file_id
+    payload["receipt_uploaded_at"] = datetime.now(timezone.utc).isoformat()
+    payload.pop("card_review_reminded_at", None)
     payment.callback_payload = payload
     payment.payment_status = "pending_approval"
     payment.provider_payment_id = receipt_file_id
@@ -1226,6 +1237,10 @@ async def _process_gateway_purchase(
     from schemas.internal.nowpayments import NowPaymentsPaymentCreateRequest
     from services.nowpayments.client import NowPaymentsClient, NowPaymentsClientConfig, NowPaymentsRequestError
 
+    if final_price == 0:
+        await _process_wallet_purchase(callback, state, session, callback.bot)
+        return
+
     local_order_id = str(uuid4())
 
     # Save purchase details in payment metadata so IPN can complete provisioning
@@ -1330,6 +1345,10 @@ async def _process_tronado_purchase(
     if discount_percent > 0:
         final_price = (final_price * (Decimal(100 - discount_percent) / Decimal(100))).quantize(Decimal("0.01"))
 
+    if final_price == 0:
+        await _process_wallet_purchase(callback, state, session, callback.bot)
+        return
+
     from apps.bot.keyboards.inline import build_topup_link_keyboard
     from services.tronado.payments import create_tronado_invoice
 
@@ -1408,6 +1427,10 @@ async def _process_tetrapay_purchase(
         return
 
     # Cost in tomans
+    if final_price == 0:
+        await _process_wallet_purchase(callback, state, session, callback.bot)
+        return
+
     toman_amount = int((final_price * toman_rate).quantize(Decimal("1")))
     rial_amount = toman_amount * 10
     
@@ -1565,17 +1588,18 @@ async def _finalize_purchase(
     try:
         async with session.begin_nested():
             try:
-                await wallet_manager.process_transaction(
-                    user_id=user.id,
-                    amount=Decimal(str(final_price)),
-                    transaction_type="purchase",
-                    direction="debit",
-                    currency=plan.currency,
-                    reference_type="order",
-                    reference_id=order.id,
-                    description=f"Purchase of plan {plan.code}",
-                    metadata={"plan_id": str(plan.id), "config_name": config_name},
-                )
+                if final_price > 0:
+                    await wallet_manager.process_transaction(
+                        user_id=user.id,
+                        amount=Decimal(str(final_price)),
+                        transaction_type="purchase",
+                        direction="debit",
+                        currency=plan.currency,
+                        reference_type="order",
+                        reference_id=order.id,
+                        description=f"Purchase of plan {plan.code}",
+                        metadata={"plan_id": str(plan.id), "config_name": config_name},
+                    )
             except InsufficientBalanceError:
                 order.status = "failed"
                 await bot.send_message(chat_id=chat_id, text=Messages.BALANCE_NOT_SUFFICIENT_ANYMORE)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -48,6 +49,19 @@ async def get_subscription_content(
         subscription = await session.get(Subscription, sub_id)
         if not subscription:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not found")
+
+        if subscription.status not in {"active", "pending_activation"}:
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        if subscription.ends_at is not None:
+            deadline = subscription.ends_at
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=timezone.utc)
+            if deadline <= datetime.now(timezone.utc):
+                raise HTTPException(status_code=404, detail="Subscription not found")
+        from models.user import User
+        owner = await session.get(User, subscription.user_id)
+        if owner is None or owner.status == "banned":
+            raise HTTPException(status_code=404, detail="Subscription not found")
 
         if not valid_sig:
             # Grace mode: subscription exists, sig is missing/wrong. Log

@@ -74,6 +74,26 @@ class ProvisioningManager:
         self.xui_client = xui_client
         self.wallet_manager = WalletManager(session)
 
+    async def _lock_server_capacity(self, server_id, error_type):
+        from hashlib import blake2b
+        from sqlalchemy import text
+        key = int.from_bytes(blake2b(f"server-capacity:{server_id}".encode(), digest_size=8).digest(), "big", signed=True)
+        result = await self.session.execute(text("SELECT pg_try_advisory_xact_lock(:key)"), {"key": key})
+        if result.scalar_one() is not True:
+            raise error_type("ظرفیت سرور در حال بررسی است؛ چند لحظه بعد دوباره تلاش کنید.")
+
+    async def _ensure_server_capacity(self, server, error_type):
+        if server.max_clients is None:
+            return
+        await self._lock_server_capacity(server.id, error_type)
+        active_count = await self.session.scalar(
+            select(func.count()).select_from(XUIClientRecord)
+            .join(XUIInboundRecord, XUIClientRecord.inbound_id == XUIInboundRecord.id)
+            .where(XUIClientRecord.is_active.is_(True), XUIInboundRecord.server_id == server.id)
+        ) or 0
+        if active_count >= server.max_clients:
+            raise error_type("ظرفیت این سرور تکمیل شده است.")
+
     async def preflight_check_plan(self, plan_id: UUID) -> tuple[bool, str | None]:
         """Quick health probe for the plan's X-UI inbound BEFORE we debit
         the user's wallet.
@@ -145,7 +165,7 @@ class ProvisioningManager:
 
         try:
             async with self._get_xui_client_for_server(server) as xui_client:
-                await xui_client.login()
+                await xui_client.get_inbounds()
             return True, None
         except Exception as exc:
             logger.warning(
@@ -194,7 +214,7 @@ class ProvisioningManager:
 
         try:
             async with self._get_xui_client_for_server(server) as xui_client:
-                await xui_client.login()
+                await xui_client.get_inbounds()
             return True, None
         except Exception as exc:
             logger.warning(
@@ -367,18 +387,7 @@ class ProvisioningManager:
         if not server.is_active:
             raise ProvisioningError("The selected server is inactive.")
 
-        if server.max_clients is not None:
-            active_count = await self.session.scalar(
-                select(func.count())
-                .select_from(XUIClientRecord)
-                .join(XUIInboundRecord, XUIClientRecord.inbound_id == XUIInboundRecord.id)
-                .where(
-                    XUIClientRecord.is_active.is_(True),
-                    XUIInboundRecord.server_id == server.id
-                )
-            ) or 0
-            if active_count >= server.max_clients:
-                raise ProvisioningError("ظرفیت این سرور تکمیل شده است. لطفاً به پشتیبانی اطلاع دهید.")
+        await self._ensure_server_capacity(server, ProvisioningError)
 
         # PasarGuard servers provision via the user-centric API (own path).
         if is_marzban_family(server):
@@ -1000,19 +1009,7 @@ class ProvisioningManager:
         if is_marzban_family(target_server):
             raise MigrationError("انتقال به سرورِ PasarGuard پشتیبانی نمی‌شود.")
 
-        # Capacity check for the target server (same rule as provisioning).
-        if target_server.max_clients is not None:
-            active_count = await self.session.scalar(
-                select(func.count())
-                .select_from(XUIClientRecord)
-                .join(XUIInboundRecord, XUIClientRecord.inbound_id == XUIInboundRecord.id)
-                .where(
-                    XUIClientRecord.is_active.is_(True),
-                    XUIInboundRecord.server_id == target_server.id,
-                )
-            ) or 0
-            if active_count >= target_server.max_clients:
-                raise MigrationError("ظرفیت سرور هدف تکمیل شده است.")
+        await self._ensure_server_capacity(target_server, MigrationError)
 
         remaining_bytes = max(sub.volume_bytes - sub.used_bytes, 0)
         _MIN_USABLE_BYTES = 100 * 1024 * 1024  # 100 MB
@@ -1321,6 +1318,8 @@ class ProvisioningManager:
         target_server = ensure_inbound_server_loaded(target_inbound)
         if not target_server.is_active:
             raise MigrationError("سرور مقصد غیرفعال است.")
+
+        await self._ensure_server_capacity(target_server, MigrationError)
 
         # Fresh identity for the new X-UI client.
         #

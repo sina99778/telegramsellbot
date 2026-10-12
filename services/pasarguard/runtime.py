@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from services.panels.pool import PoolEntry
 from uuid import UUID
 
 from pydantic import SecretStr
@@ -34,29 +35,18 @@ def build_pasarguard_client_config(server: XUIServerRecord) -> PasarGuardClientC
 
 
 @dataclass
-class PooledPasarGuardClient:
-    config: PasarGuardClientConfig
-    client: PasarGuardClient
+class PooledPasarGuardClient(PoolEntry):
+    pass
 
-_pg_clients_pool: dict[UUID, PooledPasarGuardClient] = {}
+_pg_clients_pool: dict[UUID, PoolEntry] = {}
 
 
 @asynccontextmanager
-async def create_pasarguard_client_for_server(
-    server: XUIServerRecord,
-) -> AsyncIterator[PasarGuardClient]:
+async def create_pasarguard_client_for_server(server: XUIServerRecord) -> AsyncIterator[PasarGuardClient]:
+    from services.panels.pool import borrow
     config = build_pasarguard_client_config(server)
-    pooled = _pg_clients_pool.get(server.id)
-    
-    if pooled is None or pooled.config != config:
-        if pooled is not None:
-            await pooled.client.aclose()
-            
-        new_client = PasarGuardClient(config)
-        _pg_clients_pool[server.id] = PooledPasarGuardClient(config=config, client=new_client)
-        pooled = _pg_clients_pool[server.id]
-
-    yield pooled.client
+    async with borrow(_pg_clients_pool, server.id, config, PasarGuardClient) as client:
+        yield client
 
 
 def absolute_sub_url(server: XUIServerRecord, subscription_url: str | None) -> str:

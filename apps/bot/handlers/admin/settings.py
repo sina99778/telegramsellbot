@@ -1266,7 +1266,7 @@ async def card_to_card_menu(callback: CallbackQuery, session: AsyncSession) -> N
         f"تعداد کارت‌های ثبت‌شده: <b>{len(gw.cards)}</b> (بین خریدارا شافل می‌شه)\n"
         f"جیتر قیمت (مبلغ منحصربه‌فرد): {jitter_label}\n"
         f"توضیح: {gw.card_note or 'تنظیم نشده'}\n\n"
-        f"تأیید خودکار رسید: {auto_label}\n"
+        f"یادآوری بررسی رسید: {auto_label}\n"
         f"کاربران مستثنا: {len(auto.exception_telegram_ids)} نفر"
     )
     builder = InlineKeyboardBuilder()
@@ -1278,7 +1278,7 @@ async def card_to_card_menu(callback: CallbackQuery, session: AsyncSession) -> N
     builder.button(text="📋 لیست / حذف کارت‌ها", callback_data="admin:gw:card_list")
     builder.button(text="🎲 جیتر قیمت", callback_data="admin:gw:card_jitter")
     builder.button(text="توضیح پرداخت", callback_data="admin:gw:card_note")
-    builder.button(text="⏱ تأیید خودکار رسید", callback_data="admin:gw:card_auto")
+    builder.button(text="⏱ یادآوری بررسی رسید", callback_data="admin:gw:card_auto")
     builder.button(text=AdminButtons.BACK, callback_data="admin:settings:gateways")
     builder.adjust(1)
     await safe_edit_or_send(callback, text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -1444,13 +1444,13 @@ async def card_auto_menu(callback: CallbackQuery, session: AsyncSession) -> None
     if len(auto.exception_telegram_ids) > 8:
         exempt_preview += f" … (+{len(auto.exception_telegram_ids) - 8})"
     text = (
-        "⏱ <b>تأیید خودکار رسید کارت‌به‌کارت</b>\n\n"
+        "⏱ <b>یادآوری بررسی رسید کارت‌به‌کارت</b>\n\n"
         f"وضعیت: {'🟢 روشن' if auto.enabled else '🔴 خاموش'}\n"
         f"تأخیر: <b>{auto.delay_minutes}</b> دقیقه پس از ثبت رسید\n"
         f"کاربران مستثنا: <b>{len(auto.exception_telegram_ids)}</b>\n"
         f"<code>{_html_escape(exempt_preview)}</code>\n\n"
         "<i>وقتی روشن باشد، رسیدی که در حالت «در انتظار تأیید» مانده و از مدت تنظیم‌شده گذشته،"
-        " به‌طور خودکار تأیید و کیف پول کاربر شارژ می‌شود — مگر اینکه آی‌دی کاربر در لیست استثنا باشد.</i>"
+        " برای بررسی به مدیر یادآوری می‌شود. تأیید واریز بانکی و شارژ کیف پول فقط با تأیید مدیر انجام می‌شود.</i>"
     )
     builder = InlineKeyboardBuilder()
     builder.button(
@@ -1486,7 +1486,7 @@ async def card_auto_minutes_start(callback: CallbackQuery, state: FSMContext) ->
     await state.set_state(_CardAutoMinutesState.waiting_for_minutes)
     await safe_edit_or_send(
         callback,
-        "⏱ تعداد دقیقه‌ی تأخیر تا تأیید خودکار را وارد کن (عددی ≥ ۱).\n\n"
+        "⏱ تعداد دقیقه‌ی تأخیر تا یادآوری بررسی را وارد کن (عددی ≥ ۱).\n\n"
         "مثال: <code>30</code>\n\nبرای لغو /cancel را بفرست.",
         parse_mode="HTML",
     )
@@ -1508,7 +1508,7 @@ async def card_auto_minutes_submit(message: Message, state: FSMContext, session:
     repo = AppSettingsRepository(session)
     await repo.update_card_autoconfirm_settings(delay_minutes=minutes)
     await state.clear()
-    await message.answer(f"✅ تأخیر تأیید خودکار رسید روی <b>{minutes}</b> دقیقه تنظیم شد.", parse_mode="HTML")
+    await message.answer(f"✅ تأخیر یادآوری بررسی رسید روی <b>{minutes}</b> دقیقه تنظیم شد.", parse_mode="HTML")
 
 
 @router.callback_query(F.data == "admin:gw:card_auto:exceptions")

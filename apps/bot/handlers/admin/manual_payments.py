@@ -231,6 +231,7 @@ async def approve_manual_payment(
         )
     except Exception as exc:
         logger.error("Failed to process manual payment %s: %s", payment_id, exc, exc_info=True)
+        await session.rollback()
         await safe_edit_caption_or_text(
             callback,
             f"❌ خطا در پردازش پرداخت:\n{str(exc)[:300]}",

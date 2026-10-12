@@ -455,6 +455,7 @@ async def test_login_stamps_the_current_epoch_into_the_token():
             LoginIn(username="sec002-login", password="whatever"),
             response,
             session,
+            __import__("starlette.requests", fromlist=["Request"]).Request({"type": "http", "client": ("127.0.0.1", 1234)}),
         )
 
     assert result["ok"] is True

@@ -21,8 +21,8 @@ class Payment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     provider: Mapped[str] = mapped_column(String(24), nullable=False, default="nowpayments")
     kind: Mapped[str] = mapped_column(String(24), nullable=False, default="wallet_topup")
-    # NOTE: deliberately non-unique here — manual crypto payments may
-    # legitimately reuse a TX hash across rows. The webhook-replay guard is
+    # Pending manual invoices may contain the same submitted hash, but only
+    # one can be funded (crypto_transaction_claims enforces that). The webhook guard is
     # a partial UNIQUE index on (provider, provider_payment_id) scoped to
     # automated providers (nowpayments/tetrapay/tronado), applied by
     # scripts/migrations/005_money_constraints_and_payment_unique.py

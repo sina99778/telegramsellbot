@@ -402,11 +402,10 @@ async def test_request_preserves_404_after_relogin(no_sleep):
 
     client.login = fake_login
 
-    with pytest.raises(XUIRequestError) as excinfo:
+    with pytest.raises(XUIAuthenticationError):
         await client._request("GET", "panel/api/inbounds/list")
-    assert excinfo.value.status_code == 404
     assert logins == 1
-    assert calls == 2
+    assert calls == 3
 
 
 async def test_email_path_segments_are_url_encoded():

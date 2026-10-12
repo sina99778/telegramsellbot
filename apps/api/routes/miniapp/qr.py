@@ -8,14 +8,14 @@ api.qrserver.com <img> URLs, which shipped the full vless:// credential
 open — rendering here keeps credentials inside our own trust boundary
 and keeps working when external domains are filtered.
 
-Auth matches every other mini-app endpoint (_get_current_user). Since an
-<img> tag cannot send headers, the front-end relies on the `_auth` /
-`_session` query fallbacks that _get_current_user already supports.
+Auth matches every other mini-app endpoint. The frontend sends headers on
+POST, then displays a local blob URL; credentials never enter access-log URLs.
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel, Field
 
 from apps.api.routes.miniapp.users import _get_current_user
 from core.qr import make_qr_bytes
@@ -47,3 +47,11 @@ async def render_qr(
         # let intermediaries or the webview disk-cache this response.
         headers={"Cache-Control": "no-store"},
     )
+
+
+class QRRequest(BaseModel):
+    data: str = Field(min_length=1, max_length=MAX_QR_PAYLOAD_CHARS)
+
+@router.post("/qr")
+async def render_qr_post(body: QRRequest, auth: tuple[User, AsyncSession] = Depends(_get_current_user)) -> Response:
+    return await render_qr(data=body.data, auth=auth)

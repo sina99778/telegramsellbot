@@ -39,9 +39,9 @@ async def test_evict_panel_client_closes_all_runtime_pool_entries():
     xui_client = SimpleNamespace(aclose=AsyncMock())
     pg_client = SimpleNamespace(aclose=AsyncMock())
     rebecca_client = SimpleNamespace(aclose=AsyncMock())
-    xui_runtime._xui_clients_pool[server_id] = SimpleNamespace(client=xui_client)
-    pasarguard_runtime._pg_clients_pool[server_id] = SimpleNamespace(client=pg_client)
-    rebecca_runtime._rebecca_clients_pool[server_id] = SimpleNamespace(client=rebecca_client)
+    xui_runtime._xui_clients_pool[server_id] = SimpleNamespace(client=xui_client, borrowers=0)
+    pasarguard_runtime._pg_clients_pool[server_id] = SimpleNamespace(client=pg_client, borrowers=0)
+    rebecca_runtime._rebecca_clients_pool[server_id] = SimpleNamespace(client=rebecca_client, borrowers=0)
 
     await evict_panel_client(server)
 

@@ -28,6 +28,7 @@ approve / reject inline buttons so the operator doesn't miss them.
 from __future__ import annotations
 
 import logging
+from html import escape
 from typing import Any
 from uuid import UUID
 
@@ -38,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.routes.miniapp.users import _get_current_user
 from core.config import settings
+from core.rate_limit import check_rate_limit
 from models.subscription import Subscription
 from models.ticket import Ticket, TicketMessage
 from models.user import User
@@ -82,6 +84,7 @@ async def set_user_note(
     user, session = auth
     sub = await _load_subscription(session, user, sub_id)
     cleaned = body.note.strip() or None
+    await check_rate_limit(user.telegram_id, "service_note", max_requests=10)
     sub.user_note = cleaned
     await session.commit()
     return {"ok": True, "user_note": cleaned}
@@ -104,6 +107,9 @@ async def report_issue(
     """Open a support ticket prefilled with the subscription's identifiers."""
     user, session = auth
     sub = await _load_subscription(session, user, sub_id)
+
+    await check_rate_limit(user.telegram_id, "ticket")
+    await check_rate_limit(str(sub.id), "service_report", max_requests=1, window_seconds=300)
 
     ticket = Ticket(user_id=user.id, status="open")
     session.add(ticket)
@@ -166,6 +172,9 @@ async def request_admin_action(
             status_code=400,
             detail=f"unknown action type. valid: {sorted(VALID_ACTION_TYPES)}",
         )
+
+    await check_rate_limit(user.telegram_id, "service_action", max_requests=3, window_seconds=300)
+    await check_rate_limit(f"{sub.id}:{action_type}", "service_action_duplicate", max_requests=1, window_seconds=3600)
 
     try:
         log = await AuditLogRepository(session).log_action(
@@ -230,7 +239,7 @@ async def request_admin_action(
             )
             builder.adjust(1)
 
-            details_block = f"\n\nتوضیحات:\n{body.details}" if body.details else ""
+            details_block = f"\n\nتوضیحات:\n{escape(body.details)}" if body.details else ""
             caption = (
                 f"🔔 <b>درخواست از کاربر (مینی‌اپ)</b>\n\n"
                 f"نوع: <b>{label_fa}</b>\n"

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import datetime, timezone
 
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -433,6 +434,8 @@ async def topup_card_receipt_submitted(
     receipt_file_id = message.photo[-1].file_id
     payload = dict(payment.callback_payload or {})
     payload["receipt_file_id"] = receipt_file_id
+    payload["receipt_uploaded_at"] = datetime.now(timezone.utc).isoformat()
+    payload.pop("card_review_reminded_at", None)
     payment.callback_payload = payload
     payment.provider_payment_id = receipt_file_id
     payment.payment_status = "pending_approval"
@@ -907,6 +910,9 @@ async def manual_hash_submitted(
         return
 
     tx_hash = message.text.strip()
+    if len(tx_hash) > 128:
+        await message.answer("❌ هش تراکنش بیش از حد طولانی است؛ فقط هش تراکنش را ارسال کنید.")
+        return
     if len(tx_hash) < 10:
         await message.answer("❌ هش تراکنش خیلی کوتاه است. لطفاً هش کامل را ارسال کنید.")
         return

@@ -45,7 +45,7 @@ def get_main_menu_keyboard(is_admin: bool = False, telegram_id: int | None = Non
         base = 'https://' + base[7:]
     miniapp_url = f"{base}/miniapp/"
     if telegram_id is not None:
-        miniapp_url = f"{miniapp_url}?session={create_miniapp_session_token(telegram_id)}"
+        miniapp_url = f"{miniapp_url}#session={create_miniapp_session_token(telegram_id)}"
 
     keyboard: list[list[KeyboardButton]] = [
         # ── Primary CTA ──────────────────────────────────────────

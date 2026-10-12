@@ -5,6 +5,7 @@ from models.audit import AuditLog
 from models.broadcast import BroadcastJob
 from models.order import Order
 from models.payment import Payment
+from models.crypto_claim import CryptoTransactionClaim
 from models.plan import Plan
 from models.plan_inventory import PlanInventory
 from models.ready_config import ReadyConfigItem, ReadyConfigPool
@@ -28,6 +29,7 @@ __all__ = [
     "BroadcastJob",
     "OrphanedPanelClient",
     "Payment",
+    "CryptoTransactionClaim",
     "Plan",
     "PlanInventory",
     "ReadyConfigItem",

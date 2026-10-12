@@ -3,6 +3,7 @@ Full Mini App API endpoints.
 Provides dashboard, plans, configs, wallet, tickets, and referral data.
 """
 from __future__ import annotations
+from services.pricing import purchase_price, discounted_price
 
 import hashlib
 import hmac
@@ -121,16 +122,18 @@ async def _get_current_user(
     init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
     _auth: str | None = None,  # Query param fallback
     _session: str | None = None,  # Bot-signed fallback
+    session_token: str | None = Header(default=None, alias="X-Miniapp-Session"),
     session: AsyncSession = Depends(get_db_session),
 ) -> tuple[User, AsyncSession]:
-    # Try header first, then query param fallback
-    auth_data = init_data or _auth
-    if not auth_data and not _session:
+    # Query credentials are intentionally ignored: they leak into access logs.
+    auth_data = init_data if isinstance(init_data, str) else None
+    token = session_token if isinstance(session_token, str) else None
+    if not auth_data and not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="لطفاً از داخل ربات تلگرام وارد شوید. (initData is empty)",
         )
-    telegram_user_id = validate_telegram_init_data(auth_data) if auth_data else verify_miniapp_session_token(_session or "")
+    telegram_user_id = validate_telegram_init_data(auth_data) if auth_data else verify_miniapp_session_token(token or "")
     if telegram_user_id is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1841,7 +1844,14 @@ async def _admin_audit_logs(session: AsyncSession) -> list[dict[str, Any]]:
 @router.get("/plans", response_model=PlanListResponse)
 async def get_plans(
     session: AsyncSession = Depends(get_db_session),
+    init_data: str | None = Header(None, alias="X-Telegram-Init-Data"),
+    session_token: str | None = Header(None, alias="X-Miniapp-Session"),
 ) -> PlanListResponse:
+    user = None
+    if isinstance(init_data, str) or isinstance(session_token, str):
+        user, _ = await _get_current_user(init_data=init_data if isinstance(init_data, str) else None,
+                                         session_token=session_token if isinstance(session_token, str) else None,
+                                         _auth=None, _session=None, session=session)
     result = await session.execute(
         select(Plan)
         .where(Plan.is_active.is_(True), not_(Plan.code.like("custom\\_%", escape="\\")))
@@ -1863,7 +1873,7 @@ async def get_plans(
                 protocol=p.protocol,
                 duration_days=p.duration_days,
                 volume_gb=round(p.volume_bytes / (1024**3), 2),
-                price=p.price,
+                price=purchase_price(p, user),
                 currency=p.currency,
                 sales_limit=stock_by_plan_id[p.id].sales_limit,
                 stock_remaining=stock_by_plan_id[p.id].stock_remaining,
@@ -1872,6 +1882,7 @@ async def get_plans(
             for p in plans
         ],
         custom_purchase=CustomPurchaseView(
+            discount_percent=int(user.personal_discount_percent or 0) if user else 0,
             enabled=custom_settings.enabled,
             price_per_gb=Decimal(str(custom_settings.price_per_gb)),
             price_per_day=Decimal(str(custom_settings.price_per_day)),
@@ -1946,10 +1957,12 @@ async def create_purchase(
             )
 
         if body.plan_id is None:
-            if payment_method == "wallet":
+            if payment_method == "wallet" or int(user.personal_discount_percent or 0) >= 100:
                 plan = await _create_custom_purchase_plan_for_request(session, body)
                 return await _purchase_with_wallet(session, user, plan, config_name)
             draft = await _build_custom_purchase_gateway_draft(session, body, config_name)
+            draft["price"] = discounted_price(draft["price"], user.personal_discount_percent)
+            draft["callback_payload"]["discount_percent"] = int(user.personal_discount_percent or 0)
             if payment_method == "nowpayments":
                 return await _create_nowpayments_custom_purchase(session, user, draft)
             if payment_method == "tetrapay":
@@ -1968,7 +1981,7 @@ async def create_purchase(
         except PlanStockError as exc:
             raise HTTPException(status_code=409, detail="موجودی این پلن تمام شده است.") from exc
 
-        if payment_method == "wallet":
+        if payment_method == "wallet" or purchase_price(plan, user) == 0:
             return await _purchase_with_wallet(session, user, plan, config_name)
         if payment_method == "nowpayments":
             return await _create_nowpayments_purchase(session, user, plan, config_name)
@@ -2080,7 +2093,7 @@ async def _create_card_to_card_purchase(
     payment, card = await _build_card_to_card_payment(
         session,
         user,
-        price=plan.price,
+        price=purchase_price(plan, user),
         price_currency=plan.currency or "USD",
         kind="direct_purchase",
         base_payload={
@@ -2118,7 +2131,7 @@ async def _purchase_with_wallet(
     plan: Plan,
     config_name: str,
 ) -> PurchaseResponse:
-    final_price = plan.price
+    final_price = purchase_price(plan, user)
     order = Order(
         user_id=user.id,
         plan_id=plan.id,
@@ -2131,17 +2144,18 @@ async def _purchase_with_wallet(
     await session.flush()
 
     try:
-        await WalletManager(session).process_transaction(
-            user_id=user.id,
-            amount=Decimal(str(final_price)),
-            transaction_type="purchase",
-            direction="debit",
-            currency=plan.currency,
-            reference_type="order",
-            reference_id=order.id,
-            description=f"Purchase of plan {plan.code}",
-            metadata={"plan_id": str(plan.id), "config_name": config_name, "source": "miniapp"},
-        )
+        if final_price > 0:
+            await WalletManager(session).process_transaction(
+                user_id=user.id,
+                amount=Decimal(str(final_price)),
+                transaction_type="purchase",
+                direction="debit",
+                currency=plan.currency,
+                reference_type="order",
+                reference_id=order.id,
+                description=f"Purchase of plan {plan.code}",
+                metadata={"plan_id": str(plan.id), "config_name": config_name, "source": "miniapp"},
+            )
     except InsufficientBalanceError as exc:
         order.status = "failed"
         raise HTTPException(status_code=402, detail="موجودی کیف پول کافی نیست.") from exc
@@ -2153,19 +2167,21 @@ async def _purchase_with_wallet(
             order_id=order.id,
             config_name=config_name,
         )
-    except ProvisioningError as exc:
-        order.status = "refunded"
-        await WalletManager(session).process_transaction(
-            user_id=user.id,
-            amount=Decimal(str(final_price)),
-            transaction_type="refund",
-            direction="credit",
-            currency=plan.currency,
-            reference_type="order",
-            reference_id=order.id,
-            description="Automatic refund after mini app provisioning failure",
-            metadata={"plan_id": str(plan.id), "source": "miniapp"},
-        )
+    except Exception as exc:
+        logger.exception("Mini-app provisioning failed for order %s", order.id)
+        order.status = "refunded" if final_price > 0 else "failed"
+        if final_price > 0:
+            await WalletManager(session).process_transaction(
+                user_id=user.id,
+                amount=Decimal(str(final_price)),
+                transaction_type="refund",
+                direction="credit",
+                currency=plan.currency,
+                reference_type="order",
+                reference_id=order.id,
+                description="Automatic refund after mini app provisioning failure",
+                metadata={"plan_id": str(plan.id), "source": "miniapp"},
+            )
         raise HTTPException(
             status_code=500,
             detail="ساخت کانفیگ انجام نشد و مبلغ به کیف پول برگشت داده شد.",
@@ -2223,7 +2239,7 @@ async def _create_nowpayments_purchase(
     api_key = SecretStr(raw_key)
     local_order_id = str(uuid4())
     payload = NowPaymentsPaymentCreateRequest(
-        price_amount=plan.price,
+        price_amount=purchase_price(plan, user),
         price_currency="usd",
         order_id=local_order_id,
         order_description=f"Purchase plan {plan.name} for user {user.id}",
@@ -2248,7 +2264,7 @@ async def _create_nowpayments_purchase(
         payment_status="waiting",
         pay_currency=None,
         price_currency="USD",
-        price_amount=plan.price,
+        price_amount=purchase_price(plan, user),
         invoice_url=str(invoice.invoice_url),
         callback_payload={
             "plan_id": str(plan.id),
@@ -2341,7 +2357,7 @@ async def _create_tetrapay_purchase(
         raise HTTPException(status_code=400, detail="درگاه تتراپی غیرفعال است.")
 
     toman_rate = await settings_repo.get_toman_rate()
-    toman_amount = int((plan.price * toman_rate).quantize(Decimal("1")))
+    toman_amount = int((purchase_price(plan, user) * toman_rate).quantize(Decimal("1")))
     rial_amount = toman_amount * 10
     if rial_amount < 10000:
         raise HTTPException(status_code=400, detail="مبلغ این پلن کمتر از حداقل مجاز درگاه تتراپی است.")
@@ -2372,7 +2388,7 @@ async def _create_tetrapay_purchase(
         payment_status="waiting",
         pay_currency="IRT",
         price_currency="USD",
-        price_amount=plan.price,
+        price_amount=purchase_price(plan, user),
         pay_amount=toman_amount,
         invoice_url=tx.payment_url_bot,
         callback_payload={
@@ -2467,7 +2483,7 @@ async def _create_tronado_purchase(
     invoice = await create_tronado_invoice(
         session=session,
         user=user,
-        amount_usd=plan.price,
+        amount_usd=purchase_price(plan, user),
         kind="direct_purchase",
         description=f"Purchase plan {plan.name} for user {user.id}",
         callback_payload={
@@ -3417,10 +3433,11 @@ def validate_telegram_init_data(init_data: str) -> int:
 
     try:
         auth_date = datetime.fromtimestamp(int(auth_date_raw), tz=timezone.utc)
-    except ValueError as exc:
+    except (ValueError, OverflowError, OSError) as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid auth_date.") from exc
 
-    if (datetime.now(timezone.utc) - auth_date).total_seconds() > 4 * 60 * 60:
+    age = (datetime.now(timezone.utc) - auth_date).total_seconds()
+    if age > 4 * 60 * 60 or age < -60:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Init data expired.")
 
     secret_key = hmac.new(
@@ -3450,6 +3467,8 @@ def validate_telegram_init_data(init_data: str) -> int:
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user payload.") from exc
 
+    if not isinstance(user_payload, dict):
+        raise HTTPException(status_code=401, detail="Invalid user payload.")
     raw_id = user_payload.get("id")
     if raw_id is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing user id.")

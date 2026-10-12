@@ -114,6 +114,9 @@ async def _process_successful_payment(
     wallet_already_credited = payment.actually_paid is not None
 
     if not wallet_already_credited:
+        if payment.provider == "manual_crypto":
+            from services.crypto_claims import claim_crypto_transaction
+            await claim_crypto_transaction(session, payment)
         # 1. Top up wallet FIRST — the credited markers are written only after
         # this succeeds. The old order (flush actually_paid/"finished" before
         # the credit) permanently branded the payment as credited even when the

@@ -85,111 +85,37 @@ def _card_payment(pid, telegram_id=555):
     return payment
 
 
-async def test_card_autoconfirm_lists_without_lock_then_locks_and_commits_before_send():
+@pytest.mark.parametrize("age,exempt,uploaded,expected", [(60,False,True,1),(5,False,True,0),(60,True,True,0),(60,False,False,0)])
+async def test_card_receipt_only_reminds_without_credit(age, exempt, uploaded, expected):
     pid = uuid4()
     payment = _card_payment(pid)
-
-    events: list[str] = []
+    payment.payment_status = "pending_approval"
+    if uploaded:
+        payment.callback_payload = {"receipt_uploaded_at": (datetime.now(timezone.utc)-timedelta(minutes=age)).isoformat()}
+    events = []
     session = AsyncMock()
-    session.execute = AsyncMock(return_value=_result_with_rows([(pid,)]))
-    # 1st scalar = the per-row locked load; 2nd = the sales-notify user
-    # re-fetch (None → notify skipped).
-    session.scalar = AsyncMock(side_effect=[payment, None])
-    session.commit = AsyncMock(side_effect=lambda: events.append("commit"))
-    session.flush = AsyncMock()
-
-    bot = MagicMock()
-    bot.send_message = AsyncMock(side_effect=lambda *a, **k: events.append("send"))
-
-    process = AsyncMock(side_effect=lambda **k: events.append("process") or True)
-    with patch("apps.worker.jobs.card_autoconfirm.AppSettingsRepository", return_value=_card_repo(_card_cfg())), \
-         patch("apps.worker.jobs.card_autoconfirm.process_successful_payment", process):
-        result = await run_card_autoconfirm(session, bot)
-
-    assert result["confirmed"] == 1
-
-    # The candidate listing must NOT take row locks (it used to FOR UPDATE
-    # the whole batch and keep it across Telegram sends).
-    list_sql = str(session.execute.await_args_list[0].args[0])
-    assert "FOR UPDATE" not in list_sql
-
-    # The per-payment load takes the lock AND re-checks pending_approval.
-    locked_sql = str(session.scalar.await_args_list[0].args[0])
-    assert "FOR UPDATE" in locked_sql
-    assert "payments.payment_status =" in locked_sql
-
-    # Telegram I/O strictly AFTER the row's commit released the lock.
-    assert events == ["process", "commit", "send"]
-
-
-async def test_card_autoconfirm_skips_payment_resolved_between_listing_and_locking():
-    pid = uuid4()
-    session = AsyncMock()
-    session.execute = AsyncMock(return_value=_result_with_rows([(pid,)]))
-    session.scalar = AsyncMock(return_value=None)  # skip_locked / already resolved
-
-    process = AsyncMock()
-    with patch("apps.worker.jobs.card_autoconfirm.AppSettingsRepository", return_value=_card_repo(_card_cfg())), \
-         patch("apps.worker.jobs.card_autoconfirm.process_successful_payment", process):
-        result = await run_card_autoconfirm(session, None)
-
-    process.assert_not_awaited()
+    session.execute.return_value = _result_with_rows([pid])
+    session.scalar.return_value = payment
+    session.commit.side_effect = lambda: events.append("commit")
+    notify = AsyncMock(side_effect=lambda *a: events.append("send"))
+    with patch("apps.worker.jobs.card_autoconfirm.AppSettingsRepository", return_value=_card_repo(_card_cfg([555] if exempt else []))), patch("apps.worker.jobs.card_autoconfirm.notify_admins", notify):
+        result = await run_card_autoconfirm(session, MagicMock())
     assert result["confirmed"] == 0
+    assert result["reminded"] == expected
+    assert payment.payment_status == "pending_approval"
+    session.add.assert_not_called()
+    assert events == (["commit", "send"] if expected else ["commit"])
+    assert "FOR UPDATE" not in str(session.execute.await_args.args[0])
+    assert "FOR UPDATE" in str(session.scalar.await_args.args[0])
 
-
-async def test_card_autoconfirm_releases_lock_on_exempt_user():
-    pid = uuid4()
-    payment = _card_payment(pid, telegram_id=999)
+async def test_card_reminder_resolved_row_is_skipped():
     session = AsyncMock()
-    session.execute = AsyncMock(return_value=_result_with_rows([(pid,)]))
-    session.scalar = AsyncMock(return_value=payment)
-
-    process = AsyncMock()
-    with patch("apps.worker.jobs.card_autoconfirm.AppSettingsRepository",
-               return_value=_card_repo(_card_cfg(exception_ids=[999]))), \
-         patch("apps.worker.jobs.card_autoconfirm.process_successful_payment", process):
-        result = await run_card_autoconfirm(session, None)
-
-    process.assert_not_awaited()
-    assert result["skipped_exempt"] == 1
-    # The exempt row's transaction is ended so its lock is not dragged
-    # across the rest of the sweep.
-    session.commit.assert_awaited()
-
-
-async def test_card_autoconfirm_failure_rolls_back_and_continues():
-    pid_a, pid_b = uuid4(), uuid4()
-    payment_a = _card_payment(pid_a)
-    payment_b = _card_payment(pid_b)
-
-    session = AsyncMock()
-    session.execute = AsyncMock(return_value=_result_with_rows([(pid_a,), (pid_b,)]))
-    session.scalar = AsyncMock(side_effect=[payment_a, payment_b, None])
-
-    process = AsyncMock(side_effect=[RuntimeError("boom"), True])
-    with patch("apps.worker.jobs.card_autoconfirm.AppSettingsRepository", return_value=_card_repo(_card_cfg())), \
-         patch("apps.worker.jobs.card_autoconfirm.process_successful_payment", process):
-        result = await run_card_autoconfirm(session, None)
-
-    assert result["failed"] == 1
-    assert result["confirmed"] == 1
-    session.rollback.assert_awaited_once()
-
-
-async def test_card_autoconfirm_reports_false_fulfillment_as_failed():
-    pid = uuid4()
-    payment = _card_payment(pid)
-    session = AsyncMock()
-    session.execute = AsyncMock(return_value=_result_with_rows([(pid,)]))
-    session.scalar = AsyncMock(return_value=payment)
-
-    with patch("apps.worker.jobs.card_autoconfirm.AppSettingsRepository", return_value=_card_repo(_card_cfg())), \
-         patch("apps.worker.jobs.card_autoconfirm.process_successful_payment", AsyncMock(return_value=False)):
-        result = await run_card_autoconfirm(session, None)
-
-    assert result["confirmed"] == 0
-    assert result["failed"] == 1
-    session.commit.assert_awaited_once()
+    session.execute.return_value = _result_with_rows([uuid4()])
+    session.scalar.return_value = None
+    with patch("apps.worker.jobs.card_autoconfirm.AppSettingsRepository", return_value=_card_repo(_card_cfg())), patch("apps.worker.jobs.card_autoconfirm.notify_admins", AsyncMock()) as notify:
+        result = await run_card_autoconfirm(session, MagicMock())
+    assert result["confirmed"] == result["reminded"] == 0
+    notify.assert_not_awaited()
 
 
 # ════════════════════════════════════════════════════════════════════════

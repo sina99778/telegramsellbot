@@ -37,7 +37,9 @@ from decimal import Decimal, ROUND_DOWN
 from typing import Iterable
 
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, func, text
+import hashlib
+from services.crypto_claims import currency_key
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.payment import Payment
@@ -61,7 +63,7 @@ AUTOCONFIRM_CURRENCIES = TRON_USDT_CURRENCIES | TRX_CURRENCIES | TON_CURRENCIES
 def is_autoconfirmable(currency: str | None) -> bool:
     if not currency:
         return False
-    return currency.strip() in AUTOCONFIRM_CURRENCIES
+    return currency_key(currency) in AUTOCONFIRM_CURRENCIES
 
 
 # ─── 1. Unique amount with suffix ──────────────────────────────────────────
@@ -81,7 +83,7 @@ def quantize_for_currency(amount: Decimal, currency: str) -> Decimal:
     bit-for-bit. (Earlier this used 9 dp for TON and silently lost the
     last digit on INSERT, which broke amount matching universally.)
     """
-    c = (currency or "").strip()
+    c = currency_key(currency or "")
     if c in TRON_USDT_CURRENCIES:
         return amount.quantize(Decimal("0.000001"))  # 6 dp on USDT
     if c in TRX_CURRENCIES:
@@ -106,7 +108,7 @@ def generate_unique_pay_amount(
     base = quantize_for_currency(base_amount, currency)
     pending = {quantize_for_currency(a, currency) for a in existing_pending_amounts}
 
-    c = (currency or "").strip()
+    c = currency_key(currency or "")
     # Suffix unit: how many digits below the integer part the suffix lives.
     # Stay at the quantizer's precision so the candidate doesn't drift
     # back to a higher precision the DB column can't hold.
@@ -132,7 +134,7 @@ def generate_unique_pay_amount(
     # If we couldn't find a unique one (extremely unlikely), just return
     # base + small random — the autoconfirm watcher will be slightly more
     # conservative and the admin can still approve by hash.
-    return quantize_for_currency(base + (Decimal(random.randint(1, max_suffix)) * unit), currency)
+    raise ValueError("No unique crypto invoice amount is available; retry later.")
 
 
 async def pending_amounts_for(
@@ -143,12 +145,17 @@ async def pending_amounts_for(
 ) -> list[Decimal]:
     """Existing pending invoice amounts for this exact (currency, address)
     pair — used to avoid suffix collisions."""
+    canonical = currency_key(currency)
+    # Serialize amount selection and invoice insertion on the same target.
+    lock_key = int.from_bytes(hashlib.sha256(f"crypto-amount:{canonical}:{address}".encode()).digest()[:8], "big", signed=True)
+    await session.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key})
+    aliases = [c for c in AUTOCONFIRM_CURRENCIES if currency_key(c) == canonical]
     result = await session.execute(
         select(Payment.callback_payload, Payment.pay_amount)
         .where(
             Payment.provider == "manual_crypto",
             Payment.payment_status.in_(("waiting_hash", "pending_approval", "waiting_receipt")),
-            Payment.pay_currency == currency,
+            func.upper(Payment.pay_currency).in_(aliases or [canonical]),
         )
     )
     out: list[Decimal] = []
@@ -157,7 +164,7 @@ async def pending_amounts_for(
             continue
         if payload.get("address") != address:
             continue
-        crypto_amount = payload.get("crypto_amount")
+        crypto_amount = amt if amt is not None else payload.get("crypto_amount")
         if crypto_amount is not None:
             try:
                 out.append(Decimal(str(crypto_amount)))
@@ -344,6 +351,7 @@ async def fetch_incoming(
     since: datetime,
 ) -> list[dict]:
     """Dispatch to the right blockchain explorer based on currency."""
+    currency = currency_key(currency)
     if currency in TRON_USDT_CURRENCIES:
         return await fetch_tron_trc20_incoming(address, since=since)
     if currency in TRX_CURRENCIES:

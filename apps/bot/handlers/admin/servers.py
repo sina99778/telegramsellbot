@@ -1,4 +1,5 @@
 from __future__ import annotations
+import html
 
 import logging
 from collections.abc import Sequence
@@ -289,10 +290,6 @@ async def add_server_password(
 
     # Try multiple URL variations to find the working one
     urls_to_try = [base_url]
-    if base_url.startswith("http://"):
-        urls_to_try.append("https://" + base_url[7:])
-    elif base_url.startswith("https://"):
-        urls_to_try.append("http://" + base_url[8:])
 
     # Marzban-family panels (PasarGuard / Rebecca) use a user-centric API, so
     # they share their own connect-and-sync path. The X-UI body below is untouched.
@@ -521,7 +518,7 @@ async def sync_server_inbounds(
                 panel_type=server.panel_type,
             )
         except Exception as exc:  # noqa: BLE001
-            await safe_edit_or_send(callback, f"خطا در اتصال به پنل:\n<code>{exc}</code>", parse_mode="HTML")
+            await safe_edit_or_send(callback, f"خطا در اتصال به پنل:\n<code>{html.escape(str(exc))}</code>", parse_mode="HTML")
             return
         created_inbounds, synced_count, disabled_count = _sync_remote_bundles(
             server_id=server.id,
@@ -554,7 +551,7 @@ async def sync_server_inbounds(
             password=decrypt_secret(server.credentials.password_encrypted),
         )
     except Exception as exc:
-        await safe_edit_or_send(callback, f"خطا در اتصال به پنل:\n<code>{exc}</code>", parse_mode="HTML")
+        await safe_edit_or_send(callback, f"خطا در اتصال به پنل:\n<code>{html.escape(str(exc))}</code>", parse_mode="HTML")
         return
 
     created_inbounds, synced_count, disabled_count = _sync_remote_inbounds(

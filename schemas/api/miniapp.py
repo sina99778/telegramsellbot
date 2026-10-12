@@ -49,6 +49,7 @@ class PlanView(BaseModel):
 
 
 class CustomPurchaseView(BaseModel):
+    discount_percent: int = 0
     enabled: bool
     price_per_gb: Decimal
     price_per_day: Decimal

@@ -10,6 +10,7 @@ so the rest of the app (and the sales path) can avoid dead servers.
 from __future__ import annotations
 
 import logging
+from html import escape
 
 from aiogram import Bot
 from sqlalchemy import select
@@ -84,7 +85,7 @@ async def check_server_health(session: AsyncSession, bot: Bot) -> None:
     if newly_down:
         lines = [f"🚨 <b>{len(newly_down)} سرور از کار افتاد</b> (فروش روی آن متوقف شد):\n"]
         for name, error in newly_down:
-            lines.append(f"❌ <b>{name}</b>\n   ⚠️ {error}\n")
+            lines.append(f"❌ <b>{escape(name)}</b>\n   ⚠️ {escape(error)}\n")
         lines.append("\nلطفاً هرچه سریع‌تر بررسی کنید.")
         try:
             await notify_admins(session, bot, "\n".join(lines))
@@ -94,7 +95,7 @@ async def check_server_health(session: AsyncSession, bot: Bot) -> None:
     if recovered:
         lines = [f"✅ <b>{len(recovered)} سرور دوباره سالم شد</b> (فروش از سر گرفته شد):\n"]
         for name in recovered:
-            lines.append(f"🟢 <b>{name}</b>")
+            lines.append(f"🟢 <b>{escape(name)}</b>")
         try:
             await notify_admins(session, bot, "\n".join(lines))
         except Exception as exc:

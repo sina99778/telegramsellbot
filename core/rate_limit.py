@@ -36,6 +36,13 @@ _FALLBACK_HITS: dict[str, Deque[float]] = defaultdict(deque)
 
 def _fallback_allow(key: str, max_req: int, window: int) -> tuple[bool, int]:
     now = time.monotonic()
+    if key not in _FALLBACK_HITS and len(_FALLBACK_HITS) >= 10000:
+        # Reject new keys under sustained key churn; existing limits stay intact.
+        stale = [k for k, hits in _FALLBACK_HITS.items() if not hits or now-hits[-1] > 86400]
+        for stale_key in stale:
+            del _FALLBACK_HITS[stale_key]
+        if len(_FALLBACK_HITS) >= 10000:
+            return False, max(1, window)
     bucket = _FALLBACK_HITS[key]
     cutoff = now - window
     while bucket and bucket[0] < cutoff:

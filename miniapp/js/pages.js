@@ -319,25 +319,8 @@ const Pages = (() => {
      * Rendering happens on our own backend (GET /api/miniapp/qr) instead of
      * a third-party QR service so the vless:// credential never leaves our
      * trust boundary (and keeps working when external domains are filtered).
-     * <img> can't send headers, so auth travels as the same _auth/_session
-     * query params API.request() already uses.
+     * Fetch uses authentication headers and renders a temporary blob URL.
      */
-    function localQrUrl(payload) {
-        let url = `/api/miniapp/qr?data=${encodeURIComponent(payload)}`;
-        const initData = API.getInitData();
-        if (initData) {
-            url += `&_auth=${encodeURIComponent(initData)}`;
-        } else {
-            let sessionToken = '';
-            try {
-                const params = new URLSearchParams(window.location.search.replace(/^[?]/, ''));
-                sessionToken = params.get('session') || sessionStorage.getItem('miniapp_session') || '';
-            } catch { /* ignore */ }
-            if (sessionToken) url += `&_session=${encodeURIComponent(sessionToken)}`;
-        }
-        return url;
-    }
-
     function showConfigDetail(subId) {
         const sub = [
             ...(dashboardData?.subscriptions || []),
@@ -362,7 +345,7 @@ const Pages = (() => {
 
             linkSection = `
                 <div class="config-detail-links">
-                    <img src="${localQrUrl(qrPayload)}"
+                    <img data-qr="${encodeURIComponent(qrPayload)}"
                          class="config-detail-qr" alt="QR Code" />
 
                     ${rawSub ? `
@@ -414,6 +397,13 @@ const Pages = (() => {
             ${(renewalsEnabled || isAdmin) ? `<button class="btn btn-primary btn-block" style="margin-top:16px" onclick="Pages.showRenewal('${sub.id}')">تمدید سرویس</button>` : '<div class="config-warning" style="margin-top:16px;text-align:center">⏸ تمدید موقتاً غیرفعال است</div>'}
             <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">بستن</button>
         `);
+        const image = document.querySelector('.config-detail-qr');
+        if (image) API.qrUrl(decodeURIComponent(image.dataset.qr)).then(url => {
+            if (!image.isConnected) { URL.revokeObjectURL(url); return; }
+            image.onload = () => URL.revokeObjectURL(url);
+            image.src = url;
+        }).catch(() => { image.alt = 'ساخت QR انجام نشد'; });
+
     }
 
     function showRenewal(subId) {
@@ -554,7 +544,7 @@ const Pages = (() => {
                 payment_method: paymentMethod || 'wallet',
             });
 
-            if (paymentMethod === 'card_to_card' || result.payment_method === 'card_to_card') {
+            if (result.payment_method === 'card_to_card') {
                 renderCardPaymentScreen(result, 'renewal');
                 return;
             }
@@ -637,6 +627,7 @@ const Pages = (() => {
                 <div class="plan-specs">
                     <span class="plan-spec">${UI.icon('database')} هر گیگ: $${UI.formatMoney(customPurchase.price_per_gb)}</span>
                     <span class="plan-spec">${UI.icon('clock')} هر روز: $${UI.formatMoney(customPurchase.price_per_day)}</span>
+                    ${customPurchase.discount_percent ? `<span class="plan-spec">تخفیف شخصی ${customPurchase.discount_percent}٪ روی مجموع سفارش اعمال می‌شود</span>` : ''}
                 </div>
                 <div class="plan-price">
                     <span class="plan-price-value">دلخواه</span>
@@ -716,7 +707,7 @@ const Pages = (() => {
                 config_name: configName,
                 payment_method: paymentMethod,
             });
-            if (paymentMethod === 'card_to_card' || result.payment_method === 'card_to_card') {
+            if (result.payment_method === 'card_to_card') {
                 renderCardPaymentScreen(result, 'purchase');
                 return;
             }
@@ -789,7 +780,7 @@ const Pages = (() => {
                 payment_method: paymentMethod,
             });
 
-            if (paymentMethod === 'card_to_card' || result.payment_method === 'card_to_card') {
+            if (result.payment_method === 'card_to_card') {
                 renderCardPaymentScreen(result, 'purchase');
                 return;
             }
@@ -1015,7 +1006,7 @@ const Pages = (() => {
         try {
             UI.toast('در حال ساخت فاکتور...');
             const result = await API.createTopup({ amount, payment_method: paymentMethod });
-            if (paymentMethod === 'card_to_card' || result.payment_method === 'card_to_card') {
+            if (result.payment_method === 'card_to_card') {
                 renderCardPaymentScreen(result, 'topup');
                 return;
             }

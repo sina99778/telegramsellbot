@@ -83,8 +83,13 @@ class RebeccaClient:
             follow_redirects=True,
             verify=config.verify_ssl,
         )
+        from services.panels.transport import enforce_https_redirects
+        enforce_https_redirects(self._client, config.base_url, RebeccaRequestError)
         self._authenticated = False
         self._token: str | None = None
+        self._login_lock = asyncio.Lock()
+        self._recovery_lock = asyncio.Lock()
+        self._auth_generation = 0
 
     async def __aenter__(self) -> "RebeccaClient":
         return self
@@ -99,6 +104,11 @@ class RebeccaClient:
     # ── auth ─────────────────────────────────────────────────────────────────
 
     async def login(self) -> RebeccaToken:
+        async with self._login_lock:
+            return await self._login_unlocked()
+
+    async def _login_unlocked(self) -> RebeccaToken:
+        self._authenticated = False
         response = await self._send(
             "POST",
             "api/admin/token",
@@ -121,6 +131,7 @@ class RebeccaClient:
         self._token = token.access_token
         self._client.headers["Authorization"] = f"Bearer {token.access_token}"
         self._authenticated = True
+        self._auth_generation += 1
         return token
 
     async def get_current_admin(self) -> dict[str, Any]:
@@ -214,13 +225,16 @@ class RebeccaClient:
         expected: tuple[int, ...] = (200, 201, 204),
         **kwargs: Any,
     ) -> httpx.Response:
-        if not self._authenticated:
-            await self.login()
-
+        async with self._recovery_lock:
+            if not self._authenticated:
+                await self.login()
+        generation = self._auth_generation
         response = await self._send(method, path, **kwargs)
-        if response.status_code in {401, 403}:
-            self._authenticated = False
-            await self.login()
+        if response.status_code == 401:
+            async with self._recovery_lock:
+                if generation == self._auth_generation:
+                    self._authenticated = False
+                    await self.login()
             response = await self._send(method, path, **kwargs)
 
         if response.status_code not in expected:
@@ -232,7 +246,8 @@ class RebeccaClient:
         return response
 
     async def _send(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        max_retries = 3
+        retry_safe = method.upper() in {"GET", "HEAD", "OPTIONS"}
+        max_retries = 3 if retry_safe else 1
         last_response: httpx.Response | None = None
         for attempt in range(max_retries):
             try:

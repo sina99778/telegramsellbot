@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.routes.miniapp.users import _get_current_user
 from core.config import settings
+from core.rate_limit import check_rate_limit
 from models.payment import Payment
 from models.user import User
 
@@ -85,7 +86,7 @@ async def list_pending_payments(
 
 class CryptoHashBody(BaseModel):
     payment_id: UUID
-    tx_hash: str = Field(..., min_length=4, max_length=200)
+    tx_hash: str = Field(..., min_length=4, max_length=128)
 
 
 @router.post("/payments/crypto_hash")
@@ -103,6 +104,7 @@ async def submit_crypto_hash(
     on-chain TX is confirmed.
     """
     user, session = auth
+    await check_rate_limit(user.telegram_id, "crypto_hash", max_requests=5)
     payment = await session.scalar(
         select(Payment).where(Payment.id == body.payment_id).with_for_update()
     )
@@ -152,6 +154,7 @@ async def upload_card_receipt(
     mini-app upload identically to one sent via the bot UI.
     """
     user, session = auth
+    await check_rate_limit(user.telegram_id, "receipt_upload", max_requests=3)
     payment = await session.scalar(
         select(Payment).where(Payment.id == payment_id).with_for_update()
     )
@@ -165,7 +168,7 @@ async def upload_card_receipt(
             detail=f"payment already processed (status={payment.payment_status})",
         )
 
-    blob = await photo.read()
+    blob = await photo.read(_MAX_RECEIPT_BYTES + 1)
     if not blob:
         raise HTTPException(status_code=400, detail="empty file")
     if len(blob) > _MAX_RECEIPT_BYTES:
@@ -205,6 +208,7 @@ async def upload_card_receipt(
     payload["receipt_file_id"] = file_id
     payload["receipt_source"] = "miniapp"
     payload["receipt_uploaded_at"] = datetime.now(timezone.utc).isoformat()
+    payload.pop("card_review_reminded_at", None)
     payment.callback_payload = payload
     payment.provider_payment_id = file_id
     payment.payment_status = "pending_approval"
