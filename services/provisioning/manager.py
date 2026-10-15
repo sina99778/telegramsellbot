@@ -163,6 +163,8 @@ class ProvisioningManager:
                     "دوباره تلاش کنید — وجهی از حساب شما کم نشد."
                 )
 
+        if str(inbound.protocol).lower() not in {"vless", "vmess"}:
+            return False, "پروتکل این اینباند هنوز برای فروش پشتیبانی نمی‌شود."
         try:
             async with self._get_xui_client_for_server(server) as xui_client:
                 await xui_client.get_inbounds()
@@ -1982,7 +1984,7 @@ class ProvisioningManager:
                             sub_id_str = link.rsplit("/", 1)[-1]
                         ip_limit = int(r.plan_ip_limit) if r.plan_ip_limit is not None else global_ip_limit
                         expiry_ms = int(r.ends_at.timestamp() * 1000) if r.ends_at else 0
-                        await api.update_client(
+                        await api.patch_client(
                             inbound_id=new_inbound,
                             client_id=client_id,
                             client=XUIClient(
@@ -2005,7 +2007,7 @@ class ProvisioningManager:
         return out
 
     @staticmethod
-    async def _validate_subscription_url(url: str) -> None:
+    async def _validate_subscription_url(url: str) -> str:
         """Reject subscription URLs that point at internal infrastructure.
 
         The sub-link is attacker-influenced data (it can come from an imported
@@ -2019,6 +2021,8 @@ class ProvisioningManager:
         parsed = urlsplit(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("unsupported subscription URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("subscription URL must not contain credentials")
         host = parsed.hostname.rstrip(".").lower()
         try:
             addresses = await _asyncio.to_thread(
@@ -2026,10 +2030,14 @@ class ProvisioningManager:
             )
         except OSError as exc:
             raise ValueError("subscription host could not be resolved") from exc
-        for address in {item[4][0] for item in addresses}:
+        approved = sorted({item[4][0] for item in addresses})
+        if not approved:
+            raise ValueError("subscription host has no addresses")
+        for address in approved:
             ip = ipaddress.ip_address(address)
             if (
-                ip.is_private
+                not ip.is_global
+                or ip.is_private
                 or ip.is_loopback
                 or ip.is_link_local
                 or ip.is_reserved
@@ -2037,6 +2045,7 @@ class ProvisioningManager:
                 or ip.is_multicast
             ):
                 raise ValueError("subscription host resolves to a blocked address")
+        return approved[0]
 
     async def _recover_from_sublink_header(self, sub: "Subscription") -> tuple[int | None, int | None]:
         """Best-effort: read total + expire from the `subscription-userinfo`
@@ -2072,25 +2081,45 @@ class ProvisioningManager:
                 # Redirects are followed manually so every hop is re-validated
                 # against the SSRF allow-list below.
                 follow_redirects=False,
+                trust_env=False,
+                # Different redirect hostnames can resolve to the same IP.
+                # A connection pool keyed by pinned IP must not reuse a TLS
+                # session verified for a previous hostname.
+                limits=_httpx.Limits(max_keepalive_connections=0),
                 # Honour the operator's panel TLS policy: legacy panels are
                 # frequently self-signed, so forcing verification here would
                 # silently break usage recovery for those deployments.
                 verify=_settings.xui_verify_ssl,
             ) as client:
                 for _ in range(3):
-                    await self._validate_subscription_url(current_url)
-                    logger.info("[SUBINFO] fetching sub-link host=%s", urlsplit(current_url).hostname)
-                    resp = await client.get(current_url, headers={"User-Agent": "v2rayN/6.0"})
-                    if resp.status_code not in {301, 302, 303, 307, 308}:
+                    pinned_ip = await self._validate_subscription_url(current_url)
+                    original = _httpx.URL(current_url)
+                    # Dial only the validated literal IP. Keep original HTTP Host
+                    # and TLS SNI/certificate hostname; never resolve it again.
+                    pinned = original.copy_with(host=pinned_ip)
+                    async with client.stream(
+                        "GET", pinned,
+                        headers={"User-Agent": "v2rayN/6.0", "Host": original.netloc.decode("ascii")},
+                        extensions={"sni_hostname": original.host},
+                    ) as resp:
+                        if resp.status_code >= 400:
+                            resp.raise_for_status()
+                        # Header recovery never consumes an unbounded body.
+                        response_headers = resp.headers
+                        response_status = resp.status_code
+                    if response_status not in {301, 302, 303, 307, 308}:
                         break
-                    location = resp.headers.get("location")
+                    location = response_headers.get("location")
                     if not location:
                         break
-                    current_url = urljoin(current_url, location)
+                    destination = urljoin(current_url, location)
+                    if original.scheme == "https" and urlsplit(destination).scheme != "https":
+                        raise ValueError("subscription redirect would downgrade HTTPS")
+                    current_url = destination
                 else:
                     raise ValueError("too many subscription redirects")
             userinfo = None
-            for hk, hv in resp.headers.items():
+            for hk, hv in response_headers.items():
                 if hk.lower() == "subscription-userinfo":
                     userinfo = hv
                     break
@@ -2125,9 +2154,9 @@ class ProvisioningManager:
         """Disable all of a user's active/pending configs on the X-UI panel.
 
         Used by the ban flows so a banned user's VPN actually stops working,
-        not just their bot access. Sets each sub to `disabled` and best-effort
-        disables the remote client (failures are logged, not fatal). Returns
-        how many subs were affected. Shared by the bot, dashboard, and mini-app
+        not just their bot access. Commits disabled intent with a durable
+        pending marker; the worker retries remote failures. Returns how many
+        remote disable requests were queued. Shared by the bot, dashboard, and mini-app
         ban paths so all three behave identically.
         """
         result = await self.session.execute(
@@ -2145,28 +2174,18 @@ class ProvisioningManager:
             .where(
                 Subscription.user_id == user_id,
                 Subscription.status.in_(["active", "pending_activation"]),
-            )
+            ).execution_options(populate_existing=True).with_for_update(of=Subscription)
         )
-        disabled_count = 0
+        from services.panel_sync import request_panel_sync
+
+        queued_count = 0
         for subscription in result.scalars().all():
             subscription.status = "disabled"
-            xui_record = subscription.xui_client
-            if xui_record is not None:
-                xui_record.is_active = False
-                try:
-                    await self._disable_xui_client(
-                        xui_record=xui_record,
-                        volume_bytes=subscription.volume_bytes,
-                        ends_at=subscription.ends_at,
-                        sub_link=subscription.sub_link,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "Could not disable remote config %s for banned user %s: %s",
-                        xui_record.id, user_id, exc,
-                    )
-            disabled_count += 1
-        return disabled_count
+            request_panel_sync(subscription)
+            queued_count += 1
+        # This counts queued requests; observed panel state is changed only by
+        # the durable consumer after the panel confirms the operation.
+        return queued_count
 
     async def _disable_pasarguard_client(self, xui_record: XUIClientRecord) -> None:
         """Disable a PasarGuard config (PUT status=disabled). PG keeps the sub
@@ -2228,7 +2247,7 @@ class ProvisioningManager:
             comment=f"disabled:{xui_record.subscription_id}",
         )
         async with self._get_xui_client_for_server(server) as xui_client:
-            await xui_client.update_client(
+            await xui_client.patch_client(
                 inbound_id=inbound.xui_inbound_remote_id,
                 client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
                 client=disabled_client,

@@ -46,6 +46,7 @@ import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Iterable
+from uuid import UUID
 
 from aiogram import Bot
 from sqlalchemy.ext.asyncio import AsyncSession

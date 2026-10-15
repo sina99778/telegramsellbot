@@ -10,6 +10,8 @@ TRONADO_TERMINAL_STATUSES (time-bounded by created_at) stays in the sweep.
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -43,19 +45,19 @@ def _empty_result():
 @pytest.mark.parametrize("status", list(PENDING_GATEWAY_STATUSES))
 def test_pending_gateway_statuses_sweepable_for_any_provider(make_payment, status):
     assert _is_sweepable(make_payment(provider="nowpayments", payment_status=status))
-    assert _is_sweepable(make_payment(provider="tronado", payment_status=status))
+    assert _is_sweepable(make_payment(provider="tronado", payment_status=status, actually_paid=Decimal("5")))
 
 
 @pytest.mark.parametrize("status", ["not_paid", "pending payment", "در انتظار پرداخت"])
 def test_tronado_provider_title_statuses_stay_sweepable(make_payment, status):
     # The exact bug: after one unpaid review the status becomes the provider
     # display title or 'not_paid' — the payment must remain in the sweep.
-    assert _is_sweepable(make_payment(provider="tronado", payment_status=status))
+    assert _is_sweepable(make_payment(provider="tronado", payment_status=status, actually_paid=Decimal("5")))
 
 
 @pytest.mark.parametrize("status", list(TRONADO_TERMINAL_STATUSES))
 def test_tronado_terminal_statuses_not_sweepable(make_payment, status):
-    assert not _is_sweepable(make_payment(provider="tronado", payment_status=status))
+    assert not _is_sweepable(make_payment(provider="tronado", payment_status=status, actually_paid=Decimal("5")))
 
 
 def test_exclusion_rule_only_applies_to_tronado(make_payment):
@@ -95,7 +97,7 @@ async def test_sweep_reviews_tronado_payment_stuck_in_not_paid(make_payment):
 
 async def test_sweep_skips_payment_that_turned_terminal_after_listing(make_payment):
     # Status changed between listing and locking (e.g. the IPN finished it).
-    payment = make_payment(provider="tronado", payment_status="finished", order_id="TRX-2")
+    payment = make_payment(provider="tronado", payment_status="finished", actually_paid=Decimal("5"), order_id="TRX-2")
 
     list_session = AsyncMock()
     list_result = MagicMock()

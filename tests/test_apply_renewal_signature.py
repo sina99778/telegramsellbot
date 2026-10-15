@@ -46,7 +46,7 @@ def test_apply_renewal_binds_all_caller_kwargs() -> None:
 # ─── plan renewal: fresh-start (reset) semantics ─────────────────────────────
 # "تمدید پلن فعلی" costs the FULL plan price, so quota AND days must RESET to
 # the plan's values — never stacked on the remainder — and the panel's traffic
-# counter must be zeroed via the reset_usage flag.
+# counter stays cumulative; the remaining quota is reset without a remote reset.
 
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
@@ -76,9 +76,9 @@ class _Repo:
 
 
 def _session(monkeypatch, xui_record=None):
-    monkeypatch.setattr(services.renewal, "AppSettingsRepository", _Repo)
     s = MagicMock()
     s.begin_nested = MagicMock(return_value=_Nested())
+    s.refresh = AsyncMock()
     s.flush = AsyncMock()
     s.scalar = AsyncMock(return_value=xui_record)
     s.execute = AsyncMock()
@@ -99,8 +99,8 @@ def _sub(**kw):
 
 @pytest.mark.asyncio
 async def test_plan_renewal_resets_quota_and_days(monkeypatch):
-    """Active sub mid-cycle: volume/days are REPLACED, usage zeroed, and the
-    pre-renewal consumption rolls into lifetime_used_bytes."""
+    """Active sub mid-cycle: volume/days are REPLACED, cumulative usage is preserved and the
+    desired state is durably queued for the panel."""
     now = datetime.now(timezone.utc)
     sub = _sub(
         activated_at=now - timedelta(days=10),
@@ -122,13 +122,13 @@ async def test_plan_renewal_resets_quota_and_days(monkeypatch):
         session=session, subscription=sub, renew_type="plan", amount=1, plan=plan,
     )
 
-    assert sub.volume_bytes == 100 * 1024**3          # reset to plan quota, NOT 150GB
-    assert sub.used_bytes == 0                        # usage zeroed
-    assert sub.lifetime_used_bytes == 35 * 1024**3    # 5 + 30 rolled up
+    assert sub.volume_bytes - sub.used_bytes == 100 * 1024**3          # reset to plan quota, NOT 150GB
+    assert sub.used_bytes == 30 * 1024**3  # cumulative counter preserved
+    assert sub.lifetime_used_bytes == 5 * 1024**3    # no counter reset or lifetime roll-up
     # days RESET from now, NOT extended: must be ~now+30d, NOT now+50d
     assert abs((sub.ends_at - (now + timedelta(days=30))).total_seconds()) < 5
     assert abs((sub.starts_at - now).total_seconds()) < 5
-    assert synced["reset_usage"] is True              # panel counter zeroed too
+    assert sub.panel_sync_pending is True and synced == {}              # durable intent; no pre-commit panel write
 
 
 @pytest.mark.asyncio
@@ -154,9 +154,9 @@ async def test_plan_renewal_expired_sub_reactivates_from_now(monkeypatch):
     )
 
     assert sub.status == "active"
-    assert sub.volume_bytes == 20 * 1024**3
-    assert sub.used_bytes == 0
-    assert sub.lifetime_used_bytes == 50 * 1024**3
+    assert sub.volume_bytes - sub.used_bytes == 20 * 1024**3
+    assert sub.used_bytes == 50 * 1024**3
+    assert sub.lifetime_used_bytes == 0
     assert abs((sub.ends_at - (now + timedelta(days=7))).total_seconds()) < 5
 
 
@@ -184,7 +184,7 @@ async def test_plan_renewal_unlimited_plan(monkeypatch):
 
     assert sub.ends_at is None                        # unlimited time
     assert sub.volume_bytes == 0                      # unlimited quota
-    assert sub.used_bytes == 0
+    assert sub.used_bytes == 2 * 1024**3
 
 
 @pytest.mark.asyncio
@@ -213,4 +213,4 @@ async def test_volume_renewal_still_stacks_and_does_not_reset(monkeypatch):
     assert sub.volume_bytes == 90 * 1024**3           # 50 + 40 stacked
     assert sub.used_bytes == 30 * 1024**3             # untouched
     assert sub.lifetime_used_bytes == 0               # untouched
-    assert synced["reset_usage"] is False             # NO reset for top-ups
+    assert sub.panel_sync_pending is True and synced == {}             # NO reset for top-ups

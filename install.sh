@@ -460,6 +460,8 @@ install_prerequisites_and_ssl() {
 server {
     listen 80;
     server_name ${domain_name};
+    # API validates the file itself at 6 MiB; allow multipart overhead.
+    client_max_body_size 7m;
 
     location / {
         proxy_pass http://127.0.0.1:${api_port};

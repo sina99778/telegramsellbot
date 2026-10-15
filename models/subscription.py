@@ -22,6 +22,11 @@ class Subscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         Index("ix_subscriptions_user_status", "user_id", "status"),
     )
+    # Reject a stale usage-sync write racing a committed desired-state update.
+    state_version: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default="1",
+    )
+    __mapper_args__ = {"version_id_col": state_version}
 
     user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     order_id: Mapped[UUID | None] = mapped_column(ForeignKey("orders.id", ondelete="SET NULL"), nullable=True)
@@ -44,6 +49,19 @@ class Subscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     volume_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    # Transactional outbox: desired limits/status and this marker are committed
+    # together with the wallet change. A worker writes absolute limits to the
+    # panel; a crash before commit simply causes an idempotent replay.
+    panel_sync_pending: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false", index=True,
+    )
+    panel_sync_error: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    panel_sync_attempts: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0",
+    )
+    panel_sync_attempted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
     # Monotonic counter of bytes delivered BEFORE the most recent reset.
     # Every code path that resets `used_bytes` to 0 (volume renewal, inbound
     # migration, …) MUST first accumulate `used_bytes` into this column.

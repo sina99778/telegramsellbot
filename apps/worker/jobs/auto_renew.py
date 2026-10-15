@@ -249,7 +249,7 @@ async def _notify_success(bot, sub, user, days: int, price: float) -> None:
     )
     builder.adjust(1)
     text = (
-        "🔁 <b>تمدید خودکار انجام شد</b>\n\n"
+        "🔁 <b>درخواست تمدید خودکار ثبت شد</b>\n\n"
         f"👤 سرویس: {sub_name}\n"
         f"⏰ تمدید: <b>{days} روز</b>\n"
         f"💵 از کیف پول: <b>{price:.2f}$</b>\n\n"

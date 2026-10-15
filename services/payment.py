@@ -5,6 +5,7 @@ Handles IPN callbacks and direct purchase provisioning.
 from __future__ import annotations
 
 import logging
+import asyncio
 from contextlib import asynccontextmanager
 from decimal import Decimal
 from uuid import UUID
@@ -58,38 +59,10 @@ async def process_successful_payment(
     payment: Payment,
     amount_to_credit: Decimal,
 ) -> bool:
-    if payment.kind != "direct_renewal":
-        return await _process_successful_payment(session, payment, amount_to_credit)
-
-    payload = dict(payment.callback_payload or {})
-    if payload.get("renewal_applied"):
-        return True
-    if payload.get("renewal_refused"):
-        return False
-
-    sub_id_str = payload.get("sub_id")
-    try:
-        sub_id = UUID(str(sub_id_str))
-    except (TypeError, ValueError):
-        logger.error("[RENEWAL] Missing or invalid sub_id for payment %s", payment.id)
-        return False
-
-    from core.redis import distributed_lock, renewal_lock_key
-
-    async with distributed_lock(renewal_lock_key(sub_id), ttl_seconds=120) as acquired:
-        if not acquired:
-            logger.warning(
-                "[RENEWAL] Could not acquire renewal lock for sub %s (payment %s) — deferring to retry",
-                sub_id_str,
-                payment.id,
-            )
-            return False
-        return await _process_successful_payment(
-            session,
-            payment,
-            amount_to_credit,
-            renewal_lock_held=True,
-        )
+    # Provider settlement must be recorded even when fulfillment is locked.
+    # The payment row is locked by the caller; the renewal lock is acquired
+    # only inside _handle_direct_renewal, AFTER the idempotent wallet credit.
+    return await _process_successful_payment(session, payment, amount_to_credit)
 
 
 async def _process_successful_payment(
@@ -360,7 +333,6 @@ async def _handle_direct_purchase(
         logger.info("[PROVISION] Reusing order %s for payment %s", order.id, payment.id)
 
     wallet_manager = WalletManager(session)
-    bot = _get_shared_bot()
     provisioning_manager = ProvisioningManager(session)
 
     try:
@@ -372,7 +344,8 @@ async def _handle_direct_purchase(
         else:
             preflight_ok, preflight_reason = True, None
     except Exception:
-        preflight_ok, preflight_reason = True, None
+        logger.exception("Purchase preflight failed for payment %s", payment.id)
+        preflight_ok, preflight_reason = False, "Panel availability could not be verified"
     if not preflight_ok:
         logger.warning(
             "[PROVISION] Preflight failed for payment %s: %s",
@@ -381,6 +354,7 @@ async def _handle_direct_purchase(
         )
         return False
 
+    bot = _get_shared_bot()
     try:
         if not debited:
             async with session.begin_nested():
@@ -638,7 +612,8 @@ async def _handle_direct_renewal(
                 session
             ).preflight_check_subscription(subscription.id)
         except Exception:
-            preflight_ok, preflight_reason = True, None
+            logger.exception("Renewal preflight failed for payment %s", payment.id)
+            preflight_ok, preflight_reason = False, "Panel availability could not be verified"
         if not preflight_ok:
             logger.warning(
                 "[RENEWAL] Preflight failed for payment %s: %s",
@@ -789,7 +764,7 @@ async def _apply_direct_renewal_locked(
         return False
 
     # Notify user
-    bot: Bot | None = None
+    bot: PremiumEmojiBot | None = None
     try:
         bot = _get_shared_bot()
         user = await session.scalar(select(User).where(User.id == payment.user_id))
@@ -806,18 +781,18 @@ async def _apply_direct_renewal_locked(
             if renew_type == "plan":
                 type_label = "تمدید پلن فعلی"
                 amount_label = "بازنشانی کامل حجم و زمان پلن"
-                tail = "حجم و اعتبار سرویس به مقادیر جدید پلن بازنشانی شد."
+                tail = "درخواست ثبت شد و تغییرات روی پنل در حال اعمال است."
             elif renew_type == "volume":
                 type_label = "حجم"
                 amount_label = f"{renew_amount} گیگابایت"
-                tail = "سرویس شما بروزرسانی شد."
+                tail = "درخواست ثبت شد و تغییرات روی پنل در حال اعمال است."
             else:
                 type_label = "زمان"
                 amount_label = f"{int(renew_amount)} روز"
-                tail = "سرویس شما بروزرسانی شد."
+                tail = "درخواست ثبت شد و تغییرات روی پنل در حال اعمال است."
             await bot.send_message(
                 user.telegram_id,
-                f"✅ تمدید خودکار اعمال شد!\n\n"
+                f"⏳ درخواست تمدید ثبت شد!\n\n"
                 f"📦 نوع تمدید: {type_label}\n"
                 f"📊 مقدار: {amount_label}\n"
                 f"💳 روش: {provider_fa}\n\n"

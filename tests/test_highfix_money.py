@@ -94,7 +94,7 @@ async def test_ipn_renewal_refuses_disabled_sub(mock_session, make_payment):
 
 
 @pytest.mark.asyncio
-async def test_renewal_lock_is_held_before_credit_through_apply(mock_session, make_payment):
+async def test_settlement_is_credited_before_fulfillment_lock(mock_session, make_payment):
     from services.payment import process_successful_payment
 
     sub_id = uuid4()
@@ -115,14 +115,16 @@ async def test_renewal_lock_is_held_before_credit_through_apply(mock_session, ma
         events.append("unlock")
 
     async def wallet_transaction(**kwargs):
-        assert locked is True
+        assert locked is False  # settlement is protected by the payment row lock
         events.append(kwargs["direction"])
 
     async def handle(session, current_payment, *, lock_held=False):
-        assert locked is True
-        assert lock_held is True
-        events.append("renew")
+        assert current_payment.actually_paid == Decimal("5.00")
+        assert lock_held is False  # fulfillment owns its own renewal lock
+        async with fake_lock("fixture", ttl_seconds=120):
+            events.append("renew")
         return True
+
 
     wallet_manager = MagicMock()
     wallet_manager.process_transaction = AsyncMock(side_effect=wallet_transaction)
@@ -133,7 +135,7 @@ async def test_renewal_lock_is_held_before_credit_through_apply(mock_session, ma
         result = await process_successful_payment(mock_session, payment, Decimal("5.00"))
 
     assert result is True
-    assert events == ["lock", "credit", "renew", "unlock"]
+    assert events == ["credit", "lock", "renew", "unlock"]
     assert lock_ttls == [120]
     assert payment.actually_paid == Decimal("5.00")
 
@@ -156,8 +158,10 @@ async def test_renewal_lock_miss_preserves_credit_retry(mock_session, make_payme
         result = await process_successful_payment(mock_session, payment, Decimal("5.00"))
 
     assert result is False
-    assert payment.actually_paid is None
-    wallet_manager.process_transaction.assert_not_awaited()
+    assert payment.actually_paid == Decimal("5.00")
+    assert payment.payment_status == "finished"
+    wallet_manager.process_transaction.assert_awaited_once()
+    assert not payment.callback_payload.get("renewal_applied")
 
 
 @pytest.mark.asyncio

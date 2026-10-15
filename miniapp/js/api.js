@@ -64,7 +64,7 @@ const API = (() => {
         const opts = { method, headers };
         if (body) opts.body = JSON.stringify(body);
 
-        const res = await fetch(url, opts);
+        const res = await fetchWithReadTimeout(url, opts);
         if (!res.ok) {
             const err = await res.json().catch(() => ({ detail: 'خطای ناشناخته' }));
             let detail = err.detail;
@@ -82,7 +82,7 @@ const API = (() => {
      * Multipart/form-data variant for file uploads (e.g. card receipt
      * photos). We MUST NOT set Content-Type ourselves — the browser adds
      * the multipart boundary automatically. Auth still travels as the
-     * `_auth`/`_session` query param like the JSON `request()`.
+     * header fields like the JSON `request()`.
      */
     async function requestForm(method, path, formData) {
         // Same precedence as request(): fresh initData first, session token
@@ -114,6 +114,26 @@ const API = (() => {
         const response = await fetch('/api/miniapp/qr', {method:'POST', headers, body:JSON.stringify({data})});
         if (!response.ok) throw new Error('QR unavailable');
         return URL.createObjectURL(await response.blob());
+    }
+
+    // Read-only requests may safely time out without ambiguity about payments.
+    // Never automatically replay a purchase, renewal or uploaded receipt.
+    async function fetchWithReadTimeout(url, options) {
+        if (options.method !== 'GET') return fetch(url, options);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 20000);
+        try {
+            const response = await fetch(url, {...options, signal:controller.signal});
+            // Keep the body under the same deadline; otherwise a stalled body
+            // leaves a skeleton forever even though headers arrived promptly.
+            const body = await response.text();
+            return {ok:response.ok, status:response.status, json:async () => JSON.parse(body)};
+        } catch (error) {
+            if (controller.signal.aborted) throw new Error('دریافت اطلاعات طول کشید؛ اتصال را بررسی و دوباره تلاش کنید.');
+            throw error;
+        } finally {
+            clearTimeout(timer);
+        }
     }
 
     return {

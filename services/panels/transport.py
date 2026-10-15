@@ -9,5 +9,8 @@ def enforce_https_redirects(client, base_url, error_type):
     async def require_https(request):
         if request.url.scheme != "https":
             raise error_type("Panel redirected HTTPS to an insecure connection; check the reverse proxy and canonical URL.")
+        origin = httpx.URL(base_url)
+        if (request.url.host, request.url.port) != (origin.host, origin.port):
+            raise error_type("Panel redirected to a different origin; configure its canonical URL.")
 
     client.event_hooks["request"].append(require_https)

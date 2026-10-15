@@ -41,9 +41,9 @@ class _Repo:
 
 
 def _session(monkeypatch, xui_record=None):
-    monkeypatch.setattr(services.renewal, "AppSettingsRepository", _Repo)
     s = MagicMock()
     s.begin_nested = MagicMock(return_value=_Nested())
+    s.refresh = AsyncMock()
     s.flush = AsyncMock()
     s.scalar = AsyncMock(return_value=xui_record)
     s.execute = AsyncMock()

@@ -158,6 +158,8 @@ async def user_detail(user_id: UUID, auth: AuthDep) -> dict[str, Any]:
         subs.append({
             "id": str(s.id),
             "status": s.status,
+            "panel_sync_pending": s.panel_sync_pending is True,
+            "panel_sync_error": s.panel_sync_error,
             "source": s.source,
             "name": name,
             "volume_bytes": int(s.volume_bytes or 0),
@@ -347,7 +349,8 @@ async def set_status(user_id: UUID, body: StatusBody, auth: AuthDep) -> dict[str
     except Exception as exc:
         logger.warning("Audit log failed: %s", exc)
     await session.commit()
-    return {"ok": True, "status": user.status, "disabled_configs": disabled_configs}
+    return {"ok": True, "status": user.status, "disabled_configs": disabled_configs,
+            "panel_sync_pending": disabled_configs > 0}
 
 
 class MessageBody(BaseModel):

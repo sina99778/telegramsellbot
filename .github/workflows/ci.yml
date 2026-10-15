@@ -26,11 +26,60 @@ jobs:
       - name: Run tests
         run: pytest -q
 
-      - name: Ruff
-        run: ruff check .
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[dev]
+      - run: ruff check .
 
-      - name: Mypy
-        run: mypy apps core models repositories schemas services
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[dev]
+      - run: mypy apps core models repositories schemas services
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: audit
+          POSTGRES_PASSWORD: ci-disposable-only
+          POSTGRES_DB: audit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U audit -d audit"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      AUDIT_TEST_DATABASE_URL: postgresql+asyncpg://audit:ci-disposable-only@127.0.0.1:5432/audit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .[dev]
+      - run: pytest tests/test_audit_postgres.py tests/test_upgrade_postgres.py -q
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e .[dev] pip-audit
+      - run: pip-audit --local --progress-spinner off
 
   installer:
     runs-on: ubuntu-latest
@@ -45,14 +94,14 @@ jobs:
 
       - name: Install installer test tools
         run: |
-          python -m pip install 'pytest>=8.3,<9' 'pytest-asyncio>=0.24,<1'
+          python -m pip install 'pytest>=9.0.3,<10' 'pytest-asyncio>=1.2,<2'
           command -v rsync >/dev/null && command -v flock >/dev/null || {
             sudo apt-get update
             sudo apt-get install -y rsync util-linux
           }
 
       - name: Test update, deploy, file preservation and locking
-        run: pytest tests/test_installer_operations.py -q
+        run: pytest tests/test_installer_operations.py tests/test_restore_operations.py -q
 
   dashboard:
     runs-on: ubuntu-latest
@@ -66,7 +115,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
           cache: npm
           cache-dependency-path: dashboard/package-lock.json
 
@@ -76,9 +125,18 @@ jobs:
       - name: Build dashboard
         run: npm run build
 
+      - name: Test dashboard utilities
+        run: npm test
+
+      - name: Test mini app presentation rules
+        run: node --test ../miniapp/tests/*.test.mjs
+
+      - name: Audit dashboard dependencies
+        run: npm audit
+
   container:
     runs-on: ubuntu-latest
-    needs: [test, dashboard, installer]
+    needs: [dashboard, installer]
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -1,0 +1,229 @@
+"""Real transactions in a disposable schema; never uses application tables."""
+
+from __future__ import annotations
+
+import os
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from types import SimpleNamespace as NS
+from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
+
+import pytest
+import pytest_asyncio
+from sqlalchemy import func, select, text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.exc import StaleDataError
+
+from core.database import Base
+from models.order import Order
+from models.plan import Plan
+from models.subscription import Subscription
+from models.user import User
+from models.wallet import Wallet, WalletTransaction
+from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerCredential, XUIServerRecord
+from services.panel_sync import request_panel_sync
+
+pytestmark = pytest.mark.skipif(
+    not os.getenv("AUDIT_TEST_DATABASE_URL"),
+    reason="Disposable PostgreSQL URL not configured",
+)
+
+
+@pytest_asyncio.fixture
+async def sessions():
+    schema = "upgrade_test_" + uuid4().hex
+    engine = create_async_engine(os.environ["AUDIT_TEST_DATABASE_URL"])
+    scoped = engine.execution_options(schema_translate_map={None: schema})
+    try:
+        async with scoped.begin() as conn:
+            await conn.execute(text(f'CREATE SCHEMA "{schema}"'))
+            await conn.run_sync(Base.metadata.create_all)
+        yield async_sessionmaker(scoped, expire_on_commit=False)
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        await engine.dispose()
+
+
+async def seed(sessions):
+    async with sessions() as session:
+        user = User(telegram_id=12345)
+        user.wallet = Wallet(balance=Decimal("100"))
+        plan = Plan(
+            code="fixture",
+            name="Fixture",
+            protocol="vless",
+            duration_days=30,
+            volume_bytes=1000,
+            price=Decimal("10"),
+            renewal_price=Decimal("10"),
+        )
+        server = XUIServerRecord(name="fixture", base_url="https://panel.invalid")
+        server.credentials = XUIServerCredential(
+            username="fixture", password_encrypted="FAKE-NOT-USED"
+        )
+        inbound = XUIInboundRecord(server=server, xui_inbound_remote_id=1, protocol="vless")
+        sub = Subscription(
+            user=user,
+            plan=plan,
+            status="active",
+            volume_bytes=1000,
+            used_bytes=300,
+            ends_at=datetime.now(UTC) + timedelta(days=30),
+        )
+        sub.xui_client = XUIClientRecord(
+            inbound=inbound,
+            client_uuid="fixture",
+            xui_client_remote_id="fixture",
+            email="fixture",
+            username="fixture",
+        )
+        session.add_all([user, plan, server, sub])
+        await session.commit()
+        return user.id, sub.id
+
+
+async def test_failed_miniapp_renewal_rolls_back_real_wallet_debit(sessions):
+    from apps.api.routes.miniapp import users
+    from schemas.api.miniapp import RenewalRequest
+    from services.renewal import RenewalXUISyncError
+
+    user_id, sub_id = await seed(sessions)
+    repo = MagicMock()
+    repo.get_user_actions_settings = AsyncMock(return_value=NS(renewals_enabled=True))
+    repo.get_renewal_settings = AsyncMock(return_value=NS())
+
+    @asynccontextmanager
+    async def lock(*args, **kwargs):
+        yield True
+
+    async with sessions() as session:
+        user = await session.scalar(
+            select(User).where(User.id == user_id).options(selectinload(User.wallet))
+        )
+        sub = await session.get(Subscription, sub_id)
+        with (
+            patch.object(users, "check_rate_limit", AsyncMock()),
+            patch.object(users, "_get_user_subscription", AsyncMock(return_value=sub)),
+            patch.object(users, "AppSettingsRepository", return_value=repo),
+            patch.object(users, "calculate_renewal_price", return_value=Decimal("10")),
+            patch.object(
+                users, "apply_renewal", AsyncMock(side_effect=RenewalXUISyncError("offline"))
+            ),
+            patch("core.redis.distributed_lock", lock),
+        ):
+            with pytest.raises(RenewalXUISyncError):
+                await users.renew_subscription(
+                    RenewalRequest(
+                        subscription_id=sub_id,
+                        renew_type="volume",
+                        amount=1,
+                        payment_method="wallet",
+                    ),
+                    (user, session),
+                )
+    async with sessions() as session:
+        assert await session.scalar(
+            select(Wallet.balance).where(Wallet.user_id == user_id)
+        ) == Decimal("100")
+        assert await session.scalar(select(func.count()).select_from(WalletTransaction)) == 0
+        assert await session.scalar(select(Order.status)) == "failed"
+
+
+async def test_renewal_intent_is_invisible_until_commit_and_survives_new_session(sessions):
+    from services.renewal import apply_renewal
+
+    _, sub_id = await seed(sessions)
+    repo = MagicMock()
+    repo.get_service_security_settings = AsyncMock(return_value=NS(xui_limit_ip=0))
+    async with sessions() as writer:
+        sub = await writer.get(Subscription, sub_id)
+        plan = await writer.get(Plan, sub.plan_id)
+        with (
+            patch("services.renewal._sync_xui_limits", AsyncMock()) as remote,
+        ):
+            await apply_renewal(
+                session=writer, subscription=sub, renew_type="plan", amount=1, plan=plan
+            )
+        remote.assert_not_awaited()
+        async with sessions() as reader:
+            before = await reader.get(Subscription, sub_id)
+            assert not before.panel_sync_pending and before.volume_bytes == 1000
+        await writer.commit()
+    async with sessions() as reader:
+        after = await reader.get(Subscription, sub_id)
+        assert after.panel_sync_pending and after.volume_bytes - after.used_bytes == 1000
+        assert after.used_bytes == 300 and after.lifetime_used_bytes == 0
+
+
+async def test_stale_usage_writer_cannot_erase_committed_renewal_intent(sessions):
+    _, sub_id = await seed(sessions)
+    async with sessions() as stale, sessions() as fresh:
+        old = await stale.get(Subscription, sub_id)
+        current = await fresh.get(Subscription, sub_id)
+        current.volume_bytes = 2000
+        request_panel_sync(current)
+        await fresh.commit()
+        old.used_bytes = 400
+        with pytest.raises(StaleDataError):
+            await stale.commit()
+        await stale.rollback()
+    async with sessions() as check:
+        sub = await check.get(Subscription, sub_id)
+        assert sub.panel_sync_pending and sub.volume_bytes == 2000
+
+
+async def test_restore_database_renames_and_connection_policy_are_atomic():
+    """Only random empty databases in the explicitly disposable PG instance."""
+    engine = create_async_engine(os.environ["AUDIT_TEST_DATABASE_URL"])
+    target = "upgrade_restore_" + uuid4().hex
+    shadow, previous = target + "_shadow", target + "_before"
+    try:
+        async with engine.connect() as raw:
+            admin = await raw.execution_options(isolation_level="AUTOCOMMIT")
+            for name in (target, shadow):
+                await admin.execute(text(f'CREATE DATABASE "{name}"'))
+            async with engine.connect() as swap:
+                transaction = await swap.begin()
+                await swap.execute(text(f'ALTER DATABASE "{target}" ALLOW_CONNECTIONS false'))
+                await swap.execute(text(f'ALTER DATABASE "{target}" RENAME TO "{previous}"'))
+                await swap.execute(text(f'ALTER DATABASE "{shadow}" RENAME TO "{target}"'))
+                # A cutover failure/abort must restore both names and policy.
+                await transaction.rollback()
+            rows = dict(
+                (
+                    await admin.execute(
+                        text(
+                            "SELECT datname, datallowconn FROM pg_database "
+                            "WHERE datname IN (:target, :shadow, :previous)"
+                        ),
+                        {"target": target, "shadow": shadow, "previous": previous},
+                    )
+                ).all()
+            )
+            assert rows == {target: True, shadow: True}
+            async with engine.begin() as swap:
+                await swap.execute(text(f'ALTER DATABASE "{target}" ALLOW_CONNECTIONS false'))
+                await swap.execute(text(f'ALTER DATABASE "{target}" RENAME TO "{previous}"'))
+                await swap.execute(text(f'ALTER DATABASE "{shadow}" RENAME TO "{target}"'))
+            rows = dict(
+                (
+                    await admin.execute(
+                        text(
+                            "SELECT datname, datallowconn FROM pg_database "
+                            "WHERE datname IN (:target, :shadow, :previous)"
+                        ),
+                        {"target": target, "shadow": shadow, "previous": previous},
+                    )
+                ).all()
+            )
+            assert rows == {target: True, previous: False}
+    finally:
+        async with engine.connect() as raw:
+            admin = await raw.execution_options(isolation_level="AUTOCOMMIT")
+            for name in (target, shadow, previous):
+                await admin.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
+        await engine.dispose()

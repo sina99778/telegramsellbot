@@ -38,6 +38,10 @@ TRONADO_SWEEP_MAX_AGE = timedelta(hours=48)
 
 def _is_sweepable(payment: Payment) -> bool:
     """True while this sweep should still poll the payment's provider."""
+    if (payment.payment_status in {"finished", "confirmed"}
+            and payment.actually_paid is None
+            and payment.provider in {"nowpayments", "tetrapay", "tronado"}):
+        return True
     if payment.payment_status in PENDING_GATEWAY_STATUSES:
         return True
     return (
@@ -54,6 +58,11 @@ async def sync_pending_payments() -> None:
         result = await session.execute(
             select(Payment.id).where(
                 or_(
+                    and_(
+                        Payment.payment_status.in_(["finished", "confirmed"]),
+                        Payment.actually_paid.is_(None),
+                        Payment.provider.in_(["nowpayments", "tetrapay", "tronado"]),
+                    ),
                     and_(
                         Payment.payment_status.in_(list(PENDING_GATEWAY_STATUSES)),
                         Payment.provider.in_(["nowpayments", "tetrapay", "tronado"]),

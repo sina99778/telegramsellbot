@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import pathlib
+import asyncio
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -69,9 +70,21 @@ async def _start_cache_sync() -> None:
 
 @app.get("/healthz", tags=["health"])
 async def healthz() -> dict[str, str]:
-    async with AsyncSessionFactory() as session:
-        await session.execute(text("SELECT 1"))
-    return {"status": "ok", "database": "ok"}
+    from fastapi import HTTPException
+    from core.redis import get_redis
+    try:
+        async with asyncio.timeout(3):
+            async with AsyncSessionFactory() as session:
+                await session.execute(text("SELECT 1"))
+            await get_redis().ping()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Dependencies unavailable") from exc
+    return {"status": "ok", "database": "ok", "redis": "ok"}
+
+
+@app.get("/livez", include_in_schema=False)
+async def livez() -> dict[str, str]:
+    return {"status": "ok"}
 
 # ─── Serve Mini App static files ─────────────────────────────────────────────
 logger.info("Looking for miniapp at: %s (exists=%s)", MINIAPP_DIR, MINIAPP_DIR.exists())

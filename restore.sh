@@ -14,13 +14,16 @@
 #  `.env.bak.<timestamp>` before replacing it.
 # ============================================================================
 set -Eeuo pipefail
+umask 077
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "${PROJECT_DIR}"
 
 ENV_FILE="${PROJECT_DIR}/.env"
 READY_CONFIGS_DIR="${PROJECT_DIR}/ready_configs"
-POSTGRES_CONTAINER="telegramsellbot-postgres"
+POSTGRES_CONTAINER="${TSB_POSTGRES_CONTAINER:-telegramsellbot-postgres}"
+source "${PROJECT_DIR}/scripts/ops-common.sh"
+ops_acquire_lock
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -90,7 +93,21 @@ info "Format:  ${FORMAT}"
 
 # ── Staging dir + extraction ────────────────────────────────────────────
 STAGE="$(mktemp -d -t tsb_restore.XXXXXX)"
-trap 'rm -rf "${STAGE}"' EXIT
+SHADOW_DB=""
+RESTORE_SWAPPED=0
+STOPPED_APPS=()
+cleanup_restore() {
+  local rc=$?
+  if [[ -n "${SHADOW_DB}" ]]; then
+    docker exec "${POSTGRES_CONTAINER}" psql -X -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d postgres \
+      -c "DROP DATABASE IF EXISTS \"${SHADOW_DB}\";" >/dev/null 2>&1 || true
+  fi
+  if (( rc != 0 && RESTORE_SWAPPED == 0 && ${#STOPPED_APPS[@]} > 0 )); then
+    docker start "${STOPPED_APPS[@]}" >/dev/null 2>&1 || true
+  fi
+  rm -rf "${STAGE}"
+}
+trap cleanup_restore EXIT
 
 if [[ "${FORMAT}" == "bundle" ]]; then
   info "Extracting bundle…"
@@ -193,23 +210,60 @@ if [[ "${TABLE_COUNT:-0}" -gt 0 ]]; then
   fi
 fi
 
-# ── DB restore ──────────────────────────────────────────────────────────
-# (DB_FILE and DB_READER were resolved + validated above, pre-wipe.)
-info "Stopping app containers (api/bot/worker) holding DB connections…"
-docker stop telegramsellbot-api telegramsellbot-bot telegramsellbot-worker >/dev/null 2>&1 || true
+# Restore completely into an isolated database before stopping the app.
+# pg_dump from backup.sh never switches databases. Refuse --create dumps:
+# psql's \connect would otherwise escape the shadow database.
+"${DB_READER[@]}" "${DB_FILE}" > "${STAGE}/restore.sql"
+if grep -qiE '^[[:space:]]*\\(connect|c)([[:space:]]|$)|^[[:space:]]*(CREATE|DROP|ALTER)[[:space:]]+DATABASE' "${STAGE}/restore.sql"; then
+  err "Use a pg_dump without --create/\\connect; database-switching dumps are not supported."
+  exit 1
+fi
+SHADOW_DB="tsb_restore_$(date -u +%Y%m%d%H%M%S)_$$"
+ROLLBACK_DB="tsb_before_restore_$(date -u +%Y%m%d%H%M%S)_$$"
+info "Validating the full restore in isolated database ${SHADOW_DB}…"
+docker exec "${POSTGRES_CONTAINER}" psql -X -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d postgres \
+  -c "CREATE DATABASE \"${SHADOW_DB}\" OWNER \"${DB_USER}\";" >/dev/null
+docker exec -i "${POSTGRES_CONTAINER}" psql -X --single-transaction -v ON_ERROR_STOP=1 \
+  -U "${VOLUME_DB_USER}" -d "${SHADOW_DB}" < "${STAGE}/restore.sql" >/dev/null
+VALID_SCHEMA="$(docker exec "${POSTGRES_CONTAINER}" psql -X -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d "${SHADOW_DB}" -tAc \
+  "SELECT (to_regclass('public.users') IS NOT NULL AND to_regclass('public.wallets') IS NOT NULL AND to_regclass('public.subscriptions') IS NOT NULL)::int;")"
+[[ "${VALID_SCHEMA}" == "1" ]] || { err "Restored dump lacks required application tables; target unchanged."; exit 1; }
 
-info "Terminating active connections to ${DB_NAME}…"
-docker exec "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d postgres \
-    -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${DB_NAME}';" \
-    >/dev/null
+TARGET_EXISTS="$(docker exec "${POSTGRES_CONTAINER}" psql -X -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d postgres -tAc \
+  "SELECT COUNT(*) FROM pg_database WHERE datname='${DB_NAME}'")"
+mkdir -p "${PROJECT_DIR}/backups"
+PRE_RESTORE="${PROJECT_DIR}/backups/pre_restore_$(date -u +%Y%m%dT%H%M%S)_$$"
+if [[ -f "${ENV_FILE}" ]]; then cp -p "${ENV_FILE}" "${PRE_RESTORE}.env"; fi
+if [[ "${TARGET_EXISTS}" == "1" ]]; then
+  info "Saving a fresh pre-restore dump…"
+  docker exec "${POSTGRES_CONTAINER}" pg_dump -U "${VOLUME_DB_USER}" -d "${DB_NAME}" -F p \
+    | gzip > "${PRE_RESTORE}.sql.gz"
+  gzip -t "${PRE_RESTORE}.sql.gz"
+fi
 
-info "Dropping + recreating database…"
-docker exec "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d postgres -c "DROP DATABASE IF EXISTS \"${DB_NAME}\";" >/dev/null
-docker exec "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d postgres -c "CREATE DATABASE \"${DB_NAME}\" OWNER \"${DB_USER}\";" >/dev/null
-
-info "Restoring from ${DB_FILE}…"
-"${DB_READER[@]}" "${DB_FILE}" | docker exec -i "${POSTGRES_CONTAINER}" psql -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d "${DB_NAME}" >/dev/null
-ok "Database restored."
+info "Stopping app containers for the validated database swap…"
+for app_container in telegramsellbot-api telegramsellbot-bot telegramsellbot-worker; do
+  if [[ "$(docker inspect --format '{{.State.Running}}' "${app_container}" 2>/dev/null || true)" == "true" ]]; then
+    STOPPED_APPS+=("${app_container}")
+    docker stop "${app_container}" >/dev/null
+  fi
+done
+# Disable new connections and terminate existing ones. Both renames happen
+# in one transaction: a failed cutover leaves the old name/data intact.
+{
+  echo "BEGIN;"
+  if [[ "${TARGET_EXISTS}" == "1" ]]; then
+    echo "ALTER DATABASE \"${DB_NAME}\" ALLOW_CONNECTIONS false;"
+    echo "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='${DB_NAME}';"
+    echo "ALTER DATABASE \"${DB_NAME}\" RENAME TO \"${ROLLBACK_DB}\";"
+  fi
+  echo "ALTER DATABASE \"${SHADOW_DB}\" RENAME TO \"${DB_NAME}\";"
+  echo "COMMIT;"
+} | docker exec -i "${POSTGRES_CONTAINER}" psql -X -v ON_ERROR_STOP=1 -U "${VOLUME_DB_USER}" -d postgres >/dev/null
+RESTORE_SWAPPED=1
+SHADOW_DB=""
+ok "Validated database activated. Previous data retained as ${ROLLBACK_DB} (connections disabled)."
+info "Pre-restore snapshots: ${PRE_RESTORE}.* — keep these until recovery is verified."
 
 if [[ "${FORMAT}" == "bundle" && -f "${STAGE}/env" ]]; then
   if [[ -n "${DB_PASSWORD}" ]]; then

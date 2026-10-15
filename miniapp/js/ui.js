@@ -47,13 +47,37 @@ const UI = (() => {
     // ─── Modal ──────────────────────────────────────────────────────────
     let _tgBackHandler = null;
     let _modalKeyAttached = false;
+    let _modalReturnFocus = null;
+    let _bodyOverflow = '';
+    let _confirmResolve = null;
 
     function showModal(html) {
         const overlay = document.getElementById('modal-overlay');
         const content = document.getElementById('modal-content');
         if (!overlay || !content) return;
-        content.innerHTML = html;
+        if (_confirmResolve) { _confirmResolve(false); _confirmResolve = null; }
+        if (overlay.classList.contains('hidden')) {
+            _modalReturnFocus = document.activeElement;
+            _bodyOverflow = document.body.style.overflow;
+        }
+        content.innerHTML = `<button class="modal-dismiss btn btn-ghost btn-icon-only" aria-label="بستن پنجره" onclick="UI.closeModal()">${icon('x')}</button>` + html;
+        const title = content.querySelector('.modal-title, h2');
+        if (title) {
+            title.id = 'modal-heading';
+            title.tabIndex = -1;
+            title.setAttribute('role', 'heading');
+            title.setAttribute('aria-level', '2');
+            overlay.setAttribute('aria-labelledby', title.id);
+            overlay.removeAttribute('aria-label');
+        } else {
+            overlay.removeAttribute('aria-labelledby');
+            overlay.setAttribute('aria-label', 'جزئیات');
+        }
+        document.getElementById('app').inert = true;
+        document.body.style.overflow = 'hidden';
         overlay.classList.remove('hidden');
+        content.scrollTop = 0;
+        (title || content.querySelector('button'))?.focus({ preventScroll: true });
         overlay.onclick = (e) => { if (e.target === overlay) closeModal(); };
         if (!_modalKeyAttached) {
             document.addEventListener('keydown', _onModalKey);
@@ -68,10 +92,24 @@ const UI = (() => {
     }
     function _onModalKey(ev) {
         if (ev.key === 'Escape' || ev.key === 'Esc') closeModal();
+        if (ev.key !== 'Tab') return;
+        const items = [...document.getElementById('modal-content').querySelectorAll('button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]')].filter(el => el.getClientRects().length);
+        const first = items[0], last = items.at(-1);
+        if (!first) { ev.preventDefault(); return; }
+        if (ev.shiftKey && (!items.includes(document.activeElement) || document.activeElement === first)) {
+            ev.preventDefault(); last.focus();
+        } else if (!ev.shiftKey && document.activeElement === last) {
+            ev.preventDefault(); first.focus();
+        }
     }
     function closeModal() {
+        if (_confirmResolve) { _confirmResolve(false); _confirmResolve = null; }
         const overlay = document.getElementById('modal-overlay');
         if (overlay) overlay.classList.add('hidden');
+        document.getElementById('app').inert = false;
+        document.body.style.overflow = _bodyOverflow;
+        if (_modalReturnFocus?.isConnected) _modalReturnFocus.focus({ preventScroll: true });
+        _modalReturnFocus = null;
         if (_modalKeyAttached) {
             document.removeEventListener('keydown', _onModalKey);
             _modalKeyAttached = false;
@@ -101,29 +139,48 @@ const UI = (() => {
                     <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-act="ok">${escapeHtml(confirmText)}</button>
                 </div>`;
             showModal(html);
+            _confirmResolve = resolve;
             const content = document.getElementById('modal-content');
             content.querySelector('[data-act="cancel"]').addEventListener('click', () => { closeModal(); resolve(false); });
-            content.querySelector('[data-act="ok"]').addEventListener('click', () => { closeModal(); resolve(true); });
+            content.querySelector('[data-act="ok"]').addEventListener('click', () => { _confirmResolve = null; resolve(true); closeModal(); });
         });
     }
 
     // ─── Navigation ─────────────────────────────────────────────────────
-    function navigate(pageName) {
-        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-        document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-
+    async function navigate(pageName, resetScroll = true) {
         const page = document.getElementById(`page-${pageName}`);
+        if (!page || (pageName === 'admin' && !window.AppState?.is_admin)) return;
+        document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+        document.querySelectorAll('.nav-btn').forEach(b => {
+            b.classList.remove('active');
+            b.removeAttribute('aria-current');
+        });
+
         const btn = document.querySelector(`.nav-btn[data-page="${pageName}"]`);
         if (page) page.classList.add('active');
-        if (btn)  btn.classList.add('active');
+        if (btn) { btn.classList.add('active'); btn.setAttribute('aria-current', 'page'); }
+        const more = document.getElementById('header-more');
+        more?.classList.toggle('active', ['admin', 'referral'].includes(pageName));
 
-        if (typeof Pages !== 'undefined' && Pages[`load_${pageName}`]) {
-            Pages[`load_${pageName}`]();
-        }
         // Scroll the new page to top — small UX win when bouncing between tabs.
         const scroll = page?.querySelector('.page-scroll');
-        if (scroll) scroll.scrollTop = 0;
+        if (resetScroll) { if (scroll) scroll.scrollTop = 0; window.scrollTo(0, 0); }
         haptic('selection');
+        if (typeof Pages !== 'undefined' && Pages[`load_${pageName}`]) {
+            await Pages[`load_${pageName}`]();
+        }
+    }
+
+    async function refresh(button) {
+        if (button?.disabled) return;
+        await withButtonLoading(button, () => navigate(document.querySelector('.page.active')?.id.replace('page-', '') || 'dashboard', false));
+    }
+
+    function loadError(containerId, page, message) {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        container.innerHTML = `<div class="empty-state wide" role="alert"><div class="empty-icon">${icon('warning')}</div><p>اطلاعات دریافت نشد</p><p class="empty-hint">${escapeHtml(message)}</p><button class="btn btn-secondary" data-retry>تلاش دوباره</button></div>`;
+        container.querySelector('[data-retry]').addEventListener('click', () => navigate(page, false));
     }
 
     // ─── Escape helper ──────────────────────────────────────────────────
@@ -323,6 +380,7 @@ const UI = (() => {
             check:    '<path d="m5 12 4 4L19 7"/>',
             x:        '<path d="M18 6 6 18"/><path d="M6 6l12 12"/>',
             sliders:  '<path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M2 14h4"/><path d="M10 8h4"/><path d="M18 16h4"/>',
+            search:   '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
             refresh:  '<path d="M21 2v6h-6"/><path d="M3 12a9 9 0 1 0 2.13-5.88L21 8"/>',
             zap:      '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10"/>',
             data:     '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/>',
@@ -338,7 +396,7 @@ const UI = (() => {
 
     return {
         toast, showModal, closeModal, confirm,
-        navigate, haptic,
+        navigate, refresh, loadError, haptic,
         icon, escapeHtml, toPersianDigits,
         formatBytes, formatDate, formatDateShort, formatRelative, formatMoney,
         getStatusText, getStatusClass, getUsagePercent, getProgressClass,

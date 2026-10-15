@@ -7,11 +7,10 @@
         tg.ready();
         tg.expand();
         try { tg.enableClosingConfirmation(); } catch {}
-        // Match the native header/background to the app's --bg-app (#0b0d12)
-        // and the <meta theme-color> — otherwise a different black creates a
-        // visible seam at the top of the screen.
-        try { tg.setHeaderColor('#070611'); } catch {}
-        try { tg.setBackgroundColor('#070611'); } catch {}
+        // Keep Telegram's native chrome consistent with the light canvas.
+        try { tg.setHeaderColor('#f6f8fb'); } catch {}
+        try { tg.setBackgroundColor('#f6f8fb'); } catch {}
+        try { tg.setBottomBarColor('#ffffff'); } catch {}
     }
 
     document.querySelectorAll('[data-icon]').forEach(el => {
@@ -24,10 +23,15 @@
             const page = btn.dataset.page;
             if (page) {
                 UI.navigate(page);
-                try { tg?.HapticFeedback?.selectionChanged(); } catch {}
             }
         });
     });
+
+    const updateConnection = () => document.getElementById('connection-notice').classList.toggle('hidden', navigator.onLine);
+    window.addEventListener('online', updateConnection);
+    window.addEventListener('offline', updateConnection);
+    updateConnection();
+    document.querySelector('.nav-btn.active')?.setAttribute('aria-current', 'page');
 
     // Ticket send
     // Ticket send with animation

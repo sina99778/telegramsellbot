@@ -369,6 +369,8 @@ def _subscription_to_view(sub: Subscription) -> SubscriptionView:
     return SubscriptionView(
         id=sub.id,
         status=sub.status,
+        panel_sync_pending=sub.panel_sync_pending is True,
+        panel_sync_error=sub.panel_sync_error if isinstance(sub.panel_sync_error, str) else None,
         used_bytes=sub.used_bytes,
         volume_bytes=sub.volume_bytes,
         sub_link=sub.sub_link,
@@ -2787,28 +2789,29 @@ async def renew_subscription(
         await session.flush()
 
         try:
-            await WalletManager(session).process_transaction(
-                user_id=user.id,
-                amount=price,
-                transaction_type="renewal",
-                direction="debit",
-                currency="USD",
-                reference_type="order",
-                reference_id=order.id,
-                description=f"Renewal of subscription {subscription.id}",
-                metadata={
-                    "sub_id": str(subscription.id),
-                    "type": body.renew_type,
-                    "amount": amount,
-                    "source": "miniapp",
-                },
-            )
-            await apply_renewal(
-                session=session,
-                subscription=subscription,
-                renew_type=body.renew_type,
-                amount=amount,
-            )
+            async with session.begin_nested():
+                await WalletManager(session).process_transaction(
+                    user_id=user.id,
+                    amount=price,
+                    transaction_type="renewal",
+                    direction="debit",
+                    currency="USD",
+                    reference_type="order",
+                    reference_id=order.id,
+                    description=f"Renewal of subscription {subscription.id}",
+                    metadata={
+                        "sub_id": str(subscription.id),
+                        "type": body.renew_type,
+                        "amount": amount,
+                        "source": "miniapp",
+                    },
+                )
+                await apply_renewal(
+                    session=session,
+                    subscription=subscription,
+                    renew_type=body.renew_type,
+                    amount=amount,
+                )
         except Exception:
             order.status = "failed"
             await session.commit()
@@ -2846,7 +2849,7 @@ async def renew_subscription(
 
     return RenewalResponse(
         status="renewed",
-        message="تمدید با موفقیت انجام شد.",
+        message="درخواست تمدید ثبت شد؛ تغییرات روی پنل در حال اعمال است.",
         price=price,
         balance=user.wallet.balance,
     )
