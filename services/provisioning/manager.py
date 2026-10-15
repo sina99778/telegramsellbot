@@ -2082,6 +2082,10 @@ class ProvisioningManager:
                 # against the SSRF allow-list below.
                 follow_redirects=False,
                 trust_env=False,
+                # Different redirect hostnames can resolve to the same IP.
+                # A connection pool keyed by pinned IP must not reuse a TLS
+                # session verified for a previous hostname.
+                limits=_httpx.Limits(max_keepalive_connections=0),
                 # Honour the operator's panel TLS policy: legacy panels are
                 # frequently self-signed, so forcing verification here would
                 # silently break usage recovery for those deployments.
@@ -2170,7 +2174,7 @@ class ProvisioningManager:
             .where(
                 Subscription.user_id == user_id,
                 Subscription.status.in_(["active", "pending_activation"]),
-            ).with_for_update(of=Subscription)
+            ).execution_options(populate_existing=True).with_for_update(of=Subscription)
         )
         from services.panel_sync import request_panel_sync
 

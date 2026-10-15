@@ -188,6 +188,7 @@ async def test_subscription_fetch_dials_validated_ip_preserving_host_and_tls_sni
 
     def isolated_client(*args, **kwargs):
         assert kwargs["trust_env"] is False
+        assert kwargs["limits"].max_keepalive_connections == 0
         return original(*args, **kwargs, transport=httpx.MockTransport(transport))
 
     monkeypatch.setattr(socket, "getaddrinfo", resolve)

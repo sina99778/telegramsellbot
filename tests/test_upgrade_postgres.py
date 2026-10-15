@@ -174,3 +174,56 @@ async def test_stale_usage_writer_cannot_erase_committed_renewal_intent(sessions
     async with sessions() as check:
         sub = await check.get(Subscription, sub_id)
         assert sub.panel_sync_pending and sub.volume_bytes == 2000
+
+
+async def test_restore_database_renames_and_connection_policy_are_atomic():
+    """Only random empty databases in the explicitly disposable PG instance."""
+    engine = create_async_engine(os.environ["AUDIT_TEST_DATABASE_URL"])
+    target = "upgrade_restore_" + uuid4().hex
+    shadow, previous = target + "_shadow", target + "_before"
+    try:
+        async with engine.connect() as raw:
+            admin = await raw.execution_options(isolation_level="AUTOCOMMIT")
+            for name in (target, shadow):
+                await admin.execute(text(f'CREATE DATABASE "{name}"'))
+            async with engine.connect() as swap:
+                transaction = await swap.begin()
+                await swap.execute(text(f'ALTER DATABASE "{target}" ALLOW_CONNECTIONS false'))
+                await swap.execute(text(f'ALTER DATABASE "{target}" RENAME TO "{previous}"'))
+                await swap.execute(text(f'ALTER DATABASE "{shadow}" RENAME TO "{target}"'))
+                # A cutover failure/abort must restore both names and policy.
+                await transaction.rollback()
+            rows = dict(
+                (
+                    await admin.execute(
+                        text(
+                            "SELECT datname, datallowconn FROM pg_database "
+                            "WHERE datname IN (:target, :shadow, :previous)"
+                        ),
+                        {"target": target, "shadow": shadow, "previous": previous},
+                    )
+                ).all()
+            )
+            assert rows == {target: True, shadow: True}
+            async with engine.begin() as swap:
+                await swap.execute(text(f'ALTER DATABASE "{target}" ALLOW_CONNECTIONS false'))
+                await swap.execute(text(f'ALTER DATABASE "{target}" RENAME TO "{previous}"'))
+                await swap.execute(text(f'ALTER DATABASE "{shadow}" RENAME TO "{target}"'))
+            rows = dict(
+                (
+                    await admin.execute(
+                        text(
+                            "SELECT datname, datallowconn FROM pg_database "
+                            "WHERE datname IN (:target, :shadow, :previous)"
+                        ),
+                        {"target": target, "shadow": shadow, "previous": previous},
+                    )
+                ).all()
+            )
+            assert rows == {target: True, previous: False}
+    finally:
+        async with engine.connect() as raw:
+            admin = await raw.execution_options(isolation_level="AUTOCOMMIT")
+            for name in (target, shadow, previous):
+                await admin.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
+        await engine.dispose()
