@@ -20,7 +20,7 @@ from uuid import UUID, uuid4
 
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from pydantic import SecretStr
 from sqlalchemy import func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -109,10 +109,18 @@ def _is_admin_user(user: User) -> bool:
 
 
 @router.get("/config", response_model=MiniAppConfigResponse)
-async def get_miniapp_config() -> MiniAppConfigResponse:
+async def get_miniapp_config(
+    response: Response,
+    session: AsyncSession = Depends(get_db_session),
+) -> MiniAppConfigResponse:
+    response.headers["Cache-Control"] = "no-store"
+    repo = AppSettingsRepository(session)
+    mode = await repo.get_display_currency()
     return MiniAppConfigResponse(
         bot_username=settings.bot_username.lstrip("@") if settings.bot_username else None,
         web_base_url=settings.web_base_url.rstrip("/"),
+        display_currency="IRT" if mode == "IRT" else "USD",
+        toman_rate=await repo.get_toman_rate(),
     )
 
 
@@ -2981,7 +2989,15 @@ async def create_wallet_topup(
 ) -> TopUpResponse:
     user, session = auth
     await check_rate_limit(user.telegram_id, "topup")
-    amount = body.amount.quantize(Decimal("0.01"))
+    amount = body.amount
+    if body.currency == "IRT":
+        if amount != amount.to_integral_value():
+            raise HTTPException(status_code=400, detail="مبلغ تومان باید عدد صحیح باشد.")
+        toman_rate = await AppSettingsRepository(session).get_toman_rate()
+        if toman_rate <= 0:
+            raise HTTPException(status_code=400, detail="نرخ تبدیل تومان تنظیم نشده است.")
+        amount /= Decimal(toman_rate)
+    amount = amount.quantize(Decimal("0.01"))
     if amount <= 0:
         raise HTTPException(status_code=400, detail="مبلغ شارژ باید بیشتر از صفر باشد.")
     if body.payment_method == "nowpayments":
