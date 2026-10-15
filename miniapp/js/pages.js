@@ -129,6 +129,11 @@ const Pages = (() => {
         return `${days} روز`;
     }
 
+    async function loadPricing() {
+        window.AppConfig = await API.getConfig();
+        Money.policy();
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // DASHBOARD
     // ═══════════════════════════════════════════════════════════════════════
@@ -141,6 +146,7 @@ const Pages = (() => {
             <div class="stat-card skeleton" style="height:104px"></div>
         `;
         try {
+            await loadPricing();
             dashboardData = await API.getDashboard();
             renderDashboard(dashboardData);
         } catch (e) {
@@ -174,13 +180,13 @@ const Pages = (() => {
 
         // ── Header ──
         document.getElementById('user-name').textContent = data.first_name || 'کاربر';
-        document.getElementById('user-balance').textContent = `$${UI.formatMoney(data.wallet.balance)}`;
+        document.getElementById('user-balance').textContent = `${Money.format(data.wallet.balance)}`;
         document.getElementById('user-avatar').textContent = (data.first_name || 'U')[0].toUpperCase();
 
         document.getElementById('last-updated').textContent = 'دریافت: ' + new Date().toLocaleTimeString('fa-IR', {hour:'2-digit', minute:'2-digit'});
         document.getElementById('home-summary').innerHTML = `
-            <div class="home-wallet-top"><span>${UI.icon('wallet')} موجودی کیف پول</span><span class="currency-tag">USD</span></div>
-            <div class="home-wallet-bottom"><strong class="home-balance" dir="ltr">$${UI.formatMoney(data.wallet.balance)}</strong><button class="btn btn-primary" onclick="UI.navigate('wallet')">${UI.icon('plus')} شارژ حساب</button></div>
+            <div class="home-wallet-top"><span>${UI.icon('wallet')} موجودی کیف پول</span><span class="currency-tag">${Money.unit()}</span></div>
+            <div class="home-wallet-bottom"><strong class="home-balance" dir="ltr">${Money.amount(data.wallet.balance)}</strong><button class="btn btn-primary" onclick="UI.navigate('wallet')">${UI.icon('plus')} شارژ حساب</button></div>
             <p>برای خرید و تمدید سرویس‌های شما</p>`;
         document.getElementById('quick-actions').innerHTML = `
             <button class="quick-action" onclick="UI.navigate('${salesEnabled || isAdmin ? 'store' : 'configs'}')"><span>${UI.icon(salesEnabled || isAdmin ? 'plus' : 'configs')}</span><strong>${salesEnabled || isAdmin ? 'سرویس جدید' : 'سرویس‌های من'}</strong></button>
@@ -470,7 +476,7 @@ const Pages = (() => {
             if (version !== renewalQuoteVersion || !box.isConnected) return;
             box.dataset.quoteReady = JSON.stringify([subId, renewType, amount]);
             const costLabel = renewType === 'plan' ? 'هزینه تمدید پلن (بازنشانی کامل)' : 'هزینه تمدید';
-            box.innerHTML = `<span>${costLabel}</span><strong>$${UI.formatMoney(quote.price)}</strong>`;
+            box.innerHTML = `<span>${costLabel}</span><strong>${Money.format(quote.price, quote.currency || 'USD')}</strong>`;
         } catch (e) {
             if (version === renewalQuoteVersion && box.isConnected) box.textContent = e.message;
         }
@@ -537,6 +543,7 @@ const Pages = (() => {
             <div class="plan-card skeleton" style="height:180px"></div>
         `;
         try {
+            await loadPricing();
             const data = await API.getPlans();
             plansCache = data.plans || [];
             salesEnabled = data.sales_enabled !== false;
@@ -571,13 +578,13 @@ const Pages = (() => {
             <div class="plan-card">
                 <div class="plan-name">${UI.icon('sliders')} حجم و زمان دلخواه</div>
                 <div class="plan-specs">
-                    <span class="plan-spec">${UI.icon('database')} هر گیگ: $${UI.formatMoney(customPurchase.price_per_gb)}</span>
-                    <span class="plan-spec">${UI.icon('clock')} هر روز: $${UI.formatMoney(customPurchase.price_per_day)}</span>
+                    <span class="plan-spec">${UI.icon('database')} هر گیگ: ${Money.format(customPurchase.price_per_gb)}</span>
+                    <span class="plan-spec">${UI.icon('clock')} هر روز: ${Money.format(customPurchase.price_per_day)}</span>
                     ${customPurchase.discount_percent ? `<span class="plan-spec">تخفیف شخصی ${customPurchase.discount_percent}٪ روی مجموع سفارش اعمال می‌شود</span>` : ''}
                 </div>
                 <div class="plan-price">
                     <span class="plan-price-value">دلخواه</span>
-                    <span class="plan-price-currency">/ USD</span>
+
                 </div>
                 <button class="btn btn-primary plan-buy-btn" onclick="Pages.buyCustomPlan()">
                     ${UI.icon('plus')} ساخت پلن دلخواه
@@ -597,8 +604,8 @@ const Pages = (() => {
                         ${plan.is_unlimited ? '' : `<span class="plan-spec">${UI.icon('package')} ${(plan.stock_remaining)} موجودی</span>`}
                     </div>
                     <div class="plan-price">
-                        <span class="plan-price-value">$${UI.formatMoney(plan.price)}</span>
-                        <span class="plan-price-currency">/ ${escapeHtml(plan.currency || 'USD')}</span>
+                        <span class="plan-price-value">${Money.format(plan.price, plan.currency || 'USD')}</span>
+
                     </div>
                     ${buyDisabled
                         ? `<button class="btn btn-secondary plan-buy-btn" disabled>${UI.icon('lock')} ${soldOut ? 'ناموجود' : 'فروش غیرفعال'}</button>`
@@ -692,7 +699,7 @@ const Pages = (() => {
             <div class="checkout-summary">
                 <div><span>حجم</span><strong>${Number(plan.volume_gb) > 0 ? escapeHtml(plan.volume_gb) + ' GB' : 'نامحدود'}</strong></div>
                 <div><span>مدت</span><strong>${Number(plan.duration_days) > 0 ? escapeHtml(plan.duration_days) + ' روز' : 'نامحدود'}</strong></div>
-                <div><span>قیمت</span><strong>$${UI.formatMoney(plan.price)}</strong></div>
+                <div><span>قیمت</span><strong>${Money.format(plan.price, plan.currency || 'USD')}</strong></div>
                 ${plan.is_unlimited ? '' : `<div><span>موجودی</span><strong>${escapeHtml(plan.stock_remaining)}</strong></div>`}
             </div>
             <label class="form-label" for="checkout-config-name">نام کانفیگ</label>
@@ -835,6 +842,8 @@ const Pages = (() => {
         document.getElementById('wallet-card').innerHTML = '<div class="skeleton" style="height:150px"></div>';
         document.getElementById('payments-list').innerHTML = '';
         document.getElementById('transactions-list').innerHTML = '';
+        try { await loadPricing(); }
+        catch (error) { UI.loadError('wallet-card', 'wallet', error.message); return; }
         const [summary, payments, transactions] = await Promise.allSettled([
             API.getDashboard(), API.getPayments(1), API.getTransactions(1),
         ]);
@@ -854,9 +863,9 @@ const Pages = (() => {
         const hold = parseFloat(wallet.hold_balance || 0);
         document.getElementById('wallet-card').innerHTML = `
             <div class="wallet-label">${UI.icon('wallet')} موجودی کیف پول</div>
-            <div class="wallet-balance-display">$${UI.formatMoney(wallet.balance)}</div>
-            ${hold > 0 ? `<div class="row gap-1" style="color:var(--amber);font-size:12px;margin-block-end:var(--space-3)">${UI.icon('clock')} <span>موجودی بلوکه: <strong style="direction:ltr">$${UI.formatMoney(hold)}</strong></span></div>` : ''}
-            ${credit > 0 ? `<div class="row gap-1" style="color:var(--text-muted);font-size:11px;margin-block-end:var(--space-3)">${UI.icon('info')} <span>سقف اعتبار: $${UI.formatMoney(credit)}</span></div>` : ''}
+            <div class="wallet-balance-display">${Money.format(wallet.balance)}</div>
+            ${hold > 0 ? `<div class="row gap-1" style="color:var(--amber);font-size:12px;margin-block-end:var(--space-3)">${UI.icon('clock')} <span>موجودی بلوکه: <strong style="direction:ltr">${Money.format(hold)}</strong></span></div>` : ''}
+            ${credit > 0 ? `<div class="row gap-1" style="color:var(--text-muted);font-size:11px;margin-block-end:var(--space-3)">${UI.icon('info')} <span>سقف اعتبار: ${Money.format(credit)}</span></div>` : ''}
             <div class="wallet-actions">
                 <button class="btn btn-primary" onclick="Pages.topupWallet()">${UI.icon('plus')} شارژ حساب</button>
                 <button class="btn btn-secondary" onclick="Pages.load_wallet()">${UI.icon('refresh')} بروزرسانی</button>
@@ -879,9 +888,9 @@ const Pages = (() => {
         container.innerHTML = payments.map(payment => {
             const canRefresh = ['nowpayments', 'tetrapay', 'tronado'].includes(payment.provider)
                 && ['waiting', 'pending', 'confirming'].includes(payment.payment_status);
-            const amount = payment.pay_amount
-                ? `${UI.formatMoney(payment.pay_amount)} ${escapeHtml(payment.pay_currency || '')}`
-                : `${UI.formatMoney(payment.price_amount)} ${escapeHtml(payment.price_currency || '')}`;
+            const amount = payment.pay_amount != null
+                ? Money.payment(payment.pay_amount, payment.pay_currency || payment.price_currency)
+                : Money.format(payment.price_amount, payment.price_currency);
             const statusClass = UI.getPaymentStatusClass(payment.payment_status);
             return `
                 <div class="payment-item">
@@ -944,7 +953,7 @@ const Pages = (() => {
                     <span class="tx-date">${desc ? escapeHtml(desc.substring(0, 48)) + ' · ' : ''}${escapeHtml(UI.formatRelative(tx.created_at))}</span>
                 </div>
                 <span class="tx-amount ${tx.direction === 'credit' ? 'credit' : 'debit'}">
-                    $${UI.formatMoney(tx.amount)}
+                    ${Money.format(tx.amount, tx.currency || 'USD')}
                 </span>
             </div>`;
         }).join('');
@@ -954,12 +963,12 @@ const Pages = (() => {
         const presetAmounts = [3, 5, 10, 20, 50];
         UI.showModal(`
             <div class="modal-title">افزایش موجودی</div>
-            <label class="form-label" for="topup-amount">مبلغ شارژ (دلار)</label>
-            <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-                ${presetAmounts.map(a => `<button class="btn btn-secondary btn-sm" onclick="document.getElementById('topup-amount').value='${a}'" style="flex:1;min-width:48px">$${a}</button>`).join('')}
+            <label class="form-label" for="topup-amount">مبلغ شارژ (${Money.unit()})</label>
+            <div class="topup-presets">
+                ${presetAmounts.map(a => `<button class="btn btn-secondary btn-sm" onclick="document.getElementById('topup-amount').value='${Money.preset(a)}'">${Money.format(a)}</button>`).join('')}
             </div>
-            <input id="topup-amount" class="form-input" inputmode="decimal" dir="ltr" placeholder="5" value="5">
-            <p class="form-hint">بعد از پرداخت موفق، موجودی کیف پول به صورت خودکار بروزرسانی می‌شود.</p>
+            <input id="topup-amount" class="form-input" data-currency="${Money.code()}" inputmode="${Money.code() === 'IRT' ? 'numeric' : 'decimal'}" dir="ltr" placeholder="${Money.preset(5)}" value="${Money.preset(5)}">
+            <p class="form-hint">مبلغ نهایی پرداخت در مرحلهٔ بعد نمایش داده می‌شود. پس از تأیید پرداخت، کیف پول شارژ می‌شود.</p>
             <div class="checkout-methods">
                 ${topupGatewayButtons("Pages.submitTopup(")}
             </div>
@@ -971,17 +980,17 @@ const Pages = (() => {
     let _topupSubmitting = false;
     async function submitTopup(paymentMethod) {
         if (_topupSubmitting) return;  // guard against double-tap → duplicate invoices
-        const amount = parseFloat(document.getElementById('topup-amount')?.value || '0');
-        if (!amount || amount <= 0) {
-            UI.toast('مبلغ شارژ معتبر نیست', 'error');
-            return;
-        }
+        const input = document.getElementById('topup-amount');
+        const currency = input?.dataset.currency;
+        let amount;
+        try { amount = Money.input(input?.value || '', currency); }
+        catch (error) { UI.toast(error.message, 'error'); return; }
         _topupSubmitting = true;
         const methodBtns = document.querySelectorAll('.checkout-methods .btn');
         methodBtns.forEach(b => { b.disabled = true; b.classList.add('is-loading'); });
         try {
             UI.toast('در حال ساخت فاکتور...');
-            const result = await API.createTopup({ amount, payment_method: paymentMethod });
+            const result = await API.createTopup({ amount, currency, payment_method: paymentMethod });
             if (result.payment_method === 'card_to_card') {
                 renderCardPaymentScreen(result, 'topup');
                 return;
@@ -989,7 +998,7 @@ const Pages = (() => {
             UI.showModal(`
                 <div class="modal-title">فاکتور شارژ آماده است</div>
                 <p class="form-hint" style="text-align:center;margin-bottom:14px">${escapeHtml(result.message)}</p>
-                ${result.pay_amount ? `<div class="renewal-price-box"><span>مبلغ پرداخت</span><strong>${UI.formatMoney(result.pay_amount)} ${escapeHtml(result.pay_currency || '')}</strong></div>` : ''}
+                ${result.pay_amount ? `<div class="renewal-price-box"><span>مبلغ پرداخت</span><strong>${Money.payment(result.pay_amount, result.pay_currency)}</strong></div>` : ''}
                 <button class="btn btn-primary btn-block" onclick="Pages.openInvoice(decodeURIComponent('${encodeJsArg(result.invoice_url)}'))">پرداخت فاکتور</button>
                 <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal(); Pages.load_wallet()">بستن</button>
             `);
@@ -1238,6 +1247,7 @@ const Pages = (() => {
     // ═══════════════════════════════════════════════════════════════════════
     async function load_referral() {
         try {
+            await loadPricing();
             const data = await API.getReferral();
             renderReferral(data);
         } catch (e) {
@@ -1247,6 +1257,7 @@ const Pages = (() => {
 
     async function load_admin() {
         try {
+            await loadPricing();
             const data = await API.getAdminOverview();
             renderAdminPanel(data);
         } catch (e) {
@@ -1483,7 +1494,7 @@ const Pages = (() => {
                     <div style="background:rgba(255,255,255,0.02)"><span>نقش</span><strong style="color:var(--cyan)">${escapeHtml(user.role)}</strong></div>
                     <div style="background:rgba(255,255,255,0.02)"><span>وضعیت</span><strong style="${user.status === 'active' ? 'color:var(--emerald)' : 'color:var(--coral)'}">${escapeHtml(user.status)}</strong></div>
                     <div style="background:rgba(255,255,255,0.02)"><span>شماره موبایل</span><strong>${escapeHtml(phoneText)}</strong></div>
-                    <div style="background:rgba(255,255,255,0.02)"><span>موجودی</span><strong style="color:var(--emerald)">$${UI.formatMoney(user.wallet_balance)}</strong></div>
+                    <div style="background:rgba(255,255,255,0.02)"><span>موجودی</span><strong style="color:var(--emerald)">${Money.format(user.wallet_balance)}</strong></div>
                 </div>
                 <div class="admin-actions wide" style="margin-top:12px">
                     <button class="btn btn-secondary btn-sm" onclick="Pages.runAdminUserAction('${user.id}', 'toggle_user_ban')">${user.status === 'banned' ? 'رفع بن' : 'مسدود کردن'}</button>
@@ -2054,7 +2065,7 @@ const Pages = (() => {
                 </div>
                 <div class="stat-card">
                     <div class="stat-label">درآمد کل</div>
-                    <div class="stat-value">$${UI.formatMoney(data.total_earned)}</div>
+                    <div class="stat-value">${Money.format(data.total_earned)}</div>
                 </div>
             </div>
 

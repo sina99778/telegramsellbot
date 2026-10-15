@@ -87,7 +87,6 @@
 
     // Load dashboard
     try {
-        window.AppConfig = await API.getConfig().catch(() => ({}));
         await Pages.load_dashboard();
         const params = new URLSearchParams(window.location.search);
         if (params.get('page') === 'admin' && window.AppState?.is_admin) {

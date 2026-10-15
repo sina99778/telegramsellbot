@@ -32,7 +32,7 @@ const json = (res, value, status=200) => {
 
 http.createServer(async (req,res) => {
     const url = new URL(req.url, `http://127.0.0.1:${port}`);
-    const scenario = /miniapp_preview=(empty|error|admin)/.exec(req.headers.cookie || '')?.[1] || 'default';
+    const scenario = /miniapp_preview=(empty|error|admin|toman)/.exec(req.headers.cookie || '')?.[1] || 'default';
     if (url.pathname.startsWith('/api/miniapp/')) {
         const endpoint = url.pathname.slice('/api/miniapp'.length);
         if (endpoint === '/qr') {
@@ -44,10 +44,10 @@ http.createServer(async (req,res) => {
         if (scenario === 'error' && endpoint !== '/config') return json(res, {detail:'خطای آزمایشی دریافت اطلاعات؛ لطفاً دوباره تلاش کنید.'}, 503);
         const subs = scenario === 'empty' ? [] : subscriptions;
         const routes = {
-            '/config': {bot_username:'preview_bot', sales_enabled:true, renewals_enabled:true},
+            '/config': {bot_username:'preview_bot', web_base_url:`http://127.0.0.1:${port}`, display_currency:scenario==='toman'?'IRT':'USD', toman_rate:95000},
             '/me': {first_name:'سینا', is_admin:scenario==='admin', wallet, subscriptions:subs, active_config_count:subs.length ? 4 : 0, total_volume_used:18*GB, total_volume:150*GB, gateways:{card_to_card:true}, sales_enabled:true, renewals_enabled:true},
             '/configs': {subscriptions:subs, page:1, total:subs.length, page_size:20},
-            '/plans': {plans:scenario==='empty' ? [] : plans, sales_enabled:true},
+            '/plans': {plans:scenario==='empty' ? [] : plans, sales_enabled:true, custom_purchase:scenario==='empty'?null:{can_purchase:true,price_per_gb:'0.10',price_per_day:'0.05'}},
             '/wallet/transactions': {transactions:scenario==='empty' ? [] : [{id:id(201), type:'deposit', direction:'credit', amount:'20', balance_before:'4.50', balance_after:'24.50', created_at:date(-1), description:'شارژ حساب آزمایشی'}]},
             '/payments': {payments:scenario==='empty' ? [] : [{id:id(202),provider:'card_to_card',kind:'wallet_topup',payment_status:'pending_approval',price_amount:'10',price_currency:'USD',created_at:date(-1),updated_at:date(-1)}]},
             '/tickets': {tickets:[]},
@@ -67,10 +67,10 @@ http.createServer(async (req,res) => {
         let data = await fs.readFile(filename);
         const headers = {'Content-Type':{'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8'}[path.extname(filename)],'Cache-Control':'no-store'};
         if (relative === 'index.html') {
-            const mode = ['empty','error','admin'].includes(url.searchParams.get('preview')) ? url.searchParams.get('preview') : 'default';
+            const mode = ['empty','error','admin','toman'].includes(url.searchParams.get('preview')) ? url.searchParams.get('preview') : 'default';
             headers['Set-Cookie'] = `miniapp_preview=${mode}; HttpOnly; SameSite=Strict; Path=/`;
             data = Buffer.from(data.toString().replace('<body>', '<body><div style="text-align:center;background:#fff7e8;color:#785017;font:11px system-ui;padding:6px">پیش‌نمایش · اطلاعات آزمایشی</div>'));
         }
         res.writeHead(200, headers); res.end(data);
     } catch {res.writeHead(404); res.end();}
-}).listen(port,'127.0.0.1',() => console.log(`TEST DATA only: http://127.0.0.1:${port}/miniapp/ (preview=empty|error|admin)`));
+}).listen(port,'127.0.0.1',() => console.log(`TEST DATA only: http://127.0.0.1:${port}/miniapp/ (preview=empty|error|admin|toman)`));

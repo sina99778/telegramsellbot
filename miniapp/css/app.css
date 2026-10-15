@@ -2418,8 +2418,12 @@ input:focus-visible, textarea:focus-visible, select:focus-visible {
 .home-wallet-top, .home-wallet-bottom { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .home-wallet-top { font-size:12px; color:var(--text-muted); }
 .home-wallet-top > span:first-child { display:flex; align-items:center; gap:7px; }
-.currency-tag { font-size:10px; letter-spacing:1px; border:1px solid var(--border); padding:3px 7px; border-radius:6px; }
-.home-wallet-bottom { margin:17px 0 10px; }
+.currency-tag { font-size:10px; border:1px solid var(--border); padding:3px 7px; border-radius:6px; }
+.home-wallet-bottom { margin:17px 0 10px; flex-wrap:wrap; }
+.home-balance { min-width:0; }
+.plan-price-value { overflow-wrap:anywhere; min-width:0; }
+.topup-presets { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin-bottom:10px; }
+.topup-presets .btn { min-width:0; min-height:44px; padding:8px 4px; font-size:11px; overflow-wrap:anywhere; }
 .home-balance { font-size:34px; font-weight:750; letter-spacing:-1px; overflow-wrap:anywhere; }
 .home-hero p { font-size:11px; color:var(--text-muted); }
 .home-wallet-bottom .btn { min-height:40px; padding:10px 13px; font-size:12px; flex-shrink:0; }

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
@@ -165,6 +166,8 @@ class SendTicketRequest(BaseModel):
 class MiniAppConfigResponse(BaseModel):
     bot_username: str | None
     web_base_url: str
+    display_currency: Literal["USD", "IRT"] = "USD"
+    toman_rate: int = 100000
 
 
 class PurchaseRequest(BaseModel):
@@ -196,6 +199,8 @@ class PurchaseResponse(BaseModel):
 class TopUpRequest(BaseModel):
     amount: Decimal
     payment_method: str
+    # Existing clients send USD. New clients explicitly identify Toman input.
+    currency: Literal["USD", "IRT"] = "USD"
 
 
 class TopUpResponse(BaseModel):
