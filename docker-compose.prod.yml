@@ -38,6 +38,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        APP_REVISION: ${TSB_BUILD_REVISION:-unknown}
     image: telegramsellbot:latest
     container_name: telegramsellbot-api
     restart: unless-stopped

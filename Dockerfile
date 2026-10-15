@@ -42,6 +42,9 @@ RUN npm run build
 # ─── Stage 3: Runtime image ─────────────────────────────────────────────
 FROM python:3.12-slim AS runtime
 
+ARG APP_REVISION=unknown
+LABEL org.opencontainers.image.revision="${APP_REVISION}"
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     VENV_PATH=/opt/venv \

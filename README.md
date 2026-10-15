@@ -46,7 +46,7 @@ The installer:
 ```bash
 sudo -i
 apt-get update
-apt-get install -y git curl rsync
+apt-get install -y git curl rsync util-linux
 git clone https://github.com/sina99778/telegramsellbot.git /opt/telegramsellbot
 cd /opt/telegramsellbot
 chmod +x setup.sh install.sh deploy.sh
@@ -71,9 +71,14 @@ Update to the latest version:
 
 ```bash
 cd /opt/telegramsellbot
-git pull
-./deploy.sh full
+bash install.sh
+# Choose 1: fetch, build backend + dashboard, back up, migrate and verify health
 ```
+
+Use menu option 13 or `bash deploy.sh check` to verify the running image revision
+and service health. The updater follows the remote default branch and saves local
+code changes in Git before switching versions. Operational files are preserved.
+See the [installer guide (Persian)](docs/installer-upgrade-2026-10-15-fa.md).
 
 ## `.env` Configuration
 

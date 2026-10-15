@@ -14,9 +14,11 @@
 # ============================================================================
 set -Eeuo pipefail
 
-INSTALLER_VERSION="2026-05-24-2"
+INSTALLER_VERSION="2026-10-15-1"
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${PROJECT_DIR}/scripts/ops-common.sh"
+umask 077
 ENV_FILE="${PROJECT_DIR}/.env"
 COMPOSE_FILE="${PROJECT_DIR}/docker-compose.prod.yml"
 SETUP_SCRIPT="${PROJECT_DIR}/setup.sh"
@@ -102,7 +104,9 @@ read_env_value() {
 
 backup_env() {
   if [[ -f "${ENV_FILE}" ]]; then
-    cp -p "${ENV_FILE}" "${ENV_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+    local snapshot="${ENV_FILE}.bak.$(date -u +%Y%m%d_%H%M%S%N)"
+    cp "${ENV_FILE}" "${snapshot}"
+    chmod 600 "${snapshot}"
     success "Existing .env snapshotted as a sibling .bak file."
   fi
 }
@@ -159,9 +163,10 @@ container_status_dot() {
 
 print_header() {
   clear
-  local sha branch env_status compose_status
+  local sha branch env_status compose_status image_revision
   sha="$(git_short_sha)"
   branch="$(git_branch_name)"
+  image_revision="$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' telegramsellbot-api 2>/dev/null || true)"
   env_status="$([[ -f "${ENV_FILE}" ]] && echo -e "${GREEN}present${NC}" || echo -e "${RED}missing${NC}")"
   case "$(compose_impl)" in
     plugin) compose_status="${GREEN}docker compose (plugin)${NC}" ;;
@@ -175,6 +180,7 @@ print_header() {
   echo -e "  ${DIM}installer ${INSTALLER_VERSION}  •  ${PROJECT_DIR}${NC}"
   echo
   printf "  %-12s %s\n"  "branch:"   "${branch} @ ${sha}"
+  printf "  %-12s %s\n" "API image:" "${image_revision:0:12}"
   printf "  %-12s "      "compose:"
   echo -e "${compose_status}"
   printf "  %-12s "      ".env:"
@@ -418,7 +424,7 @@ install_prerequisites_and_ssl() {
   info "Updating apt index..."
   apt-get update
   info "Installing base packages..."
-  apt-get install -y ca-certificates curl gnupg lsb-release nginx certbot python3-certbot-nginx
+  apt-get install -y ca-certificates curl git rsync util-linux gnupg lsb-release nginx certbot python3-certbot-nginx
 
   if ! command -v docker >/dev/null 2>&1; then
     info "Installing docker.io..."
@@ -435,7 +441,7 @@ install_prerequisites_and_ssl() {
 
   case "$(compose_impl)" in
     plugin) success "Modern docker compose plugin available." ;;
-    legacy) warn  "Only legacy docker-compose available; deploys will use the compat path." ;;
+    legacy) warn  "Only legacy docker-compose available; install the modern Compose plugin if image recreation fails." ;;
     *)      error "Could not install any Docker Compose."; pause; return ;;
   esac
 
@@ -501,76 +507,8 @@ fetch_latest_code() {
   fi
 
   require_commands git || return 1
-
-  info "Fetching latest code from origin..."
-  # If the clone was created with `--single-branch` (e.g. setup.sh
-  # bootstraps with `--depth 1 --branch master --single-branch`), the
-  # local remote refspec restricts what `git fetch` brings in. If the
-  # server happens to be on a different branch (e.g. `main`), then a
-  # naked `git fetch origin` will NOT make `origin/master` resolvable
-  # and the next `git checkout -B master origin/master` fails with
-  # "is not a commit".
-  #
-  # Defensive: explicitly widen the remote refspec to all branches,
-  # then explicitly fetch master so origin/master is always materialized.
-  (cd "${PROJECT_DIR}" && git remote set-branches --add origin '*' 2>/dev/null) || true
-  if ! (cd "${PROJECT_DIR}" && git fetch --prune origin); then
-    error "git fetch failed."
-    return 1
-  fi
-  # Belt-and-braces: force-create origin/master from the remote tip
-  # even if some local refspec quirk dropped it.
-  (cd "${PROJECT_DIR}" && git fetch origin '+refs/heads/master:refs/remotes/origin/master' 2>/dev/null) || true
-
-  # ── DEPLOY ALWAYS TARGETS origin/master ─────────────────────────────────
-  # Earlier versions of this function used the operator's LOCAL branch
-  # name as the reset target. That had a hidden trap: if the server was
-  # checked out on a feature branch (e.g. claude/stoic-archimedes-acd651)
-  # whose remote was pinned at a stale commit, "update & deploy" would
-  # silently roll the server BACKWARD to that stale commit — losing
-  # every newer fix that had been merged into master in the meantime
-  # (sales-report channel, autoconfirm, miniapp polish, …).
-  #
-  # Lesson: production deploys must follow master, not whatever happens
-  # to be checked out. Always reset to origin/master, and rebind the
-  # local "master" branch pointer so `git status` shows the truth.
-  local deploy_ref="origin/master"
-  local current_branch
-  current_branch="$(cd "${PROJECT_DIR}" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
-  if [[ -n "${current_branch}" && "${current_branch}" != "HEAD" && "${current_branch}" != "master" ]]; then
-    warn "Local branch is '${current_branch}', not 'master'. Update will switch to master."
-  fi
-
-  # Refuse to clobber operator-side changes silently.
-  local dirty_count
-  dirty_count="$(cd "${PROJECT_DIR}" && git status --porcelain | wc -l | tr -d ' ')"
-  if [[ "${dirty_count}" -gt 0 ]]; then
-    warn "There are ${dirty_count} uncommitted local changes in ${PROJECT_DIR}."
-    echo -e "${YELLOW}Update can only proceed by discarding them.${NC}"
-    if ! confirm "Type DISCARD to wipe local changes and continue, anything else to abort:" "DISCARD"; then
-      warn "Update aborted — your local changes are preserved."
-      return 1
-    fi
-    info "Discarding local changes..."
-    # Protect operational files that live untracked in the repo dir from
-    # `git clean`: `.env.bak.<timestamp>` secret snapshots (the only copies
-    # of previous APP_SECRET_KEY / POSTGRES_PASSWORD — .gitignore's
-    # `*.env.bak` glob does NOT match the timestamped names), installer /
-    # doctor logs, and the host `ready_configs/` store that restore.sh
-    # re-creates. Without these excludes a routine DISCARD wipes them all.
-    (cd "${PROJECT_DIR}" && git reset --hard HEAD \
-      && git clean -fd -e '.env.bak.*' -e '*.log' -e 'ready_configs')
-  fi
-
-  info "Resetting local master to ${deploy_ref}..."
-  if ! (cd "${PROJECT_DIR}" && git checkout -B master "${deploy_ref}"); then
-    error "git checkout -B master ${deploy_ref} failed."
-    return 1
-  fi
-  if ! (cd "${PROJECT_DIR}" && git reset --hard "${deploy_ref}"); then
-    error "git reset --hard ${deploy_ref} failed."
-    return 1
-  fi
+  # Follow GitHub's default branch, or the operator's explicit override.
+  ops_fetch_code "${PROJECT_DIR}" || return 1
 
   chmod +x "${SETUP_SCRIPT}" "${DEPLOY_SCRIPT}" "${BACKUP_SCRIPT}" "${RESTORE_SCRIPT}" "${DOCTOR_SCRIPT}" "${MIGRATE_BUNDLE_SCRIPT}" 2>/dev/null || true
 
@@ -582,6 +520,10 @@ fetch_latest_code() {
 }
 
 update_and_deploy() {
+  (ops_acquire_lock || exit 1; update_and_deploy_locked) || { error "Update failed. Your running version may be unchanged; inspect the message above."; pause; }
+}
+
+update_and_deploy_locked() {
   print_header
   echo -e "${BOLD}⚡ Update & Deploy${NC}"
   echo -e "${DIM}Pulls the latest code from GitHub, then runs a full rebuild.${NC}"
@@ -620,12 +562,16 @@ update_and_deploy() {
   if (cd "${PROJECT_DIR}" && "${DEPLOY_SCRIPT}" full); then
     success "Update & deploy completed successfully."
   else
-    error "Deploy step failed. Inspect the output above and try option 6 → All to see container logs."
+    error "Deploy step failed. Inspect the output above and use option 7 for container logs."
   fi
   pause
 }
 
 full_deploy() {
+  (ops_acquire_lock || exit 1; full_deploy_locked) || { error "Deploy failed. Inspect the message above."; pause; }
+}
+
+full_deploy_locked() {
   print_header
   echo -e "${BOLD}🚀 Full Deploy (no pull)${NC}"
   echo -e "${DIM}Rebuilds & migrates with the code already on disk. Skips git.${NC}"
@@ -1225,6 +1171,7 @@ main_menu() {
     echo
     echo -e "${BOLD}Danger${NC}"
     echo -e "  ${RED}12)${NC} 🗑️  Full Uninstall"
+    echo -e "  13) ✅ Verify deployment       ${DIM}(configuration + live health + revision)${NC}"
     echo
     echo -e "  0) Exit"
     echo
@@ -1242,6 +1189,7 @@ main_menu() {
       10) database_tools_menu ;;
       11) backup_menu ;;
       12) full_uninstall ;;
+      13) (cd "${PROJECT_DIR}" && bash "${DEPLOY_SCRIPT}" check) || error "Verification failed."; pause ;;
       0)  success "Goodbye."; exit 0 ;;
       *)  warn "Invalid option."; pause ;;
     esac

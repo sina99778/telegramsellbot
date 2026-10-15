@@ -45,7 +45,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/sina99778/telegramsellbot/ma
 ```bash
 sudo -i
 apt-get update
-apt-get install -y git curl rsync
+apt-get install -y git curl rsync util-linux
 git clone https://github.com/sina99778/telegramsellbot.git /opt/telegramsellbot
 cd /opt/telegramsellbot
 chmod +x setup.sh install.sh deploy.sh
@@ -70,9 +70,12 @@ cd /opt/telegramsellbot
 
 ```bash
 cd /opt/telegramsellbot
-git pull
-./deploy.sh full
+bash install.sh
+# گزینهٔ ۱: دریافت نسخهٔ جدید، بیلد بک‌اند و داشبورد، بک‌آپ و تأیید سلامت
 ```
+
+گزینهٔ ۱۳ منو یا `bash deploy.sh check` نسخهٔ ایمیج و سلامت نصب را بررسی می‌کند.
+جزئیات حفاظت فایل‌ها و مراحل دیپلوی: [راهنمای نصب‌کننده](docs/installer-upgrade-2026-10-15-fa.md).
 
 ## تنظیمات `.env`
 

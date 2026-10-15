@@ -1,4 +1,8 @@
 .env
+.env.bak*
+.deployed-revision
+installer.log
+ready_configs/
 .venv/
 backups/
 *.sql.gz

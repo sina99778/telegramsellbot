@@ -1,100 +1,77 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-SETUP_VERSION="2026-04-12-3"
+SETUP_VERSION="2026-10-15-1"
 REPO_URL="https://github.com/sina99778/telegramsellbot.git"
-REPO_BRANCH="master"
+REPO_BRANCH="${TSB_DEPLOY_BRANCH:-}"
 INSTALL_DIR="/opt/telegramsellbot"
-TMP_DIR="/tmp/telegramsellbot-sync"
+TMP_DIR=""
 MODE="${1:-install}"
-
-error() {
-  echo -e "${RED}[ERROR]${NC} $*" >&2
-}
-
-info() {
-  echo -e "${BLUE}[INFO]${NC} $*"
-}
-
-success() {
-  echo -e "${GREEN}[OK]${NC} $*"
-}
-
-warn() {
-  echo -e "${YELLOW}[WARN]${NC} $*"
-}
-
+case "${MODE}" in
+  install|--install|sync-only|--sync-only|update|--update) ;;
+  *) echo "Usage: setup.sh [install|sync-only]" >&2; exit 2 ;;
+esac
+error() { echo "[ERROR] $*" >&2; }
+info() { echo "[INFO] $*"; }
 cleanup() {
-  rm -rf "${TMP_DIR}"
+  # Only a directory created by this process; never a fixed shared /tmp path.
+  if [[ -n "${TMP_DIR}" && "${TMP_DIR}" == /tmp/telegramsellbot-sync.* ]]; then
+    rm -rf -- "${TMP_DIR}"
+  fi
 }
+trap cleanup EXIT
+trap 'error "Setup failed on line ${LINENO}. The installer was not launched."; exit 1' ERR
+main() {
+  [[ "${EUID}" -eq 0 ]] || { error "Run setup as root (sudo)."; exit 1; }
+  cd /root
+  info "Setup ${SETUP_VERSION}"
 
-sync_project_files() {
-  rm -rf "${TMP_DIR}"
-  info "Fetching latest repository snapshot..."
-  git clone --depth 1 --branch "${REPO_BRANCH}" --single-branch "${REPO_URL}" "${TMP_DIR}"
-
-  mkdir -p "${INSTALL_DIR}"
-  info "Syncing project files into ${INSTALL_DIR} without touching your .env ..."
-
-  rsync -a --delete \
-    --exclude ".env" \
-    --exclude ".git" \
-    --exclude "__pycache__" \
-    --exclude "*.pyc" \
-    "${TMP_DIR}/" "${INSTALL_DIR}/"
-
-  if [[ ! -d "${INSTALL_DIR}/.git" ]]; then
-    info "Installing git metadata for future updates..."
-    cp -R "${TMP_DIR}/.git" "${INSTALL_DIR}/.git"
-  else
-    info "Refreshing local git metadata..."
-    rsync -a --delete "${TMP_DIR}/.git/" "${INSTALL_DIR}/.git/"
+  missing=()
+  for tool in git curl rsync flock; do
+    command -v "${tool}" >/dev/null 2>&1 || missing+=("${tool}")
+  done
+  if (( ${#missing[@]} )); then
+    command -v apt-get >/dev/null 2>&1 || { error "Ubuntu/Debian with apt-get is required for bootstrap."; exit 1; }
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o Acquire::Retries=3 update -qq
+    apt-get -o Acquire::Retries=3 install -y -qq ca-certificates git curl rsync util-linux
   fi
 
+  # The same lock is shared with interactive updates and direct deploys.
+  if [[ "$(readlink "/proc/${BASHPID}/fd/9" 2>/dev/null || true)" != /run/telegramsellbot-update.lock ]]; then
+    exec 9>/run/telegramsellbot-update.lock
+  fi
+  flock -n 9 || { error "Another install/update/deploy is running."; exit 1; }
+  TMP_DIR="$(mktemp -d /tmp/telegramsellbot-sync.XXXXXX)"
+  if [[ -z "${REPO_BRANCH}" ]]; then
+    REPO_BRANCH="$(git ls-remote --symref "${REPO_URL}" HEAD | awk '$1 == "ref:" && $3 == "HEAD" {sub("^refs/heads/", "", $2); print $2}')"
+  fi
+  git check-ref-format --branch "${REPO_BRANCH}" >/dev/null || { error "Invalid deployment branch."; exit 1; }
+  info "Fetching ${REPO_BRANCH} from GitHub..."
+  git clone --depth 1 --branch "${REPO_BRANCH}" --single-branch "${REPO_URL}" "${TMP_DIR}/repo"
+  source "${TMP_DIR}/repo/scripts/ops-common.sh"
+
+  if [[ -d "${INSTALL_DIR}/.git" ]]; then
+    # Preserve local commits/edits instead of replacing .git with a shallow clone.
+    ops_fetch_code "${INSTALL_DIR}"
+  else
+    info "Syncing code; preserving environment, backups, uploaded configs and logs."
+    ops_sync_snapshot "${TMP_DIR}/repo" "${INSTALL_DIR}"
+    cp -R "${TMP_DIR}/repo/.git" "${INSTALL_DIR}/.git"
+  fi
   cd "${INSTALL_DIR}"
-  chmod +x setup.sh install.sh deploy.sh doctor.sh backup.sh restore.sh 2>/dev/null || true
+  chmod +x setup.sh install.sh deploy.sh doctor.sh backup.sh restore.sh migrate_bundle.sh
+  info "Source ready: $(git rev-parse --short HEAD) ($(git branch --show-current))"
+  cleanup
+  TMP_DIR=""
+  # Release before handing control to the interactive menu.
+  exec 9>&-
+  case "${MODE}" in
+    install|--install) exec bash install.sh ;;
+    *) info "Source updated. Run bash deploy.sh full to build and deploy it." ;;
+  esac
+
 }
 
-trap cleanup EXIT
-
-if [[ "${EUID}" -ne 0 ]]; then
-  error "This script must be run as root. Please use sudo."
-  exit 1
-fi
-
-if [[ "${PWD}" == "${INSTALL_DIR}" || "${PWD}" == "${INSTALL_DIR}/"* ]]; then
-  info "Current shell is inside ${INSTALL_DIR}; switching to /root for safe self-update."
-  cd /root
-fi
-
-info "Running setup.sh version ${SETUP_VERSION}"
-
-export DEBIAN_FRONTEND=noninteractive
-
-info "Updating package index and installing git + curl + rsync..."
-apt-get update -qq
-apt-get install -y -qq git curl rsync >/dev/null
-
-case "${MODE}" in
-  install|--install)
-    sync_project_files
-    success "Project files are up to date."
-    success "Launching interactive installer..."
-    exec bash install.sh
-    ;;
-  sync-only|--sync-only|update|--update)
-    sync_project_files
-    success "Project files were updated successfully."
-    exit 0
-    ;;
-  *)
-    error "Unknown mode: ${MODE}. Supported modes: install, sync-only"
-    exit 1
-    ;;
-esac
+main "$@"
