@@ -96,7 +96,8 @@ async function doToggleBan() {
   try {
     const r = await setUserStatus(props.id, next);
     data.value.user.status = r.status;
-    flash(next === "banned" ? "کاربر مسدود شد." : "کاربر فعال شد.");
+    flash(next === "banned" ? "کاربر مسدود شد؛ قطع سرویس‌های پنل در حال پیگیری است." : "کاربر فعال شد.");
+    await refresh();
   } catch (exc) {
     flash(exc instanceof ApiError ? exc.detail : "خطا", "warn");
   } finally {
@@ -323,6 +324,9 @@ function subStatusBadge(s: string): string {
                 {{ s.name || "—" }}
               </div>
               <span :class="subStatusBadge(s.status)">{{ s.status }}</span>
+              <span v-if="s.panel_sync_pending" class="text-xs text-amber-300">
+                {{ s.panel_sync_error ? 'اعمال روی پنل با تأخیر؛ تلاش مجدد خودکار' : 'در انتظار اعمال روی پنل' }}
+              </span>
             </div>
             <div class="text-[11px] text-slate-400 font-mono mt-1">
               {{ fmtBytes(s.used_bytes) }} / {{ fmtBytes(s.volume_bytes) }}

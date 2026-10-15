@@ -45,7 +45,7 @@ def _fake_panel_cm(fake_api):
 def _make_disable_fixture(mock_session, *, record_sub_link):
     manager = ProvisioningManager(mock_session)
     fake_api = MagicMock()
-    fake_api.update_client = AsyncMock()
+    fake_api.patch_client = AsyncMock()
     manager._get_xui_client_for_server = _fake_panel_cm(fake_api)
 
     xui_record = MagicMock()
@@ -77,8 +77,8 @@ async def test_disable_xui_client_preserves_sub_id_from_subscription_link(mock_s
             sub_link="https://host:2096/sub/subfromsub",
         )
 
-    fake_api.update_client.assert_awaited_once()
-    client = fake_api.update_client.await_args.kwargs["client"]
+    fake_api.patch_client.assert_awaited_once()
+    client = fake_api.patch_client.await_args.kwargs["client"]
     assert client.enable is False
     # The subscription's own link wins (worker convention), and the
     # serialized payload must NOT send an empty subId.
@@ -102,7 +102,7 @@ async def test_disable_xui_client_falls_back_to_record_sub_link(mock_session):
             ends_at=None,
         )
 
-    client = fake_api.update_client.await_args.kwargs["client"]
+    client = fake_api.patch_client.await_args.kwargs["client"]
     assert client.to_xui_payload()["subId"] == "recordsubid"
 
 

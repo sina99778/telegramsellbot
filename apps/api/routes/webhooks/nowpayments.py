@@ -170,11 +170,13 @@ async def handle_nowpayments_ipn(
     logger.info("IPN: Processing payment %s — amount_to_credit=%s", payment.id, amount_to_credit)
 
     try:
-        await process_successful_payment(
+        completed = await process_successful_payment(
             session=session,
             payment=payment,
             amount_to_credit=amount_to_credit,
         )
+        if not completed:
+            return {"status": "accepted_deferred"}
         logger.info("IPN: Payment %s processed SUCCESSFULLY", payment.id)
     except Exception as exc:
         # We deliberately return 200 OK here. The payment record is already

@@ -1,6 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@config "../../tailwind.config.js";
 
 :root {
   --bg-base: 19 23 28;
@@ -91,7 +90,7 @@ body {
     @apply bg-bg-panel border border-bg-border rounded-xl2 p-5 shadow-card;
   }
   .stat-card {
-    @apply card flex flex-col gap-2;
+    @apply bg-bg-panel border border-bg-border rounded-xl2 p-5 shadow-card flex flex-col gap-2;
   }
   .stat-label {
     @apply text-xs text-slate-400 font-medium;

@@ -56,6 +56,7 @@ class XUIClient(BaseModel):
 
     def to_xui_payload(self) -> dict[str, Any]:
         return {
+            **(self.model_extra or {}),
             "id": self.id,
             "flow": self.flow,
             "email": self.email,

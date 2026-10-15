@@ -11,11 +11,11 @@ from sqlalchemy.orm import selectinload
 from models.plan import Plan
 from models.subscription import Subscription
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
-from repositories.settings import AppSettingsRepository, RenewalSettings, ServiceSecuritySettings
-from services.panels.marzban import marzban_client_for_server, record_is_marzban_family
+from repositories.settings import RenewalSettings, ServiceSecuritySettings
 from schemas.internal.pasarguard import PGUserModify
-from services.xui.client import SanaeiXUIClient, XUIClient
-from services.xui.runtime import build_xui_client_config, ensure_inbound_server_loaded
+from schemas.internal.xui import XUIClient
+from services.panels.marzban import marzban_client_for_server, record_is_marzban_family
+from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
 
 logger = logging.getLogger(__name__)
 
@@ -151,8 +151,8 @@ async def apply_renewal(
 ) -> None:
     """Apply renewal to subscription and sync with X-UI panel.
 
-    Uses begin_nested() (savepoint) so that if X-UI sync fails, ALL DB
-    changes are automatically rolled back by PostgreSQL.
+    Atomically update the desired limits and queue a durable panel sync.
+    No panel mutation is performed before the enclosing wallet transaction commits.
 
     CRITICAL: Inside the savepoint, we ONLY access column attributes on
     the subscription object (volume_bytes, used_bytes, ends_at, status,
@@ -163,6 +163,23 @@ async def apply_renewal(
 
     The xui_client is loaded via an explicit query BEFORE the savepoint.
     """
+    if time_renewal_blocked(subscription, renew_type):
+        raise RenewalNotAllowedError(PENDING_TIME_RENEWAL_MSG)
+    if volume_renewal_blocked(subscription, renew_type):
+        raise RenewalNotAllowedError(TIME_EXPIRED_VOLUME_RENEWAL_MSG)
+
+    # Database row locking outlives the Redis lease and serializes the outbox
+    # consumer with every renewal surface, including slow/deferred requests.
+    await session.execute(select(Subscription.id).where(
+        Subscription.id == subscription.id
+    ).with_for_update())
+    await session.refresh(subscription, attribute_names=[
+        "status", "ends_at", "volume_bytes", "used_bytes", "lifetime_used_bytes",
+        "activated_at", "panel_sync_pending", "state_version",
+    ])
+    if getattr(subscription, "panel_sync_pending", False) is True:
+        raise RenewalNotAllowedError("درخواست قبلی هنوز در حال اعمال روی پنل است؛ کمی صبر کنید.")
+
     # Safety net: never extend TIME on a not-yet-activated config (the days are
     # discarded on first connect). Callers should block this earlier with a nice
     # message; this guard protects any path that doesn't.
@@ -176,9 +193,6 @@ async def apply_renewal(
     now_utc = datetime.now(timezone.utc)
     sub_id = subscription.id
 
-    # Fetch settings before any modifications to avoid auto-flush lazy load errors
-    security_settings = await AppSettingsRepository(session).get_service_security_settings()
-
     # Load the Plan up-front so we can resolve per-plan ip_limit without
     # touching subscription.plan inside the savepoint (lazy-load forbidden).
     # A caller may pass `plan` explicitly (e.g. the gateway/bot renewal paths
@@ -186,13 +200,22 @@ async def apply_renewal(
     if plan is None and subscription.plan_id is not None:
         plan = await session.scalar(select(Plan).where(Plan.id == subscription.plan_id))
 
-    # ── Load xui_client via explicit query ───────────────────────────────
-    # NEVER use subscription.xui_client — that triggers lazy loading!
     xui = await session.scalar(
-        select(XUIClientRecord).where(
-            XUIClientRecord.subscription_id == sub_id
-        )
+        select(XUIClientRecord).options(
+            selectinload(XUIClientRecord.inbound)
+            .selectinload(XUIInboundRecord.server)
+            .selectinload(XUIServerRecord.credentials)
+        ).where(XUIClientRecord.subscription_id == sub_id)
     )
+    if xui is None or xui.inbound is None or xui.inbound.server is None:
+        raise RenewalXUISyncError("Panel mapping is missing; renewal was not charged.")
+    if xui.inbound.server.credentials is None:
+        raise RenewalXUISyncError("Panel credentials are missing.")
+    if record_is_marzban_family(xui):
+        if not (xui.panel_username or xui.username):
+            raise RenewalXUISyncError("Panel username is missing.")
+    elif not (xui.xui_client_remote_id or xui.client_uuid):
+        raise RenewalXUISyncError("Panel client identifier is missing.")
 
     # ── Savepoint: if X-UI sync fails, all DB changes auto-rollback ─────
     async with session.begin_nested():
@@ -234,20 +257,13 @@ async def apply_renewal(
                     subscription.ends_at += timedelta(days=days_to_add)
             elif renew_type == "plan":
                 if plan is not None:
-                    # Fresh-start semantics ("تمدید پلن فعلی"): the user pays
-                    # the FULL plan price — exactly like buying the plan again
-                    # — so quota AND days are RESET to the plan's values, never
-                    # stacked on the remainder. The panel traffic counter is
-                    # reset to 0 alongside (reset_usage flag in the panel sync
-                    # below), and the pre-renewal consumption rolls into
-                    # lifetime_used_bytes — the same convention as the inbound
-                    # migration path — so Total = lifetime + used stays correct
-                    # and reseller/billing stats never lose a byte.
-                    subscription.lifetime_used_bytes = (
-                        (subscription.lifetime_used_bytes or 0) + (subscription.used_bytes or 0)
+                    # Give a fresh remaining quota without resetting the remote
+                    # counter. Absolute cumulative limits are replay-safe; a
+                    # reset followed by a failed write cannot be rolled back.
+                    quota = int(plan.volume_bytes or 0)
+                    subscription.volume_bytes = (
+                        int(subscription.used_bytes or 0) + quota if quota > 0 else 0
                     )
-                    subscription.used_bytes = 0
-                    subscription.volume_bytes = int(plan.volume_bytes or 0)
                     subscription.starts_at = now_utc
                     days = int(plan.duration_days or 0)
                     # duration_days=0 means an unlimited-time plan: no expiry.
@@ -258,13 +274,10 @@ async def apply_renewal(
             if subscription.status == "expired":
                 subscription.status = "active"
 
-            # Sync with X-UI panel — if this fails, the SAVEPOINT rolls back
-            # all the DB changes above automatically.
-            if xui is not None:
-                await _sync_xui_limits(
-                    session, subscription, xui, security_settings,
-                    plan=plan, reset_usage=(renew_type == "plan"),
-                )
+            # No external writes before the wallet/database transaction commits.
+            # The worker applies this absolute desired state and retries safely.
+            from services.panel_sync import request_panel_sync
+            request_panel_sync(subscription)
 
             await session.flush()
 
@@ -272,6 +285,7 @@ async def apply_renewal(
     try:
         async with session.begin_nested():
             from sqlalchemy import delete
+
             from models.app_setting import AppSetting
             await session.execute(
                 delete(AppSetting).where(
@@ -297,10 +311,8 @@ async def _sync_xui_limits(
     Only reads COLUMN attributes from subscription (ends_at, volume_bytes,
     sub_link).  Never accesses any relationship on subscription.
 
-    `reset_usage` (plan renewals only) zeroes the panel's cumulative traffic
-    counter BEFORE pushing the new limits — the DB side already rolled the
-    pre-renewal consumption into lifetime_used_bytes, so the panel counter
-    must start from 0 for the absolute usage-sync to stay consistent.
+    Limits are cumulative absolute targets. Resetting usage is forbidden:
+    a reset cannot be replayed safely after a timeout or a worker crash.
     """
     xui_full = await session.scalar(
         select(XUIClientRecord)
@@ -312,7 +324,7 @@ async def _sync_xui_limits(
         .where(XUIClientRecord.id == xui.id)
     )
     if xui_full is None or xui_full.inbound is None or xui_full.inbound.server is None:
-        return
+        raise RenewalXUISyncError("Panel mapping is missing.")
 
     # Marzban-family panels (PasarGuard / Rebecca) renew via the user-centric API.
     if record_is_marzban_family(xui_full):
@@ -321,11 +333,8 @@ async def _sync_xui_limits(
 
     try:
         server = ensure_inbound_server_loaded(xui_full.inbound)
-        config = build_xui_client_config(server)
-        now_utc = datetime.now(timezone.utc)
-
         # Column access only — safe in async
-        if subscription.ends_at and subscription.ends_at > now_utc:
+        if subscription.ends_at is not None:
             expiry_time = int(subscription.ends_at.timestamp() * 1000)
         else:
             expiry_time = 0
@@ -351,7 +360,7 @@ async def _sync_xui_limits(
                 "Skipping X-UI limit sync for sub=%s xui=%s: no client id on record",
                 subscription.id, xui_full.id,
             )
-            return
+            raise RenewalXUISyncError("Panel client identifier is missing.")
 
         xui_client = XUIClient(
             id=client_id,
@@ -364,23 +373,17 @@ async def _sync_xui_limits(
             subId=sub_id_str,
             comment=xui_full.username or "",
         )
-        xui_full.is_active = True
-        async with SanaeiXUIClient(config) as client:
+        if subscription.status == "pending_activation":
+            xui_client.model_fields_set.discard("expiry_time")
+        async with create_xui_client_for_server(server) as client:
             if reset_usage:
-                # Plan renewal = fresh quota: zero the cumulative traffic
-                # counter FIRST, then push the new totalGB/expiry. Resetting
-                # AFTER the update would be fine too, but reset-then-update
-                # guarantees the client is enabled with fresh limits even if
-                # the update is what re-enables it.
-                await client.reset_client_traffic(
-                    inbound_id=xui_full.inbound.xui_inbound_remote_id,
-                    email=xui_full.email,
-                )
-            await client.update_client(
+                raise RenewalXUISyncError("Remote usage reset is not replay-safe.")
+            await client.patch_client(
                 inbound_id=xui_full.inbound.xui_inbound_remote_id,
                 client_id=client_id,
                 client=xui_client,
             )
+        xui_full.is_active = True
     except Exception as exc:
         logger.error("Failed to sync X-UI limits after renewal: %s", exc, exc_info=True)
         raise RenewalXUISyncError(
@@ -404,17 +407,14 @@ async def _sync_pasarguard_limits(
         (e.g. an expired sub that apply_renewal just reactivated). A still
         on_hold (pending_activation) sub gets ONLY its data_limit bumped, so its
         first-connect timer stays intact.
-      * `reset_usage` (plan renewals) zeroes the panel's usage counter so the
-        fresh quota starts from 0, matching the DB-side lifetime roll-up.
+      * Usage counters stay cumulative; absolute quota writes can be replayed.
     """
     server = xui_full.inbound.server
     username = xui_full.panel_username or xui_full.username
-    now_utc = datetime.now(timezone.utc)
-
     data_limit = int(subscription.volume_bytes) or None  # 0 => unlimited
 
     if subscription.status == "active":
-        if subscription.ends_at and subscription.ends_at > now_utc:
+        if subscription.ends_at is not None:
             expire = int(subscription.ends_at.timestamp())  # seconds
         else:
             expire = None  # unlimited duration
@@ -426,7 +426,7 @@ async def _sync_pasarguard_limits(
     try:
         async with marzban_client_for_server(server) as client:
             if reset_usage:
-                await client.reset_user_usage(username)
+                raise RenewalXUISyncError("Remote usage reset is not replay-safe.")
             await client.modify_user(username, payload)
         xui_full.is_active = True
     except Exception as exc:

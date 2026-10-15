@@ -73,7 +73,7 @@ def _build_renew_preset_keyboard(sub_id: UUID, renew_type: str) -> InlineKeyboar
 class RenewPayCallback(CallbackData, prefix="rp"):
     m: str  # method: 'w', 'n', 't', 'm', 'tr'
     s: str  # sub_id hex
-    t: str  # type: 'v' or 't'
+    t: str  # 'v' or 't'
     a: str  # amount string
 
 

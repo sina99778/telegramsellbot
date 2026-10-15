@@ -249,14 +249,13 @@ async def test_volume_renewal_leaves_used_and_lifetime_untouched(mock_session):
         ends_at=None, activated_at=None,
     )
     # plan_id None → first scalar is the XUIClientRecord lookup → no panel sync
-    mock_session.scalar = AsyncMock(return_value=None)
+    mock_session.scalar = AsyncMock(return_value=MagicMock())
 
     settings_repo = MagicMock()
     settings_repo.get_service_security_settings = AsyncMock(return_value=NS(xui_limit_ip=1))
-    with patch.object(rmod, "AppSettingsRepository", return_value=settings_repo):
-        await rmod.apply_renewal(
-            session=mock_session, subscription=sub, renew_type="volume", amount=20,
-        )
+    await rmod.apply_renewal(
+        session=mock_session, subscription=sub, renew_type="volume", amount=20,
+    )
 
     assert sub.volume_bytes == 70 * 1024**3       # quota grew by the purchase
     assert sub.used_bytes == 30 * 1024**3          # cumulative usage untouched

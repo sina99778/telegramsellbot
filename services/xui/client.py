@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -154,6 +156,37 @@ class SanaeiXUIClient:
         if api_response.success is False:
             raise XUIRequestError(api_response.msg or "Failed to add inbound client.")
         return api_response
+
+    async def patch_client(
+        self, *, inbound_id: int, client_id: str, client: XUIClient,
+        existing_settings: dict[str, Any] | None = None,
+    ) -> XUIAPIResponse[Any]:
+        """Preserve panel-owned and unknown fields on a full-map replacement."""
+        if existing_settings is None:
+            inbounds = await self.get_inbounds()
+        else:
+            # Usage sync already read this client's settings in its one batched
+            # snapshot. Reuse it instead of downloading every inbound per user.
+            inbounds = [XUIInbound(
+                id=inbound_id, protocol="vless", settings={"clients": [existing_settings]},
+            )]
+        for inbound in inbounds:
+            if inbound.id != inbound_id:
+                continue
+            if (inbound.protocol or "vless").lower() not in {"vless", "vmess"}:
+                raise XUIRequestError("Unsupported client protocol.")
+            settings = inbound.settings if isinstance(inbound.settings, dict) else {}
+            for existing in settings.get("clients", []):
+                if not isinstance(existing, dict) or str(existing.get("id")) != client_id:
+                    continue
+                changes = client.model_dump(
+                    mode="json", by_alias=True, exclude_unset=True, exclude={"uuid"},
+                )
+                merged = XUIClient.model_validate({**existing, **changes})
+                return await self.update_client(
+                    inbound_id=inbound_id, client_id=client_id, client=merged,
+                )
+        raise XUIRequestError("Panel client was not found; refusing a blind overwrite.")
 
     async def update_client(
         self,
@@ -391,6 +424,25 @@ class SanaeiXUIClient:
         self._client.headers["X-CSRF-Token"] = token
 
     async def _send(
+        self, method: str, path: str, *, idempotent: bool | None = None, **kwargs: Any
+    ) -> httpx.Response:
+        started = time.monotonic()
+        # Static operation only: do not log client UUIDs, emails or sub tokens.
+        operation = "/".join(path.strip("/").split("/")[:4])
+        try:
+            return await self._send_with_retries(method, path, idempotent=idempotent, **kwargs)
+        except Exception as exc:
+            cause = exc.__cause__ or exc
+            logging.getLogger(__name__).warning(
+                "Panel request failed operation=%s method=%s error=%s status=%s "
+                "elapsed_ms=%d auth_generation=%d tls_verify=%s",
+                operation, method, type(cause).__name__, getattr(exc, "status_code", None),
+                int((time.monotonic() - started) * 1000), self._auth_generation,
+                self._config.verify_ssl,
+            )
+            raise
+
+    async def _send_with_retries(
         self, method: str, path: str, *, idempotent: bool | None = None, **kwargs: Any
     ) -> httpx.Response:
         import asyncio

@@ -25,6 +25,7 @@ async def _heartbeat_loop() -> None:
 from apps.bot.premium_bot import IPv4AiohttpSession, PremiumEmojiBot
 from apps.worker.jobs.broadcast import process_broadcast_queue
 from apps.worker.jobs.payments import sync_pending_payments
+from apps.worker.jobs.panel_sync import sync_pending_panel_states
 from apps.worker.jobs.retargeting import process_retargeting_campaigns
 from apps.worker.jobs.subscriptions import sync_all_subscription_states
 from apps.worker.jobs.expiry_notifications import send_expiry_notifications
@@ -63,6 +64,10 @@ async def main() -> None:
     )
 
     scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        sync_pending_panel_states, "interval", seconds=15,
+        max_instances=1, coalesce=True,
+    )
     scheduler.add_job(
         sync_pending_payments, "interval", minutes=3,
         max_instances=1, coalesce=True,
@@ -136,8 +141,8 @@ async def main() -> None:
     )
     scheduler.add_job(
         run_reconciliation_job,
-        "cron",
-        hour="*/3",
+        "interval",
+        minutes=2,
         minute=45,
         kwargs={"bot": bot},
         max_instances=1,

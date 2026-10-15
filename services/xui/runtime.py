@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import ipaddress
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from services.panels.pool import PoolEntry
@@ -48,6 +49,8 @@ def build_sub_link(server: XUIServerRecord, sub_id: str) -> str:
     if scheme not in {"http", "https"}:
         scheme = "http"
 
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
     sub_port = server.subscription_port
     # 3x-ui's subscription path ("subPath") is configurable per panel.
     # Honour XUI_SUB_PATH from .env (see core.config.settings.xui_sub_path);
@@ -77,6 +80,8 @@ def build_vless_uri(
 
     port = inbound.port or 443
     protocol = (inbound.protocol or "vless").lower()
+    if protocol not in {"vless", "vmess"}:
+        raise ValueError(f"Unsupported inbound protocol: {protocol}")
 
     # Read stream settings from inbound metadata
     meta = inbound.metadata_ or {}
@@ -198,7 +203,7 @@ def build_vless_uri(
             ext_port = first_proxy.get("port", None)
             if ext_dest:
                 # External proxy dest is the actual address clients connect to
-                host = ext_dest.split(":")[0] if ":" in ext_dest else ext_dest
+                host = _extract_host(ext_dest)
             if ext_port:
                 port = int(ext_port)
 
@@ -219,7 +224,8 @@ def build_vless_uri(
     query = urlencode(params, safe="/:@,")
 
     if protocol == "vless":
-        return f"vless://{client_uuid}@{host}:{port}?{query}#{quote(remark)}"
+        uri_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        return f"vless://{client_uuid}@{uri_host}:{port}?{query}#{quote(remark)}"
     elif protocol == "vmess":
         import base64, json as json_mod
         payload = {
@@ -250,21 +256,27 @@ def _extract_host(base_url: str) -> str:
     http://1.2.3.4:54321/xui  →  1.2.3.4
     http://example.com:8080   →  example.com
     """
-    # Strip scheme
-    url = re.sub(r"^https?://", "", base_url.strip())
-    # Take only the host:port part (before first /)
-    host_port = url.split("/")[0]
-    # Strip port
-    host = host_port.split(":")[0]
-    return host
+    raw = base_url.strip()
+    try:
+        return str(ipaddress.ip_address(raw))
+    except ValueError:
+        pass
+    parsed = urlparse(raw if "://" in raw else "//" + raw)
+    if not parsed.hostname:
+        raise ValueError("Panel hostname is missing")
+    return parsed.hostname
 
 
 def _split_optional_scheme(value: str) -> tuple[str | None, str]:
     raw = value.strip()
-    if raw.lower().startswith(("http://", "https://")):
-        parsed = urlparse(raw)
-        return parsed.scheme.lower(), parsed.hostname or _extract_host(raw)
-    return None, raw.split("/")[0].split(":")[0]
+    try:
+        return None, str(ipaddress.ip_address(raw))
+    except ValueError:
+        pass
+    parsed = urlparse(raw if "://" in raw else "//" + raw)
+    if not parsed.hostname:
+        raise ValueError("Subscription hostname is missing")
+    return (parsed.scheme.lower() or None), parsed.hostname
 
 
 def build_xui_client_config(server: XUIServerRecord) -> XUIClientConfig:

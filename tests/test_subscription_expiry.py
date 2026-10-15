@@ -15,7 +15,7 @@ class FakeXUIClient:
         self.calls = []
         self.ips = ips or []
 
-    async def update_client(self, *, inbound_id, client_id, client):
+    async def patch_client(self, *, inbound_id, client_id, client):
         self.calls.append(
             {
                 "inbound_id": inbound_id,

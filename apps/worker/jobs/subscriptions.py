@@ -217,11 +217,12 @@ async def sync_xui_usage_and_status(
             subscription.status = "active"
             subscription.activated_at = now
             subscription.starts_at = now
-            subscription.ends_at = now + timedelta(days=plan_duration_days)
+            subscription.ends_at = (now + timedelta(days=plan_duration_days)) if plan_duration_days > 0 else None
             await _update_xui_expiry_on_activation(
                 xui_client,
                 subscription,
                 limit_ip=security_settings.xui_limit_ip,
+                existing_settings=panel_client,
             )
             logger.info(
                 "[SYNC] Subscription %s activated (first_use) — ends_at=%s",
@@ -458,6 +459,8 @@ async def sync_all_subscription_states() -> None:
 
         grouped_by_server: dict[str, list[Subscription]] = {}
         for subscription in subscriptions:
+            if subscription.panel_sync_pending is True:
+                continue
             xui_record = subscription.xui_client
             if xui_record is None or xui_record.inbound is None:
                 continue
@@ -536,7 +539,7 @@ async def _reset_client_uuid(
         comment=f"uuid_reset:{subscription.id}",
     )
     try:
-        await xui_client.update_client(
+        await xui_client.patch_client(
             inbound_id=xui_record.inbound.xui_inbound_remote_id,
             client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
             client=updated_client,
@@ -620,7 +623,7 @@ async def _expire_subscription_in_xui(
         comment=f"expired:{reason}:{subscription.id}",
     )
     try:
-        await xui_client.update_client(
+        await xui_client.patch_client(
             inbound_id=xui_record.inbound.xui_inbound_remote_id,
             client_id=old_client_id,
             client=expired_client,
@@ -669,7 +672,7 @@ async def _disable_client_in_xui(
         comment=f"expired:{subscription.id}",
     )
     try:
-        await xui_client.update_client(
+        await xui_client.patch_client(
             inbound_id=xui_record.inbound.xui_inbound_remote_id,
             client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
             client=disabled_client,
@@ -683,6 +686,7 @@ async def _update_xui_expiry_on_activation(
     subscription: Subscription,
     *,
     limit_ip: int = 1,
+    existing_settings: dict | None = None,
 ) -> None:
     """Update X-UI client expiryTime when a first_use subscription is activated."""
     xui_record = subscription.xui_client
@@ -707,17 +711,22 @@ async def _update_xui_expiry_on_activation(
         comment=f"activated:{subscription.id}",
     )
     try:
-        await xui_client.update_client(
+        await xui_client.patch_client(
             inbound_id=xui_record.inbound.xui_inbound_remote_id,
             client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
             client=activated_client,
+            existing_settings=existing_settings,
         )
         logger.info("[SYNC] X-UI expiry updated for '%s' — expiry_ms=%s", xui_record.email, expiry_ms)
     except XUIClientError as exc:
+        from services.panel_sync import request_panel_sync
+        request_panel_sync(subscription)
         logger.warning("[SYNC] Failed to update X-UI expiry for '%s': %s", xui_record.email, exc)
 
 async def get_realtime_usage(session: AsyncSession, subscription: Subscription) -> dict | None:
     """Fetch real-time usage from X-UI panel for a single subscription."""
+    if subscription.panel_sync_pending is True:
+        return None
     xui_record = subscription.xui_client
     if xui_record is None or xui_record.inbound_id is None:
         logger.warning("[REALTIME] No xui_record or inbound_id for sub %s", subscription.id)
@@ -804,7 +813,7 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
                 )
                 # Update X-UI panel with the real expiry time
                 try:
-                    await xui_client.update_client(
+                    await xui_client.patch_client(
                         inbound_id=inbound.xui_inbound_remote_id,
                         client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
                         client=XUIClient(

@@ -500,8 +500,12 @@ function healthLabel(s: string): string {
             <input
               v-model="createForm.sub_domain"
               class="input"
-              placeholder="sub.example.com"
+              placeholder="https://sub.example.com"
             />
+            <p v-if="!createForm.sub_domain.toLowerCase().startsWith('https://')"
+               class="text-xs text-amber-300 mt-1">
+              برای محافظت از اطلاعات اشتراک، آدرس HTTPS با گواهی معتبر وارد کنید؛ HTTPS پنل به‌تنهایی ساب را امن نمی‌کند.
+            </p>
           </div>
           <div>
             <label class="label">پورت sub</label>
@@ -595,8 +599,12 @@ function healthLabel(s: string): string {
             <input
               v-model="editForm.sub_domain"
               class="input"
-              placeholder="sub.example.com"
+              placeholder="https://sub.example.com"
             />
+            <p v-if="!editForm.sub_domain.toLowerCase().startsWith('https://')"
+               class="text-xs text-amber-300 mt-1">
+              برای محافظت از اطلاعات اشتراک، آدرس HTTPS با گواهی معتبر وارد کنید؛ HTTPS پنل به‌تنهایی ساب را امن نمی‌کند.
+            </p>
           </div>
           <div>
             <label class="label">پورت sub</label>

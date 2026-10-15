@@ -48,6 +48,8 @@ def get_redis() -> aioredis.Redis:
                 settings.redis_url,
                 max_connections=settings.redis_max_connections,
                 timeout=settings.redis_pool_timeout,
+                socket_connect_timeout=5,
+                socket_timeout=5,
                 encoding="utf-8",
                 decode_responses=True,
                 health_check_interval=30,

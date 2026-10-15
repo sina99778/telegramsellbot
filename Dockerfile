@@ -26,7 +26,7 @@ RUN "${VENV_PATH}/bin/pip" install .
 
 # ─── Stage 2: Vue 3 dashboard build ─────────────────────────────────────
 # Built separately so a Python-only change doesn't trigger an npm install.
-FROM node:20-alpine AS dashboard-builder
+FROM node:24-alpine AS dashboard-builder
 
 WORKDIR /dashboard
 

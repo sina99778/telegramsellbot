@@ -21,6 +21,8 @@ class SubscriptionView(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
     status: str
+    panel_sync_pending: bool = False
+    panel_sync_error: str | None = None
     used_bytes: int
     volume_bytes: int
     sub_link: str | None

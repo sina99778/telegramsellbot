@@ -24,6 +24,8 @@ export interface UserListResponse {
 export interface UserSubscription {
   id: string;
   status: string;
+  panel_sync_pending: boolean;
+  panel_sync_error: string | null;
   source: string | null;
   name: string;
   volume_bytes: number;

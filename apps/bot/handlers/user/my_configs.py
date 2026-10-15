@@ -931,7 +931,7 @@ async def reset_uuid_handler(
     try:
         server = ensure_inbound_server_loaded(xui_record.inbound)
         async with create_xui_client_for_server(server) as xui_client:
-            await xui_client.update_client(
+            await xui_client.patch_client(
                 inbound_id=xui_record.inbound.xui_inbound_remote_id,
                 client_id=old_client_id,
                 client=updated_client,
@@ -1118,7 +1118,7 @@ async def toggle_enable_handler(
     try:
         server = ensure_inbound_server_loaded(xui_record.inbound)
         async with create_xui_client_for_server(server) as xui_client:
-            await xui_client.update_client(
+            await xui_client.patch_client(
                 inbound_id=xui_record.inbound.xui_inbound_remote_id,
                 client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
                 client=updated_client,

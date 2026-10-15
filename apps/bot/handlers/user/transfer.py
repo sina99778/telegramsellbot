@@ -127,7 +127,7 @@ async def _rotate_config_identity_for_transfer(
             sub.sub_link = new_sub_link
             await session.flush()
             async with create_xui_client_for_server(server) as xui_client:
-                await xui_client.update_client(
+                await xui_client.patch_client(
                     inbound_id=xui_record.inbound.xui_inbound_remote_id,
                     client_id=old_client_id,
                     client=updated_client,

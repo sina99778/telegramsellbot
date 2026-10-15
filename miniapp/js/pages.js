@@ -254,7 +254,9 @@ const Pages = (() => {
         const days = UI.daysLeft(sub.ends_at);
         const isExpired = sub.status === 'expired' || sub.status === 'disabled' || days === 0 || pct >= 100;
         let warning = '';
-        if (isExpired) {
+        if (sub.panel_sync_pending) {
+            warning = 'درخواست ثبت شده و تغییرات روی پنل در حال اعمال است.';
+        } else if (isExpired) {
             warning = 'این سرویس به پایان رسیده و دسترسی آن باید قطع باشد.';
         } else if (pct >= 90) {
             warning = 'حجم سرویس رو به پایان است.';
@@ -264,7 +266,7 @@ const Pages = (() => {
         return {
             pct,
             pctClass: UI.getProgressClass(pct),
-            statusText: UI.getStatusText(isExpired && sub.status === 'active' ? 'expired' : sub.status),
+            statusText: sub.panel_sync_pending ? 'در انتظار پنل' : UI.getStatusText(isExpired && sub.status === 'active' ? 'expired' : sub.status),
             statusClass: UI.getStatusClass(isExpired ? 'expired' : sub.status),
             remainingBytes,
             daysLabel: formatDaysLeft(days),
