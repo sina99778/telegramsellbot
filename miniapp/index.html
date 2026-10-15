@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <meta name="theme-color" content="#070611">
-    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#f6f8fb">
+    <meta name="color-scheme" content="light">
     <title>V2rays Emergency</title>
 
     <!-- Vazirmatn from jsDelivr (reachable in Iran without a VPN).
@@ -15,12 +15,10 @@
 
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css">
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <link rel="stylesheet" href="/miniapp/css/app.css?v=v18-20260602">
+    <link rel="stylesheet" href="/miniapp/css/app.css?v=v19-20261015">
 </head>
 <body>
     <div id="app">
-        <div class="ambient-bg" aria-hidden="true"></div>
-
         <!-- Loading screen — shown until app.js finishes hydration -->
         <div id="loading-screen" class="loading-screen" role="status" aria-live="polite">
             <div class="loading-spinner" aria-hidden="true"></div>
@@ -33,52 +31,53 @@
                 <div class="user-info">
                     <div class="user-avatar" id="user-avatar" aria-hidden="true">U</div>
                     <div class="user-details">
-                        <span class="app-kicker">V2rays Emergency</span>
+                        <span class="app-kicker">حساب کاربری · V2rays</span>
                         <span class="user-name" id="user-name">کاربر</span>
                         <span class="user-balance" id="user-balance">$0.00</span>
                     </div>
                 </div>
+                <div class="header-actions">
+                <button class="btn btn-ghost btn-icon-only" id="header-more" aria-label="گزینه‌های بیشتر" onclick="Pages.showMore()">
+                    <span data-icon="sliders"></span>
+                </button>
                 <button class="btn btn-ghost btn-icon-only"
                         id="header-refresh"
                         aria-label="بروزرسانی"
-                        onclick="UI.navigate(document.querySelector('.nav-btn.active')?.dataset.page || 'dashboard')">
+                        onclick="UI.refresh(this)">
                     <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
                          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                         <path d="M21 2v6h-6"/><path d="M3 12a9 9 0 1 0 2.13-5.88L21 8"/>
                     </svg>
                 </button>
+                </div>
             </div>
         </header>
 
         <!-- Pages -->
         <main id="main-content" class="main-content hidden">
+            <div id="connection-notice" class="connection-notice hidden" role="status">اتصال اینترنت قطع است. پس از اتصال، دوباره بروزرسانی کنید.</div>
 
             <!-- ── Dashboard ────────────────────────────────────────────── -->
             <section id="page-dashboard" class="page active">
                 <div class="page-scroll">
-                    <div class="home-hero">
-                        <div>
-                            <span class="home-eyebrow">پنل کاربری</span>
-                            <h1>مدیریت سریع سرویس‌ها</h1>
-                            <p>خرید، تمدید، کیف پول و پشتیبانی در یک تجربه‌ی یکپارچه و سریع.</p>
-                        </div>
-                    </div>
+                    <div class="page-heading"><div><span class="eyebrow">همه‌چیز در یک نگاه</span><h1>خانه</h1></div><span id="last-updated" class="updated-label" role="status"></span></div>
+                    <div class="home-hero" id="home-summary"><div class="skeleton" style="height:120px"></div></div>
 
                     <div class="quick-actions" id="quick-actions">
                         <button class="quick-action" onclick="UI.navigate('store')">
-                            <span>🛒</span><strong>خرید سرویس</strong>
+                            <span data-icon="plus"></span><strong>سرویس جدید</strong>
                         </button>
-                        <button class="quick-action" onclick="UI.navigate('wallet')">
-                            <span>💳</span><strong>شارژ حساب</strong>
+                        <button class="quick-action" onclick="Pages.showGuide()">
+                            <span data-icon="share"></span><strong>راهنمای اتصال</strong>
                         </button>
                         <button class="quick-action" onclick="UI.navigate('support')">
-                            <span>💬</span><strong>پشتیبانی</strong>
+                            <span data-icon="support"></span><strong>پشتیبانی</strong>
                         </button>
                     </div>
 
                     <div class="stats-grid" id="stats-grid"></div>
 
-                    <h3 class="section-title"><span data-icon="configs"></span> سرویس‌های فعال</h3>
+                    <div class="section-heading"><h2>سرویس‌های شما</h2><button class="text-button" onclick="UI.navigate('configs')">مشاهده همه ‹</button></div>
                     <div id="configs-list" class="configs-list"></div>
                 </div>
             </section>
@@ -86,7 +85,7 @@
             <!-- ── Store ─────────────────────────────────────────────────── -->
             <section id="page-store" class="page">
                 <div class="page-scroll">
-                    <h3 class="section-title"><span data-icon="store"></span> فروشگاه پلن‌ها</h3>
+                    <div class="page-heading"><div><span class="eyebrow">یک سرویس تازه</span><h1>خرید سرویس</h1><p>حجم و زمان مناسب خودتان را انتخاب کنید.</p></div></div>
                     <div id="plans-list" class="plans-grid"></div>
                 </div>
             </section>
@@ -94,7 +93,16 @@
             <!-- ── My Configs ────────────────────────────────────────────── -->
             <section id="page-configs" class="page">
                 <div class="page-scroll">
-                    <h3 class="section-title"><span data-icon="configs"></span> سرویس‌های من</h3>
+                    <div class="page-heading"><div><span class="eyebrow">اتصال‌های شما</span><h1>سرویس‌های من</h1><p>حجم، اعتبار و لینک اتصال هر سرویس.</p></div></div>
+                    <div class="service-tools">
+                        <label class="search-field"><span data-icon="search"></span><input id="config-search" type="search" placeholder="جست‌وجوی نام سرویس یا پلن" aria-label="جست‌وجو در سرویس‌های این صفحه" oninput="Pages.filterConfigs()"></label>
+                        <div class="filter-tabs" role="group" aria-label="فیلتر سرویس‌های این صفحه">
+                            <button class="filter-tab active" data-filter="all" aria-pressed="true" onclick="Pages.filterConfigs('all')">همه</button>
+                            <button class="filter-tab" data-filter="active" aria-pressed="false" onclick="Pages.filterConfigs('active')">فعال</button>
+                            <button class="filter-tab" data-filter="attention" aria-pressed="false" onclick="Pages.filterConfigs('attention')">نیاز به توجه</button>
+                        </div>
+                        <p id="config-results" class="form-hint" role="status"></p>
+                    </div>
                     <div id="all-configs-list" class="configs-list"></div>
                 </div>
             </section>
@@ -102,6 +110,7 @@
             <!-- ── Wallet ────────────────────────────────────────────────── -->
             <section id="page-wallet" class="page">
                 <div class="page-scroll">
+                    <div class="page-heading"><div><span class="eyebrow">پرداخت و موجودی</span><h1>کیف پول</h1></div></div>
                     <div class="wallet-card" id="wallet-card"></div>
                     <h3 class="section-title"><span data-icon="wallet"></span> وضعیت پرداخت‌ها</h3>
                     <div id="payments-list" class="payments-list"></div>
@@ -113,7 +122,7 @@
             <!-- ── Support ───────────────────────────────────────────────── -->
             <section id="page-support" class="page">
                 <div class="page-scroll support-page-scroll">
-                    <h3 class="section-title"><span data-icon="support"></span> پشتیبانی</h3>
+                    <div class="page-heading"><div><span class="eyebrow">در کنارتان هستیم</span><h1>پشتیبانی</h1><p>پیام‌ها و پاسخ‌های تیم پشتیبانی را اینجا دنبال کنید.</p></div></div>
                     <div id="tickets-container" class="tickets-container"></div>
                     <div class="ticket-input-area">
                         <textarea id="ticket-input" placeholder="پیام خود را اینجا بنویسید…" rows="1" aria-label="متن پیام"></textarea>
@@ -154,7 +163,7 @@
             </button>
             <button class="nav-btn" data-page="store" aria-label="فروشگاه">
                 <span class="nav-icon" data-icon="store"></span>
-                <span class="nav-label">فروشگاه</span>
+                <span class="nav-label">خرید</span>
             </button>
             <button class="nav-btn" data-page="configs" aria-label="سرویس‌ها">
                 <span class="nav-icon" data-icon="configs"></span>
@@ -168,14 +177,6 @@
                 <span class="nav-icon" data-icon="support"></span>
                 <span class="nav-label">پشتیبانی</span>
             </button>
-            <button class="nav-btn" data-page="referral" aria-label="دعوت دوستان">
-                <span class="nav-icon" data-icon="users"></span>
-                <span class="nav-label">دعوت</span>
-            </button>
-            <button id="admin-nav-btn" class="nav-btn hidden" data-page="admin" aria-label="مدیریت">
-                <span class="nav-icon" data-icon="admin"></span>
-                <span class="nav-label">مدیریت</span>
-            </button>
         </nav>
     </div>
 
@@ -184,9 +185,10 @@
         <div class="modal-content" id="modal-content"></div>
     </div>
 
-    <script src="/miniapp/js/api.js?v=v18-20260602"></script>
-    <script src="/miniapp/js/ui.js?v=v18-20260602"></script>
-    <script src="/miniapp/js/pages.js?v=v18-20260602"></script>
-    <script src="/miniapp/js/app.js?v=v18-20260602"></script>
+    <script src="/miniapp/js/api.js?v=v19-20261015"></script>
+    <script src="/miniapp/js/subscriptions.js?v=v19-20261015"></script>
+    <script src="/miniapp/js/ui.js?v=v19-20261015"></script>
+    <script src="/miniapp/js/pages.js?v=v19-20261015"></script>
+    <script src="/miniapp/js/app.js?v=v19-20261015"></script>
 </body>
 </html>

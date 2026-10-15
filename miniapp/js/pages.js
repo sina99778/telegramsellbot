@@ -144,11 +144,18 @@ const Pages = (() => {
             dashboardData = await API.getDashboard();
             renderDashboard(dashboardData);
         } catch (e) {
-            UI.toast('خطا در بارگذاری: ' + e.message, 'error');
+            UI.loadError('stats-grid', 'dashboard', e.message);
+            document.getElementById('last-updated').textContent = dashboardData ? 'دریافت تازه ناموفق' : '';
+            if (!dashboardData) {
+                document.getElementById('home-summary').innerHTML = '<p>برای دیدن موجودی، دوباره تلاش کنید.</p>';
+                document.getElementById('configs-list').innerHTML = '<div class="empty-state"><p>اطلاعات سرویس‌ها دریافت نشده است.</p></div>';
+            }
         }
     }
 
     function renderDashboard(data) {
+        const latest = new Map((data.subscriptions || []).map(sub => [sub.id, sub]));
+        configsCache = configsCache.map(sub => latest.get(sub.id) || sub);
         window.AppState = data;
         salesEnabled = data.sales_enabled !== false;
         renewalsEnabled = data.renewals_enabled !== false;
@@ -170,65 +177,26 @@ const Pages = (() => {
         document.getElementById('user-balance').textContent = `$${UI.formatMoney(data.wallet.balance)}`;
         document.getElementById('user-avatar').textContent = (data.first_name || 'U')[0].toUpperCase();
 
-        // ── Quick actions (3 columns, icon + label) ──
-        const quickActionsEl = document.getElementById('quick-actions');
-        if (quickActionsEl) {
-            const buyOrManage = (salesEnabled || isAdmin)
-                ? `<button class="quick-action" onclick="UI.navigate('store')"><span>🛒</span><strong>خرید سرویس</strong></button>`
-                : `<button class="quick-action" onclick="UI.navigate('configs')"><span>📋</span><strong>سرویس‌های من</strong></button>`;
-            quickActionsEl.innerHTML = `
-                ${buyOrManage}
-                <button class="quick-action" onclick="UI.navigate('wallet')"><span>💳</span><strong>شارژ حساب</strong></button>
-                <button class="quick-action" onclick="UI.navigate('support')"><span>💬</span><strong>پشتیبانی</strong></button>
-            `;
-        }
-
-        // ── Stats grid ──
-        // Layout: row 1 → [active count] [balance]
-        //         row 2 → [usage card spanning both columns]
-        const usagePct = UI.getUsagePercent(data.total_volume_used, data.total_volume);
-        const usageClass = usagePct >= 90 ? 'danger' : usagePct >= 75 ? 'warn' : '';
-        // Mirror the progress-bar tone on the big headline percent.
-        const usageHeadlineClass = usagePct >= 90 ? 'is-danger' : usagePct >= 75 ? 'is-warn' : '';
-        const banners = [
-            (!salesEnabled && !isAdmin)
-                ? '<div class="config-warning danger wide">⛔ فروش سرویس موقتاً غیرفعال است.</div>'
-                : '',
-            (!renewalsEnabled && !isAdmin)
-                ? '<div class="config-warning wide">⏸ تمدید سرویس موقتاً غیرفعال است.</div>'
-                : '',
-        ].filter(Boolean).join('');
-
+        document.getElementById('last-updated').textContent = 'دریافت: ' + new Date().toLocaleTimeString('fa-IR', {hour:'2-digit', minute:'2-digit'});
+        document.getElementById('home-summary').innerHTML = `
+            <div class="home-wallet-top"><span>${UI.icon('wallet')} موجودی کیف پول</span><span class="currency-tag">USD</span></div>
+            <div class="home-wallet-bottom"><strong class="home-balance" dir="ltr">$${UI.formatMoney(data.wallet.balance)}</strong><button class="btn btn-primary" onclick="UI.navigate('wallet')">${UI.icon('plus')} شارژ حساب</button></div>
+            <p>برای خرید و تمدید سرویس‌های شما</p>`;
+        document.getElementById('quick-actions').innerHTML = `
+            <button class="quick-action" onclick="UI.navigate('${salesEnabled || isAdmin ? 'store' : 'configs'}')"><span>${UI.icon(salesEnabled || isAdmin ? 'plus' : 'configs')}</span><strong>${salesEnabled || isAdmin ? 'سرویس جدید' : 'سرویس‌های من'}</strong></button>
+            <button class="quick-action" onclick="Pages.showGuide()"><span>${UI.icon('share')}</span><strong>راهنمای اتصال</strong></button>
+            <button class="quick-action" onclick="UI.navigate('support')"><span>${UI.icon('support')}</span><strong>پشتیبانی</strong></button>`;
+        const subs = data.subscriptions || [];
+        const attention = subs.filter(s => SubscriptionUI.health(s).needsAttention).length;
         document.getElementById('stats-grid').innerHTML = `
-            ${banners}
-            <div class="stat-card">
-                <div class="stat-label">سرویس فعال</div>
-                <div class="stat-value">${(data.active_config_count || 0)}</div>
-                <div class="stat-hint">از مجموع سرویس‌های شما</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">موجودی کیف پول</div>
-                <div class="stat-value">$${UI.formatMoney(data.wallet.balance)}</div>
-                <div class="stat-hint">قابل خرج برای خرید/تمدید</div>
-            </div>
-            <div class="stat-card wide">
-                <div class="row-between">
-                    <div>
-                        <div class="stat-label">حجم خریداری‌شده</div>
-                        <div class="stat-value stat-value--compact">${UI.formatBytes(data.total_volume_used)}</div>
-                        <div class="stat-hint stat-hint--ltr">از ${UI.formatBytes(data.total_volume)} (شامل منقضی)</div>
-                    </div>
-                    <div class="usage-headline ${usageHeadlineClass}">${usagePct}<span class="pct-unit">%</span></div>
-                </div>
-                <div class="progress-bar-container stat-progress">
-                    <div class="progress-bar ${usageClass}" style="width:${usagePct}%"></div>
-                </div>
-            </div>
-        `;
+            ${!salesEnabled && !isAdmin ? '<div class="config-warning danger wide">فروش سرویس موقتاً غیرفعال است.</div>' : ''}
+            ${!renewalsEnabled && !isAdmin ? '<div class="config-warning wide">تمدید سرویس موقتاً غیرفعال است.</div>' : ''}
+            <div class="stat-card"><span class="stat-label">سرویس فعال</span><strong class="stat-value">${UI.toPersianDigits(data.active_config_count || 0)}</strong><span class="stat-hint">از مجموع سرویس‌های شما</span></div>
+            <div class="stat-card ${attention ? 'attention-stat' : ''}"><span class="stat-label">نیاز به توجه</span><strong class="stat-value">${UI.toPersianDigits(attention)}</strong><span class="stat-hint">در سرویس‌های این خلاصه</span></div>`;
 
         // ── Active configs (max 5 on dashboard; full list lives on /configs) ──
         const activeSubs = (data.subscriptions || [])
-            .filter(s => s.status === 'active' || s.status === 'pending_activation')
+            .filter(s => s.status === 'active' || s.status === 'pending_activation' || s.panel_sync_pending)
             .slice(0, 5);
         const container = document.getElementById('configs-list');
 
@@ -236,9 +204,9 @@ const Pages = (() => {
             container.innerHTML = `
                 <div class="empty-state">
                     <div class="empty-icon">${UI.icon('package')}</div>
-                    <p>هنوز سرویسی ندارید</p>
-                    <p class="empty-hint">برای شروع، اولین کانفیگ خود را خریداری کنید.</p>
-                    <button class="btn btn-primary" onclick="UI.navigate('store')">${UI.icon('plus')} خرید اولین سرویس</button>
+                    <p>در این خلاصه سرویس فعالی ندارید</p>
+                    <p class="empty-hint">سرویس‌های قبلی را در بخش سرویس‌ها ببینید یا یک سرویس جدید بخرید.</p>
+                    <button class="btn btn-secondary" onclick="UI.navigate('configs')">مشاهده همه سرویس‌ها</button>
                 </div>`;
             return;
         }
@@ -247,33 +215,7 @@ const Pages = (() => {
     }
 
     function getConfigHealth(sub) {
-        const pct = UI.getUsagePercent(sub.used_bytes, sub.volume_bytes);
-        const remainingBytes = Math.max((sub.volume_bytes || 0) - (sub.used_bytes || 0), 0);
-        // UI.daysLeft() returns Number|null — compare numerically (0 = time
-        // elapsed, 1 = less than one day left thanks to Math.ceil).
-        const days = UI.daysLeft(sub.ends_at);
-        const isExpired = sub.status === 'expired' || sub.status === 'disabled' || days === 0 || pct >= 100;
-        let warning = '';
-        if (sub.panel_sync_pending) {
-            warning = 'درخواست ثبت شده و تغییرات روی پنل در حال اعمال است.';
-        } else if (isExpired) {
-            warning = 'این سرویس به پایان رسیده و دسترسی آن باید قطع باشد.';
-        } else if (pct >= 90) {
-            warning = 'حجم سرویس رو به پایان است.';
-        } else if (days === 1) {
-            warning = 'کمتر از یک روز تا پایان سرویس باقی مانده است.';
-        }
-        return {
-            pct,
-            pctClass: UI.getProgressClass(pct),
-            statusText: sub.panel_sync_pending ? 'در انتظار پنل' : UI.getStatusText(isExpired && sub.status === 'active' ? 'expired' : sub.status),
-            statusClass: UI.getStatusClass(isExpired ? 'expired' : sub.status),
-            remainingBytes,
-            daysLabel: formatDaysLeft(days),
-            isExpired,
-            isNearLimit: pct >= 90,
-            warning,
-        };
+        return SubscriptionUI.health(sub);
     }
 
     function renderConfigCard(sub, showActions = false) {
@@ -288,10 +230,10 @@ const Pages = (() => {
         const safeSubLink = sub.sub_link ? encodeJsArg(sub.sub_link) : '';
 
         return `
-            <div class="${cardClass}" onclick="Pages.showConfigDetail('${sub.id}')">
+            <div class="${cardClass}">
                 <div class="config-top">
                     <div class="usage-ring ${health.pctClass}" style="--pct:${health.pct}">
-                        <b>${health.pct}%</b><span>مصرف</span>
+                        <b>${health.unlimited ? '∞' : health.pct + '%'}</b><span>${health.unlimited ? 'نامحدود' : 'مصرف'}</span>
                     </div>
                     <div class="config-top-info">
                         <div class="config-header">
@@ -299,16 +241,16 @@ const Pages = (() => {
                             <span class="config-status ${health.statusClass}">${health.statusText}</span>
                         </div>
                         <div class="config-meta-row">
-                            <span>حجم <b>${UI.formatBytes(sub.used_bytes)} / ${UI.formatBytes(sub.volume_bytes)}</b></span>
+                            <span>باقی‌مانده <b>${health.unlimited ? 'نامحدود' : UI.formatBytes(health.remainingBytes)}</b></span>
                             <span>زمان <b>${escapeHtml(health.daysLabel)}</b></span>
                         </div>
                     </div>
                 </div>
 
-                ${health.warning ? `<div class="config-warning ${health.isExpired ? 'danger' : ''}">${health.warning}</div>` : ''}
+                ${health.warning ? `<div class="config-warning ${health.isExpired && !health.pending ? 'danger' : ''}">${health.warning}</div>` : ''}
 
-                <div class="config-actions" onclick="event.stopPropagation()">
-                    ${(renewalsEnabled && !health.isExpired) ? `<button class="btn btn-primary btn-sm" onclick="Pages.showRenewal('${sub.id}')">${UI.icon('refresh')} تمدید</button>` : ''}
+                <div class="config-actions">
+                    ${((renewalsEnabled || isAdmin) && !health.pending && sub.status !== 'disabled') ? `<button class="btn btn-primary btn-sm" onclick="Pages.showRenewal('${sub.id}')">${UI.icon('refresh')} تمدید</button>` : ''}
                     ${sub.sub_link ? `<button class="btn btn-secondary btn-sm" onclick="UI.copyToClipboard(decodeURIComponent('${safeSubLink}'))">${UI.icon('copy')} کپی لینک</button>` : ''}
                     <button class="btn btn-ghost btn-sm" onclick="Pages.showConfigDetail('${sub.id}')">${UI.icon('info')} جزئیات</button>
                 </div>
@@ -325,8 +267,8 @@ const Pages = (() => {
      */
     function showConfigDetail(subId) {
         const sub = [
-            ...(dashboardData?.subscriptions || []),
             ...configsCache,
+            ...(dashboardData?.subscriptions || []),
         ].find(s => s.id === subId);
         if (!sub) return;
 
@@ -376,13 +318,13 @@ const Pages = (() => {
         UI.showModal(`
             <div class="modal-title">${UI.icon('configs')} ${escapeHtml(name)}</div>
             <div class="modal-pct">
-                <div class="modal-pct__value">${pct}%</div>
-                <div class="modal-pct__label">مصرف شده</div>
+                <div class="modal-pct__value">${health.unlimited ? '∞' : pct + '%'}</div>
+                <div class="modal-pct__label">${health.unlimited ? 'حجم نامحدود' : 'مصرف شده'}</div>
             </div>
             <div class="progress-bar-container" style="margin-bottom:16px">
                 <div class="progress-bar-fill ${UI.getProgressClass(pct)}" style="width:${pct}%"></div>
             </div>
-            ${health.warning ? `<div class="config-warning ${health.isExpired ? 'danger' : ''}" style="margin-bottom:12px">${health.warning}</div>` : ''}
+            ${health.warning ? `<div class="config-warning ${health.isExpired && !health.pending ? 'danger' : ''}" style="margin-bottom:12px">${health.warning}</div>` : ''}
             <div class="modal-stats-grid">
                 <div>
                     <span>وضعیت</span>
@@ -390,13 +332,13 @@ const Pages = (() => {
                 </div>
                 <div><span>باقیمانده</span><strong>${health.daysLabel}</strong></div>
                 <div><span>مصرف</span><strong>${UI.formatBytes(sub.used_bytes)}</strong></div>
-                <div><span>کل حجم</span><strong>${UI.formatBytes(sub.volume_bytes)}</strong></div>
-                <div><span>باقی‌مانده حجم</span><strong>${UI.formatBytes(health.remainingBytes)}</strong></div>
-                <div><span>پلن</span><strong>${sub.plan_name || '-'}</strong></div>
+                <div><span>کل حجم</span><strong>${health.unlimited ? 'نامحدود' : UI.formatBytes(sub.volume_bytes)}</strong></div>
+                <div><span>باقی‌مانده حجم</span><strong>${health.unlimited ? 'نامحدود' : UI.formatBytes(health.remainingBytes)}</strong></div>
+                <div><span>پلن</span><strong>${escapeHtml(sub.plan_name || '-')}</strong></div>
                 <div><span>شروع</span><strong>${UI.formatDate(sub.starts_at)}</strong></div>
             </div>
             ${linkSection}
-            ${(renewalsEnabled || isAdmin) ? `<button class="btn btn-primary btn-block" style="margin-top:16px" onclick="Pages.showRenewal('${sub.id}')">تمدید سرویس</button>` : '<div class="config-warning" style="margin-top:16px;text-align:center">⏸ تمدید موقتاً غیرفعال است</div>'}
+            ${((renewalsEnabled || isAdmin) && !health.pending && sub.status !== 'disabled') ? `<button class="btn btn-primary btn-block" style="margin-top:16px" onclick="Pages.showRenewal('${sub.id}')">تمدید سرویس</button>` : `<div class="config-warning" style="margin-top:16px;text-align:center">${health.pending ? 'پس از اعمال درخواست قبلی، تمدید دوباره ممکن می‌شود.' : 'تمدید این سرویس در دسترس نیست.'}</div>`}
             <button class="btn btn-secondary btn-block" style="margin-top:10px" onclick="UI.closeModal()">بستن</button>
         `);
         const image = document.querySelector('.config-detail-qr');
@@ -410,17 +352,21 @@ const Pages = (() => {
 
     function showRenewal(subId) {
         const sub = [
-            ...(dashboardData?.subscriptions || []),
             ...configsCache,
+            ...(dashboardData?.subscriptions || []),
         ].find(s => s.id === subId);
         if (!sub) return;
+        if (sub.panel_sync_pending || sub.status === 'disabled' || (!renewalsEnabled && !isAdmin)) {
+            UI.toast('تمدید فعلاً در دسترس نیست؛ وضعیت سرویس را بروزرسانی کنید.', 'error');
+            return;
+        }
         const name = sub.config_name || sub.plan_name || 'سرویس';
         UI.showModal(`
             <div class="modal-title">تمدید ${escapeHtml(name)}</div>
-            <div class="renewal-tabs">
-                <button class="renewal-tab active" data-renew-type="time" onclick="Pages.setRenewalType('time')">⏳ زمان</button>
-                <button class="renewal-tab" data-renew-type="volume" onclick="Pages.setRenewalType('volume')">💾 حجم</button>
-                <button class="renewal-tab" data-renew-type="plan" onclick="Pages.setRenewalType('plan')">🔄 تمدید پلن فعلی</button>
+            <div class="renewal-tabs" role="group" aria-label="نوع تمدید">
+                <button class="renewal-tab active" data-renew-type="time" aria-pressed="true" onclick="Pages.setRenewalType('time')">${UI.icon('clock')} زمان</button>
+                <button class="renewal-tab" data-renew-type="volume" aria-pressed="false" onclick="Pages.setRenewalType('volume')">${UI.icon('database')} حجم</button>
+                <button class="renewal-tab" data-renew-type="plan" aria-pressed="false" onclick="Pages.setRenewalType('plan')">${UI.icon('refresh')} پلن فعلی</button>
             </div>
             <div id="renewal-plan-note" style="display:none;background:rgba(255,180,0,.10);border:1px solid rgba(255,180,0,.35);border-radius:10px;padding:10px 12px;margin:12px 0;font-size:13px;line-height:1.6;">
                 ⚠️ حجم و زمانِ باقی‌مانده حذف می‌شود و دوره‌ی جدید با مقادیر کاملِ پلن از همین لحظه آغاز می‌گردد (مانند خرید مجددِ همان پلن).
@@ -433,7 +379,7 @@ const Pages = (() => {
             <label class="form-label" id="renewal-amount-label" for="renewal-amount">تعداد روز</label>
             <input id="renewal-amount" class="form-input" inputmode="decimal" dir="ltr" placeholder="30" value="30">
             <p class="form-hint" id="renewal-hint">مدت موردنظر را به روز وارد کنید.</p>
-            <div class="renewal-price-box" id="renewal-price-box">برای محاسبه قیمت، مقدار را وارد کنید.</div>
+            <div class="renewal-price-box" id="renewal-price-box" data-subscription-id="${sub.id}">برای محاسبه قیمت، مقدار را وارد کنید.</div>
             <div class="checkout-methods">
                 ${gatewayButtons(`Pages.submitRenewal('${sub.id}',`)}
             </div>
@@ -442,12 +388,12 @@ const Pages = (() => {
         setRenewalType('time');
         const input = document.getElementById('renewal-amount');
         input?.addEventListener('input', () => updateRenewalQuote(sub.id));
-        updateRenewalQuote(sub.id);
     }
 
     function setRenewalType(type) {
         document.querySelectorAll('.renewal-tab').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.renewType === type);
+            btn.setAttribute('aria-pressed', String(btn.dataset.renewType === type));
         });
         const input = document.getElementById('renewal-amount');
         const label = document.getElementById('renewal-amount-label');
@@ -492,8 +438,7 @@ const Pages = (() => {
             if (presetBtns[2]) presetBtns[2].textContent = '+90 روز';
             if (presetBtns[2]) presetBtns[2].setAttribute('onclick', "document.getElementById('renewal-amount').value='90'; document.getElementById('renewal-amount').dispatchEvent(new Event('input'))");
         }
-        const subId = document.querySelector('.btn.btn-primary.btn-block[onclick^="Pages.submitRenewal"]')
-            ?.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
+        const subId = document.getElementById('renewal-price-box')?.dataset.subscriptionId;
         if (subId) updateRenewalQuote(subId);
     }
 
@@ -501,7 +446,9 @@ const Pages = (() => {
         return document.querySelector('.renewal-tab.active')?.dataset.renewType || 'time';
     }
 
+    let renewalQuoteVersion = 0;
     async function updateRenewalQuote(subId) {
+        const version = ++renewalQuoteVersion;
         const box = document.getElementById('renewal-price-box');
         const renewType = getSelectedRenewalType();
         // Plan renewals have a fixed amount (1); volume/time read the input.
@@ -512,16 +459,20 @@ const Pages = (() => {
             if (box) box.textContent = 'مقدار تمدید معتبر نیست.';
             return;
         }
+        box.dataset.quoteReady = '';
+        box.textContent = 'در حال محاسبه قیمت…';
         try {
             const quote = await API.getRenewalQuote({
                 subscription_id: subId,
                 renew_type: renewType,
                 amount,
             });
+            if (version !== renewalQuoteVersion || !box.isConnected) return;
+            box.dataset.quoteReady = JSON.stringify([subId, renewType, amount]);
             const costLabel = renewType === 'plan' ? 'هزینه تمدید پلن (بازنشانی کامل)' : 'هزینه تمدید';
             box.innerHTML = `<span>${costLabel}</span><strong>$${UI.formatMoney(quote.price)}</strong>`;
         } catch (e) {
-            box.textContent = e.message;
+            if (version === renewalQuoteVersion && box.isConnected) box.textContent = e.message;
         }
     }
 
@@ -534,6 +485,11 @@ const Pages = (() => {
             : parseFloat(document.getElementById('renewal-amount')?.value || '0');
         if (!amount || amount <= 0) {
             UI.toast('مقدار تمدید معتبر نیست', 'error');
+            return;
+        }
+        const box = document.getElementById('renewal-price-box');
+        if (box?.dataset.quoteReady !== JSON.stringify([subId, renewType, amount])) {
+            UI.toast('ابتدا منتظر محاسبهٔ قیمت این تمدید بمانید.', 'error');
             return;
         }
         _renewalSubmitting = true;
@@ -563,6 +519,7 @@ const Pages = (() => {
                 UI.closeModal();
                 dashboardData = await API.getDashboard();
                 renderDashboard(dashboardData);
+                if (document.getElementById('page-configs').classList.contains('active')) await load_configs(configsState.page);
             }
         } catch (e) {
             UI.toast(e.message, 'error');
@@ -585,7 +542,7 @@ const Pages = (() => {
             salesEnabled = data.sales_enabled !== false;
             renderPlans(data.plans || [], data.custom_purchase || null);
         } catch (e) {
-            UI.toast('خطا: ' + e.message, 'error');
+            UI.loadError('plans-list', 'store', e.message);
         }
     }
 
@@ -610,19 +567,6 @@ const Pages = (() => {
             return;
         }
 
-        // Pick the cheapest-per-day plan as ⭐ "recommended"
-        let recommendedIndex = -1;
-        if (plans.length > 1) {
-            let bestPpd = Infinity;
-            plans.forEach((p, i) => {
-                const days = Math.max(1, Number(p.duration_days) || 1);
-                const ppd = Number(p.price) / days;
-                if (ppd < bestPpd) { bestPpd = ppd; recommendedIndex = i; }
-            });
-        } else if (plans.length === 1) {
-            recommendedIndex = 0;
-        }
-
         const customCard = (customPurchase?.can_purchase && (salesEnabled || isAdmin)) ? `
             <div class="plan-card">
                 <div class="plan-name">${UI.icon('sliders')} حجم و زمان دلخواه</div>
@@ -640,15 +584,15 @@ const Pages = (() => {
                 </button>
             </div>` : '';
 
-        container.innerHTML = closedBanner + customCard + plans.map((plan, i) => {
-            const recommended = i === recommendedIndex;
-            const buyDisabled = !(salesEnabled || isAdmin);
+        container.innerHTML = closedBanner + customCard + plans.map(plan => {
+            const soldOut = !plan.is_unlimited && Number(plan.stock_remaining) <= 0;
+            const buyDisabled = !(salesEnabled || isAdmin) || soldOut;
             return `
-                <div class="plan-card ${recommended ? 'popular' : ''}">
+                <div class="plan-card">
                     <div class="plan-name">${escapeHtml(plan.name)}</div>
                     <div class="plan-specs">
                         <span class="plan-spec">${UI.icon('database')} ${plan.volume_gb > 0 ? `${plan.volume_gb} گیگ` : 'نامحدود ♾'}</span>
-                        <span class="plan-spec">${UI.icon('clock')} ${(plan.duration_days)} روز</span>
+                        <span class="plan-spec">${UI.icon('clock')} ${Number(plan.duration_days) > 0 ? plan.duration_days + ' روز' : 'زمان نامحدود'}</span>
                         ${plan.protocol ? `<span class="plan-spec">${UI.icon('lock')} ${escapeHtml(plan.protocol)}</span>` : ''}
                         ${plan.is_unlimited ? '' : `<span class="plan-spec">${UI.icon('package')} ${(plan.stock_remaining)} موجودی</span>`}
                     </div>
@@ -657,7 +601,7 @@ const Pages = (() => {
                         <span class="plan-price-currency">/ ${escapeHtml(plan.currency || 'USD')}</span>
                     </div>
                     ${buyDisabled
-                        ? `<button class="btn btn-secondary plan-buy-btn" disabled>${UI.icon('lock')} فروش غیرفعال</button>`
+                        ? `<button class="btn btn-secondary plan-buy-btn" disabled>${UI.icon('lock')} ${soldOut ? 'ناموجود' : 'فروش غیرفعال'}</button>`
                         : `<button class="btn btn-primary plan-buy-btn" onclick="Pages.buyPlan('${plan.id}')">${UI.icon('store')} خرید این پلن</button>`}
                 </div>`;
         }).join('');
@@ -746,8 +690,8 @@ const Pages = (() => {
         UI.showModal(`
             <div class="modal-title">خرید ${escapeHtml(plan.name)}</div>
             <div class="checkout-summary">
-                <div><span>حجم</span><strong>${escapeHtml(plan.volume_gb)} GB</strong></div>
-                <div><span>مدت</span><strong>${escapeHtml(plan.duration_days)} روز</strong></div>
+                <div><span>حجم</span><strong>${Number(plan.volume_gb) > 0 ? escapeHtml(plan.volume_gb) + ' GB' : 'نامحدود'}</strong></div>
+                <div><span>مدت</span><strong>${Number(plan.duration_days) > 0 ? escapeHtml(plan.duration_days) + ' روز' : 'نامحدود'}</strong></div>
                 <div><span>قیمت</span><strong>$${UI.formatMoney(plan.price)}</strong></div>
                 ${plan.is_unlimited ? '' : `<div><span>موجودی</span><strong>${escapeHtml(plan.stock_remaining)}</strong></div>`}
             </div>
@@ -813,9 +757,12 @@ const Pages = (() => {
 
     function openInvoice(url) {
         try {
-            window.Telegram?.WebApp?.openLink(url);
+            const target = new URL(url);
+            if (!['https:', 'http:'].includes(target.protocol)) throw new Error('invalid URL');
+            if (window.Telegram?.WebApp?.openLink) window.Telegram.WebApp.openLink(target.href);
+            else window.open(target.href, '_blank', 'noopener,noreferrer');
         } catch {
-            window.open(url, '_blank');
+            UI.toast('لینک پرداخت معتبر نیست.', 'error');
         }
     }
 
@@ -831,14 +778,20 @@ const Pages = (() => {
                 pageSize: data.page_size || 20,
             };
             configsCache = data.subscriptions || [];
+            if (dashboardData) {
+                const latest = new Map(configsCache.map(sub => [sub.id, sub]));
+                dashboardData.subscriptions = (dashboardData.subscriptions || []).map(sub => latest.get(sub.id) || sub);
+            }
             renderAllConfigs(data.subscriptions || []);
         } catch (e) {
-            UI.toast('خطا: ' + e.message, 'error');
+            UI.loadError('all-configs-list', 'configs', e.message);
         }
     }
 
     function renderAllConfigs(subs) {
         const container = document.getElementById('all-configs-list');
+        const visible = SubscriptionUI.filter(subs, document.getElementById('config-search').value, configFilter);
+        document.getElementById('config-results').textContent = `${UI.toPersianDigits(visible.length)} از ${UI.toPersianDigits(subs.length)} سرویس این صفحه · مجموع ${UI.toPersianDigits(configsState.total)}`;
         if (!subs.length) {
             container.innerHTML = `
                 <div class="empty-state">
@@ -857,23 +810,43 @@ const Pages = (() => {
                 <button class="btn btn-secondary btn-sm" ${configsState.page >= totalPages ? 'disabled' : ''} onclick="Pages.load_configs(${configsState.page + 1})">بعدی</button>
             </div>
         ` : '';
-        container.innerHTML = subs.map(sub => renderConfigCard(sub, true)).join('') + pager;
+        container.innerHTML = (visible.length ? visible.map(sub => renderConfigCard(sub, true)).join('') : '<div class="empty-state"><p>سرویسی با این جست‌وجو یا فیلتر پیدا نشد</p><button class="btn btn-secondary" onclick="Pages.clearConfigFilters()">پاک‌کردن فیلترها</button></div>') + pager;
+    }
+
+    let configFilter = 'all';
+    function filterConfigs(mode) {
+        if (['all', 'active', 'attention'].includes(mode)) configFilter = mode;
+        document.querySelectorAll('[data-filter]').forEach(button => {
+            const selected = button.dataset.filter === configFilter;
+            button.classList.toggle('active', selected);
+            button.setAttribute('aria-pressed', String(selected));
+        });
+        renderAllConfigs(configsCache);
+    }
+    function clearConfigFilters() {
+        document.getElementById('config-search').value = '';
+        filterConfigs('all');
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // WALLET
     // ═══════════════════════════════════════════════════════════════════════
     async function load_wallet() {
-        try {
-            if (!dashboardData) dashboardData = await API.getDashboard();
+        document.getElementById('wallet-card').innerHTML = '<div class="skeleton" style="height:150px"></div>';
+        document.getElementById('payments-list').innerHTML = '';
+        document.getElementById('transactions-list').innerHTML = '';
+        const [summary, payments, transactions] = await Promise.allSettled([
+            API.getDashboard(), API.getPayments(1), API.getTransactions(1),
+        ]);
+        if (summary.status === 'fulfilled') {
+            dashboardData = summary.value;
+            renderDashboard(dashboardData);
             renderWalletCard(dashboardData.wallet);
-            const paymentData = await API.getPayments(1);
-            renderPayments(paymentData.payments || []);
-            const txData = await API.getTransactions(1);
-            renderTransactions(txData.transactions || []);
-        } catch (e) {
-            UI.toast('خطا: ' + e.message, 'error');
-        }
+        } else UI.loadError('wallet-card', 'wallet', summary.reason.message);
+        if (payments.status === 'fulfilled') renderPayments(payments.value.payments || []);
+        else UI.loadError('payments-list', 'wallet', payments.reason.message);
+        if (transactions.status === 'fulfilled') renderTransactions(transactions.value.transactions || []);
+        else UI.loadError('transactions-list', 'wallet', transactions.reason.message);
     }
 
     function renderWalletCard(wallet) {
@@ -954,6 +927,7 @@ const Pages = (() => {
 
         const typeMap = {
             'topup': 'شارژ',
+            'deposit': 'شارژ',
             'purchase': 'خرید',
             'refund': 'بازگشت',
             'referral_bonus': 'پاداش',
@@ -1138,7 +1112,7 @@ const Pages = (() => {
             supportTicketsCache = data.tickets || [];
             renderTickets(supportTicketsCache);
         } catch (e) {
-            UI.toast('خطا: ' + e.message, 'error');
+            UI.loadError('tickets-container', 'support', e.message);
         }
     }
 
@@ -2107,7 +2081,23 @@ const Pages = (() => {
     }
 
     // ─── Expose ─────────────────────────────────────────────────────────
+    function showMore() {
+        UI.showModal(`<div class="modal-title">حساب و امکانات</div><div class="more-menu">
+            <button class="menu-row" onclick="UI.closeModal(); UI.navigate('referral')">${UI.icon('users')}<span><strong>دعوت دوستان</strong><small>لینک دعوت و پاداش‌های شما</small></span><b>‹</b></button>
+            <button class="menu-row" onclick="Pages.showGuide()">${UI.icon('info')}<span><strong>راهنمای اتصال</strong><small>استفاده از لینک و QR سرویس</small></span><b>‹</b></button>
+            ${isAdmin ? `<button class="menu-row" onclick="UI.closeModal(); UI.navigate('admin')">${UI.icon('admin')}<span><strong>مدیریت</strong><small>ابزارهای مدیریت حساب‌ها و سرویس‌ها</small></span><b>‹</b></button>` : ''}
+        </div>`);
+    }
+    function showGuide() {
+        UI.showModal(`<div class="modal-title">چطور متصل شوم؟</div><ol class="connection-steps">
+            <li><strong>سرویس خود را باز کنید</strong><p>در بخش «سرویس‌ها»، دکمهٔ جزئیات را بزنید.</p></li>
+            <li><strong>لینک اشتراک را وارد کنید</strong><p>لینک را کپی و در برنامهٔ اتصال خود وارد کنید؛ یا از دکمهٔ V2rayNG، V2Box یا Streisand استفاده کنید.</p></li>
+            <li><strong>اشتراک را بروزرسانی کنید</strong><p>پس از اعمال تمدید روی پنل، فهرست سرورها را در برنامهٔ اتصال بروزرسانی کنید. QR هم در جزئیات سرویس در دسترس است.</p></li>
+        </ol><button class="btn btn-primary btn-block" onclick="UI.closeModal(); UI.navigate('configs')">مشاهده سرویس‌های من</button><button class="btn btn-secondary btn-block" onclick="UI.closeModal(); UI.navigate('support')">هنوز کمک لازم دارم</button>`);
+    }
+
     return {
+        showMore, showGuide, filterConfigs, clearConfigFilters,
         load_dashboard, load_store, load_configs,
         load_wallet, load_support, load_referral, load_admin,
         showConfigDetail, showRenewal, setRenewalType, submitRenewal,

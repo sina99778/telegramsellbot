@@ -128,6 +128,9 @@ jobs:
       - name: Test dashboard utilities
         run: npm test
 
+      - name: Test mini app presentation rules
+        run: node --test ../miniapp/tests/*.test.mjs
+
       - name: Audit dashboard dependencies
         run: npm audit
 
