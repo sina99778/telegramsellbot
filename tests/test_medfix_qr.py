@@ -14,7 +14,8 @@ import pathlib
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi import HTTPException
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
 from apps.api.routes.miniapp.qr import MAX_QR_PAYLOAD_CHARS, render_qr
 from apps.api.routes.miniapp.users import _get_current_user
@@ -80,15 +81,24 @@ class TestRenderQrEndpoint:
 
 
 class TestQrRouterRegistration:
-    def test_qr_route_attached_to_included_router(self):
+    def test_qr_route_attached_to_included_router(self, miniapp_auth):
         """apps/api/main.py only includes the sibling routers; the package
         __init__ must graft /qr onto the users router so the endpoint is
         actually served under /api/miniapp."""
         import apps.api.routes.miniapp  # noqa: F401 — executes the wiring
         from apps.api.routes.miniapp.users import router as users_router
 
-        paths = {route.path for route in users_router.routes}
-        assert "/qr" in paths
+        # Exercise the registered route: FastAPI may retain nested routers
+        # instead of exposing every child as a flat .routes list.
+        app = FastAPI()
+        app.include_router(users_router, prefix="/api/miniapp")
+        app.dependency_overrides[_get_current_user] = lambda: miniapp_auth
+        with patch("apps.api.routes.miniapp.qr.make_qr_bytes", return_value=b"fixture-png"):
+            with TestClient(app) as client:
+                response = client.post("/api/miniapp/qr", json={"data": "vless://fixture"})
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.content == b"fixture-png"
 
 
 # ─── Frontend regressions (findings 57 + 58) ─────────────────────────────────
