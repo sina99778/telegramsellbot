@@ -44,25 +44,8 @@ from core.database import AsyncSessionFactory
 logger = logging.getLogger(__name__)
 
 
-async def main() -> None:
-    logging.basicConfig(level=logging.INFO)
-
-    from core.observability import init_sentry
-    init_sentry("worker")
-
-    # Bootstrap heartbeat — see apps/bot/main.py for rationale.
-    try:
-        HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
-        HEARTBEAT_PATH.write_text(str(time.time()))
-    except OSError as exc:
-        logging.getLogger(__name__).warning("bootstrap heartbeat write failed: %s", exc)
-
-    bot = PremiumEmojiBot(
-        token=settings.bot_token.get_secret_value(),
-        default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
-        session=IPv4AiohttpSession(),
-    )
-
+def build_worker_scheduler(bot: PremiumEmojiBot) -> AsyncIOScheduler:
+    """Construct every real trigger before starting worker background tasks."""
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         sync_pending_panel_states, "interval", seconds=15,
@@ -143,7 +126,6 @@ async def main() -> None:
         run_reconciliation_job,
         "interval",
         minutes=2,
-        minute=45,
         kwargs={"bot": bot},
         max_instances=1,
         coalesce=True,
@@ -190,7 +172,34 @@ async def main() -> None:
         max_instances=1,
         coalesce=True,
     )
+    return scheduler
+
+
+async def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+
+    from core.observability import init_sentry
+    init_sentry("worker")
+
+    # Bootstrap heartbeat — see apps/bot/main.py for rationale.
+    try:
+        HEARTBEAT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        HEARTBEAT_PATH.write_text(str(time.time()))
+    except OSError as exc:
+        logging.getLogger(__name__).warning("bootstrap heartbeat write failed: %s", exc)
+
+    bot = PremiumEmojiBot(
+        token=settings.bot_token.get_secret_value(),
+        default=DefaultBotProperties(parse_mode=settings.bot_parse_mode),
+        session=IPv4AiohttpSession(),
+    )
+
+    scheduler = build_worker_scheduler(bot)
     scheduler.start()
+    logger.info(
+        "Worker scheduler started with %d jobs; panel sync runs every 15 seconds",
+        len(scheduler.get_jobs()),
+    )
 
     # Keep this process's settings caches in sync with dashboard/bot changes.
     try:
@@ -204,6 +213,7 @@ async def main() -> None:
     try:
         await asyncio.Event().wait()
     finally:
+        scheduler.shutdown(wait=False)
         heartbeat_task.cancel()
         try:
             await heartbeat_task

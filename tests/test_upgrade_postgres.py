@@ -176,6 +176,57 @@ async def test_stale_usage_writer_cannot_erase_committed_renewal_intent(sessions
         assert sub.panel_sync_pending and sub.volume_bytes == 2000
 
 
+async def test_worker_replays_paid_renewal_after_restart_without_another_debit(sessions):
+    from apps.worker.jobs import panel_sync
+    from services.renewal import apply_renewal
+    from services.wallet.manager import WalletManager
+
+    user_id, sub_id = await seed(sessions)
+    async with sessions() as writer:
+        sub = await writer.get(Subscription, sub_id)
+        await WalletManager(writer).process_transaction(
+            user_id=user_id,
+            amount=Decimal("10"),
+            transaction_type="renewal",
+            direction="debit",
+            currency="USD",
+            reference_type="subscription",
+            reference_id=sub_id,
+        )
+        await apply_renewal(
+            session=writer, subscription=sub, renew_type="volume", amount=1,
+        )
+        await writer.commit()
+
+    repo = MagicMock()
+    repo.get_service_security_settings = AsyncMock(return_value=NS(xui_limit_ip=0))
+    remote = AsyncMock(side_effect=[TimeoutError("offline"), None])
+    with (
+        patch.object(panel_sync, "AsyncSessionFactory", sessions),
+        patch.object(panel_sync, "AppSettingsRepository", return_value=repo),
+        patch.object(panel_sync, "_sync_xui_limits", remote),
+    ):
+        await panel_sync.sync_pending_panel_states()
+        async with sessions() as check:
+            pending = await check.get(Subscription, sub_id)
+            assert pending.panel_sync_pending and pending.panel_sync_attempts == 1
+            assert pending.panel_sync_error == "TimeoutError"
+        # A fresh worker invocation reads the committed intent from the DB.
+        retry_time = datetime.now(UTC) + timedelta(minutes=2)
+        with patch.object(panel_sync, "utcnow", return_value=retry_time):
+            await panel_sync.sync_pending_panel_states()
+        await panel_sync.sync_pending_panel_states()
+    assert remote.await_count == 2
+    async with sessions() as check:
+        delivered = await check.get(Subscription, sub_id)
+        assert not delivered.panel_sync_pending and delivered.panel_sync_error is None
+        assert delivered.volume_bytes == 1000 + 1024 ** 3 and delivered.used_bytes == 300
+        assert await check.scalar(
+            select(Wallet.balance).where(Wallet.user_id == user_id)
+        ) == Decimal("90")
+        assert await check.scalar(select(func.count()).select_from(WalletTransaction)) == 1
+
+
 async def test_restore_database_renames_and_connection_policy_are_atomic():
     """Only random empty databases in the explicitly disposable PG instance."""
     engine = create_async_engine(os.environ["AUDIT_TEST_DATABASE_URL"])
