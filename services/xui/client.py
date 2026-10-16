@@ -40,6 +40,44 @@ class XUIRequestError(XUIClientError):
         self.status_code = status_code
 
 
+class XUIClientAbsentError(XUIRequestError):
+    """A complete inventory confirms the client is absent from this panel."""
+
+
+def _client_absence_confirmed(
+    inbounds: list[XUIInbound], inbound_id: int, client_id: str, client: XUIClient,
+) -> bool:
+    # Missing mappings, partial inventories, moved identities, and reused emails
+    # must remain errors. Only a positive, complete read can satisfy a disable.
+    if not client_id or not client.email or not any(i.id == inbound_id for i in inbounds):
+        return False
+    identities = (client_id, client.id, client.uuid)
+    for inbound in inbounds:
+        if (inbound.protocol or "vless").lower() not in {"vless", "vmess"}:
+            return False
+        if not isinstance(inbound.settings, dict):
+            return False
+        clients = inbound.settings.get("clients")
+        if not isinstance(clients, list):
+            return False
+        for existing in clients:
+            if (
+                not isinstance(existing, dict)
+                or not isinstance(existing.get("id"), str)
+                or not existing["id"]
+                or not isinstance(existing.get("email"), str)
+                or not existing["email"]
+            ):
+                return False
+            if (
+                existing["id"] in identities
+                or (existing.get("uuid") is not None and existing["uuid"] in identities)
+                or existing["email"] == client.email
+            ):
+                return False
+    return True
+
+
 @dataclass(slots=True, frozen=True)
 class XUIClientConfig:
     base_url: str
@@ -140,6 +178,12 @@ class SanaeiXUIClient:
 
     async def get_inbounds(self) -> list[XUIInbound]:
         response = await self._request("GET", "panel/api/inbounds/list")
+        if (
+            not isinstance(response, dict)
+            or response.get("success") is not True
+            or not isinstance(response.get("obj"), list)
+        ):
+            raise XUIRequestError("Panel did not return a complete successful inbound inventory.")
         api_response = XUIAPIResponse[list[dict[str, Any]]].model_validate(response)
         if api_response.success is False:
             raise XUIRequestError(api_response.msg or "Failed to fetch inbounds.")
@@ -186,6 +230,10 @@ class SanaeiXUIClient:
                 return await self.update_client(
                     inbound_id=inbound_id, client_id=client_id, client=merged,
                 )
+        if existing_settings is None and _client_absence_confirmed(
+            inbounds, inbound_id, client_id, client,
+        ):
+            raise XUIClientAbsentError("Panel inventory confirms the client is absent.")
         raise XUIRequestError("Panel client was not found; refusing a blind overwrite.")
 
     async def update_client(

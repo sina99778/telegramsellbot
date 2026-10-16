@@ -25,7 +25,7 @@ from schemas.internal.xui import XUIClient
 from services.plan_inventory import PlanStockError, release_plan_sale, reserve_plan_sale
 from services.panels.marzban import is_marzban_family, marzban_client_for_server, record_is_marzban_family
 from services.wallet.manager import WalletManager
-from services.xui.client import SanaeiXUIClient
+from services.xui.client import SanaeiXUIClient, XUIClientAbsentError
 from services.xui.runtime import build_sub_link, build_vless_uri, create_xui_client_for_server, ensure_inbound_server_loaded
 from schemas.internal.pasarguard import PGUserModify
 
@@ -2247,11 +2247,16 @@ class ProvisioningManager:
             comment=f"disabled:{xui_record.subscription_id}",
         )
         async with self._get_xui_client_for_server(server) as xui_client:
-            await xui_client.patch_client(
-                inbound_id=inbound.xui_inbound_remote_id,
-                client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
-                client=disabled_client,
-            )
+            try:
+                await xui_client.patch_client(
+                    inbound_id=inbound.xui_inbound_remote_id,
+                    client_id=xui_record.xui_client_remote_id or xui_record.client_uuid,
+                    client=disabled_client,
+                )
+            except XUIClientAbsentError:
+                # A deleted client already satisfies the desired disabled state.
+                # Other lookup, authentication, and transport errors still retry.
+                return
 
     def _get_xui_client_for_server(self, server: XUIServerRecord) -> "_StaticAsyncClientContext":
         if self.xui_client is not None:
