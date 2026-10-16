@@ -120,6 +120,8 @@ async def test_disable_outbox_checks_real_inventory_before_completing(
 @pytest.mark.parametrize(
     "response",
     [
+        None,
+        [],
         {"success": True},
         {"obj": []},
         {"success": False, "obj": []},

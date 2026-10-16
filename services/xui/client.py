@@ -178,7 +178,11 @@ class SanaeiXUIClient:
 
     async def get_inbounds(self) -> list[XUIInbound]:
         response = await self._request("GET", "panel/api/inbounds/list")
-        if response.get("success") is not True or not isinstance(response.get("obj"), list):
+        if (
+            not isinstance(response, dict)
+            or response.get("success") is not True
+            or not isinstance(response.get("obj"), list)
+        ):
             raise XUIRequestError("Panel did not return a complete successful inbound inventory.")
         api_response = XUIAPIResponse[list[dict[str, Any]]].model_validate(response)
         if api_response.success is False:
