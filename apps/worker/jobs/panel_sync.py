@@ -103,8 +103,13 @@ async def sync_pending_panel_states() -> None:
                     )
                     if subscription is None:
                         return
-                    await deliver_panel_state(session, subscription)
+                    delivered = await deliver_panel_state(session, subscription)
                     await session.commit()
+                    if delivered:
+                        logger.info(
+                            "Panel sync delivered for subscription %s after %d attempts",
+                            subscription_id, subscription.panel_sync_attempts,
+                        )
                 except Exception:
                     await session.rollback()
                     logger.exception("Panel outbox transaction failed for %s", subscription_id)
