@@ -60,7 +60,7 @@ class NowPaymentsPaymentStatusResponse(BaseModel):
     pay_currency: str | None = None
     order_id: str | None = None
     order_description: str | None = None
-    purchase_id: str | None = None
+    purchase_id: str | int | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     outcome_amount: Decimal | None = None
