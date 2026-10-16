@@ -8,6 +8,7 @@ from uuid import uuid4
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.exc import StaleDataError
 
 from core.database import AsyncSessionFactory, utcnow
 from models.subscription import Subscription
@@ -407,6 +408,21 @@ async def sync_pasarguard_usage_and_status(
 
 
 async def sync_all_subscription_states() -> None:
+    # Version checks deliberately reject a usage snapshot that races a renewal.
+    # Retry with a new transaction and ORM objects; never merge stale values or
+    # reuse an expired identity map after rollback. Bound contention to one retry.
+    for attempt in range(2):
+        try:
+            await _sync_all_subscription_states_once()
+            return
+        except StaleDataError:
+            if attempt == 0:
+                logger.info("[SYNC] Concurrent subscription update; refreshing usage snapshot")
+            else:
+                logger.warning("[SYNC] Usage sync deferred after repeated concurrent updates")
+
+
+async def _sync_all_subscription_states_once() -> None:
     async with AsyncSessionFactory() as session:
         security_settings = await AppSettingsRepository(session).get_service_security_settings()
         result = await session.execute(
@@ -480,6 +496,8 @@ async def sync_all_subscription_states() -> None:
             if is_marzban_family(server):
                 try:
                     await sync_pasarguard_usage_and_status(session, server, group)
+                except StaleDataError:
+                    raise
                 except Exception as exc:  # noqa: BLE001
                     logger.error("[SYNC] PasarGuard sync failed for server %s: %s", server.name, exc)
             else:
@@ -503,6 +521,9 @@ async def sync_all_subscription_states() -> None:
             # their attributes after this commit. Mirrors run_reconcile_migrated_usage.
             try:
                 await session.commit()
+            except StaleDataError:
+                await session.rollback()
+                raise
             except Exception as exc:  # noqa: BLE001
                 await session.rollback()
                 logger.error("[SYNC] commit failed for server %s: %s", getattr(server, "name", "?"), exc)

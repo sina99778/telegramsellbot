@@ -176,6 +176,52 @@ async def test_stale_usage_writer_cannot_erase_committed_renewal_intent(sessions
         assert sub.panel_sync_pending and sub.volume_bytes == 2000
 
 
+@pytest.mark.parametrize("conflict_at", ["flush", "commit"])
+async def test_usage_worker_retries_fresh_after_concurrent_renewal(sessions, conflict_at):
+    from apps.worker.jobs import subscriptions
+
+    _, sub_id = await seed(sessions)
+    repo = MagicMock()
+    repo.get_service_security_settings = AsyncMock(
+        return_value=NS(xui_limit_ip=0, restart_xray_on_expiry=False)
+    )
+
+    @asynccontextmanager
+    async def panel(server):
+        yield NS()
+
+    async def concurrent_renewal(session, client, group, settings):
+        old = group[0]
+        async with sessions() as writer:
+            current = await writer.get(Subscription, sub_id)
+            current.volume_bytes = 2000
+            request_panel_sync(current)
+            await writer.commit()
+        old.used_bytes = 400
+        if conflict_at == "flush":
+            await session.flush()
+        return False
+
+    session_factory = MagicMock(side_effect=sessions)
+    sync = AsyncMock(side_effect=concurrent_renewal)
+    with (
+        patch.object(subscriptions, "AsyncSessionFactory", session_factory),
+        patch.object(subscriptions, "AppSettingsRepository", return_value=repo),
+        patch.object(subscriptions, "create_xui_client_for_server", panel),
+        patch.object(subscriptions, "sync_xui_usage_and_status", sync),
+    ):
+        await subscriptions.sync_all_subscription_states()
+    # The retry reads the new pending marker and skips the renewed subscription.
+    assert session_factory.call_count == 2
+    sync.assert_awaited_once()
+    async with sessions() as check:
+        sub = await check.get(Subscription, sub_id)
+        assert sub.volume_bytes == 2000 and sub.used_bytes == 300
+        assert sub.panel_sync_pending
+        assert await check.scalar(select(Wallet.balance)) == Decimal("100")
+        assert await check.scalar(select(func.count()).select_from(WalletTransaction)) == 0
+
+
 async def test_worker_replays_paid_renewal_after_restart_without_another_debit(sessions):
     from apps.worker.jobs import panel_sync
     from services.renewal import apply_renewal
