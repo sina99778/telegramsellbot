@@ -37,7 +37,7 @@ dependencies = [
   "tenacity>=9.0.0,<10.0.0",
   "cryptography>=50.0.2,<51.0.0",
   "segno>=1.6.0,<2.0.0",
-  "pillow>=12.3.0,<13.0.0",
+  "pillow>=13.0.0,<14.0.0",
   "sentry-sdk[fastapi]>=2.0.0,<3.0.0",
   "pytesseract>=0.3.10,<0.4.0",
   # Persian text shaping for rendered banners (services/banner.py) — must stay

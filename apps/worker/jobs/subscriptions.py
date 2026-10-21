@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import and_, or_, select
@@ -744,7 +745,9 @@ async def _update_xui_expiry_on_activation(
         request_panel_sync(subscription)
         logger.warning("[SYNC] Failed to update X-UI expiry for '%s': %s", xui_record.email, exc)
 
-async def get_realtime_usage(session: AsyncSession, subscription: Subscription) -> dict | None:
+async def get_realtime_usage(
+    session: AsyncSession, subscription: Subscription,
+) -> dict[str, Any] | None:
     """Keep optional panel reads from invalidating the request transaction."""
     if subscription.panel_sync_pending is True:
         return None
@@ -752,7 +755,7 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
     try:
         async with session.begin_nested():
             return await _get_realtime_usage(session, subscription)
-    except BaseException as exc:
+    except (Exception, asyncio.CancelledError) as exc:
         # Includes cancellation by the detail view's timeout. Savepoint rollback
         # expires touched objects, so reload them before the caller renders its
         # fallback. Never commit/rollback unrelated request work or retry a write.
@@ -778,7 +781,9 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
         raise
 
 
-async def _get_realtime_usage(session: AsyncSession, subscription: Subscription) -> dict | None:
+async def _get_realtime_usage(
+    session: AsyncSession, subscription: Subscription,
+) -> dict[str, Any] | None:
     """Fetch real-time usage from X-UI panel for a single subscription."""
     if subscription.panel_sync_pending is True:
         return None
