@@ -86,10 +86,6 @@ class ForceJoinMiddleware(BaseMiddleware):
 
         try:
             member = await bot.get_chat_member(chat_id=channel, user_id=telegram_id)
-            if member.status in ("member", "administrator", "creator"):
-                return await handler(event, data)
-            # A definitive non-member status (left / kicked) → fall through and
-            # prompt them to join.
         except (TelegramBadRequest, TelegramForbiddenError) as exc:
             # The bot CAN'T query the channel — almost always because it isn't an
             # ADMIN of the force-join channel (or the channel is mis-set). That's
@@ -107,6 +103,11 @@ class ForceJoinMiddleware(BaseMiddleware):
                 "Force join: unexpected check error for channel %s — letting the user "
                 "through: %s", channel, exc,
             )
+            return await handler(event, data)
+
+        # Handler exceptions belong to the transaction/error middleware. Never
+        # catch them as membership failures or execute the same handler twice.
+        if member.status in ("member", "administrator", "creator"):
             return await handler(event, data)
 
         # User is definitively NOT a member — block and show the join button.

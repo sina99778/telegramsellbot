@@ -18,6 +18,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from apps.bot.utils.button_style import styled_button
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -490,6 +491,9 @@ async def my_config_detail_handler(
             realtime_ok = True
     except asyncio.TimeoutError:
         realtime_error = "تایم‌اوت پنل"
+    except SQLAlchemyError:
+        # A failed outer transaction must reach the global rollback handler.
+        raise
     except Exception as exc:
         logger.error("Failed to fetch realtime usage for sub %s: %s", sub.id, exc, exc_info=True)
         realtime_error = str(exc)[:100]
@@ -784,6 +788,8 @@ async def refresh_usage_handler(
     from apps.worker.jobs.subscriptions import get_realtime_usage
     try:
         usage = await get_realtime_usage(session, sub)
+    except SQLAlchemyError:
+        raise
     except Exception as exc:
         logger.error("refresh_usage failed: %s", exc, exc_info=True)
         await safe_edit_or_send(callback, f"❌ خطا: {str(exc)[:200]}")

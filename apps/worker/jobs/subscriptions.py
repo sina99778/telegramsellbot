@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import and_, or_, select
@@ -744,7 +745,45 @@ async def _update_xui_expiry_on_activation(
         request_panel_sync(subscription)
         logger.warning("[SYNC] Failed to update X-UI expiry for '%s': %s", xui_record.email, exc)
 
-async def get_realtime_usage(session: AsyncSession, subscription: Subscription) -> dict | None:
+async def get_realtime_usage(
+    session: AsyncSession, subscription: Subscription,
+) -> dict[str, Any] | None:
+    """Keep optional panel reads from invalidating the request transaction."""
+    if subscription.panel_sync_pending is True:
+        return None
+    subscription_id = subscription.id
+    try:
+        async with session.begin_nested():
+            return await _get_realtime_usage(session, subscription)
+    except (Exception, asyncio.CancelledError) as exc:
+        # Includes cancellation by the detail view's timeout. Savepoint rollback
+        # expires touched objects, so reload them before the caller renders its
+        # fallback. Never commit/rollback unrelated request work or retry a write.
+        if not session.is_active:
+            raise
+        current = await session.scalar(
+            select(Subscription)
+            .where(Subscription.id == subscription_id)
+            .options(
+                selectinload(Subscription.plan),
+                selectinload(Subscription.xui_client)
+                .selectinload(XUIClientRecord.inbound)
+                .selectinload(XUIInboundRecord.server)
+                .selectinload(XUIServerRecord.credentials),
+            )
+            .execution_options(populate_existing=True)
+        )
+        if current is None:
+            raise LookupError("Subscription no longer exists.") from exc
+        if isinstance(exc, StaleDataError):
+            logger.info("[REALTIME] Concurrent subscription change; using refreshed local state")
+            return None
+        raise
+
+
+async def _get_realtime_usage(
+    session: AsyncSession, subscription: Subscription,
+) -> dict[str, Any] | None:
     """Fetch real-time usage from X-UI panel for a single subscription."""
     if subscription.panel_sync_pending is True:
         return None
@@ -897,6 +936,8 @@ async def get_realtime_usage(session: AsyncSession, subscription: Subscription) 
                 "remaining_bytes": max(subscription.volume_bytes - used_bytes, 0),
                 "status": subscription.status,
             }
+    except StaleDataError:
+        raise
     except Exception as exc:
         logger.error("[REALTIME] Failed to fetch for email='%s': %s", xui_record.email, exc, exc_info=True)
         raise
