@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -174,6 +175,77 @@ async def test_stale_usage_writer_cannot_erase_committed_renewal_intent(sessions
     async with sessions() as check:
         sub = await check.get(Subscription, sub_id)
         assert sub.panel_sync_pending and sub.volume_bytes == 2000
+
+
+@pytest.mark.parametrize("failure", ["conflict", "timeout", "panel_error", "success"])
+async def test_realtime_read_savepoint_preserves_request_and_fresh_renewal(sessions, failure):
+    from apps.worker.jobs import subscriptions
+    from schemas.internal.xui import XUIInbound
+    from services.xui.client import XUIRequestError
+
+    user_id, sub_id = await seed(sessions)
+    security = NS(xui_limit_ip=0, auto_disable_ip_abuse=False, max_distinct_ips=0)
+    repo = MagicMock()
+    repo.get_service_security_settings = AsyncMock(return_value=security)
+
+    async def snapshot():
+        if failure == "conflict":
+            async with sessions() as writer:
+                renewed = await writer.get(Subscription, sub_id)
+                renewed.volume_bytes = 2000
+                request_panel_sync(renewed)
+                await writer.commit()
+        return [XUIInbound(
+            id=1, protocol="vless",
+            settings={"clients": [{"id": "fixture", "email": "fixture"}]},
+            clientStats=[{"email": "fixture", "up": 400, "down": 0}],
+        )]
+
+    async def ip_probe(*args):
+        if failure == "timeout":
+            raise asyncio.CancelledError()
+        if failure == "panel_error":
+            raise XUIRequestError("fixture panel failure")
+        return None
+
+    @asynccontextmanager
+    async def panel(server):
+        yield NS(get_inbounds=AsyncMock(side_effect=snapshot))
+
+    async with sessions() as session:
+        user = await session.get(User, user_id)
+        user.language_code = "fa"
+        sub = await session.scalar(
+            select(Subscription).where(Subscription.id == sub_id).options(
+                selectinload(Subscription.plan), selectinload(Subscription.xui_client),
+            )
+        )
+        cached_record = sub.xui_client
+        with (
+            patch.object(subscriptions, "AppSettingsRepository", return_value=repo),
+            patch.object(subscriptions, "create_xui_client_for_server", panel),
+            patch.object(subscriptions, "_get_ip_abuse", side_effect=ip_probe),
+        ):
+            if failure in {"timeout", "panel_error"}:
+                error = asyncio.CancelledError if failure == "timeout" else XUIRequestError
+                with pytest.raises(error):
+                    await subscriptions.get_realtime_usage(session, sub)
+            else:
+                result = await subscriptions.get_realtime_usage(session, sub)
+                assert (result is None) is (failure == "conflict")
+        assert session.is_active
+        # Both the caller's cached references and new queries remain usable.
+        assert cached_record is sub.xui_client
+        assert cached_record.username == "fixture" and sub.plan.name == "Fixture"
+        assert sub.used_bytes == (400 if failure == "success" else 300)
+        assert sub.volume_bytes == (2000 if failure == "conflict" else 1000)
+        assert sub.panel_sync_pending is (failure == "conflict")
+        assert await session.scalar(select(User.language_code)) == "fa"
+        await session.commit()
+    async with sessions() as check:
+        assert await check.scalar(select(User.language_code)) == "fa"
+        assert await check.scalar(select(Wallet.balance)) == Decimal("100")
+        assert await check.scalar(select(func.count()).select_from(WalletTransaction)) == 0
 
 
 @pytest.mark.parametrize("conflict_at", ["flush", "commit"])
