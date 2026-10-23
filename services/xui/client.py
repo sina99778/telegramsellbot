@@ -44,6 +44,10 @@ class XUIClientAbsentError(XUIRequestError):
     """A complete inventory confirms the client is absent from this panel."""
 
 
+class XUIIdentityVerificationError(XUIRequestError):
+    """The panel has not confirmed the requested identity change."""
+
+
 def _client_absence_confirmed(
     inbounds: list[XUIInbound], inbound_id: int, client_id: str, client: XUIClient,
 ) -> bool:
@@ -227,14 +231,43 @@ class SanaeiXUIClient:
                     mode="json", by_alias=True, exclude_unset=True, exclude={"uuid"},
                 )
                 merged = XUIClient.model_validate({**existing, **changes})
-                return await self.update_client(
+                result = await self.update_client(
                     inbound_id=inbound_id, client_id=client_id, client=merged,
                 )
+                if merged.id != client_id:
+                    await self._verify_client_identity(
+                        inbound_id=inbound_id, old_client_id=client_id, expected=merged,
+                    )
+                return result
         if existing_settings is None and _client_absence_confirmed(
             inbounds, inbound_id, client_id, client,
         ):
             raise XUIClientAbsentError("Panel inventory confirms the client is absent.")
         raise XUIRequestError("Panel client was not found; refusing a blind overwrite.")
+
+    async def _verify_client_identity(
+        self, *, inbound_id: int, old_client_id: str, expected: XUIClient,
+    ) -> None:
+        # A success envelope is not proof that the panel committed a rotation.
+        # Never advance local credentials from an unconfirmed write or resolve
+        # a missing identity by email alone.
+        inbounds = await self.get_inbounds()
+        matches = [inbound for inbound in inbounds if inbound.id == inbound_id]
+        if len(matches) == 1 and isinstance(matches[0].settings, dict):
+            clients = matches[0].settings.get("clients")
+            if isinstance(clients, list) and all(isinstance(c, dict) for c in clients):
+                found = [c for c in clients if c.get("id") == expected.id]
+                old_remains = expected.id != old_client_id and any(
+                    c.get("id") == old_client_id for c in clients
+                )
+                if (
+                    len(found) == 1
+                    and not old_remains
+                    and found[0].get("email") == expected.email
+                    and found[0].get("subId") == expected.sub_id
+                ):
+                    return
+        raise XUIIdentityVerificationError("Panel did not confirm the new client identity.")
 
     async def update_client(
         self,
@@ -244,12 +277,13 @@ class SanaeiXUIClient:
         client: XUIClient,
     ) -> XUIAPIResponse[Any]:
         payload = XUIUpdateClientRequest.from_client(inbound_id, client)
-        # Full overwrite of one client with the same payload — safe to re-send.
+        # Rotating the ID consumes the old URL target. A timeout must not replay
+        # that request blindly; same-identity limit updates remain replay-safe.
         response = await self._request(
             "POST",
             f"panel/api/inbounds/updateClient/{client_id}",
             json=payload.model_dump(mode="json"),
-            idempotent=True,
+            idempotent=client.id == client_id,
         )
         api_response = XUIAPIResponse[Any].model_validate(response or {"success": True, "obj": None})
         if api_response.success is False:
