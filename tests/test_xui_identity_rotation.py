@@ -124,9 +124,17 @@ async def test_noop_rotation_does_not_persist_new_local_credentials(mock_session
     callback = NS(answer=AsyncMock(), from_user=NS(id=123))
     callback_data = NS(subscription_id=sub.id)
 
+    sent_clients = []
+    panel_state = {
+        **OLD, "totalGB": 999, "expiryTime": 1234567890000, "limitIp": 7,
+        "enable": False, "comment": "panel-owned",
+    }
+
     def respond(request):
         if request.url.path == "/panel/api/inbounds/list":
-            return httpx.Response(200, json={"success": True, "obj": [_inbound([OLD])]})
+            return httpx.Response(200, json={"success": True, "obj": [_inbound([panel_state])]})
+        if "/updateClient/" in request.url.path:
+            sent_clients.append(json.loads(json.loads(request.content)["settings"])["clients"][0])
         return httpx.Response(200, json={"success": True})
 
     async with httpx.AsyncClient(
@@ -157,3 +165,6 @@ async def test_noop_rotation_does_not_persist_new_local_credentials(mock_session
     assert record.sub_link == sub.sub_link == "https://sub.example/old-sub"
     mock_session.flush.assert_not_awaited()
     assert "✅" not in show.await_args.args[1]
+    assert len(sent_clients) == 1
+    for field in ["totalGB", "expiryTime", "limitIp", "enable", "comment"]:
+        assert sent_clients[0][field] == panel_state[field]

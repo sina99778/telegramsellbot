@@ -917,22 +917,15 @@ async def reset_uuid_handler(
     
     new_uuid = str(uuid_mod.uuid4())
     new_sub_id = uuid_mod.uuid4().hex[:16]  # Generate a proper new subId
-    expiry_ms = int(sub.ends_at.timestamp() * 1000) if sub.ends_at else 0
-    security_settings = await AppSettingsRepository(session).get_service_security_settings()
-
     # The URL path uses the OLD UUID to find the client
     old_client_id = xui_record.xui_client_remote_id or xui_record.client_uuid
-    # The payload uses the NEW UUID as the new client identity
+    # Rotate identity only. patch_client preserves the panel's current limits,
+    # expiry, enabled state and metadata, even if the local snapshot differs.
     updated_client = XUIClient(
         id=new_uuid,
         uuid=new_uuid,
         email=xui_record.email,
-        limitIp=security_settings.xui_limit_ip,
-        totalGB=sub.volume_bytes,
-        expiryTime=expiry_ms,
-        enable=xui_record.is_active,
         subId=new_sub_id,
-        comment=xui_record.username or "",
     )
 
     try:
