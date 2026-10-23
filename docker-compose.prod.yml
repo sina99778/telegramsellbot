@@ -42,6 +42,11 @@ services:
         APP_REVISION: ${TSB_BUILD_REVISION:-unknown}
     image: telegramsellbot:latest
     container_name: telegramsellbot-api
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
     labels:
       # Restarted by the autoheal sidecar when the healthcheck fails.
@@ -70,6 +75,11 @@ services:
   bot:
     image: telegramsellbot:latest
     container_name: telegramsellbot-bot
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
     labels:
       # Restarted by the autoheal sidecar when the heartbeat goes stale.
@@ -102,6 +112,15 @@ services:
     user: root
     image: telegramsellbot:latest
     container_name: telegramsellbot-worker
+    # Keep background sweeps below one core and favor interactive services
+    # when the host is busy. The sync cadence remains once per minute.
+    cpus: "0.75"
+    cpu_shares: 256
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     restart: unless-stopped
     labels:
       # Restarted by the autoheal sidecar when the heartbeat goes stale.

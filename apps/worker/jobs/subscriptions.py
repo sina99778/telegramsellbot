@@ -89,6 +89,64 @@ def _stats_used_bytes(stats: dict | None) -> int:
     return int((stats or {}).get("up") or 0) + int((stats or {}).get("down") or 0)
 
 
+class _PanelSnapshotIndex:
+    """Index one immutable sync snapshot, preserving first-match semantics.
+
+    Email and ID may match different clients. Keep their original positions
+    so the earliest client still wins, just as in the linear lookup.
+    """
+
+    def __init__(self, inbounds: list) -> None:
+        self.inbounds: dict = {}
+        for inbound in inbounds:
+            if inbound.id in self.inbounds:
+                continue
+            try:
+                by_email: dict = {}
+                by_id: dict = {}
+                stats_by_email: dict = {}
+                settings = inbound.settings if isinstance(inbound.settings, dict) else {}
+                for position, client in enumerate(settings.get("clients") or []):
+                    candidate = (position, client)
+                    by_email.setdefault(str(client.get("email") or "").casefold(), candidate)
+                    for value in (client.get("id"), client.get("uuid")):
+                        if value:
+                            by_id.setdefault(str(value), candidate)
+                for stats in getattr(inbound, "client_stats", None) or []:
+                    stats_by_email.setdefault(str(stats.get("email") or "").casefold(), stats)
+                self.inbounds[inbound.id] = (by_email, by_id, stats_by_email)
+            except (AttributeError, TypeError, ValueError):
+                # Preserve per-client error isolation for malformed panel data.
+                self.inbounds[inbound.id] = inbound
+
+    def locate(
+        self, *, inbound_remote_id: int | None, email: str,
+        client_remote_id: str | None, client_uuid: str | None,
+    ) -> tuple[dict | None, dict | None]:
+        indexed = self.inbounds.get(inbound_remote_id)
+        if indexed is None:
+            return None, None
+        if not isinstance(indexed, tuple):
+            return _locate_client_in_snapshot(
+                [indexed], inbound_remote_id=inbound_remote_id, email=email,
+                client_remote_id=client_remote_id, client_uuid=client_uuid,
+            )
+        by_email, by_id, stats_by_email = indexed
+        expected_email = (email or "").casefold()
+        matches = []
+        candidate = by_email.get(expected_email)
+        if candidate is not None:
+            matches.append(candidate)
+        for value in (client_remote_id, client_uuid):
+            if value:
+                candidate = by_id.get(str(value))
+                if candidate is not None:
+                    matches.append(candidate)
+        if not matches:
+            return None, None
+        return min(matches, key=lambda item: item[0])[1], stats_by_email.get(expected_email)
+
+
 async def sync_xui_usage_and_status(
     session: AsyncSession,
     xui_client: SanaeiXUIClient,
@@ -106,6 +164,7 @@ async def sync_xui_usage_and_status(
     )
     inbound_snapshot_lock = asyncio.Lock()
     inbound_snapshot: list | None = None
+    snapshot_index: _PanelSnapshotIndex | None = None
     any_expired = False
 
     async def get_panel_bundle(xui_record: XUIClientRecord) -> tuple[dict | None, dict | None]:
@@ -116,13 +175,14 @@ async def sync_xui_usage_and_status(
         configs are synced, and the per-email getClientTraffics endpoint
         (which the panel logs "Inbound Not Found For Email" for) is never hit.
         """
-        nonlocal inbound_snapshot
+        nonlocal inbound_snapshot, snapshot_index
         if inbound_snapshot is None:
             async with inbound_snapshot_lock:
                 if inbound_snapshot is None:
                     inbound_snapshot = await xui_client.get_inbounds()
-        return _locate_client_in_snapshot(
-            inbound_snapshot,
+                    snapshot_index = _PanelSnapshotIndex(inbound_snapshot)
+        assert snapshot_index is not None
+        return snapshot_index.locate(
             inbound_remote_id=xui_record.inbound.xui_inbound_remote_id,
             email=xui_record.email,
             client_remote_id=xui_record.xui_client_remote_id,
@@ -275,8 +335,17 @@ async def sync_xui_usage_and_status(
     # e.g. malformed JSON / a pydantic ValidationError from the panel response —
     # cannot abort the whole batch and skip the flush below (which would discard
     # every other row's usage/status updates and bypass the cycle's commit).
+    # Bound panel requests before they enter HTTPX's connection-pool queue.
+    # Thousands of concurrent IP probes otherwise repeatedly scan that queue
+    # and its sockets, consuming CPU while waiting for connection slots.
+    semaphore = asyncio.Semaphore(8)
+
+    async def sync_bounded(subscription: Subscription) -> None:
+        async with semaphore:
+            await sync_one(subscription)
+
     results = await asyncio.gather(
-        *(sync_one(subscription) for subscription in subscriptions),
+        *(sync_bounded(subscription) for subscription in subscriptions),
         return_exceptions=True,
     )
     for subscription, res in zip(subscriptions, results):

@@ -106,7 +106,13 @@ async def run_cache_invalidation_listener() -> None:
             async with get_redis().pubsub() as pubsub:
                 await pubsub.subscribe(_CHANNEL)
                 logger.info("cache invalidation listener subscribed (%s)", _CHANNEL)
-                async for message in pubsub.listen():
+                # Poll below the shared pool's five-second socket timeout.
+                # An idle channel is normal; listen() otherwise reconnects on
+                # every idle timeout and misses invalidations during backoff.
+                while True:
+                    message = await pubsub.get_message(timeout=1.0)
+                    if message is None:
+                        continue
                     if message.get("type") != "message":
                         continue
                     name = message.get("data")

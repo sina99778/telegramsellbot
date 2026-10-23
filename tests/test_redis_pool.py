@@ -70,3 +70,43 @@ async def test_listener_releases_pubsub_on_reconnect(monkeypatch):
 
     # __aexit__ ran exactly once → the leaked-per-reconnect connection is gone.
     assert closed["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_idle_pubsub_polls_without_reconnecting_and_handles_message(monkeypatch):
+    polls = []
+    handled = []
+    closed = []
+
+    class FakePubSub:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            closed.append(True)
+
+        async def subscribe(self, channel):
+            pass
+
+        async def get_message(self, *, timeout):
+            polls.append(timeout)
+            if len(polls) <= 12:
+                return None
+            if len(polls) == 13:
+                return {"type": "message", "data": b"probe"}
+            raise asyncio.CancelledError
+
+    class FakeRedis:
+        def pubsub(self):
+            return FakePubSub()
+
+    async def handle(name):
+        handled.append(name)
+
+    monkeypatch.setattr(cs, "get_redis", lambda: FakeRedis())
+    monkeypatch.setattr(cs, "_run", handle)
+    with pytest.raises(asyncio.CancelledError):
+        await cs.run_cache_invalidation_listener()
+    assert polls == [1.0] * 14
+    assert handled == ["probe"]
+    assert closed == [True]
