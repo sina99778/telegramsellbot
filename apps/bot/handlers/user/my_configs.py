@@ -912,6 +912,7 @@ async def reset_uuid_handler(
 
     import uuid as uuid_mod
     from schemas.internal.xui import XUIClient
+    from services.xui.client import XUIIdentityVerificationError
     from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded, build_sub_link
     
     new_uuid = str(uuid_mod.uuid4())
@@ -976,7 +977,12 @@ async def reset_uuid_handler(
         await safe_edit_or_send(callback, "\n".join(response_lines))
     except Exception as exc:
         logger.error("Failed to reset UUID for sub %s: %s", sub.id, exc, exc_info=True)
-        error_detail = str(exc)[:150]
+        error_detail = (
+            "پنل تغییر لینک را تأیید نکرد؛ لینک جدید در ربات ثبت نشد. "
+            "برای بررسی با پشتیبانی تماس بگیرید."
+            if isinstance(exc, XUIIdentityVerificationError)
+            else str(exc)[:150]
+        )
         await safe_edit_or_send(callback, f"❌ خطا در تغییر لینک:\n{error_detail}")
 
 
