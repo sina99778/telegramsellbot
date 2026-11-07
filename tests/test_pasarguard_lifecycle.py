@@ -95,9 +95,8 @@ async def test_renewal_pending_only_bumps_data_limit(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_renewal_unlimited_volume_keeps_data_limit_unset(monkeypatch):
-    # volume_bytes=0 (unlimited plan) → the modify payload must OMIT
-    # data_limit so the panel keeps the config unlimited after renewal.
+async def test_renewal_unlimited_volume_clears_data_limit(monkeypatch):
+    # An explicit null clears a previous cap; omission would retain it.
     import services.renewal as rmod
 
     fake = FakePGClient()
@@ -114,7 +113,7 @@ async def test_renewal_unlimited_volume_keeps_data_limit_unset(monkeypatch):
     await rmod._sync_pasarguard_limits(sub, xui_full)
 
     _uname, payload = fake.modify_calls[0]
-    assert "data_limit" not in payload
+    assert payload == {"data_limit": None}
 
 
 # ─── usage sync transitions ───────────────────────────────────────────────────

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -148,6 +149,7 @@ async def apply_renewal(
     renew_type: str,
     amount: float,
     plan: "Plan | None" = None,
+    expected_user_id: UUID | None = None,
 ) -> None:
     """Apply renewal to subscription and sync with X-UI panel.
 
@@ -174,9 +176,13 @@ async def apply_renewal(
         Subscription.id == subscription.id
     ).with_for_update())
     await session.refresh(subscription, attribute_names=[
-        "status", "ends_at", "volume_bytes", "used_bytes", "lifetime_used_bytes",
+        "user_id", "status", "ends_at", "volume_bytes", "used_bytes", "lifetime_used_bytes",
         "activated_at", "panel_sync_pending", "state_version",
     ])
+    if expected_user_id is not None and subscription.user_id != expected_user_id:
+        raise RenewalNotAllowedError("مالکیت سرویس تغییر کرده است؛ امکان تمدید وجود ندارد.")
+    if subscription.status not in {"active", "expired", "pending_activation"}:
+        raise RenewalNotAllowedError("تمدید این سرویس در وضعیت فعلی مجاز نیست.")
     if getattr(subscription, "panel_sync_pending", False) is True:
         raise RenewalNotAllowedError("درخواست قبلی هنوز در حال اعمال روی پنل است؛ کمی صبر کنید.")
 

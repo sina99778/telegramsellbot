@@ -94,6 +94,9 @@ class Subscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     migration_usage_reconciled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false",
     )
+    # Backfill cannot reconstruct an immutable legacy entitlement after renewal.
+    # Park ambiguous rows for review rather than retrying or reducing paid quota.
+    migration_usage_review_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
     # Consecutive "client not found on panel" responses during usage sync. We
     # only mark a sub expired after several in a row — a single transient panel
     # error (or a flaky "no traffic stats found") must NOT expire a config that

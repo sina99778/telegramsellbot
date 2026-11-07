@@ -977,8 +977,8 @@ async def global_search_execute(
 # Fixes configs migrated from the legacy bot that got their FULL volume back
 # (the bot didn't subtract what the user already used on the old client). This
 # command READS the panel, shows exactly what it found, and lets the admin
-# apply the fix with one tap. The computation is idempotent (it uses the OLD
-# client's own panel quota minus its usage), so it's safe to run repeatedly.
+# queue a safe correction with one tap. Changed entitlements require review;
+# completed corrections are never subtracted a second time.
 
 
 def _gb(num: object) -> str:
@@ -990,7 +990,7 @@ def _gb(num: object) -> str:
 
 def _format_fixvol_report(agg: dict, *, applied: bool) -> str:
     head = (
-        "✅ اصلاح حجم کانفیگ‌های منتقل‌شده — اعمال شد"
+        "✅ اصلاح حجم کانفیگ‌های منتقل‌شده — در صف اعمال روی پنل"
         if applied
         else "🔧 بررسی حجم کانفیگ‌های منتقل‌شده (آزمایشی — هنوز اعمال نشده)"
     )
@@ -998,14 +998,14 @@ def _format_fixvol_report(agg: dict, *, applied: bool) -> str:
         head,
         "",
         f"بررسی‌شده: <b>{agg['checked']}</b>",
-        ("اصلاح‌شده" if applied else "قابل اصلاح") + f": <b>{agg['fixed']}</b>",
+        ("در صف اصلاح" if applied else "قابل اصلاح") + f": <b>{agg['fixed']}</b>",
         f"کلاینت قدیمی پیدا نشد: <b>{agg['no_data']}</b>",
     ]
     if agg.get("errors"):
         lines.append("\n<b>⚠️ خطا حین اجرا:</b>")
         for e in agg["errors"][:5]:
             lines.append(f"• {_esc(str(e))}")
-    fixes = [d for d in agg["details"] if d.get("result") in ("would_fix", "fixed")][:8]
+    fixes = [d for d in agg["details"] if d.get("result") in ("would_fix", "fixed", "queued")][:8]
     if fixes:
         lines.append("\n<b>نمونه اصلاحات:</b>")
         for d in fixes:
@@ -1013,6 +1013,11 @@ def _format_fixvol_report(agg: dict, *, applied: bool) -> str:
                 f"• {_esc(str(d.get('remark', '-')))}: کل {_gb(d.get('old_total'))}، "
                 f"مصرف {_gb(d.get('old_used'))} ← باقی‌مانده {_gb(d.get('new_total'))}"
             )
+    review = [d for d in agg["details"] if d.get("result") == "review_required"][:8]
+    if review:
+        lines.append("\n<b>نیازمند بررسی دستی؛ سهمیه حفظ شد:</b>")
+        for detail in review:
+            lines.append(f"• {_esc(str(detail.get('remark', '-')))}")
     nodata = [d for d in agg["details"] if d.get("result") in ("no_old_client", "old_unlimited")][:6]
     if nodata:
         lines.append("\n<b>پیدا نشد (نمونه نام‌ها):</b>")

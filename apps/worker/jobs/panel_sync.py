@@ -7,7 +7,7 @@ import logging
 from datetime import timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -21,13 +21,17 @@ from services.renewal import _sync_xui_limits
 logger = logging.getLogger(__name__)
 
 
+def _retry_delay(attempts: int) -> timedelta:
+    return timedelta(seconds=min(30 * 2 ** min(attempts, 7), 3600))
+
+
 async def deliver_panel_state(session: AsyncSession, subscription: Subscription) -> bool:
     """Caller holds the subscription row lock until commit."""
     attempted = subscription.panel_sync_attempted_at
     attempts = int(subscription.panel_sync_attempts or 0)
     if (
         attempted
-        and attempted + timedelta(seconds=min(30 * 2 ** min(attempts, 7), 3600)) > utcnow()
+        and attempted + _retry_delay(attempts) > utcnow()
     ):
         return False
     subscription.panel_sync_attempted_at = utcnow()
@@ -67,12 +71,26 @@ async def deliver_panel_state(session: AsyncSession, subscription: Subscription)
 
 
 async def sync_pending_panel_states() -> None:
+    now = utcnow()
+    # Compare timestamps to bound cutoffs instead of dialect-specific interval
+    # arithmetic. Filtering before LIMIT keeps sleeping retries out of the batch.
+    retry_cutoff = case(
+        *((func.coalesce(Subscription.panel_sync_attempts, 0) == attempts,
+           now - _retry_delay(attempts)) for attempts in range(7)),
+        else_=now - _retry_delay(7),
+    )
     async with AsyncSessionFactory() as session:
         ids = list(
             (
                 await session.scalars(
                     select(Subscription.id)
-                    .where(Subscription.panel_sync_pending.is_(True))
+                    .where(
+                        Subscription.panel_sync_pending.is_(True),
+                        or_(
+                            Subscription.panel_sync_attempted_at.is_(None),
+                            Subscription.panel_sync_attempted_at <= retry_cutoff,
+                        ),
+                    )
                     .order_by(
                         Subscription.panel_sync_attempted_at.asc().nullsfirst(), Subscription.id
                     )

@@ -104,7 +104,7 @@ class PGUserCreate(BaseModel):
 
 
 class PGUserModify(BaseModel):
-    """Body for PUT /api/user/{username}. All optional — omitted == no change."""
+    """Body for PUT: omitted fields stay unchanged; explicit null clears a value."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -115,7 +115,7 @@ class PGUserModify(BaseModel):
     note: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
-        return self.model_dump(exclude_none=True)
+        return self.model_dump(exclude_unset=True)
 
 
 # ─── User response ────────────────────────────────────────────────────────────

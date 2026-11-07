@@ -40,6 +40,7 @@ def test_apply_renewal_binds_all_caller_kwargs() -> None:
         renew_type="plan",
         amount=1.0,
         plan=object(),
+        expected_user_id=object(),
     )
 
 

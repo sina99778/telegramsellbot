@@ -740,7 +740,7 @@ async def renew_pay_wallet(
             # But the wallet debit above already committed (its own savepoint
             # completed), so we must refund manually.
             try:
-                await _apply_renewal(sub, renew_type, amount, session)
+                await _apply_renewal(sub, renew_type, amount, session, expected_user_id=user.id)
             except Exception as exc:
                 logger.error("Renewal X-UI sync failed for sub %s: %s", sub.id, exc, exc_info=True)
                 # Refund: the wallet debit's savepoint already committed,
@@ -1459,7 +1459,10 @@ async def renew_pay_partial_manual(
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
-async def _apply_renewal(sub, renew_type: str, amount: float, session: AsyncSession) -> None:
+async def _apply_renewal(
+    sub, renew_type: str, amount: float, session: AsyncSession,
+    *, expected_user_id: UUID | None = None,
+) -> None:
     """Apply the actual renewal (volume or time) to the subscription and sync with X-UI.
     
     Delegates to services.renewal.apply_renewal which uses a savepoint to ensure
@@ -1479,6 +1482,7 @@ async def _apply_renewal(sub, renew_type: str, amount: float, session: AsyncSess
         renew_type=renew_type,
         amount=amount,
         plan=plan,
+        expected_user_id=expected_user_id,
     )
 
 

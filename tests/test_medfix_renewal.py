@@ -109,7 +109,9 @@ async def test_wallet_renewal_proceeds_for_planless_sub(mock_session):
         assert kwargs["reference_type"] == "subscription"
         assert kwargs["reference_id"] == sub.id
 
-        apply_mock.assert_awaited_once_with(sub, "volume", 10.0, mock_session)
+        apply_mock.assert_awaited_once_with(
+            sub, "volume", 10.0, mock_session, expected_user_id=rd["user"].id,
+        )
         mock_session.commit.assert_awaited_once()
         # No Order row was created (Order.plan_id is NOT NULL).
         assert not any(

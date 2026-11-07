@@ -406,6 +406,8 @@ async def test_paid_webhook_credits_settlement_even_when_renewal_is_busy(mock_se
         price_currency="USD",
         payment_status="waiting",
         provider_payment_id="fixture-payment",
+        provider_invoice_id=None,
+        order_id=None,
         callback_payload={"sub_id": str(uuid4()), "renew_type": "time", "renew_amount": 10},
     )
     session.scalar.return_value = payment

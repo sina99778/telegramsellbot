@@ -203,7 +203,8 @@ async def _try_auto_renew(session, bot, sub, renewal_settings) -> None:
 
         try:
             await apply_renewal(
-                session=session, subscription=sub, renew_type="time", amount=float(days)
+                session=session, subscription=sub, renew_type="time", amount=float(days),
+                expected_user_id=user.id,
             )
         except Exception as exc:
             logger.error("auto-renew panel sync failed for sub %s: %s", sub.id, exc, exc_info=True)
