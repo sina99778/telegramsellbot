@@ -94,6 +94,7 @@ from services.plan_inventory import (
 from services.phone_verification import get_verified_phone
 from services.provisioning.manager import ProvisioningError, ProvisioningManager
 from services.renewal import apply_renewal, average_active_plan_renewal_rates, calculate_renewal_price
+from services.subscription_usage import display_usage
 from services.tetrapay.client import TetraPayClient, TetraPayClientConfig, TetraPayRequestError
 from services.tronado.payments import create_tronado_invoice
 from services.wallet.manager import InsufficientBalanceError, WalletManager
@@ -374,13 +375,14 @@ def _subscription_to_view(sub: Subscription) -> SubscriptionView:
             # Don't break the dashboard if a single sub can't be rendered.
             vless_uri = None
 
+    displayed = display_usage(sub)
     return SubscriptionView(
         id=sub.id,
         status=sub.status,
         panel_sync_pending=sub.panel_sync_pending is True,
         panel_sync_error=sub.panel_sync_error if isinstance(sub.panel_sync_error, str) else None,
-        used_bytes=sub.used_bytes,
-        volume_bytes=sub.volume_bytes,
+        used_bytes=displayed.used_bytes,
+        volume_bytes=displayed.total_bytes,
         sub_link=sub.sub_link,
         vless_uri=vless_uri,
         plan_name=sub.plan.name if sub.plan else None,
@@ -1546,14 +1548,15 @@ def _serialize_admin_user_detail(user: User) -> dict[str, Any]:
     summary["phone"] = get_verified_phone(user)
     subscriptions = []
     for sub in sorted(user.subscriptions or [], key=lambda item: item.created_at, reverse=True):
+        displayed = display_usage(sub)
         subscriptions.append(
             {
                 "id": str(sub.id),
                 "status": sub.status,
                 "plan_name": sub.plan.name if sub.plan else None,
                 "config_name": sub.xui_client.username if sub.xui_client else None,
-                "used_bytes": sub.used_bytes,
-                "volume_bytes": sub.volume_bytes,
+                "used_bytes": displayed.used_bytes,
+                "volume_bytes": displayed.total_bytes,
                 "starts_at": sub.starts_at.isoformat() if sub.starts_at else None,
                 "ends_at": sub.ends_at.isoformat() if sub.ends_at else None,
                 "sub_link": sub.sub_link,
@@ -1575,10 +1578,14 @@ async def _admin_subscriptions(session: AsyncSession) -> list[dict[str, Any]]:
         {
             "id": str(s.id),
             "title": (s.xui_client.username if s.xui_client else None) or (s.plan.name if s.plan else "سرویس"),
-            "subtitle": f"{s.status} | {s.user.telegram_id if s.user else '-'} | {s.used_bytes}/{s.volume_bytes}",
+            "subtitle": (
+                f"{s.status} | {s.user.telegram_id if s.user else '-'} | "
+                f"{displayed.used_bytes}/{displayed.total_bytes}"
+            ),
             "actions": [],
         }
         for s in result.scalars().unique().all()
+        for displayed in [display_usage(s)]
     ]
 
 

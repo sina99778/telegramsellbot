@@ -49,6 +49,9 @@ class Subscription(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     expired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     volume_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
     used_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default="0")
+    # Lifetime + current panel usage at the last full-plan renewal. NULL means
+    # the historical period boundary is unknown, so its display stays unchanged.
+    cycle_start_used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     # Transactional outbox: desired limits/status and this marker are committed
     # together with the wallet change. A worker writes absolute limits to the
     # panel; a crash before commit simply causes an idempotent replay.

@@ -34,6 +34,7 @@ from core.formatting import format_usage_bar, format_volume_bytes
 from core.texts import AdminButtons
 from models.subscription import Subscription
 from models.user import User
+from services.subscription_usage import display_usage
 from services.admin_transfer import (
     AdminTransferError,
     admin_transfer_configs,
@@ -126,8 +127,9 @@ def _sub_detail_view(sub: Subscription):
         or (getattr(plan, "name", None) if plan else None)
         or f"config-{str(sub.id)[:8]}"
     )
-    used = format_volume_bytes(sub.used_bytes)
-    total_v = format_volume_bytes(sub.volume_bytes) if sub.volume_bytes else "نامحدود"
+    displayed = display_usage(sub)
+    used = format_volume_bytes(displayed.used_bytes)
+    total_v = format_volume_bytes(displayed.total_bytes) if displayed.total_bytes else "نامحدود"
     link = sub.sub_link or (getattr(xc, "sub_link", None) if xc else None)
     owner_id = f"<code>{owner.telegram_id}</code>" if owner is not None else "—"
 
@@ -138,8 +140,8 @@ def _sub_detail_view(sub: Subscription):
         f"👤 مالکِ فعلی: {_html_escape(owner_label(owner))} (آی‌دی: {owner_id})",
         f"💾 مصرف: {used} / {total_v}",
     ]
-    if sub.volume_bytes:
-        lines.append(format_usage_bar(sub.used_bytes, sub.volume_bytes))
+    if displayed.total_bytes:
+        lines.append(format_usage_bar(displayed.used_bytes, displayed.total_bytes))
     if plan is not None:
         lines.append(f"📦 پلن: {_html_escape(plan.name)}")
     if sub.ends_at:

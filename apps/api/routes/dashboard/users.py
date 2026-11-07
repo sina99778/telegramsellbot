@@ -31,6 +31,7 @@ from models.subscription import Subscription
 from models.user import User
 from models.wallet import Wallet, WalletTransaction
 from repositories.audit import AuditLogRepository
+from services.subscription_usage import display_usage
 from services.wallet.manager import WalletManager
 
 
@@ -148,6 +149,7 @@ async def user_detail(user_id: UUID, auth: AuthDep) -> dict[str, Any]:
 
     subs = []
     for s in subs_rows:
+        usage = display_usage(s)
         name: str
         if s.source == "imported_legacy" and s.legacy_remark:
             name = s.legacy_remark
@@ -162,8 +164,8 @@ async def user_detail(user_id: UUID, auth: AuthDep) -> dict[str, Any]:
             "panel_sync_error": s.panel_sync_error,
             "source": s.source,
             "name": name,
-            "volume_bytes": int(s.volume_bytes or 0),
-            "used_bytes": int(s.used_bytes or 0),
+            "volume_bytes": usage.total_bytes,
+            "used_bytes": usage.used_bytes,
             "lifetime_used_bytes": int(s.lifetime_used_bytes or 0),
             "starts_at": s.starts_at.isoformat() if s.starts_at else None,
             "ends_at": s.ends_at.isoformat() if s.ends_at else None,

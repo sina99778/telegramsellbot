@@ -38,6 +38,7 @@ from models.user import User
 from models.xui import XUIClientRecord, XUIInboundRecord, XUIServerRecord
 from repositories.audit import AuditLogRepository
 from services.renewal import apply_renewal
+from services.subscription_usage import display_usage
 from services.panels.registry import strategy_for_record
 from services.xui.runtime import create_xui_client_for_server, ensure_inbound_server_loaded
 
@@ -124,7 +125,11 @@ async def _render_user_configs(
     for sub in page_items:
         status_icon = {"active": "🟢", "pending_activation": "⏳", "expired": "🔴", "cancelled": "⛔"}.get(sub.status, "❓")
         plan_name = sub.plan.name if sub.plan else "-"
-        usage = f"{format_volume_bytes(sub.used_bytes)}/{format_plan_volume(sub.volume_bytes)}"
+        displayed = display_usage(sub)
+        usage = (
+            f"{format_volume_bytes(displayed.used_bytes)}/"
+            f"{format_plan_volume(displayed.total_bytes)}"
+        )
         ends = sub.ends_at.strftime("%Y-%m-%d") if sub.ends_at else "-"
         lines.append(
             f"{status_icon} {plan_name}\n"
@@ -192,14 +197,16 @@ async def _render_sub_detail(
 
     status_icon = {"active": "🟢", "pending_activation": "⏳", "expired": "🔴", "cancelled": "⛔"}.get(sub.status, "❓")
     plan_name = sub.plan.name if sub.plan else "-"
-    usage_bar = format_usage_bar(sub.used_bytes, sub.volume_bytes)
+    displayed = display_usage(sub)
+    usage_bar = format_usage_bar(displayed.used_bytes, displayed.total_bytes)
 
     text = (
         f"📦 جزئیات اشتراک\n\n"
         f"🆔 ID: <code>{sub.id}</code>\n"
         f"{status_icon} وضعیت: {sub.status}\n"
         f"📦 پلن: {plan_name}\n"
-        f"📊 مصرف: {format_volume_bytes(sub.used_bytes)} / {format_plan_volume(sub.volume_bytes)}\n"
+        f"📊 مصرف: {format_volume_bytes(displayed.used_bytes)} / "
+        f"{format_plan_volume(displayed.total_bytes)}\n"
         f"{usage_bar}\n"
         f"📅 شروع: {sub.starts_at.strftime('%Y-%m-%d %H:%M') if sub.starts_at else '-'}\n"
         f"📅 انقضا: {sub.ends_at.strftime('%Y-%m-%d %H:%M') if sub.ends_at else '-'}\n"
@@ -492,7 +499,7 @@ async def add_volume_submit(
 
     await message.answer(
         f"✅ {gb:.1f} GB به اشتراک {str(sub.id)[:8]} اضافه شد.\n"
-        f"حجم جدید: {format_volume_bytes(sub.volume_bytes)}"
+        f"حجم جدید: {format_plan_volume(display_usage(sub).total_bytes)}"
     )
 
 

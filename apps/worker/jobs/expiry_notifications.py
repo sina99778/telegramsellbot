@@ -24,6 +24,7 @@ from core.formatting import format_plan_volume, format_volume_bytes
 from models.app_setting import AppSetting
 from models.subscription import Subscription
 from models.user import User
+from services.subscription_usage import display_usage
 
 logger = logging.getLogger(__name__)
 
@@ -158,10 +159,11 @@ async def _send_volume_warnings(session: AsyncSession, bot: Bot) -> None:
 
     tasks = []
     for sub in volume_subs:
-        if sub.volume_bytes <= 0:
+        usage = display_usage(sub)
+        if usage.total_bytes <= 0:
             continue
 
-        usage_ratio = sub.used_bytes / sub.volume_bytes
+        usage_ratio = usage.used_bytes / usage.total_bytes
         user = sub.user
         if user is None or user.is_bot_blocked:
             continue
@@ -191,7 +193,7 @@ async def _send_volume_warnings(session: AsyncSession, bot: Bot) -> None:
         plan_name = sub.plan.name if sub.plan else "نامشخص"
         sub_name = sub.xui_client.username if (sub.xui_client and sub.xui_client.username) else str(sub.id)[:8]
         volume_remaining = format_volume_bytes(max(sub.volume_bytes - sub.used_bytes, 0))
-        volume_total = format_plan_volume(sub.volume_bytes)
+        volume_total = format_plan_volume(usage.total_bytes)
         pct_used = round(usage_ratio * 100)
 
         builder = InlineKeyboardBuilder()
@@ -209,7 +211,8 @@ async def _send_volume_warnings(session: AsyncSession, bot: Bot) -> None:
             f"{emoji} هشدار: حجم سرویس شما {urgency} است!\n\n"
             f"👤 سرویس: {sub_name}\n"
             f"📦 پلن: {plan_name}\n"
-            f"📊 مصرف: {pct_used}% ({format_volume_bytes(sub.used_bytes)} از {volume_total})\n"
+            f"📊 مصرف: {pct_used}% "
+            f"({format_volume_bytes(usage.used_bytes)} از {volume_total})\n"
             f"💾 باقی‌مانده: {volume_remaining} ({pct_remaining}%)\n\n"
         )
         if usage_ratio >= 0.95:
