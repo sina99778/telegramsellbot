@@ -57,6 +57,7 @@ from models.subscription import Subscription
 from models.user import User
 from repositories.settings import AppSettingsRepository
 from services.notifications import notify_sales_event
+from services.subscription_usage import display_usage
 
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ def _gb_label(volume_bytes: int) -> str:
     return f"{gb:.1f} گیگ"
 
 
-def _days_label(starts_at, ends_at) -> str:
+def _days_label(starts_at: datetime | None, ends_at: datetime | None) -> str:
     if not ends_at:
         return "—"
     if starts_at:
@@ -420,12 +421,9 @@ async def notify_renewal(
             days_for_display = "—"
             amount_kind = "افزایش"
         elif renew_type == "plan":
-            # Plan renewal resets quota AND days to the plan's fresh values — by
-            # the time this notification fires the subscription columns already
-            # hold the post-reset numbers, so show those.
             header = "🔄 | تمدید پلن فعلی با"
-            volume_for_display = int(getattr(subscription, "volume_bytes", 0) or 0)
-            days_for_display = "بازنشانی کامل"
+            volume_for_display = display_usage(subscription).total_bytes
+            days_for_display = _days_label(subscription.starts_at, subscription.ends_at)
             amount_kind = "تمدید"
         else:
             header = "⏳ | افزایش زمان با"

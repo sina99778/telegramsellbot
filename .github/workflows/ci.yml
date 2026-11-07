@@ -68,7 +68,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e .[dev]
-      - run: pytest tests/test_audit_postgres.py tests/test_upgrade_postgres.py -q
+      - run: pytest tests/test_audit_postgres.py tests/test_upgrade_postgres.py tests/test_lifetime_migration_replay.py -q
 
   security:
     runs-on: ubuntu-latest

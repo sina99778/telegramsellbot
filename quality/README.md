@@ -38,3 +38,7 @@ error counts: `_apply_renewal` remains an existing untyped subscription paramete
 whose signature now spans multiple lines; `services/payment.py` retains its
 existing `bot` redefinition diagnostic, whose message embeds the shifted earlier
 line number. These are recorded as existing debt, not newly accepted errors.
+
+The renewal-cycle display repair removed one further Ruff finding and typed the
+existing `_days_label` helper, removing one mypy finding. Baselines were pruned
+to 1774 and 511 respectively after both gates confirmed zero new diagnostics.

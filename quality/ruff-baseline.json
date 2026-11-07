@@ -286,7 +286,6 @@
     "[\"apps/api/routes/miniapp/users.py\", \"E501\", \"Line too long (127 > 100)\", \"d546328faa1e3e6d3e0b72762fda4aa3a6b4a5024caff21cd2352498e070b8ae\"]": 1,
     "[\"apps/api/routes/miniapp/users.py\", \"E501\", \"Line too long (121 > 100)\", \"7c3604f35be2027ce0f34e088cd160e01dcea579cf8865f727eefd9ab645f406\"]": 1,
     "[\"apps/api/routes/miniapp/users.py\", \"E501\", \"Line too long (111 > 100)\", \"7b7379c6dd7793097651fcfd4c1d62ca160b6f84c38195cf4af3111c8164784e\"]": 1,
-    "[\"apps/api/routes/miniapp/users.py\", \"E501\", \"Line too long (114 > 100)\", \"2a3c532a8d10d0810b9098b2a2d67011cadf9dd2f7f59dbdcf5236092163228d\"]": 1,
     "[\"apps/api/routes/miniapp/users.py\", \"RUF001\", \"String contains ambiguous `ه` (ARABIC LETTER HEH). Did you mean `o` (LATIN SMALL LETTER O)?\", \"880106792952f9bd2a5fb9416d95ff14186bd4d32205e859015d3eb6ece4c8e5\"]": 1,
     "[\"apps/api/routes/miniapp/users.py\", \"RUF001\", \"String contains ambiguous `ا` (ARABIC LETTER ALEF). Did you mean `l` (LATIN SMALL LETTER L)?\", \"880106792952f9bd2a5fb9416d95ff14186bd4d32205e859015d3eb6ece4c8e5\"]": 1,
     "[\"apps/api/routes/miniapp/users.py\", \"E501\", \"Line too long (122 > 100)\", \"ec150a45cd500a5d8d54ef21bd226c6f7b02be7ce2de78556e793b695e81fa0b\"]": 1,

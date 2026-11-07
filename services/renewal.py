@@ -177,7 +177,7 @@ async def apply_renewal(
     ).with_for_update())
     await session.refresh(subscription, attribute_names=[
         "user_id", "status", "ends_at", "volume_bytes", "used_bytes", "lifetime_used_bytes",
-        "activated_at", "panel_sync_pending", "state_version",
+        "activated_at", "panel_sync_pending", "state_version", "cycle_start_used_bytes",
     ])
     if expected_user_id is not None and subscription.user_id != expected_user_id:
         raise RenewalNotAllowedError("مالکیت سرویس تغییر کرده است؛ امکان تمدید وجود ندارد.")
@@ -267,6 +267,10 @@ async def apply_renewal(
                     # counter. Absolute cumulative limits are replay-safe; a
                     # reset followed by a failed write cannot be rolled back.
                     quota = int(plan.volume_bytes or 0)
+                    subscription.cycle_start_used_bytes = (
+                        int(subscription.lifetime_used_bytes or 0)
+                        + int(subscription.used_bytes or 0)
+                    )
                     subscription.volume_bytes = (
                         int(subscription.used_bytes or 0) + quota if quota > 0 else 0
                     )

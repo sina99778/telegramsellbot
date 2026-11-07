@@ -33,6 +33,7 @@ from repositories.audit import AuditLogRepository
 from repositories.settings import AppSettingsRepository
 from repositories.user import UserRepository
 from services.banner import create_traffic_banner
+from services.subscription_usage import display_usage
 from services.provisioning.manager import (
     MigrationError,
     MigrationResult,
@@ -488,6 +489,8 @@ async def my_config_detail_handler(
         from apps.worker.jobs.subscriptions import get_realtime_usage
         usage = await asyncio.wait_for(get_realtime_usage(session, sub), timeout=3.0)
         if usage is not None:
+            sub.used_bytes = usage["used_bytes"]
+            sub.volume_bytes = usage["total_bytes"]
             realtime_ok = True
     except asyncio.TimeoutError:
         realtime_error = "تایم‌اوت پنل"
@@ -498,11 +501,12 @@ async def my_config_detail_handler(
         logger.error("Failed to fetch realtime usage for sub %s: %s", sub.id, exc, exc_info=True)
         realtime_error = str(exc)[:100]
 
-    volume_total = format_plan_volume(sub.volume_bytes)
-    volume_used = format_volume_bytes(sub.used_bytes)
+    displayed = display_usage(sub)
+    volume_total = format_plan_volume(displayed.total_bytes)
+    volume_used = format_volume_bytes(displayed.used_bytes)
     volume_remaining = (
-        "نامحدود" if sub.volume_bytes <= 0
-        else format_volume_bytes(max(sub.volume_bytes - sub.used_bytes, 0))
+        "نامحدود" if displayed.total_bytes <= 0
+        else format_volume_bytes(displayed.remaining_bytes)
     )
 
     # Time remaining
@@ -574,7 +578,7 @@ async def my_config_detail_handler(
     # Build message with HTML
     import html
     esc = html.escape
-    usage_bar = format_usage_bar(sub.used_bytes, sub.volume_bytes)
+    usage_bar = format_usage_bar(displayed.used_bytes, displayed.total_bytes)
     if realtime_ok:
         sync_label = "✅ لحظه‌ای (بروز)"
     elif realtime_error:
@@ -705,8 +709,8 @@ async def my_config_detail_handler(
                 config_name=config_name,
                 user_id=user.id,
                 status=sub.status,
-                used_gb=sub.used_bytes / (1024**3),
-                total_gb=sub.volume_bytes / (1024**3),
+                used_gb=displayed.used_bytes / (1024**3),
+                total_gb=displayed.total_bytes / (1024**3),
                 days_left=days_left,
                 is_active=(sub.status in ["active", "pending_activation"]),
                 bot_username=bot_uname,
@@ -799,13 +803,16 @@ async def refresh_usage_handler(
         await safe_edit_or_send(callback, "❌ خطا در دریافت اطلاعات از سرور. لطفاً بعداً تلاش کنید.")
         return
 
-    used = format_volume_bytes(usage["used_bytes"])
-    total = format_plan_volume(usage["total_bytes"])
+    sub.used_bytes = usage["used_bytes"]
+    sub.volume_bytes = usage["total_bytes"]
+    displayed = display_usage(sub)
+    used = format_volume_bytes(displayed.used_bytes)
+    total = format_plan_volume(displayed.total_bytes)
     remaining = (
-        "نامحدود" if usage["total_bytes"] <= 0
-        else format_volume_bytes(usage["remaining_bytes"])
+        "نامحدود" if displayed.total_bytes <= 0
+        else format_volume_bytes(displayed.remaining_bytes)
     )
-    usage_bar = format_usage_bar(usage["used_bytes"], usage["total_bytes"])
+    usage_bar = format_usage_bar(displayed.used_bytes, displayed.total_bytes)
 
     config_name = sub.xui_client.username if sub.xui_client else "نامشخص"
     

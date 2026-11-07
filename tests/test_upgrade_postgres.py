@@ -535,3 +535,111 @@ async def test_transfer_racing_renewal_rolls_back_the_previous_owners_debit(sess
         assert wallet.balance == Decimal("100")
         assert sub.user_id == recipient_id and sub.ends_at == deadline
         assert not sub.panel_sync_pending
+
+
+async def test_cycle_baseline_commits_with_renewal_and_survives_client_migration(sessions):
+    from services.renewal import apply_renewal
+    from services.subscription_usage import display_usage
+
+    _, sub_id = await seed(sessions)
+    async with sessions() as renewal:
+        sub = await renewal.get(Subscription, sub_id)
+        old_used = sub.used_bytes
+        old_lifetime = sub.lifetime_used_bytes
+        quota = 1000  # seed plan volume
+        await apply_renewal(
+            session=renewal, subscription=sub, renew_type="plan", amount=1,
+        )
+        assert sub.cycle_start_used_bytes == old_lifetime + old_used
+        assert sub.volume_bytes == old_used + quota
+        assert display_usage(sub).total_bytes == quota
+        assert display_usage(sub).used_bytes == 0
+        async with sessions() as observer:
+            before = await observer.get(Subscription, sub_id)
+            assert before.cycle_start_used_bytes is None
+            assert not before.panel_sync_pending
+        await renewal.commit()
+
+    async with sessions() as migration:
+        sub = await migration.get(Subscription, sub_id)
+        sub.used_bytes += 100
+        before = display_usage(sub)
+        sub.volume_bytes -= sub.used_bytes
+        sub.lifetime_used_bytes += sub.used_bytes
+        sub.used_bytes = 0
+        assert display_usage(sub) == before
+        await migration.commit()
+
+
+async def test_failed_wallet_renewal_rolls_back_cycle_baseline(sessions):
+    from services.renewal import apply_renewal
+    from services.wallet.manager import WalletManager
+
+    user_id, sub_id = await seed(sessions)
+    async with sessions() as session:
+        sub = await session.get(Subscription, sub_id)
+        with pytest.raises(RuntimeError, match="cancelled transaction"):
+            async with session.begin_nested():
+                await WalletManager(session).process_transaction(
+                    user_id=user_id, amount=Decimal("10"), transaction_type="renewal",
+                    direction="debit", currency="USD", reference_type="subscription",
+                    reference_id=sub_id,
+                )
+                await apply_renewal(
+                    session=session, subscription=sub, renew_type="plan", amount=1,
+                    expected_user_id=user_id,
+                )
+                raise RuntimeError("cancelled transaction")
+        await session.commit()
+    async with sessions() as observer:
+        sub = await observer.get(Subscription, sub_id)
+        wallet = await observer.scalar(select(Wallet).where(Wallet.user_id == user_id))
+        assert sub.cycle_start_used_bytes is None
+        assert sub.volume_bytes == 1000 and not sub.panel_sync_pending
+        assert wallet.balance == Decimal("100")
+
+
+async def test_confirmed_legacy_cycle_backfill_preserves_quota_wallet_and_usage(sessions):
+    from scripts.backfill_confirmed_cycle import backfill_confirmed_cycle
+    from services.subscription_usage import display_usage
+    from services.wallet.manager import WalletManager
+
+    user_id, sub_id = await seed(sessions)
+    async with sessions() as setup:
+        sub = await setup.get(Subscription, sub_id)
+        order = Order(user_id=user_id, plan_id=sub.plan_id, amount=Decimal("10"),
+                      currency="USD", status="completed", source="bot")
+        setup.add(order)
+        await setup.flush()
+        result = await WalletManager(setup).process_transaction(
+            user_id=user_id, amount=Decimal("10"), transaction_type="renewal",
+            direction="debit", currency="USD", reference_type="order", reference_id=order.id,
+            metadata={"type": "plan", "sub_id": str(sub.id)},
+        )
+        sub.order = order
+        sub.starts_at = result.transaction.created_at
+        sub.volume_bytes = 1300
+        sub.used_bytes = 400
+        await setup.commit()
+        snapshot = {
+            "subscription_id": str(sub.id), "owner_id": str(user_id),
+            "plan_id": str(sub.plan_id), "order_id": str(order.id),
+            "starts_at": sub.starts_at.isoformat(), "ends_at": sub.ends_at.isoformat(),
+            "volume_bytes": 1300, "lifetime_used_bytes": 0, "plan_quota_bytes": 1000,
+            "cycle_start_used_bytes": 300, "renewal_tx_id": str(result.transaction.id),
+        }
+    async with sessions() as writer:
+        assert await backfill_confirmed_cycle(writer, snapshot) == 300
+        sub = await writer.get(Subscription, sub_id)
+        assert sub.cycle_start_used_bytes is None
+        await backfill_confirmed_cycle(writer, snapshot, apply=True)
+        await writer.commit()
+    async with sessions() as check:
+        sub = await check.get(Subscription, sub_id)
+        wallet = await check.scalar(select(Wallet).where(Wallet.user_id == user_id))
+        assert sub.volume_bytes == 1300 and sub.used_bytes == 400
+        assert sub.lifetime_used_bytes == 0 and sub.cycle_start_used_bytes == 300
+        assert not sub.panel_sync_pending and wallet.balance == Decimal("90")
+        displayed = display_usage(sub)
+        assert displayed.total_bytes == 1000 and displayed.used_bytes == 100
+        assert displayed.remaining_bytes == 900

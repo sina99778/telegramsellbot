@@ -20,6 +20,7 @@ from apps.bot.utils.messaging import safe_edit_or_send
 from core.formatting import format_plan_volume, format_volume_bytes
 from models.order import Order
 from models.subscription import Subscription
+from services.subscription_usage import display_usage
 from models.user import User
 
 logger = logging.getLogger(__name__)
@@ -183,8 +184,9 @@ async def customer_detail(
     for sub in subs[:10]:  # Max 10
         st = {"active": "🟢", "pending_activation": "🟡", "expired": "🔴"}.get(sub.status, "⚪")
         plan_name = sub.plan.name if sub.plan else "?"
-        used = format_volume_bytes(sub.used_bytes)
-        total = format_plan_volume(sub.volume_bytes)
+        displayed = display_usage(sub)
+        used = format_volume_bytes(displayed.used_bytes)
+        total = format_plan_volume(displayed.total_bytes)
         text += f"{st} {plan_name} — {used}/{total}\n"
 
     builder = InlineKeyboardBuilder()
@@ -225,8 +227,9 @@ async def customer_sub_detail(
 
     st = {"active": "🟢 فعال", "pending_activation": "🟡 در انتظار", "expired": "🔴 منقضی"}.get(sub.status, sub.status)
     plan_name = sub.plan.name if sub.plan else "?"
-    used = format_volume_bytes(sub.used_bytes)
-    total = format_plan_volume(sub.volume_bytes)
+    displayed = display_usage(sub)
+    used = format_volume_bytes(displayed.used_bytes)
+    total = format_plan_volume(displayed.total_bytes)
 
     text = (
         f"📦 <b>جزئیات سرویس</b>\n"
