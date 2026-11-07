@@ -396,3 +396,142 @@ async def test_restore_database_renames_and_connection_policy_are_atomic():
             for name in (target, shadow, previous):
                 await admin.execute(text(f'DROP DATABASE IF EXISTS "{name}"'))
         await engine.dispose()
+
+
+async def test_migration_backfill_queues_versioned_outbox_and_rejects_stale_usage(sessions):
+    from services.provisioning import manager as mod
+    from schemas.internal.xui import XUIInbound
+
+    _, sub_id = await seed(sessions)
+    async with sessions() as setup:
+        sub = await setup.get(Subscription, sub_id)
+        sub.legacy_remark = "legacy-fixture"
+        await setup.commit()
+    api = NS(get_inbounds=AsyncMock(return_value=[XUIInbound(
+        id=2, settings={"clients": []},
+        clientStats=[{"email": "legacy-fixture", "total": 1000, "up": 200, "down": 0}],
+    )]), patch_client=AsyncMock())
+    @asynccontextmanager
+    async def panel(server):
+        yield api
+
+    async with sessions() as stale, sessions() as writer:
+        old = await stale.get(Subscription, sub_id)
+        version = old.state_version
+        server = await writer.scalar(select(XUIServerRecord))
+        manager = mod.ProvisioningManager(writer)
+        with patch.object(manager, "_get_xui_client_for_server", panel):
+            result = await manager.reconcile_migrated_usage_for_server(server)
+        assert result["fixed"] == 1
+        async with sessions() as observer:
+            before = await observer.get(Subscription, sub_id)
+            assert before.volume_bytes == 1000 and not before.panel_sync_pending
+        await writer.commit()
+        old.used_bytes = 400
+        with pytest.raises(StaleDataError):
+            await stale.commit()
+        await stale.rollback()
+    async with sessions() as check:
+        sub = await check.get(Subscription, sub_id)
+        assert sub.volume_bytes == 800 and sub.panel_sync_pending
+        assert sub.migration_usage_reconciled and sub.lifetime_used_bytes == 200
+        assert sub.state_version > version
+    api.patch_client.assert_not_awaited()
+
+
+async def test_migration_backfill_waits_for_paid_renewal_lock_and_refreshes(sessions):
+    from services.provisioning import manager as mod
+    from schemas.internal.xui import XUIInbound
+
+    _, sub_id = await seed(sessions)
+    async with sessions() as setup:
+        sub = await setup.get(Subscription, sub_id)
+        sub.legacy_remark = "legacy-fixture"
+        await setup.commit()
+    fetched = asyncio.Event()
+    async def get_inbounds():
+        fetched.set()
+        return [XUIInbound(
+            id=2, settings={"clients": []},
+            clientStats=[{"email": "legacy-fixture", "total": 1000, "up": 200, "down": 0}],
+        )]
+    api = NS(get_inbounds=get_inbounds, patch_client=AsyncMock())
+    @asynccontextmanager
+    async def panel(server):
+        yield api
+
+    async with sessions() as renewal, sessions() as backfill:
+        current = await renewal.scalar(
+            select(Subscription).where(Subscription.id == sub_id).with_for_update()
+        )
+        current.volume_bytes = 2000
+        request_panel_sync(current)
+        await renewal.flush()
+        # The backfill identity map deliberately contains the pre-renewal row.
+        stale = await backfill.get(Subscription, sub_id)
+        assert stale.volume_bytes == 1000
+        server = await backfill.scalar(select(XUIServerRecord))
+        manager = mod.ProvisioningManager(backfill)
+        with patch.object(manager, "_get_xui_client_for_server", panel):
+            task = asyncio.create_task(manager.reconcile_migrated_usage_for_server(server))
+            await asyncio.wait_for(fetched.wait(), timeout=5)
+            done, _ = await asyncio.wait({task}, timeout=0.1)
+            assert not done, "backfill must wait for the renewal's subscription row lock"
+            await renewal.commit()
+            result = await asyncio.wait_for(task, timeout=5)
+        await backfill.commit()
+        assert result["details"][0]["result"] == "pending_sync"
+        assert stale.volume_bytes == 2000 and stale.panel_sync_pending
+    api.patch_client.assert_not_awaited()
+
+
+async def test_transfer_racing_renewal_rolls_back_the_previous_owners_debit(sessions):
+    from services.renewal import RenewalNotAllowedError, apply_renewal
+    from services.wallet.manager import WalletManager
+
+    owner_id, sub_id = await seed(sessions)
+    async with sessions() as setup:
+        recipient = User(telegram_id=54321)
+        recipient.wallet = Wallet(balance=Decimal("0"))
+        setup.add(recipient)
+        await setup.commit()
+        recipient_id = recipient.id
+
+    async with sessions() as transfer, sessions() as request:
+        stale = await request.get(Subscription, sub_id)
+        deadline = stale.ends_at
+        current = await transfer.scalar(
+            select(Subscription).where(Subscription.id == sub_id).with_for_update()
+        )
+        current.user_id = recipient_id
+        await transfer.flush()
+        entered = asyncio.Event()
+
+        async def charge_and_renew():
+            async with request.begin_nested():
+                await WalletManager(request).process_transaction(
+                    user_id=owner_id, amount=Decimal("10"), transaction_type="renewal",
+                    direction="debit", currency="USD", reference_type="subscription",
+                    reference_id=sub_id,
+                )
+                entered.set()
+                await apply_renewal(
+                    session=request, subscription=stale, renew_type="time", amount=30,
+                    expected_user_id=owner_id,
+                )
+
+        task = asyncio.create_task(charge_and_renew())
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        done, _ = await asyncio.wait({task}, timeout=0.1)
+        assert not done, "renewal must wait for the ownership transaction"
+        await transfer.commit()
+        with pytest.raises(RenewalNotAllowedError):
+            await asyncio.wait_for(task, timeout=5)
+        await request.rollback()
+
+    async with sessions() as check:
+        sub = await check.get(Subscription, sub_id)
+        wallet = await check.scalar(select(Wallet).where(Wallet.user_id == owner_id))
+        assert wallet.balance == Decimal("100")
+        assert sub.user_id == recipient_id and sub.ends_at == deadline
+        assert not sub.panel_sync_pending

@@ -1832,29 +1832,21 @@ class ProvisioningManager:
         force: bool = False,
         dry_run: bool = False,
     ) -> dict:
-        """Backfill fix for configs migrated BEFORE the usage-subtraction fix.
+        """Queue safe legacy-usage corrections in the transactional panel outbox.
 
-        Those were provisioned with their FULL purchased volume even though the
-        user had already consumed part of it on the old client. We find each
-        migrated config's OLD client on the panel (one get_inbounds, matched by
-        email == legacy_remark, case-insensitive, on a DIFFERENT inbound than
-        the new client) and set the NEW client's quota to the OLD client's REAL
-        remaining = old.totalGB - old.used.
-
-        IDEMPOTENT: the result is computed purely from the OLD client's frozen
-        panel counters (an absolute value), NOT from the current DB volume — so
-        re-running converges to the same correct value and can NEVER double-
-        subtract. Safe to run repeatedly / with force.
-
-        `force`   — ignore the reconciled marker and re-check every migrated sub.
-        `dry_run` — read + report only, change nothing (no panel write, no DB).
-
-        Returns a dict with counts + a `details` list (per-sub diagnostics) +
-        a `panel_emails` sample (to debug name mismatches).
+        Legacy migrations have no immutable entitlement baseline. Only untouched
+        finite quotas can be corrected automatically. Changed or renewed quotas
+        require review; never guess at how much purchased traffic to subtract.
+        ``force`` rechecks candidates but cannot bypass entitlement safeguards or
+        subtract legacy usage a second time. ``dry_run`` changes no state.
         """
         import asyncio as _asyncio
         from collections import defaultdict
-        from sqlalchemy import update as _sa_update
+
+        from sqlalchemy import false, or_
+
+        from models.wallet import WalletTransaction
+        from services.panel_sync import request_panel_sync
 
         out: dict = {"checked": 0, "fixed": 0, "no_data": 0, "skipped": 0, "details": [], "panel_emails": []}
 
@@ -1882,38 +1874,25 @@ class ProvisioningManager:
         ]
         if not force:
             cond.append(Subscription.migration_usage_reconciled.is_(False))
+            cond.append(Subscription.migration_usage_review_reason.is_(None))
 
-        # IMPORTANT: select COLUMNS, not ORM objects. Loading Subscription rows
-        # with relationships and then reading xc.inbound / sub.plan inside the
-        # async panel block is what raised MissingGreenlet (a lazy load mid
-        # await). Row tuples carry no relationships, so nothing can lazy-load.
+        # Snapshot candidates only. The panel fetch can take time; every decision
+        # below uses a fresh, locked ORM row, not this pre-fetch snapshot.
         rows = await self.session.execute(
             select(
                 Subscription.id.label("sub_id"),
                 Subscription.legacy_remark,
-                Subscription.lifetime_used_bytes,
-                Subscription.ends_at,
-                Subscription.sub_link,
-                XUIClientRecord.client_uuid,
-                XUIClientRecord.xui_client_remote_id,
                 XUIClientRecord.email,
-                XUIClientRecord.username,
-                XUIClientRecord.is_active,
-                XUIClientRecord.sub_link.label("xc_sub_link"),
                 XUIInboundRecord.xui_inbound_remote_id.label("new_inbound"),
-                Plan.ip_limit.label("plan_ip_limit"),
             )
             .join(XUIClientRecord, XUIClientRecord.subscription_id == Subscription.id)
             .join(XUIInboundRecord, XUIInboundRecord.id == XUIClientRecord.inbound_id)
-            .outerjoin(Plan, Plan.id == Subscription.plan_id)
             .where(*cond)
             .limit(limit)
         )
         subs = rows.all()
         if not subs:
             return out
-
-        global_ip_limit = (await AppSettingsRepository(self.session).get_service_security_settings()).xui_limit_ip
 
         # ONE get_inbounds → map normalized-email -> [{inbound, total, used, email}].
         clients_by_email: dict[str, list[dict]] = defaultdict(list)
@@ -1957,48 +1936,92 @@ class ProvisioningManager:
                     out["details"].append(detail)
                     continue
 
-                new_total = old["total"] - old["used"]
-                if new_total <= 0:
-                    new_total = 1  # depleted; never 0 == unlimited
-                detail.update({"old_total": old["total"], "old_used": old["used"], "new_total": new_total})
-                if dry_run:
-                    detail["result"] = "would_fix"
-                    out["fixed"] += 1
-                    out["details"].append(detail)
-                    continue
                 try:
                     async with self.session.begin_nested():
-                        await self.session.execute(
-                            _sa_update(Subscription)
-                            .where(Subscription.id == r.sub_id)
-                            .values(
-                                volume_bytes=new_total,
-                                lifetime_used_bytes=max(int(r.lifetime_used_bytes or 0), old["used"]),
-                                migration_usage_reconciled=True,
+                        locked = await self.session.execute(
+                            select(Subscription)
+                            .join(
+                                XUIClientRecord,
+                                XUIClientRecord.subscription_id == Subscription.id,
                             )
+                            .join(
+                                XUIInboundRecord,
+                                XUIInboundRecord.id == XUIClientRecord.inbound_id,
+                            )
+                            .where(
+                                Subscription.id == r.sub_id,
+                                Subscription.source.is_(None),
+                                XUIInboundRecord.server_id == server.id,
+                                XUIInboundRecord.xui_inbound_remote_id == new_inbound,
+                            )
+                            .execution_options(populate_existing=True)
+                            .with_for_update(of=Subscription)
                         )
-                        client_id = r.xui_client_remote_id or r.client_uuid
-                        sub_id_str = ""
-                        link = r.sub_link or r.xc_sub_link or ""
-                        if "/" in link:
-                            sub_id_str = link.rsplit("/", 1)[-1]
-                        ip_limit = int(r.plan_ip_limit) if r.plan_ip_limit is not None else global_ip_limit
-                        expiry_ms = int(r.ends_at.timestamp() * 1000) if r.ends_at else 0
-                        await api.patch_client(
-                            inbound_id=new_inbound,
-                            client_id=client_id,
-                            client=XUIClient(
-                                id=client_id, uuid=r.client_uuid, email=r.email,
-                                limitIp=ip_limit, totalGB=new_total, expiryTime=expiry_ms,
-                                enable=r.is_active, subId=sub_id_str, comment=r.username or "",
-                            ),
-                        )
-                    detail["result"] = "fixed"
-                    out["fixed"] += 1
-                    logger.info(
-                        "[MIGRATE-USAGE] fixed sub=%s: old_total=%d old_used=%d → new=%d",
-                        r.sub_id, old["total"], old["used"], new_total,
-                    )
+                        sub = locked.scalar_one_or_none()
+                        reason = None
+                        if sub is None or (sub.legacy_remark or "").strip().lower() != remark_norm:
+                            detail["result"] = "mapping_changed"
+                        elif sub.panel_sync_pending:
+                            detail["result"] = "pending_sync"
+                        elif sub.migration_usage_reconciled:
+                            detail["result"] = "already_reconciled"
+                        elif sub.status not in {"active", "pending_activation", "expired"}:
+                            reason = "subscription_status_changed"
+                        elif (
+                            int(sub.volume_bytes or 0) != old["total"]
+                            or int(sub.lifetime_used_bytes or 0) != 0
+                        ):
+                            reason = "entitlement_baseline_changed"
+                        else:
+                            # Some paths replace quota (plan renewal), others add
+                            # volume, and older ledger entries omit quantity. Even
+                            # an equal quota can be a paid fresh plan: review it.
+                            renewed_id: UUID | None = await self.session.scalar(
+                                select(WalletTransaction.id).where(
+                                    WalletTransaction.type == "renewal",
+                                    WalletTransaction.direction == "debit",
+                                    or_(
+                                        WalletTransaction.metadata_["sub_id"].astext == str(sub.id),
+                                        (WalletTransaction.reference_type == "subscription")
+                                        & (WalletTransaction.reference_id == sub.id),
+                                        (WalletTransaction.reference_type == "order")
+                                        & (WalletTransaction.reference_id == sub.order_id)
+                                        if sub.order_id is not None else false(),
+                                    ),
+                                ).limit(1)
+                            )
+                            if renewed_id is not None:
+                                reason = "renewal_history_requires_review"
+                            else:
+                                new_total = max(old["total"] - max(old["used"], 0), 1)
+                                detail.update(
+                                    old_total=old["total"],
+                                    old_used=old["used"],
+                                    new_total=new_total,
+                                )
+                                if dry_run:
+                                    detail["result"] = "would_fix"
+                                else:
+                                    sub.volume_bytes = new_total
+                                    sub.lifetime_used_bytes = max(old["used"], 0)
+                                    sub.migration_usage_reconciled = True
+                                    sub.migration_usage_review_reason = None
+                                    request_panel_sync(sub)
+                                    # ORM flush includes state_version; desired
+                                    # quota + pending marker commit atomically.
+                                    await self.session.flush()
+                                    detail["result"] = "queued"
+                                out["fixed"] += 1
+                        if reason and sub is not None:
+                            detail.update(result="review_required", reason=reason)
+                            if not dry_run:
+                                sub.migration_usage_review_reason = reason
+                                await self.session.flush()
+                            logger.warning(
+                                "[MIGRATE-USAGE] review required sub=%s: %s", r.sub_id, reason,
+                            )
+                        if detail["result"] not in {"queued", "would_fix"}:
+                            out["skipped"] += 1
                 except Exception as exc:
                     detail["result"] = f"error: {str(exc)[:80]}"
                     logger.warning("[MIGRATE-USAGE] failed to reconcile sub %s: %s", r.sub_id, exc)

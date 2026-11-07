@@ -92,8 +92,6 @@ async def _rotate_config_identity_for_transfer(
 
     new_uuid = str(_uuid.uuid4())
     new_sub_id = _uuid.uuid4().hex[:16]
-    expiry_ms = int(sub.ends_at.timestamp() * 1000) if sub.ends_at else 0
-    security_settings = await AppSettingsRepository(session).get_service_security_settings()
 
     # The URL path addresses the client by its CURRENT id; the body carries
     # the NEW identity.
@@ -106,12 +104,7 @@ async def _rotate_config_identity_for_transfer(
         id=new_uuid,
         uuid=new_uuid,
         email=xui_record.email,
-        limitIp=security_settings.xui_limit_ip,
-        totalGB=sub.volume_bytes,
-        expiryTime=expiry_ms,
-        enable=xui_record.is_active,
         subId=new_sub_id,
-        comment=xui_record.username or "",
     )
 
     try:

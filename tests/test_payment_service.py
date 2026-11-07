@@ -268,6 +268,7 @@ class TestProcessSuccessfulPayment:
         subscription = MagicMock()
         subscription.id = sub_id
         subscription.status = "active"  # the IPN status gate refuses disabled subs
+        subscription.user_id = payment.user_id
         mock_session.scalar.return_value = subscription
 
         # The IPN renewal path now takes the canonical renewal lock — fake it.
@@ -378,6 +379,7 @@ class TestProcessSuccessfulPayment:
         subscription = MagicMock()
         subscription.id = sub_id
         subscription.status = "active"  # the IPN status gate refuses disabled subs
+        subscription.user_id = payment.user_id
         mock_session.scalar.return_value = subscription
 
         from contextlib import asynccontextmanager

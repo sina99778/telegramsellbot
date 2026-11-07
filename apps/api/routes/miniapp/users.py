@@ -2819,6 +2819,7 @@ async def renew_subscription(
                     subscription=subscription,
                     renew_type=body.renew_type,
                     amount=amount,
+                    expected_user_id=user.id,
                 )
         except Exception:
             order.status = "failed"

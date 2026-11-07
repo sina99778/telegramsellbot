@@ -583,7 +583,8 @@ async def _handle_direct_renewal(
             logger.error("[RENEWAL] Subscription %s not found for renewal payment %s", sub_id_str, payment.id)
             return False
 
-        if subscription.status not in ("active", "pending_activation", "expired"):
+        owner_changed = subscription.user_id != payment.user_id
+        if owner_changed or subscription.status not in ("active", "pending_activation", "expired"):
             logger.warning(
                 "[RENEWAL] Refusing renewal of sub %s with status=%s (payment %s) — funds stay in wallet",
                 sub_id_str, subscription.status, payment.id,
@@ -591,6 +592,8 @@ async def _handle_direct_renewal(
             payload = dict(payment.callback_payload or {})
             payload["renewal_refused"] = True
             payload["renewal_refused_status"] = subscription.status
+            if owner_changed:
+                payload["renewal_refused_reason"] = "ownership_changed"
             payment.callback_payload = payload
             bot = _get_shared_bot()
             try:
@@ -598,7 +601,8 @@ async def _handle_direct_renewal(
                 if user:
                     await bot.send_message(
                         user.telegram_id,
-                        "⚠️ امکان تمدید این سرویس وجود ندارد (وضعیت سرویس مجاز نیست).\n"
+                        "⚠️ امکان تمدید این سرویس وجود ندارد "
+                        "(مالکیت یا وضعیت سرویس تغییر کرده است).\n"
                         "مبلغ پرداختی در کیف پول شما باقی ماند.",
                     )
             finally:
@@ -674,6 +678,7 @@ async def _apply_direct_renewal_locked(
                     renew_type=renew_type,
                     amount=float(renew_amount),
                     plan=plan,
+                    expected_user_id=payment.user_id,
                 )
             payload["wallet_debited"] = True
             payment.callback_payload = payload
@@ -685,6 +690,7 @@ async def _apply_direct_renewal_locked(
                 renew_type=renew_type,
                 amount=float(renew_amount),
                 plan=plan,
+                expected_user_id=payment.user_id,
             )
         logger.info("[RENEWAL] Renewal applied successfully for subscription %s", sub_id_str)
 

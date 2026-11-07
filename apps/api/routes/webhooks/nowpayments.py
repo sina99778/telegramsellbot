@@ -99,17 +99,26 @@ async def handle_nowpayments_ipn(
 
     # Find payment: try provider_payment_id, then order_id, then invoice_id
     payment = await session.scalar(
-        select(Payment).where(Payment.provider_payment_id == provider_payment_id).with_for_update()
+        select(Payment).where(
+            Payment.provider == "nowpayments",
+            Payment.provider_payment_id == provider_payment_id,
+        ).with_for_update()
     )
     if payment is None and order_id_from_payload:
         logger.info("Payment not found by provider_payment_id, trying order_id=%s", order_id_from_payload)
         payment = await session.scalar(
-            select(Payment).where(Payment.order_id == order_id_from_payload).with_for_update()
+            select(Payment).where(
+                Payment.provider == "nowpayments",
+                Payment.order_id == order_id_from_payload,
+            ).with_for_update()
         )
     if payment is None and invoice_id_from_payload:
         logger.info("Payment not found by order_id, trying provider_invoice_id=%s", invoice_id_from_payload)
         payment = await session.scalar(
-            select(Payment).where(Payment.provider_invoice_id == invoice_id_from_payload).with_for_update()
+            select(Payment).where(
+                Payment.provider == "nowpayments",
+                Payment.provider_invoice_id == invoice_id_from_payload,
+            ).with_for_update()
         )
 
     if payment is None:
@@ -120,6 +129,22 @@ async def handle_nowpayments_ipn(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Payment not found.",
+        )
+
+    # A fallback may discover an invoice before it has a payment ID, but it
+    # must never rebind an existing payment or contradict another known ID.
+    identifiers = (
+        (payment.provider_payment_id, provider_payment_id),
+        (payment.order_id, order_id_from_payload),
+        (payment.provider_invoice_id, invoice_id_from_payload),
+    )
+    if payment.provider != "nowpayments" or any(
+        stored and received and str(stored) != received
+        for stored, received in identifiers
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="NOWPayments callback identifiers do not match payment.",
         )
 
     logger.info("IPN: Found payment %s (kind=%s, current_status=%s)", payment.id, payment.kind, payment.payment_status)

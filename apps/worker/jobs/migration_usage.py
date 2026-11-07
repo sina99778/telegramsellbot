@@ -14,7 +14,9 @@ What this does
 For each migrated config that hasn't been reconciled yet, it reads the OLD
 client's real consumption from the panel (one get_inbounds per server, matched
 by email == legacy_remark on a different inbound than the new client) and
-reduces BOTH the panel quota and the DB volume to the true remaining. It's:
+queues a transactional desired-state correction only for untouched quotas.
+Ambiguous or renewed entitlements are parked with a persisted review reason.
+The panel outbox delivers safe corrections after commit. It's:
 
 * idempotent  — a per-sub `migration_usage_reconciled` flag, set once;
 * bounded     — at most `BATCH_PER_SERVER` subs per server per run;
@@ -62,6 +64,7 @@ async def _reconcile_migrated_usage() -> None:
                 Subscription.source.is_(None),
                 Subscription.legacy_remark.isnot(None),
                 Subscription.migration_usage_reconciled.is_(False),
+                Subscription.migration_usage_review_reason.is_(None),
             )
         )
         if not pending:
@@ -83,7 +86,7 @@ async def _reconcile_migrated_usage() -> None:
         )
 
         manager = ProvisioningManager(session)
-        total = {"checked": 0, "fixed": 0, "no_data": 0}
+        total = {"checked": 0, "fixed": 0, "no_data": 0, "skipped": 0}
         for server in servers:
             # Snapshot scalars before any await — session.commit() expires ORM
             # objects and accessing attributes on them afterwards raises
@@ -108,6 +111,7 @@ async def _reconcile_migrated_usage() -> None:
 
         if total["checked"]:
             logger.info(
-                "[MIGRATE-USAGE] run complete — checked=%d, fixed=%d, no_legacy_data=%d",
-                total["checked"], total["fixed"], total["no_data"],
+                "[MIGRATE-USAGE] run complete — checked=%d, queued=%d, "
+                "no_legacy_data=%d, skipped=%d",
+                total["checked"], total["fixed"], total["no_data"], total["skipped"],
             )

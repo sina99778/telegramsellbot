@@ -74,6 +74,7 @@ async def test_ipn_renewal_refuses_disabled_sub(mock_session, make_payment):
 
     sub = NS(id=uuid4(), status="disabled", xui_client=None)
     payment = _renewal_payment(make_payment, sub.id)
+    sub.user_id = payment.user_id
     mock_session.scalar = AsyncMock(side_effect=[sub, None])  # sub, then user lookup
 
     bot = MagicMock()
